@@ -39,23 +39,23 @@ def test_unload_cancels_inflight_generation_then_unloads(monkeypatch):
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     sent = []
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: sent.append(cmd))
-    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout=300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
     # A generation holds _gen_lock and releases it only once cancelled.
     o._gen_lock.acquire()
 
     def releaser():
-        o._cancel_event.wait(timeout = 5)  # released only after the cancel fires
+        o._cancel_event.wait(timeout=5)  # released only after the cancel fires
         o._gen_lock.release()
 
-    t = threading.Thread(target = releaser)
+    t = threading.Thread(target=releaser)
     t.start()
 
     start = time.monotonic()
     ok = o.unload_model("m")
     elapsed = time.monotonic() - start
-    t.join(timeout = 5)
+    t.join(timeout=5)
 
     assert ok is True
     assert o._cancel_event.is_set(), "generation must be cancelled before the unload"
@@ -71,7 +71,7 @@ def test_unload_no_active_generation_unloads_normally(monkeypatch):
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     sent = []
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: sent.append(cmd))
-    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout=300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
     ok = o.unload_model("m")
@@ -80,7 +80,7 @@ def test_unload_no_active_generation_unloads_normally(monkeypatch):
     assert {"type": "unload", "model_name": "m"} in sent
     assert o.active_model_name is None
     # Lock released for the next caller.
-    assert o._gen_lock.acquire(blocking = False)
+    assert o._gen_lock.acquire(blocking=False)
     o._gen_lock.release()
 
 
@@ -89,7 +89,7 @@ def test_unload_falls_back_to_shutdown_when_generation_wont_yield(monkeypatch):
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orch_mod, "_UNLOAD_GEN_LOCK_TIMEOUT", 0.2)
     shutdown = []
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: shutdown.append(timeout))
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: pytest.fail("must not send unload when wedged"))
 
     # A wedged worker never releases _gen_lock, even after the cancel.
@@ -121,7 +121,7 @@ def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
     o._dispatcher_thread = _AliveThread()
 
     shutdown = []
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: shutdown.append(timeout))
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
     monkeypatch.setattr(
         o, "_send_cmd", lambda cmd: pytest.fail("must not send unload with a wedged dispatcher")
@@ -129,7 +129,7 @@ def test_unload_tears_down_when_compare_dispatcher_wedged(monkeypatch):
     monkeypatch.setattr(
         o,
         "_wait_response",
-        lambda t, timeout = 300.0: pytest.fail(
+        lambda t, timeout=300.0: pytest.fail(
             "must not wait on resp_queue with a wedged dispatcher"
         ),
     )
@@ -157,7 +157,7 @@ def test_consume_token_stream_bails_when_subprocess_swapped(monkeypatch):
         o._proc = object()  # simulate the reload swapping the subprocess
         return None
 
-    gen = o._consume_token_stream(read_one, lambda: None, crash_context = "generation")
+    gen = o._consume_token_stream(read_one, lambda: None, crash_context="generation")
     msg = next(gen)
 
     assert "restarted" in msg
@@ -169,7 +169,7 @@ def test_unload_pending_clears_after_unload(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: None)
-    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout=300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
     o.unload_model("m")
@@ -184,11 +184,11 @@ def test_generation_bails_when_unload_pending(monkeypatch):
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     o._unload_pending = True
 
-    out = list(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_inner(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     # It released (or never held) the lock, so the pending unload can proceed.
-    assert o._gen_lock.acquire(blocking = False)
+    assert o._gen_lock.acquire(blocking=False)
     o._gen_lock.release()
 
 
@@ -205,7 +205,7 @@ def test_dispatched_generation_bails_when_unload_pending(monkeypatch):
     )
     o._unload_pending = True
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
 
@@ -219,11 +219,11 @@ def test_audio_input_generation_bails_when_unload_pending(monkeypatch):
     )
     o._unload_pending = True
 
-    out = list(o._generate_audio_input_inner(audio_array = [0.0, 0.1]))
+    out = list(o._generate_audio_input_inner(audio_array=[0.0, 0.1]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     # Lock released so the pending unload can proceed.
-    assert o._gen_lock.acquire(blocking = False)
+    assert o._gen_lock.acquire(blocking=False)
     o._gen_lock.release()
 
 
@@ -237,11 +237,11 @@ def test_audio_response_bails_when_unload_pending(monkeypatch):
     )
     o._unload_pending = True
 
-    with pytest.raises(RuntimeError, match = "unload"):
+    with pytest.raises(RuntimeError, match="unload"):
         o.generate_audio_response("hello")
 
     # Lock released so the pending unload can proceed.
-    assert o._gen_lock.acquire(blocking = False)
+    assert o._gen_lock.acquire(blocking=False)
     o._gen_lock.release()
 
 
@@ -329,7 +329,7 @@ def test_unload_sets_drain_event_during_switch_and_clears_after(monkeypatch):
     o = _bare_orchestrator()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
-    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout=300.0: {"type": "unloaded"})
 
     seen = {}
 
@@ -355,7 +355,7 @@ def test_unload_clears_drain_event_even_on_wedged_teardown(monkeypatch):
 
     # A wedged worker never releases _gen_lock; unload tears the subprocess down. The
     # real teardown nulls _drain_event, so emulate that so the finally exercises its guard.
-    def fake_shutdown(timeout = 5):
+    def fake_shutdown(timeout=5):
         o._drain_event = None
 
     monkeypatch.setattr(o, "_shutdown_subprocess", fake_shutdown)
@@ -392,15 +392,15 @@ def test_generation_rechecks_model_after_lock_wait(monkeypatch):
     out: list = []
 
     def run():
-        out.extend(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
+        out.extend(o._generate_inner(messages=[{"role": "user", "content": "hi"}]))
 
-    t = threading.Thread(target = run)
+    t = threading.Thread(target=run)
     t.start()
-    assert reached_lock.wait(timeout = 5)
+    assert reached_lock.wait(timeout=5)
     # Unload finished: model swapped, pending already cleared. Release the lock.
     o.active_model_name = "other"
     o._gen_lock.release()
-    t.join(timeout = 5)
+    t.join(timeout=5)
 
     assert out and any("unloaded" in chunk.lower() for chunk in out)
 
@@ -421,13 +421,13 @@ def test_generation_rechecks_model_when_unloaded_to_none(monkeypatch):
 
     out: list = []
     t = threading.Thread(
-        target = lambda: out.extend(o._generate_inner(messages = [{"role": "user", "content": "hi"}]))
+        target=lambda: out.extend(o._generate_inner(messages=[{"role": "user", "content": "hi"}]))
     )
     t.start()
-    assert reached_lock.wait(timeout = 5)
+    assert reached_lock.wait(timeout=5)
     o.active_model_name = None
     o._gen_lock.release()
-    t.join(timeout = 5)
+    t.join(timeout=5)
 
     assert out and any("unloaded" in chunk.lower() for chunk in out)
 
@@ -464,7 +464,7 @@ def test_unload_matches_active_model_case_insensitively(monkeypatch):
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     sent = []
     monkeypatch.setattr(o, "_send_cmd", lambda cmd: sent.append(cmd))
-    monkeypatch.setattr(o, "_wait_response", lambda t, timeout = 300.0: {"type": "unloaded"})
+    monkeypatch.setattr(o, "_wait_response", lambda t, timeout=300.0: {"type": "unloaded"})
     monkeypatch.setattr(o, "_drain_queue", lambda: [])
 
     o.active_model_name = "unsloth/Qwen3-4B"
@@ -522,13 +522,13 @@ def test_load_does_not_accumulate_stale_models_defeating_the_unload_guard(monkey
         monkeypatch.setattr(
             o,
             "_wait_response",
-            lambda expected, timeout = 300.0: {
+            lambda expected, timeout=300.0: {
                 "type": "loaded",
                 "success": True,
                 "model_info": {"identifier": name, "display_name": name},
             },
         )
-        assert o.load_model(types.SimpleNamespace(identifier = name, gguf_variant = None)) is True
+        assert o.load_model(types.SimpleNamespace(identifier=name, gguf_variant=None)) is True
 
     _load("modelA")
     _load("modelB")  # switch to B without unloading A first
@@ -576,10 +576,10 @@ def test_unload_route_serializes_with_loads_via_lifecycle_gate(monkeypatch):
 
     async def scenario():
         # Hold the real gate, exactly as an in-flight /load would.
-        assert kw._lifecycle_lock.acquire(blocking = False)
+        assert kw._lifecycle_lock.acquire(blocking=False)
         try:
             task = asyncio.ensure_future(
-                inference_route.unload_model(UnloadRequest(model_path = "m"), "tester")
+                inference_route.unload_model(UnloadRequest(model_path="m"), "tester")
             )
             # Yield to the loop repeatedly: the route must stay blocked on the gate.
             for _ in range(10):
@@ -608,7 +608,7 @@ def test_cancel_load_terminates_loading_subprocess_and_sends_no_command(monkeypa
     o.active_model_name = None
     o.models = {}
     shutdown = []
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: shutdown.append(timeout))
     monkeypatch.setattr(
         o, "_send_cmd", lambda cmd: pytest.fail("cancel_load must not send a worker command")
     )
@@ -624,7 +624,7 @@ def test_cancel_load_terminates_loading_subprocess_and_sends_no_command(monkeypa
 def test_cancel_load_matches_loading_model_case_insensitively(monkeypatch):
     o = _bare_orchestrator()
     o.loading_models = {"unsloth/Qwen3-4B"}
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: None)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: None)
 
     assert o.cancel_load("unsloth/qwen3-4b") is True
     assert o.loading_models == set()
@@ -636,7 +636,7 @@ def test_unload_model_cancels_a_loading_model_via_cancel_load(monkeypatch):
     o.loading_models = {"m"}
     o.active_model_name = None
     shutdown = []
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: shutdown.append(timeout))
     monkeypatch.setattr(
         o, "_send_cmd", lambda cmd: pytest.fail("must not send a command to cancel a load")
     )
@@ -684,10 +684,10 @@ def test_unload_route_cancels_in_flight_load_without_waiting_on_gate(monkeypatch
 
     async def scenario():
         # Hold the real gate, exactly as an in-flight /load would.
-        assert kw._lifecycle_lock.acquire(blocking = False)
+        assert kw._lifecycle_lock.acquire(blocking=False)
         try:
             # Even with the gate held, the loading-cancel must go through.
-            resp = await inference_route.unload_model(UnloadRequest(model_path = "m"), "tester")
+            resp = await inference_route.unload_model(UnloadRequest(model_path="m"), "tester")
             assert resp.status == "unloaded"
             assert cancelled == ["m"]
         finally:
@@ -726,7 +726,7 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
         o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
     )
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
@@ -769,7 +769,7 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
         o, "_send_cmd", lambda cmd: pytest.fail("must not generate on the swapped-in model")
     )
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
@@ -796,7 +796,7 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
         o, "_send_cmd", lambda cmd: pytest.fail("must not generate with the dispatcher stopped")
     )
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     assert o._mailboxes == {}, "must not leave an orphaned mailbox"
@@ -827,7 +827,7 @@ def test_dispatched_happy_path_registers_and_sends(monkeypatch):
 
     monkeypatch.setattr(o, "_consume_token_stream", fake_consume)
 
-    list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert sent, "happy path must send the generate command"
     assert o._mailboxes == {}, "mailbox popped in finally"
@@ -889,7 +889,7 @@ def test_load_model_proceeds_when_not_cancelled(monkeypatch):
     monkeypatch.setattr(
         o,
         "_wait_response",
-        lambda t, timeout = 300.0: {"success": True, "model_info": {"identifier": "m"}},
+        lambda t, timeout=300.0: {"success": True, "model_info": {"identifier": "m"}},
     )
 
     import utils.transformers_version as tv
@@ -935,16 +935,16 @@ def test_load_model_aborts_when_cancelled_during_spawn(monkeypatch):
     monkeypatch.setattr(o, "_spawn_subprocess", spawn_then_cancel)
 
     shutdown = []
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: shutdown.append(timeout))
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: shutdown.append(timeout))
     monkeypatch.setattr(
         o,
         "_wait_response",
-        lambda t, timeout = 300.0: pytest.fail(
+        lambda t, timeout=300.0: pytest.fail(
             "must not wait for 'loaded' after a cancel during spawn"
         ),
     )
 
-    ok = o.load_model(types.SimpleNamespace(identifier = "m", gguf_variant = None))
+    ok = o.load_model(types.SimpleNamespace(identifier="m", gguf_variant=None))
 
     assert ok is False
     assert shutdown, "must tear the orphaned worker down"
@@ -999,8 +999,8 @@ def test_unload_cancels_loading_gguf_off_gate(monkeypatch):
     monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
     monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
 
-    req = ri.UnloadRequest(model_path = "gguf-model")
-    resp = _asyncio.run(ri.unload_model(req, current_subject = "s"))
+    req = ri.UnloadRequest(model_path="gguf-model")
+    resp = _asyncio.run(ri.unload_model(req, current_subject="s"))
 
     assert getattr(resp, "status", None) == "unloaded"
     assert llama.unloaded is True, "must cancel the loading GGUF via unload_model()"
@@ -1048,8 +1048,8 @@ def test_unload_loaded_gguf_still_uses_gate(monkeypatch):
     monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
     monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
 
-    req = ri.UnloadRequest(model_path = "gguf-model")
-    resp = _asyncio.run(ri.unload_model(req, current_subject = "s"))
+    req = ri.UnloadRequest(model_path="gguf-model")
+    resp = _asyncio.run(ri.unload_model(req, current_subject="s"))
 
     assert getattr(resp, "status", None) == "unloaded"
     assert llama.unloaded is True
@@ -1102,8 +1102,8 @@ def test_unload_of_mismatched_loading_gguf_skips_off_gate_fast_path(monkeypatch)
     monkeypatch.setattr(llama_keepwarm, "inference_lifecycle_gate", lambda: _Gate())
     monkeypatch.setattr(llama_keepwarm, "note_model_unloaded", lambda: None)
 
-    req = ri.UnloadRequest(model_path = "gguf-Y")  # different from the loading model X
-    _asyncio.run(ri.unload_model(req, current_subject = "s"))
+    req = ri.UnloadRequest(model_path="gguf-Y")  # different from the loading model X
+    _asyncio.run(ri.unload_model(req, current_subject="s"))
 
     assert gate_entered["v"] is True, (
         "a mismatched-target unload must not use the off-gate GGUF fast path; "
@@ -1132,7 +1132,7 @@ def test_cancel_load_clears_marker_before_shutdown(monkeypatch):
 
     at_shutdown = {}
 
-    def record_shutdown(timeout = 5):
+    def record_shutdown(timeout=5):
         at_shutdown["marker_present"] = "m" in o.loading_models
         at_shutdown["active"] = o.active_model_name
         at_shutdown["models"] = dict(o.models)
@@ -1182,9 +1182,9 @@ def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown
     release_loaded = threading.Event()  # cancel_load lets the load consume "loaded"
     load_done = threading.Event()
 
-    def blocking_wait_response(expected, timeout = 300.0):
+    def blocking_wait_response(expected, timeout=300.0):
         parked.set()
-        assert release_loaded.wait(timeout = 5)
+        assert release_loaded.wait(timeout=5)
         return {
             "type": "loaded",
             "success": True,
@@ -1198,28 +1198,28 @@ def test_cancel_load_reclears_state_when_racing_load_repopulates_during_teardown
     def run_load():
         try:
             load_result["ok"] = o.load_model(
-                types.SimpleNamespace(identifier = "m", gguf_variant = None)
+                types.SimpleNamespace(identifier="m", gguf_variant=None)
             )
         except Exception as exc:  # noqa: BLE001
             load_result["exc"] = exc
         finally:
             load_done.set()
 
-    loader = threading.Thread(target = run_load)
+    loader = threading.Thread(target=run_load)
     loader.start()
-    assert parked.wait(timeout = 5), "load_model must reach _wait_response"
+    assert parked.wait(timeout=5), "load_model must reach _wait_response"
 
     # The teardown IS the window in which the racing load repopulates the mirrors: the
     # marker is already discarded here, so release the load and wait for it to finish
     # repopulating, mirroring the 0.5s cancel-settle inside the real _shutdown_subprocess.
-    def racing_shutdown(timeout = 0.5):
+    def racing_shutdown(timeout=0.5):
         release_loaded.set()
-        assert load_done.wait(timeout = 5), "the racing load must repopulate during teardown"
+        assert load_done.wait(timeout=5), "the racing load must repopulate during teardown"
 
     monkeypatch.setattr(o, "_shutdown_subprocess", racing_shutdown)
 
     assert o.cancel_load("m") is True
-    loader.join(timeout = 5)
+    loader.join(timeout=5)
 
     # Fail-without: load_model set active_model_name/models during racing_shutdown and
     # cancel_load left them set, so the backend advertises a model whose worker was killed.
@@ -1274,7 +1274,7 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
         o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
     )
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     assert started["v"], "this call started the dispatcher"
@@ -1312,7 +1312,7 @@ def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch)
         o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
     )
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
     assert set(o._mailboxes) == {"other"}, "the other request's mailbox is untouched"
@@ -1343,7 +1343,7 @@ def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
         o, "_send_cmd", lambda cmd: pytest.fail("must not send generate after the unload flipped")
     )
 
-    out = list(o._generate_dispatched(messages = [{"role": "user", "content": "hi"}]))
+    out = list(o._generate_dispatched(messages=[{"role": "user", "content": "hi"}]))
 
     assert any("unloaded" in chunk.lower() for chunk in out)
 
@@ -1380,18 +1380,18 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
     monkeypatch.setattr(o, "_spawn_subprocess", lambda cfg: None)
     # cancel_load tears the worker down; a no-op keeps the test off real subprocesses.
-    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 5: None)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout=5: None)
 
     parked = threading.Event()  # load_model reached _wait_response("loaded")
     cancel_done = threading.Event()  # cancel_load fully returned (marker discarded + re-clear)
     load_done = threading.Event()
 
-    def blocking_wait_response(expected, timeout = 300.0):
+    def blocking_wait_response(expected, timeout=300.0):
         parked.set()
         # Do not consume "loaded" until cancel_load has fully returned, so the publish
         # would land AFTER cancel_load's post-teardown re-clear -- the window the
         # re-clear alone cannot cover.
-        assert cancel_done.wait(timeout = 5)
+        assert cancel_done.wait(timeout=5)
         return {
             "type": "loaded",
             "success": True,
@@ -1405,16 +1405,16 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     def run_load():
         try:
             load_result["ok"] = o.load_model(
-                types.SimpleNamespace(identifier = "m", gguf_variant = None)
+                types.SimpleNamespace(identifier="m", gguf_variant=None)
             )
         except Exception as exc:  # noqa: BLE001
             load_result["exc"] = exc
         finally:
             load_done.set()
 
-    loader = threading.Thread(target = run_load)
+    loader = threading.Thread(target=run_load)
     loader.start()
-    assert parked.wait(timeout = 5), "load_model must reach _wait_response"
+    assert parked.wait(timeout=5), "load_model must reach _wait_response"
 
     # cancel_load runs to completion while the load is parked: it discards the marker and
     # re-clears the mirrors (post-teardown), then returns. Only then let the load consume
@@ -1422,7 +1422,7 @@ def test_load_model_aborts_publish_when_cancelled_after_wait_response(monkeypatc
     assert o.cancel_load("m") is True
     cancel_done.set()
 
-    loader.join(timeout = 5)
+    loader.join(timeout=5)
     assert load_done.is_set()
 
     # Fail-without: load_model published active_model_name/models for 'm' AFTER cancel_load
@@ -1469,11 +1469,11 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
         with results_lock:
             results.append(started)
 
-    threads = [threading.Thread(target = racer, name = f"racer-{i}") for i in range(n)]
+    threads = [threading.Thread(target=racer, name=f"racer-{i}") for i in range(n)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout = 5)
+        t.join(timeout=5)
 
     try:
         # _start_dispatcher returns True only for the caller that actually spawned a thread.
@@ -1581,9 +1581,9 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
         def is_alive(self):
             return True
 
-        def join(self, timeout = None):
-            assert start_queued.wait(timeout = 5), "compare start must queue behind the stop"
-            assert join_may_finish.wait(timeout = 5)
+        def join(self, timeout=None):
+            assert start_queued.wait(timeout=5), "compare start must queue behind the stop"
+            assert join_may_finish.wait(timeout=5)
 
     o._dispatcher_thread = _IdleDispatcher()
 
@@ -1599,13 +1599,13 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     def compare_side():
         started_result["v"] = o._start_dispatcher()
 
-    u = threading.Thread(target = unload_side, name = "unload-side")
+    u = threading.Thread(target=unload_side, name="unload-side")
     u.start()
     # Let the unload set _unload_pending, enter _stop_dispatcher, and block in the gated join
     # while holding the lifecycle lock.
     time.sleep(0.2)
 
-    c = threading.Thread(target = compare_side, name = "compare-side")
+    c = threading.Thread(target=compare_side, name="compare-side")
     c.start()
     # Let the compare _start_dispatcher block on the lifecycle lock (queued behind the stop).
     time.sleep(0.2)
@@ -1613,8 +1613,8 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     start_queued.set()  # the start is now queued behind the stop
     join_may_finish.set()  # let the stop's join complete and release the lock
 
-    u.join(timeout = 5)
-    c.join(timeout = 5)
+    u.join(timeout=5)
+    c.join(timeout=5)
 
     assert started_result.get("v") is False, "the queued start must refuse while unloading"
     assert o._dispatcher_thread is None, "the stop cleared it and the queued start spawned nothing"

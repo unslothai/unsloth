@@ -21,7 +21,7 @@ from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 _SESSION = "loop-session"
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_pending():
     with tool_approvals._lock:
         tool_approvals._pending.clear()
@@ -39,11 +39,11 @@ class _FakeExecuteTool:
         name,
         arguments,
         *,
-        cancel_event = None,
-        timeout = None,
-        session_id = None,
-        rag_scope = None,
-        disable_sandbox = False,
+        cancel_event=None,
+        timeout=None,
+        session_id=None,
+        rag_scope=None,
+        disable_sandbox=False,
     ):
         self.calls.append((name, arguments))
         return f"RESULT[{name}]"
@@ -76,7 +76,7 @@ def _drive(
     turns,
     decisions,
     *,
-    tools = None,
+    tools=None,
 ):
     """Run the loop, resolving each gated tool_start with the next decision.
 
@@ -87,12 +87,12 @@ def _drive(
     decision_iter = iter(decisions)
     exec_fn = _FakeExecuteTool()
     gen = run_safetensors_tool_loop(
-        single_turn = _multi_turn(turns),
-        messages = [{"role": "user", "content": "hi"}],
-        tools = _DEFAULT_TOOLS if tools is None else tools,
-        execute_tool = exec_fn,
-        session_id = _SESSION,
-        confirm_tool_calls = True,
+        single_turn=_multi_turn(turns),
+        messages=[{"role": "user", "content": "hi"}],
+        tools=_DEFAULT_TOOLS if tools is None else tools,
+        execute_tool=exec_fn,
+        session_id=_SESSION,
+        confirm_tool_calls=True,
     )
     events = []
     for ev in gen:
@@ -100,7 +100,7 @@ def _drive(
         if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
             # Slot is already registered (begin ran before this yield), so
             # the decision lands before the loop enters its blocking wait.
-            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = _SESSION)
+            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id=_SESSION)
     return events, exec_fn.calls
 
 
@@ -138,7 +138,7 @@ def test_disabled_tool_is_not_prompted():
     events, calls = _drive(
         [_tool_call("python", '{"code": "print(1)"}'), "final answer"],
         [],
-        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        tools=[{"type": "function", "function": {"name": "web_search"}}],
     )
     assert _tool_starts(events) == []
     assert _tool_ends(events) == []

@@ -76,7 +76,7 @@ def _get_base_load_in_4bit(model_config) -> bool:
         if not adapter_cfg_path.exists():
             return True
 
-        with open(adapter_cfg_path, encoding = "utf-8") as f:
+        with open(adapter_cfg_path, encoding="utf-8") as f:
             adapter_cfg = json.load(f)
 
         training_method = adapter_cfg.get("unsloth_training_method")
@@ -135,32 +135,32 @@ def _pick_trained_model(console) -> str:
         typer.echo(
             "No trained models found in your outputs folder. "
             "Pass a model id or path: `unsloth chat <model>`.",
-            err = True,
+            err=True,
         )
-        raise typer.Exit(code = 1)
+        raise typer.Exit(code=1)
 
-    console.print("Your trained models (newest first):", style = "bold")
+    console.print("Your trained models (newest first):", style="bold")
     for i, (display_name, _, model_type) in enumerate(trained, 1):
-        console.print(f"  {i}. {display_name}  ({model_type})", markup = False)
+        console.print(f"  {i}. {display_name}  ({model_type})", markup=False)
 
     while True:
         try:
             raw = input(f"Chat with [1-{len(trained)}, Enter = 1]: ").strip()
         except (EOFError, KeyboardInterrupt):
-            raise typer.Exit(code = 1)
+            raise typer.Exit(code=1)
         if not raw:
             return trained[0][1]
         if raw.isdigit() and 1 <= int(raw) <= len(trained):
             return trained[int(raw) - 1][1]
-        console.print(f"Pick a number between 1 and {len(trained)}.", style = "yellow")
+        console.print(f"Pick a number between 1 and {len(trained)}.", style="yellow")
 
 
 def chat(
     model: Optional[str] = typer.Argument(
-        None, help = "HF model id or local path. Omit to pick one of your trained models."
+        None, help="HF model id or local path. Omit to pick one of your trained models."
     ),
     hf_token: Optional[str] = typer.Option(
-        None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
+        None, "--hf-token", envvar="HF_TOKEN", help="Hugging Face token if needed."
     ),
     temperature: float = typer.Option(0.7, "--temperature"),
     top_p: float = typer.Option(0.9, "--top-p"),
@@ -168,14 +168,14 @@ def chat(
     max_new_tokens: int = typer.Option(512, "--max-new-tokens"),
     repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
     system_prompt: str = typer.Option(
-        "", "--system-prompt", help = "Optional system prompt for the conversation."
+        "", "--system-prompt", help="Optional system prompt for the conversation."
     ),
     max_seq_length: int = typer.Option(4096, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
-        help = (
+        help=(
             "Split a GGUF across GPUs by tensor (--split-mode tensor) instead "
             "of by layer. Under non-MPI mlx.launch, select MLX tensor "
             "parallel mode instead of pipeline mode."
@@ -184,7 +184,7 @@ def chat(
     llama_extra_args: Optional[List[str]] = typer.Option(
         None,
         "--llama-extra-arg",
-        help = (
+        help=(
             "Extra llama-server arg for GGUF models. Repeat for multiple "
             "tokens, e.g. --llama-extra-arg=--top-k --llama-extra-arg 20."
         ),
@@ -192,21 +192,21 @@ def chat(
     think: bool = typer.Option(
         False,
         "--think/--no-think",
-        help = "Start with the model's <think> reasoning shown. Toggle live with /think.",
+        help="Start with the model's <think> reasoning shown. Toggle live with /think.",
     ),
     compare: bool = typer.Option(
         False,
         "--compare/--no-compare",
-        help = "Answer each prompt twice — base vs fine-tuned — side by side. "
+        help="Answer each prompt twice — base vs fine-tuned — side by side. "
         "Needs a LoRA adapter. Toggle live with /compare.",
     ),
     verbose: bool = typer.Option(
-        False, "--verbose", "-v", help = "Show backend and llama-server logs."
+        False, "--verbose", "-v", help="Show backend and llama-server logs."
     ),
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Studio server is running.",
+        help="Load the model in-process even if a Studio server is running.",
     ),
 ):
     """Start an interactive chat with a model (loads once, stays warm)."""
@@ -214,7 +214,7 @@ def chat(
         configure_quiet_logging()
 
     console = Console()
-    err = Console(stderr = True)
+    err = Console(stderr=True)
     is_mlx_distributed, rank, _world_size = mlx_distributed_info()
     should_print = rank == 0
 
@@ -224,25 +224,25 @@ def chat(
                 "Distributed `unsloth chat` with MPI needs rank-0 prompt broadcast, "
                 "which is not enabled yet. Use a non-MPI MLX launcher backend "
                 "such as ring/JACCL for now.",
-                style = "red",
-                markup = False,
+                style="red",
+                markup=False,
             )
-        raise typer.Exit(code = 1)
+        raise typer.Exit(code=1)
 
     if model is None:
         if is_mlx_distributed:
             if should_print:
                 err.print(
                     "Distributed `unsloth chat` requires an explicit model id or path.",
-                    style = "red",
-                    markup = False,
+                    style="red",
+                    markup=False,
                 )
-            raise typer.Exit(code = 1)
+            raise typer.Exit(code=1)
         model = _pick_trained_model(console)
 
     # Resolve first so --compare can be rejected before the slow load.
     with quiet_if_nonzero_mlx_rank():
-        model_config = resolve_model_config(model, hf_token = hf_token)
+        model_config = resolve_model_config(model, hf_token=hf_token)
     compare_blocked = _compare_blocked_reason(model_config)
     if is_mlx_distributed:
         compare_blocked = (
@@ -251,15 +251,15 @@ def chat(
         )
     if compare and compare_blocked:
         if should_print:
-            err.print(f"--compare unavailable: {compare_blocked}", style = "red", markup = False)
-        raise typer.Exit(code = 1)
+            err.print(f"--compare unavailable: {compare_blocked}", style="red", markup=False)
+        raise typer.Exit(code=1)
 
     load_opts = dict(
-        hf_token = hf_token,
-        max_seq_length = max_seq_length,
-        load_in_4bit = load_in_4bit,
-        tensor_parallel = tensor_parallel,
-        llama_extra_args = llama_extra_args,
+        hf_token=hf_token,
+        max_seq_length=max_seq_length,
+        load_in_4bit=load_in_4bit,
+        tensor_parallel=tensor_parallel,
+        llama_extra_args=llama_extra_args,
     )
 
     # Prefer a running Studio server: instant starts, model shared with the UI.
@@ -270,10 +270,10 @@ def chat(
     if server_mode and should_print:
         console.print(
             "(Studio server connected — model stays warm after /exit)",
-            style = "bright_black",
+            style="bright_black",
         )
     else:
-        chat_backend = load_chat_backend(model, model_config = model_config, **load_opts)
+        chat_backend = load_chat_backend(model, model_config=model_config, **load_opts)
 
     name = model_config.display_name or model
     show_thinking = think
@@ -295,48 +295,48 @@ def chat(
             if should_print:
                 console.print(
                     "(compare unavailable: this adapter doesn't record its base model)",
-                    style = "yellow",
+                    style="yellow",
                 )
             return False
         if should_print:
             console.print(
                 f"(loading base model {base_id} for compare — keeps two models in memory)",
-                style = "bright_black",
-                markup = False,
+                style="bright_black",
+                markup=False,
             )
         try:
             # Use the same precision as the tuned model for fair comparison
             base_load_opts = dict(load_opts)  # Copy original options
             base_load_opts["load_in_4bit"] = _get_base_load_in_4bit(model_config)
-            base_backend = load_chat_backend(base_id, fresh_backend = True, **base_load_opts)
+            base_backend = load_chat_backend(base_id, fresh_backend=True, **base_load_opts)
         except Exception as exc:
             if should_print:
-                err.print(f"(base model load failed: {exc})", style = "red", markup = False)
+                err.print(f"(base model load failed: {exc})", style="red", markup=False)
             return False
         return True
 
     if compare and dual_compare and not load_base_for_compare():
-        raise typer.Exit(code = 1)
+        raise typer.Exit(code=1)
 
-    def generate(backend = None, use_adapter = None):
+    def generate(backend=None, use_adapter=None):
         # Reads messages and show_thinking live, so /reset and /think apply.
         stream = (backend or chat_backend).stream(
             messages,
-            system_prompt = system_prompt,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            max_new_tokens = max_new_tokens,
-            repetition_penalty = repetition_penalty,
-            enable_thinking = show_thinking,
-            use_adapter = use_adapter,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_new_tokens=max_new_tokens,
+            repetition_penalty=repetition_penalty,
+            enable_thinking=show_thinking,
+            use_adapter=use_adapter,
         )
         return raise_on_streamed_error(stream) if is_mlx_distributed else stream
 
     if should_print:
         console.print()
-        console.print(f"Chatting with {name}", style = "bold green", markup = False)
-        console.print(_HELP, style = "bright_black")
+        console.print(f"Chatting with {name}", style="bold green", markup=False)
+        console.print(_HELP, style="bright_black")
 
     # legacy_windows: pre-VT consoles print raw ANSI as ←[1;36m garbage.
     you_prompt = (
@@ -359,17 +359,17 @@ def chat(
 
             if is_mlx_distributed:
                 try:
-                    turn = chat_backend.share_distributed_object(turn, timeout = None)
+                    turn = chat_backend.share_distributed_object(turn, timeout=None)
                     if not should_print:
                         _drain_available_stdin()
                 except Exception as exc:
                     if should_print:
                         err.print(
                             f"\n(error sharing chat turn: {exc})",
-                            style = "red",
-                            markup = False,
+                            style="red",
+                            markup=False,
                         )
-                    raise typer.Exit(code = 1)
+                    raise typer.Exit(code=1)
             if not turn:
                 continue
             user = str(turn.get("text", "")).strip()
@@ -381,29 +381,29 @@ def chat(
             if user == "/reset":
                 messages = []
                 if should_print:
-                    console.print("(history cleared)", style = "bright_black")
+                    console.print("(history cleared)", style="bright_black")
                 continue
             if user == "/think":
                 show_thinking = not show_thinking
                 if should_print:
                     state = "on" if show_thinking else "off"
-                    console.print(f"(thinking {state})", style = "bright_black")
+                    console.print(f"(thinking {state})", style="bright_black")
                 continue
             if user == "/compare":
                 if compare_blocked:
                     if should_print:
-                        console.print(f"(compare unavailable: {compare_blocked})", style = "yellow")
+                        console.print(f"(compare unavailable: {compare_blocked})", style="yellow")
                     continue
                 if not compare_mode and dual_compare and not load_base_for_compare():
                     continue
                 compare_mode = not compare_mode
                 if should_print:
                     state = "on" if compare_mode else "off"
-                    console.print(f"(compare {state})", style = "bright_black")
+                    console.print(f"(compare {state})", style="bright_black")
                 continue
             if user in ("/help", "/?"):
                 if should_print:
-                    console.print(_HELP, style = "bright_black")
+                    console.print(_HELP, style="bright_black")
                 continue
 
             messages.append({"role": "user", "content": user})
@@ -411,46 +411,46 @@ def chat(
             try:
                 if compare_mode:
                     if should_print:
-                        console.print("(comparing base vs tuned…)", style = "bright_black")
+                        console.print("(comparing base vs tuned…)", style="bright_black")
                     if dual_compare:
-                        base_text = collect_stream(generate(backend = base_backend), show_thinking)
+                        base_text = collect_stream(generate(backend=base_backend), show_thinking)
                         tuned_text = collect_stream(generate(), show_thinking)
                     else:
-                        base_text = collect_stream(generate(use_adapter = False), show_thinking)
-                        tuned_text = collect_stream(generate(use_adapter = True), show_thinking)
+                        base_text = collect_stream(generate(use_adapter=False), show_thinking)
+                        tuned_text = collect_stream(generate(use_adapter=True), show_thinking)
                     if should_print:
                         console.print()
                         render_columns(
-                            "base", base_text, f"{name} (tuned)", tuned_text, console = console
+                            "base", base_text, f"{name} (tuned)", tuned_text, console=console
                         )
                     # History continues as the tuned model; base is just the reference.
                     answer = tuned_text
                 else:
                     if should_print:
                         console.print(assistant_label)
-                        answer = stream_markdown(generate(), show_thinking, console = console)
+                        answer = stream_markdown(generate(), show_thinking, console=console)
                     else:
                         answer = collect_stream(generate(), show_thinking)
             except KeyboardInterrupt:
                 # Ctrl-C aborts this answer only; drop the unanswered turn.
                 if should_print:
-                    console.print("\n(interrupted)", style = "bright_black")
+                    console.print("\n(interrupted)", style="bright_black")
                 messages.pop()
                 continue
             except Exception as exc:
                 if should_print:
-                    err.print(f"\n(error: {exc})", style = "red", markup = False)
+                    err.print(f"\n(error: {exc})", style="red", markup=False)
                 messages.pop()
                 if is_mlx_distributed:
-                    raise typer.Exit(code = 1)
+                    raise typer.Exit(code=1)
                 continue
 
             messages.append(
-                {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
+                {"role": "assistant", "content": visible_text(answer, show_thinking=False)}
             )
     finally:
         chat_backend.close()
         if base_backend is not None:
             base_backend.close()
         if should_print:
-            err.print("\nBye.", style = "bright_black")
+            err.print("\nBye.", style="bright_black")

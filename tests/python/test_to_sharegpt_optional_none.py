@@ -8,13 +8,13 @@ def _load_formatter_builders():
     # unsloth (importing unsloth needs unsloth_zoo / a GPU). Both are pure
     # Python and only use the `re` module.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     wanted = {"_parse_combined_prompt", "_create_formatter"}
     funcs = [
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
     ]
     namespace = {"re": re}
-    module = ast.Module(body = funcs, type_ignores = [])
+    module = ast.Module(body=funcs, type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(source), "exec"), namespace)
     return namespace["_parse_combined_prompt"], namespace["_create_formatter"]

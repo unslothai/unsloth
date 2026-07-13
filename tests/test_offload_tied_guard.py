@@ -26,20 +26,20 @@ tied = _load_fn()
 
 def test_untied_separate_weights():
     emb = nn.Embedding(32, 8)
-    lm = nn.Linear(8, 32, bias = False)
+    lm = nn.Linear(8, 32, bias=False)
     assert tied(emb, lm) is False
 
 
 def test_tied_shared_parameter():
     emb = nn.Embedding(32, 8)
-    lm = nn.Linear(8, 32, bias = False)
+    lm = nn.Linear(8, 32, bias=False)
     lm.weight = emb.weight  # transformers-style weight tying
     assert tied(emb, lm) is True
 
 
 def test_tied_by_storage_even_if_distinct_parameter():
     emb = nn.Embedding(32, 8)
-    lm = nn.Linear(8, 32, bias = False)
+    lm = nn.Linear(8, 32, bias=False)
     lm.weight = nn.Parameter(emb.weight.detach())  # distinct Parameter, shared storage
     assert tied(emb, lm) is True
 

@@ -63,16 +63,16 @@ _stub_module(
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _torch_distributed_safe(monkeypatch):
     """Give torch.distributed probes safe single-process defaults."""
     try:
         import torch.distributed as dist
 
-        monkeypatch.setattr(dist, "is_available", lambda: True, raising = False)
-        monkeypatch.setattr(dist, "is_initialized", lambda: False, raising = False)
-        monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 1, raising = False)
-        monkeypatch.setattr(dist, "get_rank", lambda *a, **k: 0, raising = False)
+        monkeypatch.setattr(dist, "is_available", lambda: True, raising=False)
+        monkeypatch.setattr(dist, "is_initialized", lambda: False, raising=False)
+        monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 1, raising=False)
+        monkeypatch.setattr(dist, "get_rank", lambda *a, **k: 0, raising=False)
     except Exception:
         pass
 
@@ -88,7 +88,7 @@ def _has_vllm() -> bool:
 # rl_replacements: zero direct vllm imports; the GRPO + fast_inference surface.
 
 
-@pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
+@pytest.mark.skipif(not _has_unsloth_zoo(), reason="unsloth_zoo not installed")
 def test_rl_replacements_imports_without_vllm():
     """unsloth_zoo.rl_replacements must NOT pull in vllm at import time."""
     sys.modules.pop("unsloth_zoo.rl_replacements", None)
@@ -110,7 +110,7 @@ def test_rl_replacements_imports_without_vllm():
 # empty_model: no vllm import; pure builder for the fast_inference=True path.
 
 
-@pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
+@pytest.mark.skipif(not _has_unsloth_zoo(), reason="unsloth_zoo not installed")
 def test_empty_model_imports_without_vllm():
     sys.modules.pop("unsloth_zoo.empty_model", None)
     em = importlib.import_module("unsloth_zoo.empty_model")
@@ -129,7 +129,7 @@ def test_empty_model_imports_without_vllm():
 
 
 @pytest.mark.skipif(
-    not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
+    not (_has_unsloth_zoo() and _has_vllm()), reason="vllm not installed on this runner"
 )
 def test_vllm_lora_request_imports():
     sys.modules.pop("unsloth_zoo.vllm_lora_request", None)
@@ -137,7 +137,7 @@ def test_vllm_lora_request_imports():
 
 
 @pytest.mark.skipif(
-    not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
+    not (_has_unsloth_zoo() and _has_vllm()), reason="vllm not installed on this runner"
 )
 def test_vllm_lora_worker_manager_imports():
     sys.modules.pop("unsloth_zoo.vllm_lora_worker_manager", None)
@@ -157,7 +157,7 @@ def test_vllm_lora_worker_manager_imports():
 
 
 @pytest.mark.skipif(
-    not (_has_unsloth_zoo() and _has_vllm()), reason = "vllm not installed on this runner"
+    not (_has_unsloth_zoo() and _has_vllm()), reason="vllm not installed on this runner"
 )
 def test_vllm_utils_imports():
     sys.modules.pop("unsloth_zoo.vllm_utils", None)

@@ -39,28 +39,28 @@ class S3Config(BaseModel):
     """S3 bucket configuration for loading datasets from AWS S3"""
 
     # Accept both snake_case and the frontend's camelCase field names.
-    model_config = ConfigDict(populate_by_name = True)
+    model_config = ConfigDict(populate_by_name=True)
 
-    bucket: str = Field(..., description = "S3 bucket name")
-    region: str = Field("us-east-1", description = "AWS region")
-    prefix: Optional[str] = Field(None, description = "Optional path prefix within bucket")
+    bucket: str = Field(..., description="S3 bucket name")
+    region: str = Field("us-east-1", description="AWS region")
+    prefix: Optional[str] = Field(None, description="Optional path prefix within bucket")
     access_key_id: Optional[str] = Field(
         None,
-        alias = "accessKeyId",
-        description = "AWS access key ID (optional if using IAM role)",
+        alias="accessKeyId",
+        description="AWS access key ID (optional if using IAM role)",
     )
     secret_access_key: Optional[str] = Field(
         None,
-        alias = "secretAccessKey",
-        description = "AWS secret access key (optional if using IAM role)",
+        alias="secretAccessKey",
+        description="AWS secret access key (optional if using IAM role)",
     )
     use_iam_role: bool = Field(
         False,
-        alias = "useIamRole",
-        description = "Use IAM role credentials instead of access keys",
+        alias="useIamRole",
+        description="Use IAM role credentials instead of access keys",
     )
 
-    @model_validator(mode = "after")
+    @model_validator(mode="after")
     def _check_credentials(self) -> "S3Config":
         # Require either IAM role auth or a full key pair so credentials are
         # never half-configured.
@@ -97,64 +97,64 @@ class TrainingStartRequest(BaseModel):
 
     # Model parameters
     model_name: str = Field(
-        ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
+        ..., description="Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
     project_name: Optional[str] = Field(
         None,
-        max_length = 80,
-        description = "Optional user-defined project name appended to run folders and shown in history",
+        max_length=80,
+        description="Optional user-defined project name appended to run folders and shown in history",
     )
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
         ...,
-        description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
+        description="Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
     )
-    hf_token: Optional[str] = Field(None, description = "HuggingFace token")
-    load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
-    max_seq_length: int = Field(2048, description = "Maximum sequence length")
+    hf_token: Optional[str] = Field(None, description="HuggingFace token")
+    load_in_4bit: bool = Field(True, description="Load model in 4-bit quantization")
+    max_seq_length: int = Field(2048, description="Maximum sequence length")
     vision_image_size: Optional[int] = Field(
         None,
-        description = "Optional maximum image side length for VLM training. Null uses model default.",
+        description="Optional maximum image side length for VLM training. Null uses model default.",
     )
     trust_remote_code: bool = Field(
         False,
-        description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
+        description="Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
     approved_remote_code_fingerprint: Optional[str] = Field(
         None,
-        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+        description="sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
     )
 
     # Dataset parameters
-    hf_dataset: Optional[str] = Field(None, description = "HuggingFace dataset identifier")
+    hf_dataset: Optional[str] = Field(None, description="HuggingFace dataset identifier")
     local_datasets: List[str] = Field(
-        default_factory = list, description = "List of local dataset paths"
+        default_factory=list, description="List of local dataset paths"
     )
     local_eval_datasets: List[str] = Field(
-        default_factory = list, description = "List of local eval dataset paths"
+        default_factory=list, description="List of local eval dataset paths"
     )
-    format_type: str = Field(..., description = "Dataset format type")
+    format_type: str = Field(..., description="Dataset format type")
     subset: Optional[str] = None
-    train_split: Optional[str] = Field("train", description = "Training split name")
-    eval_split: Optional[str] = Field(None, description = "Eval split name. None = auto-detect")
+    train_split: Optional[str] = Field("train", description="Training split name")
+    eval_split: Optional[str] = Field(None, description="Eval split name. None = auto-detect")
     dataset_streaming: bool = Field(
         False,
-        description = "Whether to load the Hugging Face dataset in streaming mode",
+        description="Whether to load the Hugging Face dataset in streaming mode",
     )
-    eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
+    eval_steps: float = Field(0.00, description="Fraction of total steps between evals (0-1)")
     dataset_slice_start: Optional[int] = Field(
         None,
-        ge = 0,
-        le = _MAX_DATASET_SLICE_INDEX,
-        description = "Inclusive start row index for dataset slicing",
+        ge=0,
+        le=_MAX_DATASET_SLICE_INDEX,
+        description="Inclusive start row index for dataset slicing",
     )
     dataset_slice_end: Optional[int] = Field(
         None,
-        ge = 0,
-        le = _MAX_DATASET_SLICE_INDEX,
-        description = "Inclusive end row index for dataset slicing",
+        ge=0,
+        le=_MAX_DATASET_SLICE_INDEX,
+        description="Inclusive end row index for dataset slicing",
     )
 
-    @model_validator(mode = "before")
+    @model_validator(mode="before")
     @classmethod
     def _compat_split(cls, values: Any) -> Any:
         """Accept legacy 'split' field as alias for 'train_split'."""
@@ -170,7 +170,7 @@ class TrainingStartRequest(BaseModel):
     # NOTE: pydantic runs all `mode="after"` validators in definition order. A
     # second one, `_check_steps_or_epochs`, is defined lower in this class; keep
     # these cross-field checks order-independent so the two stay decoupled.
-    @model_validator(mode = "after")
+    @model_validator(mode="after")
     def _validate_dataset_slice(self) -> "TrainingStartRequest":
         # Only the ordering is validated here. No upper bound is enforced on the
         # indices: the trainer slices via datasets `.take()` / `.select()`, which
@@ -231,7 +231,7 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("split name contains invalid characters")
         return v
 
-    @field_validator("learning_rate", mode = "before")
+    @field_validator("learning_rate", mode="before")
     @classmethod
     def _check_learning_rate(cls, v):
         # Stringify because downstream call sites float() it themselves.
@@ -285,7 +285,7 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"max_seq_length must be in [1, {_MAX_SEQ_LENGTH}] (got {v!r})")
         return v
 
-    @field_validator("vision_image_size", mode = "before")
+    @field_validator("vision_image_size", mode="before")
     @classmethod
     def _check_vision_image_size(cls, v: Any) -> Optional[int]:
         # mode="before" sees True/False as bool (not 1/0) for a precise error.
@@ -303,6 +303,7 @@ class TrainingStartRequest(BaseModel):
             # numpy ints / Integral subclasses, without a hard numpy import.
             try:
                 import numbers
+
                 if isinstance(v, numbers.Integral):
                     coerced = int(v)
                 elif isinstance(v, numbers.Real) and float(v).is_integer():
@@ -397,7 +398,7 @@ class TrainingStartRequest(BaseModel):
 
     custom_format_mapping: Optional[Dict[str, Any]] = Field(
         None,
-        description = (
+        description=(
             "User-provided column-to-role mapping, e.g. {'image': 'image', 'caption': 'text'} "
             "for VLM or {'instruction': 'user', 'output': 'assistant'} for LLM. "
             "Enhanced format includes __system_prompt, __user_template, "
@@ -405,32 +406,32 @@ class TrainingStartRequest(BaseModel):
         ),
     )
     # Training parameters
-    num_epochs: int = Field(1, description = "Number of training epochs")
-    learning_rate: str = Field("2e-4", description = "Learning rate")
-    batch_size: int = Field(1, description = "Batch size")
-    gradient_accumulation_steps: int = Field(1, description = "Gradient accumulation steps")
-    warmup_steps: Optional[int] = Field(None, description = "Warmup steps")
-    warmup_ratio: Optional[float] = Field(None, description = "Warmup ratio")
-    max_steps: Optional[int] = Field(None, description = "Maximum training steps")
-    save_steps: int = Field(100, description = "Steps between checkpoints")
-    weight_decay: float = Field(0.001, description = "Weight decay")
+    num_epochs: int = Field(1, description="Number of training epochs")
+    learning_rate: str = Field("2e-4", description="Learning rate")
+    batch_size: int = Field(1, description="Batch size")
+    gradient_accumulation_steps: int = Field(1, description="Gradient accumulation steps")
+    warmup_steps: Optional[int] = Field(None, description="Warmup steps")
+    warmup_ratio: Optional[float] = Field(None, description="Warmup ratio")
+    max_steps: Optional[int] = Field(None, description="Maximum training steps")
+    save_steps: int = Field(100, description="Steps between checkpoints")
+    weight_decay: float = Field(0.001, description="Weight decay")
     max_grad_norm: float = Field(
         0.0,
-        ge = 0,
-        description = "Global gradient norm clipping threshold. Set 0 to disable.",
+        ge=0,
+        description="Global gradient norm clipping threshold. Set 0 to disable.",
     )
     max_grad_value: Optional[float] = Field(
         None,
-        ge = 0,
-        description = (
+        ge=0,
+        description=(
             "MLX-only elementwise gradient value clipping threshold. "
             "If unset, MLX uses its runtime default."
         ),
     )
     max_grad_leaf_norm: Optional[float] = Field(
         None,
-        ge = 0,
-        description = (
+        ge=0,
+        description=(
             "MLX-only proportional per-parameter gradient norm cap. "
             "Preserves each tensor's gradient direction without global norm "
             "clipping's memory overhead."
@@ -438,74 +439,74 @@ class TrainingStartRequest(BaseModel):
     )
     cast_norm_output_to_input_dtype: bool = Field(
         True,
-        description = (
+        description=(
             "MLX-only: keep norm parameters in fp32 but cast norm outputs "
             "back to the incoming activation dtype."
         ),
     )
     random_seed: int = Field(
         3407,
-        description = (
+        description=(
             "Random seed; matches the Studio backend / MLX worker default "
             "and unsloth's historical recommended value."
         ),
     )
-    packing: bool = Field(False, description = "Enable sequence packing")
-    optim: str = Field("adamw_8bit", description = "Optimizer")
-    lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
+    packing: bool = Field(False, description="Enable sequence packing")
+    optim: str = Field("adamw_8bit", description="Optimizer")
+    lr_scheduler_type: str = Field("linear", description="Learning rate scheduler type")
     embedding_learning_rate: Optional[float] = Field(
         None,
-        gt = 0,
-        lt = 1.0,
-        description = "Separate learning rate for embedding matrices (CPT). "
+        gt=0,
+        lt=1.0,
+        description="Separate learning rate for embedding matrices (CPT). "
         "Must be in (0, 1). Should be 2-10x smaller than the main learning rate.",
     )
 
     # LoRA parameters
-    use_lora: bool = Field(True, description = "Use LoRA (derived from training_type)")
-    lora_r: int = Field(16, description = "LoRA rank")
-    lora_alpha: int = Field(16, description = "LoRA alpha")
-    lora_dropout: float = Field(0.0, description = "LoRA dropout")
-    target_modules: List[str] = Field(default_factory = list, description = "Target modules for LoRA")
-    gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
-    use_rslora: bool = Field(False, description = "Use RSLoRA")
-    use_loftq: bool = Field(False, description = "Use LoftQ")
-    train_on_completions: bool = Field(False, description = "Train on completions only")
+    use_lora: bool = Field(True, description="Use LoRA (derived from training_type)")
+    lora_r: int = Field(16, description="LoRA rank")
+    lora_alpha: int = Field(16, description="LoRA alpha")
+    lora_dropout: float = Field(0.0, description="LoRA dropout")
+    target_modules: List[str] = Field(default_factory=list, description="Target modules for LoRA")
+    gradient_checkpointing: str = Field("", description="Gradient checkpointing setting")
+    use_rslora: bool = Field(False, description="Use RSLoRA")
+    use_loftq: bool = Field(False, description="Use LoftQ")
+    train_on_completions: bool = Field(False, description="Train on completions only")
 
     # Vision-specific LoRA parameters
-    finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
-    finetune_language_layers: bool = Field(False, description = "Finetune language layers")
-    finetune_attention_modules: bool = Field(False, description = "Finetune attention modules")
-    finetune_mlp_modules: bool = Field(False, description = "Finetune MLP modules")
-    is_dataset_image: bool = Field(False, description = "Whether the dataset contains image data")
-    is_dataset_audio: bool = Field(False, description = "Whether the dataset contains audio data")
+    finetune_vision_layers: bool = Field(False, description="Finetune vision layers")
+    finetune_language_layers: bool = Field(False, description="Finetune language layers")
+    finetune_attention_modules: bool = Field(False, description="Finetune attention modules")
+    finetune_mlp_modules: bool = Field(False, description="Finetune MLP modules")
+    is_dataset_image: bool = Field(False, description="Whether the dataset contains image data")
+    is_dataset_audio: bool = Field(False, description="Whether the dataset contains audio data")
     is_embedding: bool = Field(
-        False, description = "Whether model is an embedding/sentence-transformer model"
+        False, description="Whether model is an embedding/sentence-transformer model"
     )
 
     # Logging parameters
-    enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
-    wandb_token: Optional[str] = Field(None, description = "W&B token")
-    wandb_project: Optional[str] = Field(None, description = "W&B project name")
-    enable_tensorboard: bool = Field(False, description = "Enable TensorBoard logging")
-    tensorboard_dir: Optional[str] = Field(None, description = "TensorBoard directory")
+    enable_wandb: bool = Field(False, description="Enable Weights & Biases logging")
+    wandb_token: Optional[str] = Field(None, description="W&B token")
+    wandb_project: Optional[str] = Field(None, description="W&B project name")
+    enable_tensorboard: bool = Field(False, description="Enable TensorBoard logging")
+    tensorboard_dir: Optional[str] = Field(None, description="TensorBoard directory")
     resume_from_checkpoint: Optional[str] = Field(
-        None, description = "Saved training output directory to resume from"
+        None, description="Saved training output directory to resume from"
     )
 
     # GPU selection
     gpu_ids: Optional[List[int]] = Field(
         None,
-        description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
+        description="Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries.",
     )
 
     # S3 dataset source configuration
     s3_config: Optional[S3Config] = Field(
         None,
-        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
+        description="S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
     )
 
-    @model_validator(mode = "after")
+    @model_validator(mode="after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
         # Streaming load_dataset does not accept HF slice syntax (e.g. "train[:50%]"
         # or "train[:20]"). Probe-confirmed: raises ValueError: Bad split. Reject
@@ -523,7 +524,7 @@ class TrainingStartRequest(BaseModel):
                     )
         return self
 
-    @model_validator(mode = "after")
+    @model_validator(mode="after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
@@ -534,16 +535,16 @@ class TrainingStartRequest(BaseModel):
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
 
-    job_id: str = Field(..., description = "Unique training job identifier")
-    status: Literal["queued", "error"] = Field(..., description = "Initial job status")
-    message: str = Field(..., description = "Human-readable status message")
-    error: Optional[str] = Field(None, description = "Error details if status is 'error'")
+    job_id: str = Field(..., description="Unique training job identifier")
+    status: Literal["queued", "error"] = Field(..., description="Initial job status")
+    message: str = Field(..., description="Human-readable status message")
+    error: Optional[str] = Field(None, description="Error details if status is 'error'")
 
 
 class TrainingStatus(BaseModel):
     """Current training job status - works for streaming or polling"""
 
-    job_id: str = Field(..., description = "Training job identifier")
+    job_id: str = Field(..., description="Training job identifier")
     phase: Literal[
         "idle",
         "loading_model",
@@ -553,20 +554,20 @@ class TrainingStatus(BaseModel):
         "completed",
         "error",
         "stopped",
-    ] = Field(..., description = "Current phase of training pipeline")
-    is_training_running: bool = Field(..., description = "True if training loop is actively running")
+    ] = Field(..., description="Current phase of training pipeline")
+    is_training_running: bool = Field(..., description="True if training loop is actively running")
     eval_enabled: bool = Field(
         False,
-        description = "True if evaluation dataset is configured for this training run",
+        description="True if evaluation dataset is configured for this training run",
     )
-    message: str = Field(..., description = "Human-readable status message")
-    error: Optional[str] = Field(None, description = "Error details if phase is 'error'")
+    message: str = Field(..., description="Human-readable status message")
+    error: Optional[str] = Field(None, description="Error details if phase is 'error'")
     details: Optional[dict] = Field(
-        None, description = "Phase-specific info, e.g. {'model_size': '8B'}"
+        None, description="Phase-specific info, e.g. {'model_size': '8B'}"
     )
     metric_history: Optional[dict] = Field(
         None,
-        description = "Full metric history arrays for chart recovery after SSE reconnection. "
+        description="Full metric history arrays for chart recovery after SSE reconnection. "
         "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
     )
 
@@ -574,23 +575,23 @@ class TrainingStatus(BaseModel):
 class TrainingProgress(BaseModel):
     """Training progress metrics - for streaming or polling"""
 
-    job_id: str = Field(..., description = "Training job identifier")
-    step: int = Field(..., description = "Current training step")
-    total_steps: int = Field(..., description = "Total training steps")
-    loss: Optional[float] = Field(None, description = "Current loss value")
-    learning_rate: Optional[float] = Field(None, description = "Current learning rate")
-    progress_percent: float = Field(..., description = "Progress percentage (0.0 to 100.0)")
-    epoch: Optional[float] = Field(None, description = "Current epoch")
+    job_id: str = Field(..., description="Training job identifier")
+    step: int = Field(..., description="Current training step")
+    total_steps: int = Field(..., description="Total training steps")
+    loss: Optional[float] = Field(None, description="Current loss value")
+    learning_rate: Optional[float] = Field(None, description="Current learning rate")
+    progress_percent: float = Field(..., description="Progress percentage (0.0 to 100.0)")
+    epoch: Optional[float] = Field(None, description="Current epoch")
     elapsed_seconds: Optional[float] = Field(
-        None, description = "Time elapsed since training started"
+        None, description="Time elapsed since training started"
     )
-    eta_seconds: Optional[float] = Field(None, description = "Estimated time remaining")
+    eta_seconds: Optional[float] = Field(None, description="Estimated time remaining")
     grad_norm: Optional[float] = Field(
-        None, description = "L2 norm of gradients, computed before gradient clipping"
+        None, description="L2 norm of gradients, computed before gradient clipping"
     )
-    num_tokens: Optional[int] = Field(None, description = "Total number of tokens processed so far")
+    num_tokens: Optional[int] = Field(None, description="Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(
-        None, description = "Eval loss from the most recent evaluation step"
+        None, description="Eval loss from the most recent evaluation step"
     )
 
 
@@ -624,9 +625,9 @@ class TrainingRunSummary(BaseModel):
 class TrainingRunUpdateRequest(BaseModel):
     """Mutable fields on a training run."""
 
-    model_config = ConfigDict(extra = "forbid")
+    model_config = ConfigDict(extra="forbid")
 
-    display_name: Optional[str] = Field(None, max_length = 120)
+    display_name: Optional[str] = Field(None, max_length=120)
 
 
 class TrainingRunListResponse(BaseModel):
@@ -639,15 +640,15 @@ class TrainingRunListResponse(BaseModel):
 class TrainingRunMetrics(BaseModel):
     """Metrics arrays for a training run, using paired step arrays per metric."""
 
-    step_history: List[int] = Field(default_factory = list)
-    loss_history: List[float] = Field(default_factory = list)
-    loss_step_history: List[int] = Field(default_factory = list)
-    lr_history: List[float] = Field(default_factory = list)
-    lr_step_history: List[int] = Field(default_factory = list)
-    grad_norm_history: List[float] = Field(default_factory = list)
-    grad_norm_step_history: List[int] = Field(default_factory = list)
-    eval_loss_history: List[float] = Field(default_factory = list)
-    eval_step_history: List[int] = Field(default_factory = list)
+    step_history: List[int] = Field(default_factory=list)
+    loss_history: List[float] = Field(default_factory=list)
+    loss_step_history: List[int] = Field(default_factory=list)
+    lr_history: List[float] = Field(default_factory=list)
+    lr_step_history: List[int] = Field(default_factory=list)
+    grad_norm_history: List[float] = Field(default_factory=list)
+    grad_norm_step_history: List[int] = Field(default_factory=list)
+    eval_loss_history: List[float] = Field(default_factory=list)
+    eval_step_history: List[int] = Field(default_factory=list)
     final_epoch: Optional[float] = None
     final_num_tokens: Optional[int] = None
 

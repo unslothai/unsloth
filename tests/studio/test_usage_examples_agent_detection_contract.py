@@ -10,7 +10,7 @@ USAGE_EXAMPLES_TSX = REPO / "studio/frontend/src/features/settings/components/us
 
 
 def test_agent_detection_requires_desktop_scope():
-    src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
+    src = USAGE_EXAMPLES_TSX.read_text(encoding="utf-8")
     assert 'import { isTauri } from "@/lib/api-base"' in src
     assert "function canUseLocalAgentDetection(base: string): boolean" in src
     helper = src[src.find("function canUseLocalAgentDetection") : src.find("const SHIKI_THEMES")]

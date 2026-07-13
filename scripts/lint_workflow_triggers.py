@@ -29,7 +29,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    print("ERROR: PyYAML is required. Install with 'pip install pyyaml'", file = sys.stderr)
+    print("ERROR: PyYAML is required. Install with 'pip install pyyaml'", file=sys.stderr)
     sys.exit(2)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +54,7 @@ def _load_workflow(path: Path):
     try:
         return yaml.safe_load(path.read_text())
     except Exception as exc:
-        print(f"ERROR: failed to parse {path}: {exc}", file = sys.stderr)
+        print(f"ERROR: failed to parse {path}: {exc}", file=sys.stderr)
         sys.exit(2)
 
 
@@ -74,12 +74,12 @@ def _trigger_set(yaml_doc) -> set[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description = __doc__)
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--workflows-dir",
-        type = Path,
-        default = DEFAULT_WORKFLOWS_DIR,
-        help = "Override the workflows directory (used by tests).",
+        type=Path,
+        default=DEFAULT_WORKFLOWS_DIR,
+        help="Override the workflows directory (used by tests).",
     )
     args = parser.parse_args()
     workflows_dir = args.workflows_dir
@@ -133,9 +133,9 @@ def main() -> int:
                 )
 
     if findings:
-        print("Workflow trigger lint failed with the following issues:", file = sys.stderr)
+        print("Workflow trigger lint failed with the following issues:", file=sys.stderr)
         for f in findings:
-            print(f"  - {f}", file = sys.stderr)
+            print(f"  - {f}", file=sys.stderr)
         return 1
 
     print(

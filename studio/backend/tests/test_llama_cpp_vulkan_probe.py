@@ -67,7 +67,7 @@ def _make_vulkan_install(tmp_path: Path) -> str:
     """A binary whose sibling dir holds the Vulkan ggml lib, so the
     reader's ``is_vulkan_backend`` sibling-file check passes."""
     bindir = tmp_path / "build" / "bin"
-    bindir.mkdir(parents = True)
+    bindir.mkdir(parents=True)
     binary = bindir / ("llama-server.exe" if sys.platform == "win32" else "llama-server")
     binary.write_bytes(b"stub")
     (bindir / _vulkan_lib_filename()).write_bytes(b"stub")
@@ -85,11 +85,11 @@ def _mock_probe(rows: list[str], captured_env: dict | None = None):
                 captured_env.clear()
                 captured_env.update(kwargs.get("env") or {})
             return subprocess.CompletedProcess(
-                args = cmd, returncode = 0, stdout = "\n".join(rows), stderr = ""
+                args=cmd, returncode=0, stdout="\n".join(rows), stderr=""
             )
         return real_run(cmd, *args, **kwargs)
 
-    return mock.patch("subprocess.run", side_effect = fake_run)
+    return mock.patch("subprocess.run", side_effect=fake_run)
 
 
 def _row(
@@ -105,7 +105,7 @@ def test_integrated_gpu_leaves_host_margin(tmp_path):
     binary = _make_vulkan_install(tmp_path)
     # iGPU with 30 GiB free; reserve a flat 1024 MiB (llama.cpp --fit-target).
     # total stays 0: shared system RAM is not a VRAM budget for the fit.
-    rows = [_row(0, 30 * GIB, is_igpu = 1, total_bytes = 32 * GIB)]
+    rows = [_row(0, 30 * GIB, is_igpu=1, total_bytes=32 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 30 * 1024 - 1024, 0)], gpus
@@ -116,7 +116,7 @@ def test_discrete_gpu_free_is_untouched_and_total_passed_through(tmp_path):
     # 6 GiB free on a partially occupied 24 GiB card: free is untouched and the
     # real total flows through so the fit reserves absolute headroom (CUDA/ROCm
     # parity) instead of the looser free*frac budget.
-    rows = [_row(0, 6 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
+    rows = [_row(0, 6 * GIB, is_igpu=0, total_bytes=24 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 6 * 1024, 24 * 1024)], gpus
@@ -126,7 +126,7 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
     binary = _make_vulkan_install(tmp_path)
     # A 48 GiB discrete card stays untouched regardless of size; only the
     # iGPU flag triggers the host margin, never a VRAM/RAM ratio.
-    rows = [_row(0, 47 * GIB, is_igpu = 0, total_bytes = 48 * GIB)]
+    rows = [_row(0, 47 * GIB, is_igpu=0, total_bytes=48 * GIB)]
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert gpus == [(0, 47 * 1024, 48 * 1024)], gpus
@@ -140,8 +140,8 @@ def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, mon
     binary = _make_vulkan_install(tmp_path)
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     captured: dict = {}
-    rows = [_row(0, 23 * GIB, is_igpu = 0, total_bytes = 24 * GIB)]
-    with _mock_probe(rows, captured_env = captured):
+    rows = [_row(0, 23 * GIB, is_igpu=0, total_bytes=24 * GIB)]
+    with _mock_probe(rows, captured_env=captured):
         LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
     assert captured.get("GGML_VK_VISIBLE_DEVICES") == "1", captured
 
@@ -171,7 +171,7 @@ def test_multi_backend_build_is_not_vulkan_only(tmp_path):
     assert LlamaCppBackend._is_vulkan_backend(binary) is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")
+@pytest.mark.skipif(sys.platform == "win32", reason="shell wrapper fallback is POSIX")
 def test_shell_wrapper_entrypoint_resolves_to_real_lib_dir(tmp_path):
     # create_exec_entrypoint falls back to a #!/bin/sh wrapper at the install root
     # when it cannot symlink; _find_llama_server_binary returns that root entrypoint,

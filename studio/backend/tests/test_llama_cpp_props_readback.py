@@ -89,8 +89,8 @@ import core.inference.llama_cpp as llama_cpp_mod
 class _FakeResponse:
     def __init__(
         self,
-        status_code = 200,
-        body = None,
+        status_code=200,
+        body=None,
     ):
         self.status_code = status_code
         self._body = body or {}
@@ -99,7 +99,7 @@ class _FakeResponse:
         return self._body
 
 
-def _make_backend(effective_ctx = 98304, port = 51234):
+def _make_backend(effective_ctx=98304, port=51234):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
     inst._effective_context_length = effective_ctx
@@ -109,14 +109,14 @@ def _make_backend(effective_ctx = 98304, port = 51234):
 
 def _stub_props(
     monkeypatch,
-    status_code = 200,
-    body = None,
-    exc = None,
+    status_code=200,
+    body=None,
+    exc=None,
 ):
     def fake_get(
         url,
-        timeout = None,
-        trust_env = None,
+        timeout=None,
+        trust_env=None,
     ):
         assert url.endswith("/props")
 
@@ -125,7 +125,7 @@ def _stub_props(
             raise exc
         return _FakeResponse(status_code, body)
 
-    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising = False)
+    monkeypatch.setattr(llama_cpp_mod.httpx, "get", fake_get, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -136,23 +136,23 @@ def _stub_props(
 def test_query_n_ctx_reads_default_generation_settings(monkeypatch):
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 67584}},
+        body={"default_generation_settings": {"n_ctx": 67584}},
     )
     assert _make_backend()._query_server_n_ctx() == 67584
 
 
 def test_query_n_ctx_non_200_returns_none(monkeypatch):
-    _stub_props(monkeypatch, status_code = 503)
+    _stub_props(monkeypatch, status_code=503)
     assert _make_backend()._query_server_n_ctx() is None
 
 
 def test_query_n_ctx_missing_key_returns_none(monkeypatch):
-    _stub_props(monkeypatch, body = {"default_generation_settings": {}})
+    _stub_props(monkeypatch, body={"default_generation_settings": {}})
     assert _make_backend()._query_server_n_ctx() is None
 
 
 def test_query_n_ctx_swallows_transport_errors(monkeypatch):
-    _stub_props(monkeypatch, exc = RuntimeError("connection refused"))
+    _stub_props(monkeypatch, exc=RuntimeError("connection refused"))
     assert _make_backend()._query_server_n_ctx() is None
 
 
@@ -163,10 +163,10 @@ def test_query_n_ctx_swallows_transport_errors(monkeypatch):
 
 def test_fit_shrunk_ctx_overwrites_advertised_value(monkeypatch):
     """The Nick repro: requested/advertised 98304, server really at 67584."""
-    inst = _make_backend(effective_ctx = 98304)
+    inst = _make_backend(effective_ctx=98304)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 67584}},
+        body={"default_generation_settings": {"n_ctx": 67584}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 67584
@@ -174,10 +174,10 @@ def test_fit_shrunk_ctx_overwrites_advertised_value(monkeypatch):
 
 
 def test_matching_ctx_is_left_alone(monkeypatch):
-    inst = _make_backend(effective_ctx = 98304)
+    inst = _make_backend(effective_ctx=98304)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 98304}},
+        body={"default_generation_settings": {"n_ctx": 98304}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 98304
@@ -185,21 +185,21 @@ def test_matching_ctx_is_left_alone(monkeypatch):
 
 def test_larger_server_ctx_does_not_inflate_advertised_value(monkeypatch):
     """Never advertise more than the user asked for, even if the server could."""
-    inst = _make_backend(effective_ctx = 32768)
+    inst = _make_backend(effective_ctx=32768)
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 65536}},
+        body={"default_generation_settings": {"n_ctx": 65536}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 32768
 
 
 def test_unset_effective_ctx_adopts_server_value(monkeypatch):
-    inst = _make_backend(effective_ctx = None)
+    inst = _make_backend(effective_ctx=None)
     inst._context_length = None
     _stub_props(
         monkeypatch,
-        body = {"default_generation_settings": {"n_ctx": 40960}},
+        body={"default_generation_settings": {"n_ctx": 40960}},
     )
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 40960
@@ -207,8 +207,8 @@ def test_unset_effective_ctx_adopts_server_value(monkeypatch):
 
 def test_props_failure_keeps_studio_value(monkeypatch):
     """A flaky /props must never wipe the computed context."""
-    inst = _make_backend(effective_ctx = 98304)
-    _stub_props(monkeypatch, exc = RuntimeError("boom"))
+    inst = _make_backend(effective_ctx=98304)
+    _stub_props(monkeypatch, exc=RuntimeError("boom"))
     inst._reconcile_effective_ctx_with_server()
     assert inst._effective_context_length == 98304
 
@@ -254,7 +254,7 @@ def test_fit_ctx_skipped_without_fit_or_explicit_ctx_or_support():
 
 
 def test_probe_missing_binary_reports_new_capabilities_false():
-    info = LlamaCppBackend.probe_server_capabilities(binary = "/nonexistent/llama-server")
+    info = LlamaCppBackend.probe_server_capabilities(binary="/nonexistent/llama-server")
     assert info["found"] is False
     assert info["supports_kv_unified"] is False
     assert info["supports_fit_ctx"] is False

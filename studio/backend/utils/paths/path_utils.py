@@ -124,6 +124,7 @@ def _hf_hub_cache_dir() -> Path:
     """Return HF cache root honoring HF_HUB_CACHE when available."""
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
+
         return Path(HF_HUB_CACHE)
     except Exception as exc:
         logger.debug(

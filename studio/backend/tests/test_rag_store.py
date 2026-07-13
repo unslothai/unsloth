@@ -19,24 +19,24 @@ def embed(text):
 
 def _chunk(
     text,
-    index = 0,
-    page = None,
+    index=0,
+    page=None,
 ):
     return Chunk(
-        text = text,
-        token_count = len(text.split()),
-        page_number = page,
-        source_page_index = 0,
-        chunk_index = index,
-        page_char_start = 0,
-        page_char_end = len(text),
+        text=text,
+        token_count=len(text.split()),
+        page_number=page,
+        source_page_index=0,
+        chunk_index=index,
+        page_char_start=0,
+        page_char_end=len(text),
     )
 
 
 def _add_doc(conn, scope, doc_id, filename, sha, texts):
     chunks = [_chunk(t, i) for i, t in enumerate(texts)]
     vectors = [embed(t) for t in texts]
-    store.create_document(conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id)
+    store.create_document(conn, scope=scope, filename=filename, sha256=sha, document_id=doc_id)
     store.add_chunks(conn, scope, doc_id, chunks, vectors)
 
 
@@ -113,7 +113,7 @@ def test_chunks_by_id_joins_filename(rag_conn):
 
 
 def test_kb_crud_and_delete_cascades(rag_conn):
-    kb_id = store.create_kb(rag_conn, name = "My KB", description = "d", kb_id = "K1")
+    kb_id = store.create_kb(rag_conn, name="My KB", description="d", kb_id="K1")
     assert store.get_kb(rag_conn, kb_id)["name"] == "My KB"
     assert [k["id"] for k in store.list_kbs(rag_conn)] == ["K1"]
 

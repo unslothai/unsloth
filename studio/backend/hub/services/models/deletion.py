@@ -251,8 +251,8 @@ def _delete_gguf_variant_from_repos(
 
     if failures:
         raise HTTPException(
-            status_code = 409,
-            detail = (
+            status_code=409,
+            detail=(
                 f"Couldn't fully delete {variant} for {repo_id}: "
                 f"{len(failures)} file(s) are in use. "
                 "Unload the model and try again."
@@ -263,13 +263,13 @@ def _delete_gguf_variant_from_repos(
         repo_id,
         variant,
         hf_token,
-        extra_hashes = frozenset(completed_hashes),
-        companions = not sibling_active,
+        extra_hashes=frozenset(completed_hashes),
+        companions=not sibling_active,
     )
     if incomplete_result.unresolved:
         raise HTTPException(
-            status_code = 409,
-            detail = (
+            status_code=409,
+            detail=(
                 f"Couldn't fully delete {variant} for {repo_id}: partial "
                 "download bytes exist but this variant's blob hashes are unavailable. "
                 "Reconnect or provide access to the repo, then try again."
@@ -284,8 +284,8 @@ def _delete_gguf_variant_from_repos(
     dir_failures.extend(snap_dir_failures)
     if dir_failures:
         raise HTTPException(
-            status_code = 409,
-            detail = (
+            status_code=409,
+            detail=(
                 f"Couldn't fully delete {variant} for {repo_id}: "
                 f"{len(dir_failures)} folder(s) could not be removed "
                 "(read-only cache or in use). Try again."
@@ -299,8 +299,8 @@ def _delete_gguf_variant_from_repos(
         and removed_dirs == 0
     ):
         raise HTTPException(
-            status_code = 404,
-            detail = f"Variant {variant} not found in cache for {repo_id}",
+            status_code=404,
+            detail=f"Variant {variant} not found in cache for {repo_id}",
         )
 
     freed_mb = deleted_bytes / (1024 * 1024)
@@ -357,7 +357,7 @@ def reclaim_replaced_gguf_variant(
             "Skipping stale GGUF reclaim for %s [%s]: cache scan failed: %s",
             repo_id,
             variant,
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )
         return {
             "status": "skipped",
@@ -377,7 +377,7 @@ def reclaim_replaced_gguf_variant(
         matched_repo_ids = resolve_destructive_repo_ids(
             repo_id,
             [str(getattr(repo_info, "repo_id", "")) for repo_info in candidate_repos],
-            noun = "models",
+            noun="models",
         )
     except HTTPException as e:
         detail = getattr(e, "detail", str(e))
@@ -385,7 +385,7 @@ def reclaim_replaced_gguf_variant(
             "Skipping stale GGUF reclaim for %s [%s]: %s",
             repo_id,
             variant,
-            download_registry.scrub_secrets(str(detail), hf_token = hf_token),
+            download_registry.scrub_secrets(str(detail), hf_token=hf_token),
         )
         return {
             "status": "skipped",
@@ -515,6 +515,7 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
         from routes.inference import get_llama_cpp_backend
+
         backend = get_llama_cpp_backend()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
@@ -542,6 +543,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference import get_inference_backend
+
         backend = get_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
@@ -562,12 +564,12 @@ async def delete_cached_model_response(
     Refuses if the model is currently loaded for inference.
     """
     if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        raise HTTPException(status_code=400, detail="Invalid repo_id format")
     variant = (variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
-            status_code = 400,
-            detail = f"Invalid gguf_variant: {variant!r}",
+            status_code=400,
+            detail=f"Invalid gguf_variant: {variant!r}",
         )
 
     # Guard fails closed: if a live backend's load state can't be read, abort
@@ -579,23 +581,23 @@ async def delete_cached_model_response(
     except Exception as e:
         logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
         raise HTTPException(
-            status_code = 503,
-            detail = _LOAD_STATE_UNVERIFIABLE_DETAIL,
+            status_code=503,
+            detail=_LOAD_STATE_UNVERIFIABLE_DETAIL,
         )
     if blocks_delete:
         raise HTTPException(
-            status_code = 400,
-            detail = "Unload the model before deleting",
+            status_code=400,
+            detail="Unload the model before deleting",
         )
 
-    repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
+    repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="model")
     if not downloads.registry.begin_delete(repo_key, variant):
         detail = (
             f"Cancel the {variant} download before deleting it."
             if variant is not None
             else "Cancel the active downloads before deleting."
         )
-        raise HTTPException(status_code = 400, detail = detail)
+        raise HTTPException(status_code=400, detail=detail)
     try:
         return await asyncio.to_thread(_delete_cached_model_blocking, repo_id, variant, hf_token)
     finally:
@@ -626,7 +628,7 @@ def _delete_cached_model_blocking(
         matched_repo_ids = resolve_destructive_repo_ids(
             repo_id,
             [str(repo_info.repo_id) for _hf_cache, repo_info in candidate_entries],
-            noun = "models",
+            noun="models",
         )
         target_entries = [
             (hf_cache, repo_info)
@@ -647,12 +649,12 @@ def _delete_cached_model_blocking(
                     repo_id,
                     variant,
                     hf_token,
-                    companions = not sibling_active,
+                    companions=not sibling_active,
                 )
                 if incomplete_result.unresolved:
                     raise HTTPException(
-                        status_code = 409,
-                        detail = (
+                        status_code=409,
+                        detail=(
                             f"Couldn't fully delete {variant} for {repo_id}: partial "
                             "download bytes exist but this variant's blob hashes are unavailable. "
                             "Reconnect or provide access to the repo, then try again."
@@ -669,7 +671,7 @@ def _delete_cached_model_blocking(
                         "repo_id": repo_id,
                         "variant": variant,
                     }
-            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+            raise HTTPException(status_code=404, detail="Model not found in cache")
 
         if variant:
             return _delete_gguf_variant_from_repos(
@@ -677,7 +679,7 @@ def _delete_cached_model_blocking(
                 variant,
                 [repo for _cache, repo in target_entries],
                 hf_token,
-                sibling_active = sibling_active,
+                sibling_active=sibling_active,
             )
 
         deleted_revisions = False
@@ -701,7 +703,7 @@ def _delete_cached_model_blocking(
         state_purged = download_manifest.purge_all_state_for_repo("model", repo_id) > 0
 
         if not (deleted_revisions or cache_purged or partial_purged or state_purged):
-            raise HTTPException(status_code = 404, detail = "No revisions found for model")
+            raise HTTPException(status_code=404, detail="No revisions found for model")
 
         return {"status": "deleted", "repo_id": repo_id}
 
@@ -711,10 +713,10 @@ def _delete_cached_model_blocking(
         logger.error(
             "Error deleting cached model %s: %s",
             repo_id,
-            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to delete cached model: "
-            + download_registry.scrub_secrets(str(e), hf_token = hf_token),
+            status_code=500,
+            detail="Failed to delete cached model: "
+            + download_registry.scrub_secrets(str(e), hf_token=hf_token),
         )

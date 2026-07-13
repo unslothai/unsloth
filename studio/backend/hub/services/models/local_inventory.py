@@ -70,7 +70,7 @@ def _has_immediate_model_weight(
     path: Path, *, probe_limit: int = _MODEL_SIGNAL_PROBE_LIMIT
 ) -> bool:
     try:
-        for index, entry in enumerate(path.iterdir(), start = 1):
+        for index, entry in enumerate(path.iterdir(), start=1):
             if index > probe_limit:
                 break
             try:
@@ -91,7 +91,7 @@ def _has_immediate_model_signal(
             return True
     except OSError:
         return False
-    return _has_immediate_model_weight(path, probe_limit = probe_limit)
+    return _has_immediate_model_weight(path, probe_limit=probe_limit)
 
 
 def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool:
@@ -107,6 +107,7 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 def _resolve_hf_cache_dir() -> Path:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
+
         return Path(HF_HUB_CACHE)
     except Exception:
         return Path.home() / ".cache" / "huggingface" / "hub"
@@ -123,7 +124,7 @@ def _scan_models_dir(
 
     _is_self_model = _is_model_directory_for_scan(
         models_dir,
-        entry_limit = entry_limit,
+        entry_limit=entry_limit,
     )
 
     if _is_self_model:
@@ -134,7 +135,7 @@ def _scan_models_dir(
         return _classify_local_path(
             models_dir,
             "models_dir",
-            updated_at = updated_at,
+            updated_at=updated_at,
         )
 
     found: List[LocalModelInfo] = []
@@ -168,7 +169,7 @@ def _scan_models_dir(
         rows = _classify_local_path(
             child,
             "models_dir",
-            updated_at = updated_at,
+            updated_at=updated_at,
         )
         if limit is not None:
             rows = rows[: max(0, limit - len(found))]
@@ -244,7 +245,7 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
             hf_cache_scan.partial_transport_for(
                 "model",
                 model_id,
-                repo_cache_dir = repo_dir,
+                repo_cache_dir=repo_dir,
             )
             if snapshot_partial
             else None
@@ -256,26 +257,26 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
-            load_path = repo_dir,
-            display_name = model_id.split("/")[-1],
-            model_id = model_id,
-            updated_at = updated_at,
-            partial = False,
+            load_path=repo_dir,
+            display_name=model_id.split("/")[-1],
+            model_id=model_id,
+            updated_at=updated_at,
+            partial=False,
         )
         if not rows:
             if has_gguf_variant_state and gguf_partial:
                 rows = [
                     _local_model_info(
-                        scan_path = repo_dir,
-                        load_path = repo_dir,
-                        source = "hf_cache",
-                        model_format = "gguf",
-                        display_name = model_id.split("/")[-1],
-                        model_id = model_id,
-                        updated_at = updated_at,
-                        partial = True,
-                        requires_variant = True,
-                        size_bytes = gguf_variant_state_size,
+                        scan_path=repo_dir,
+                        load_path=repo_dir,
+                        source="hf_cache",
+                        model_format="gguf",
+                        display_name=model_id.split("/")[-1],
+                        model_id=model_id,
+                        updated_at=updated_at,
+                        partial=True,
+                        requires_variant=True,
+                        size_bytes=gguf_variant_state_size,
                     )
                 ]
             else:
@@ -283,14 +284,14 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
                 # applies because we can't dispatch to a specific predicate.
                 rows = [
                     _local_model_info(
-                        scan_path = repo_dir,
-                        load_path = repo_dir,
-                        source = "hf_cache",
-                        model_format = "unknown",
-                        display_name = model_id.split("/")[-1],
-                        model_id = model_id,
-                        updated_at = updated_at,
-                        partial = snapshot_partial or gguf_partial,
+                        scan_path=repo_dir,
+                        load_path=repo_dir,
+                        source="hf_cache",
+                        model_format="unknown",
+                        display_name=model_id.split("/")[-1],
+                        model_id=model_id,
+                        updated_at=updated_at,
+                        partial=snapshot_partial or gguf_partial,
                     )
                 ]
         elif (
@@ -300,23 +301,23 @@ def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[L
         ):
             rows.append(
                 _local_model_info(
-                    scan_path = repo_dir,
-                    load_path = repo_dir,
-                    source = "hf_cache",
-                    model_format = "gguf",
-                    display_name = model_id.split("/")[-1],
-                    model_id = model_id,
-                    updated_at = updated_at,
-                    partial = True,
-                    requires_variant = True,
-                    size_bytes = gguf_variant_state_size,
+                    scan_path=repo_dir,
+                    load_path=repo_dir,
+                    source="hf_cache",
+                    model_format="gguf",
+                    display_name=model_id.split("/")[-1],
+                    model_id=model_id,
+                    updated_at=updated_at,
+                    partial=True,
+                    requires_variant=True,
+                    size_bytes=gguf_variant_state_size,
                 )
             )
         rows = _apply_format_aware_partial(
             rows,
-            snapshot_partial = snapshot_partial,
-            gguf_partial = gguf_partial,
-            snapshot_partial_transport = snapshot_partial_transport,
+            snapshot_partial=snapshot_partial,
+            gguf_partial=gguf_partial,
+            snapshot_partial_transport=snapshot_partial_transport,
         )
         found.extend(rows)
     return found
@@ -337,7 +338,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
         return _classify_local_path(
             lm_dir,
             "lmstudio",
-            updated_at = updated_at,
+            updated_at=updated_at,
         )
 
     found: List[LocalModelInfo] = []
@@ -367,7 +368,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         _classify_local_path(
                             child,
                             "lmstudio",
-                            updated_at = updated_at,
+                            updated_at=updated_at,
                         )
                     )
                 continue
@@ -382,7 +383,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     _classify_local_path(
                         child,
                         "lmstudio",
-                        updated_at = updated_at,
+                        updated_at=updated_at,
                     )
                 )
                 continue
@@ -406,9 +407,9 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             _classify_local_path(
                                 model_dir,
                                 "lmstudio",
-                                display_name = model_dir.name,
-                                model_id = model_id,
-                                updated_at = updated_at,
+                                display_name=model_dir.name,
+                                model_id=model_id,
+                                updated_at=updated_at,
                             )
                         )
                     elif model_dir.suffix == ".gguf" and model_dir.is_file():
@@ -420,8 +421,8 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             _classify_local_path(
                                 model_dir,
                                 "lmstudio",
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                updated_at = updated_at,
+                                model_id=f"{child.name}/{model_dir.stem}",
+                                updated_at=updated_at,
                             )
                         )
                 except OSError:
@@ -539,11 +540,11 @@ def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
         for m in (
             _scan_models_dir(
                 folder_path,
-                limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
-                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                limit=_MAX_MODELS_PER_CUSTOM_FOLDER,
+                entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES,
             )
-            + _scan_hf_cache(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
-            + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+            + _scan_hf_cache(folder_path, entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES)
+            + _scan_lmstudio_dir(folder_path, entry_limit=_MAX_CUSTOM_FOLDER_ENTRIES)
         )
         if m.model_format in supported_formats
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -555,7 +556,7 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
     if model.source == "hf_cache":
         return model
     return model.model_copy(
-        update = {
+        update={
             "source": "custom",
             "model_id": None,
             "inventory_id": _local_inventory_id(
@@ -567,8 +568,8 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
             "capabilities": _capabilities_for_format(
                 model.model_format,
                 "custom",
-                partial = model.partial,
-                requires_variant = model.capabilities.requires_variant,
+                partial=model.partial,
+                requires_variant=model.capabilities.requires_variant,
             ),
         }
     )
@@ -618,8 +619,8 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
             deduped[key] = model
     return sorted(
         deduped.values(),
-        key = lambda item: (item.updated_at or 0),
-        reverse = True,
+        key=lambda item: (item.updated_at or 0),
+        reverse=True,
     )
 
 
@@ -641,7 +642,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     try:
         models_root = _resolve_allowed_models_dir(models_dir, allowed_roots)
     except ValueError:
-        raise HTTPException(status_code = 403, detail = "Directory not allowed")
+        raise HTTPException(status_code=403, detail="Directory not allowed")
 
     try:
         local_models = await _collect_models_from_default_sources(
@@ -656,17 +657,17 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         models = _dedupe_local_models(local_models)
 
         return LocalModelListResponse(
-            models_dir = str(models_root),
-            hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
-            ollama_dirs = [str(d) for d in ollama_dirs],
-            models = models,
+            models_dir=str(models_root),
+            hf_cache_dir=str(hf_cache_dir),
+            lmstudio_dirs=[str(d) for d in lm_dirs],
+            ollama_dirs=[str(d) for d in ollama_dirs],
+            models=models,
         )
     except Exception as e:
-        logger.error(f"Error listing local models: {e}", exc_info = True)
+        logger.error(f"Error listing local models: {e}", exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to list local models: {str(e)}",
+            status_code=500,
+            detail=f"Failed to list local models: {str(e)}",
         )
 
 
@@ -681,16 +682,16 @@ def get_models_folder_response() -> dict:
     # HF builds the cache lazily, and studio only pre-creates the *default*
     # dir, not a user's explicit HF_HOME / HF_HUB_CACHE.
     try:
-        path.mkdir(parents = True, exist_ok = True)
+        path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to create models folder: {path}: {e}",
+            status_code=500,
+            detail=f"Failed to create models folder: {path}: {e}",
         ) from e
     if not path.is_dir():
         raise HTTPException(
-            status_code = 500,
-            detail = f"Models folder path is not a directory: {path}",
+            status_code=500,
+            detail=f"Models folder path is not a directory: {path}",
         )
     return {"path": str(path)}
 
@@ -704,7 +705,7 @@ def add_scan_folder_response(path: str) -> dict:
         folder = add_scan_folder(_coerce_scan_folder_path(path))
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     logger.info("Scan folder added: %s", folder.get("path"))
     return folder
 

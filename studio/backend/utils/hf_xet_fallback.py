@@ -126,9 +126,9 @@ def _degraded_start_watchdog(
                 pass
 
     threading.Thread(
-        target = _beat,
-        daemon = True,
-        name = "hf-xet-degraded-heartbeat",
+        target=_beat,
+        daemon=True,
+        name="hf-xet-degraded-heartbeat",
     ).start()
     return stop
 
@@ -156,13 +156,13 @@ def _degraded_hf_hub_download_with_xet_fallback(
     from huggingface_hub import hf_hub_download
 
     path = hf_hub_download(
-        repo_id = repo_id,
-        filename = filename,
-        token = token,
-        repo_type = repo_type,
-        revision = revision,
-        cache_dir = cache_dir,
-        force_download = force_download,
+        repo_id=repo_id,
+        filename=filename,
+        token=token,
+        repo_type=repo_type,
+        revision=revision,
+        cache_dir=cache_dir,
+        force_download=force_download,
     )
     if _degraded_cancelled(cancel_event):
         raise RuntimeError("Cancelled")
@@ -188,14 +188,14 @@ def _degraded_snapshot_download_with_xet_fallback(
     from huggingface_hub import snapshot_download
 
     path = snapshot_download(
-        repo_id = repo_id,
-        repo_type = repo_type,
-        revision = revision,
-        token = token,
-        cache_dir = cache_dir,
-        allow_patterns = allow_patterns,
-        ignore_patterns = ignore_patterns,
-        force_download = force_download,
+        repo_id=repo_id,
+        repo_type=repo_type,
+        revision=revision,
+        token=token,
+        cache_dir=cache_dir,
+        allow_patterns=allow_patterns,
+        ignore_patterns=ignore_patterns,
+        force_download=force_download,
     )
     if _degraded_cancelled(cancel_event):
         raise RuntimeError("Cancelled")
@@ -268,10 +268,12 @@ def _studio_prepare_for_http(repo_type: str, repo_id: str) -> None:
     not fatal to the retry."""
     try:
         from hub.utils.download_registry import prepare_cache_for_transport
+
         prepare_cache_for_transport(repo_type, repo_id, "http")
     except Exception as exc:
         try:
             from loggers import get_logger
+
             get_logger(__name__).debug(
                 "Studio prepare_cache_for_transport failed for %s: %s", repo_id, exc
             )
@@ -300,15 +302,15 @@ def hf_hub_download_with_xet_fallback(
         repo_id,
         filename,
         token,
-        cancel_event = cancel_event,
-        repo_type = repo_type,
-        revision = revision,
-        stall_timeout = stall_timeout,
-        interval = interval,
-        grace_period = grace_period,
-        on_status = on_status,
-        force_download = force_download,
-        prepare_for_http_fn = _studio_prepare_for_http,
+        cancel_event=cancel_event,
+        repo_type=repo_type,
+        revision=revision,
+        stall_timeout=stall_timeout,
+        interval=interval,
+        grace_period=grace_period,
+        on_status=on_status,
+        force_download=force_download,
+        prepare_for_http_fn=_studio_prepare_for_http,
     )
 
 

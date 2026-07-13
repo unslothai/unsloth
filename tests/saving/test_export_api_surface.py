@@ -14,8 +14,8 @@ UNSLOTH = Path(__file__).resolve().parents[2] / "unsloth"
 SAVE_PY = UNSLOTH / "save.py"
 QUANT_PY = UNSLOTH / "_compressed_quantize.py"
 
-SAVE_SRC = SAVE_PY.read_text(encoding = "utf-8")
-SAVE_TREE = ast.parse(SAVE_SRC, filename = str(SAVE_PY))
+SAVE_SRC = SAVE_PY.read_text(encoding="utf-8")
+SAVE_TREE = ast.parse(SAVE_SRC, filename=str(SAVE_PY))
 
 # Every merged-save entry point that must route compressed (FP8/FP4/INT) save_methods.
 MERGED_SAVERS = (
@@ -163,7 +163,7 @@ def test_compressed_export_propagates_variant():
     assert (
         '"--variant"' in helper_src
     ), "compressed export must forward the variant to the converter"
-    quant_src = QUANT_PY.read_text(encoding = "utf-8")
+    quant_src = QUANT_PY.read_text(encoding="utf-8")
     assert '"--variant"' in quant_src, "the converter runner must accept --variant"
     assert (
         "save_compressed" in quant_src and "variant" in quant_src
@@ -173,4 +173,4 @@ def test_compressed_export_propagates_variant():
 def test_compressed_quantize_runner_parses():
     # The standalone runner is invoked by path in a subprocess; make sure it stays importable
     # (valid syntax) so a typo there is caught without launching the subprocess.
-    ast.parse(QUANT_PY.read_text(encoding = "utf-8"), filename = str(QUANT_PY))
+    ast.parse(QUANT_PY.read_text(encoding="utf-8"), filename=str(QUANT_PY))

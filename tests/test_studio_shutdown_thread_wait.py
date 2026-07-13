@@ -12,7 +12,7 @@ _STUDIO_CLI_PY = _ROOT / "unsloth_cli" / "commands" / "studio.py"
 
 
 def _parse(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(encoding = "utf-8"))
+    return ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _function(tree: ast.AST, name: str) -> ast.FunctionDef:

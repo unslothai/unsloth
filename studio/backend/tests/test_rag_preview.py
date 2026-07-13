@@ -25,7 +25,7 @@ def _make_pdf(path) -> None:
     )
     for _ in range(3):
         page = doc.new_page()
-        page.insert_text((72, 72), body, fontsize = 11)
+        page.insert_text((72, 72), body, fontsize=11)
     doc.save(str(path))
     doc.close()
 
@@ -35,7 +35,7 @@ def _ingest(home, pdf_path):
     from storage import rag_db
 
     conn = rag_db.get_connection()
-    kb_id = store.create_kb(conn, name = "kb")
+    kb_id = store.create_kb(conn, name="kb")
     conn.close()
     doc_id, job_id = ingestion.start_ingestion(
         store.kb_scope(kb_id), kb_id, None, "doc.pdf", str(pdf_path)
@@ -97,13 +97,13 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
     kb_id, doc_id = _ingest(rag_home, pdf)
 
     app = FastAPI()
-    app.include_router(router, prefix = "/api/rag")
+    app.include_router(router, prefix="/api/rag")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     c = TestClient(app)
 
     res = c.post(
         "/api/rag/search",
-        json = {
+        json={
             "query": "masked language modeling next sentence",
             "kb_id": kb_id,
             "mode": "lexical",
@@ -112,19 +112,19 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
     assert res
     chunk_id = res[0]["chunkId"]
 
-    pt = c.get(f"/api/rag/documents/{doc_id}/preview-target", params = {"chunk_id": chunk_id}).json()
+    pt = c.get(f"/api/rag/documents/{doc_id}/preview-target", params={"chunk_id": chunk_id}).json()
     assert pt["mediaKind"] == "pdf"
     assert pt["text"]
 
     url = c.get(f"/api/rag/documents/{doc_id}/file-url").json()["url"]
     full = c.get(url)
     assert full.status_code == 200 and full.content[:4] == b"%PDF"
-    rng = c.get(url, headers = {"Range": "bytes=0-99"})
+    rng = c.get(url, headers={"Range": "bytes=0-99"})
     assert rng.status_code in (200, 206)
     assert (
         c.get(
             f"/api/rag/documents/{doc_id}/file-signed",
-            params = {"token": "bad.token.sig"},
+            params={"token": "bad.token.sig"},
         ).status_code
         == 401
     )
@@ -148,11 +148,11 @@ def test_locator_handles_midword_anchor_and_locates_line():
 
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize = 12)
+    page.insert_text((72, 200), "alpha beta gamma delta epsilon zeta eta theta", fontsize=12)
     page_text = doc[0].get_text("text")  # mirrors what the parser stores
     start = page_text.index("lpha")
     end = page_text.index("theta") + 3
-    match = LocatorMatch(page_index = 0, page_number = 1, start = start, end = end)
+    match = LocatorMatch(page_index=0, page_number=1, start=start, end=end)
     rects = _regions_for_match(doc, page_text, match)
     doc.close()
 
@@ -174,10 +174,10 @@ def test_locator_anchors_through_markdown_table_pipes():
 
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_text((72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize = 12)
+    page.insert_text((72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize=12)
     # What the Markdown parser stores for the row (cells joined by pipes, no spaces).
     page_text = "|Quarter|Revenue|Growth|Q1|sales|strong|here|"
-    match = LocatorMatch(page_index = 0, page_number = 1, start = 0, end = len(page_text))
+    match = LocatorMatch(page_index=0, page_number=1, start=0, end=len(page_text))
     rects = _regions_for_match(doc, page_text, match)
     doc.close()
 

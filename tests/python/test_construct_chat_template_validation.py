@@ -36,9 +36,9 @@ class _FakeTokenizer:
 def test_missing_placeholder_in_chat_template_raises(template, expected_in_message):
     with pytest.raises(RuntimeError) as exc_info:
         construct_chat_template(
-            tokenizer = _FakeTokenizer(),
-            chat_template = template,
-            extra_eos_tokens = ["</s>"],
+            tokenizer=_FakeTokenizer(),
+            chat_template=template,
+            extra_eos_tokens=["</s>"],
         )
     assert expected_in_message in str(exc_info.value)
 
@@ -49,9 +49,9 @@ def test_single_pair_template_raises_clear_error_not_attribute_error():
     template = "user: {INPUT}\nassistant: {OUTPUT}\n"
     with pytest.raises(RuntimeError):
         construct_chat_template(
-            tokenizer = _FakeTokenizer(),
-            chat_template = template,
-            extra_eos_tokens = ["</s>"],
+            tokenizer=_FakeTokenizer(),
+            chat_template=template,
+            extra_eos_tokens=["</s>"],
         )
 
 
@@ -61,9 +61,9 @@ def test_error_message_excerpt_is_bounded():
     huge = ("garbage " * 5000) + "{INPUT}"  # ~40 KB, missing {OUTPUT}
     with pytest.raises(RuntimeError) as exc_info:
         construct_chat_template(
-            tokenizer = _FakeTokenizer(),
-            chat_template = huge,
-            extra_eos_tokens = ["</s>"],
+            tokenizer=_FakeTokenizer(),
+            chat_template=huge,
+            extra_eos_tokens=["</s>"],
         )
     msg = str(exc_info.value)
     # Excerpt is capped well under the template length.
@@ -80,7 +80,7 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
 
     def __call__(self, text):
         # input_ids[0] must differ from bos_token_id so the BOS-handling branch is skipped.
-        return SimpleNamespace(input_ids = [5])
+        return SimpleNamespace(input_ids=[5])
 
 
 @pytest.mark.parametrize(
@@ -98,9 +98,9 @@ def test_chat_template_does_not_leak_sentinel_when_section_starts_with_it(chat_t
     branch in the internal `process()` helper used to slice from `find()` (which is 0
     here) instead of past the sentinel, re-including the literal `{INPUT}`/`{OUTPUT}`."""
     _, jinja_template, _, _ = construct_chat_template(
-        tokenizer = _SuccessFakeTokenizer(),
-        chat_template = chat_template,
-        extra_eos_tokens = ["</s>"],
+        tokenizer=_SuccessFakeTokenizer(),
+        chat_template=chat_template,
+        extra_eos_tokens=["</s>"],
     )
     assert "{INPUT}" not in jinja_template
     assert "{OUTPUT}" not in jinja_template

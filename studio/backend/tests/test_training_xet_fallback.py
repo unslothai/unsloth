@@ -75,7 +75,7 @@ for _name in (
         sys.modules[_name] = _prev
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _stub_worker_module():
     """Stub ``core.training.worker`` so the respawn's lazy import of the
     torch-heavy worker is never required."""
@@ -108,7 +108,7 @@ class _FakeProc:
     def kill(self):
         self._alive = False
 
-    def join(self, timeout = None):
+    def join(self, timeout=None):
         self._alive = False
 
 

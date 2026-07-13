@@ -33,8 +33,8 @@ from unsloth.kernels.utils import get_lora_parameters_bias, _FP8_WEIGHT_DTYPES
 _FP8 = _FP8_WEIGHT_DTYPES[0] if _FP8_WEIGHT_DTYPES else None
 
 
-def _proj(weight, weight_scale = None):
-    proj = SimpleNamespace(weight = weight, bias = None, merged = False)
+def _proj(weight, weight_scale=None):
+    proj = SimpleNamespace(weight=weight, bias=None, merged=False)
     if weight_scale is not None:
         proj.weight_scale = weight_scale
     return proj
@@ -42,7 +42,7 @@ def _proj(weight, weight_scale = None):
 
 def test_bf16_weight_scale_not_used_as_quant_state():
     """A bf16 weight carrying a weight_scale (compressed-tensors) -> quant state must be None."""
-    proj = _proj(torch.randn(4, 4, dtype = torch.bfloat16), torch.rand(2, 2))
+    proj = _proj(torch.randn(4, 4, dtype=torch.bfloat16), torch.rand(2, 2))
     W, W_quant = get_lora_parameters_bias(proj)[:2]
     assert W_quant is None
 
@@ -58,6 +58,6 @@ def test_fp8_weight_keeps_scale():
 
 
 def test_plain_bf16_has_no_quant_state():
-    proj = _proj(torch.randn(4, 4, dtype = torch.bfloat16))
+    proj = _proj(torch.randn(4, 4, dtype=torch.bfloat16))
     W, W_quant = get_lora_parameters_bias(proj)[:2]
     assert W_quant is None

@@ -82,7 +82,7 @@ def test_unstructured_upload_names_missing_extractor_dependency(
     monkeypatch.setattr(
         seed_route,
         "_extract_text_from_file",
-        _raise(ModuleNotFoundError(f"No module named {package!r}", name = package)),
+        _raise(ModuleNotFoundError(f"No module named {package!r}", name=package)),
     )
 
     result = _run_upload(seed_route, filename, b"%PDF-1.7")
@@ -112,7 +112,7 @@ def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
         ImportError("cannot import internal symbol"),
         ModuleNotFoundError(
             "No module named 'missing_transitive_pkg'",
-            name = "missing_transitive_pkg",
+            name="missing_transitive_pkg",
         ),
     ],
 )
@@ -131,7 +131,7 @@ _TEST_UPLOAD_UID = "0f" * 16
 
 def test_remove_unstructured_block_deletes_directory(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    _run_upload(seed_route, "notes.txt", b"hello", block_id = _TEST_UPLOAD_UID)
+    _run_upload(seed_route, "notes.txt", b"hello", block_id=_TEST_UPLOAD_UID)
     assert _block_files(seed_route, _TEST_UPLOAD_UID) != []
 
     result = asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
@@ -159,7 +159,7 @@ def test_remove_unstructured_block_rejects_unsafe_ids(monkeypatch, tmp_path):
 
 def test_remove_unstructured_block_rejects_legacy_node_ids(monkeypatch, tmp_path):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
-    _run_upload(seed_route, "notes.txt", b"hello", block_id = "n1")
+    _run_upload(seed_route, "notes.txt", b"hello", block_id="n1")
     assert _block_files(seed_route, "n1") != []
 
     with pytest.raises(seed_route.HTTPException) as exc:
@@ -175,7 +175,7 @@ def test_remove_unstructured_block_rejects_symlink_escape(monkeypatch, tmp_path)
     outside.mkdir()
     (outside / "victim.txt").write_text("keep me")
     root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
-    root.mkdir(parents = True)
+    root.mkdir(parents=True)
     (root / _TEST_UPLOAD_UID).symlink_to(outside)
 
     with pytest.raises(seed_route.HTTPException) as exc:
@@ -189,7 +189,7 @@ def test_remove_unstructured_block_fails_if_directory_remains(monkeypatch, tmp_p
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
     block_dir = root / _TEST_UPLOAD_UID
-    block_dir.mkdir(parents = True)
+    block_dir.mkdir(parents=True)
     (block_dir / "victim.txt").write_text("keep me")
 
     calls = []
@@ -219,5 +219,5 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     assert exc.value.status_code == 413
 
     # Another block starts with its own untouched budget.
-    other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
+    other = _run_upload(seed_route, "c.txt", b"123", block_id="other")
     assert other.status == "ok"

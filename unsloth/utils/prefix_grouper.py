@@ -141,7 +141,7 @@ class GroupLayout:
         )[0]  # [N] logprobs
         dest = self.tgt_rows.to(device) * self.L + self.tgt_cols.to(device)
         result = (
-            torch.zeros(self.total_rows * self.L, dtype = torch.float32, device = device)
+            torch.zeros(self.total_rows * self.L, dtype=torch.float32, device=device)
             .index_put((dest,), sel.to(torch.float32))
             .view(self.total_rows, self.L)[:, -self.W :]
         )
@@ -193,12 +193,12 @@ def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_row
             return None
         groups.append(
             dict(
-                rows = rows,
-                P = P,
-                prefix_cols = prompt_cols_per_row[0],  # shared prompt real columns (row0)
-                prefix_row = rows[0],
-                R_list = R_list,
-                suf_cols = comp_cols_per_row,  # per-row completion-region real columns
+                rows=rows,
+                P=P,
+                prefix_cols=prompt_cols_per_row[0],  # shared prompt real columns (row0)
+                prefix_row=rows[0],
+                R_list=R_list,
+                suf_cols=comp_cols_per_row,  # per-row completion-region real columns
             )
         )
     return groups
@@ -222,8 +222,8 @@ def build_group_layout(
     num_generations,
     left_pad_tokens_per_prompt,
     *,
-    apply_tokr_gate = True,
-    max_segment_cap = None,
+    apply_tokr_gate=True,
+    max_segment_cap=None,
 ):
     """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
 
@@ -242,9 +242,9 @@ def build_group_layout(
     ids_cpu = input_ids.tolist()
     # per-row real (non-pad) columns. GRPO rows are one contiguous real run, so derive
     # [first, first+n) on GPU; the O(B*L) scan is only a non-contiguous fallback.
-    n_real = keep.sum(dim = 1)
-    first = torch.argmax(keep.to(torch.int8), dim = 1)
-    ar = torch.arange(L, device = device)
+    n_real = keep.sum(dim=1)
+    first = torch.argmax(keep.to(torch.int8), dim=1)
+    ar = torch.arange(L, device=device)
     contiguous = bool(
         (keep == ((ar >= first.unsqueeze(1)) & (ar < (first + n_real).unsqueeze(1)))).all()
     )
@@ -309,10 +309,10 @@ def build_group_layout(
 
     T = len(flat_src_rows)
     assert T == seg.T, f"flat stream len {T} != seg.T {seg.T}"
-    fr = torch.tensor(flat_src_rows, device = device, dtype = torch.long)
-    fc = torch.tensor(flat_src_cols, device = device, dtype = torch.long)
+    fr = torch.tensor(flat_src_rows, device=device, dtype=torch.long)
+    fc = torch.tensor(flat_src_cols, device=device, dtype=torch.long)
     flat_ids = input_ids[fr, fc].unsqueeze(0)  # [1, T] (grad-safe gather)
-    position_ids = torch.tensor(pos_list, device = device, dtype = torch.long).unsqueeze(0)
+    position_ids = torch.tensor(pos_list, device=device, dtype=torch.long).unsqueeze(0)
 
     max_left_pad = int(left_pad_tokens_per_prompt.max().item()) if total_rows else 0
     W = logits_to_keep + max_left_pad
@@ -324,18 +324,18 @@ def build_group_layout(
     sig = (len(groups), grp_sizes)
 
     return GroupLayout(
-        flat_ids = flat_ids,
-        position_ids = position_ids,
-        prefix_seg_info = seg,
-        tgt_rows = torch.tensor(tgt_rows, device = device, dtype = torch.long),
-        tgt_cols = torch.tensor(tgt_cols, device = device, dtype = torch.long),
-        tgt_pred = torch.tensor(tgt_pred, device = device, dtype = torch.long),
-        tgt_flat = torch.tensor(tgt_flat, device = device, dtype = torch.long),
-        total_rows = total_rows,
-        L = L,
-        W = W,
-        tok_r = tok_r,
-        signature = sig,
+        flat_ids=flat_ids,
+        position_ids=position_ids,
+        prefix_seg_info=seg,
+        tgt_rows=torch.tensor(tgt_rows, device=device, dtype=torch.long),
+        tgt_cols=torch.tensor(tgt_cols, device=device, dtype=torch.long),
+        tgt_pred=torch.tensor(tgt_pred, device=device, dtype=torch.long),
+        tgt_flat=torch.tensor(tgt_flat, device=device, dtype=torch.long),
+        total_rows=total_rows,
+        L=L,
+        W=W,
+        tok_r=tok_r,
+        signature=sig,
     )
 
 

@@ -7,14 +7,14 @@ def _load_remove_special_tokens():
     # needs unsloth_zoo / a GPU). The function is pure Python and uses no imports,
     # so it execs cleanly in an empty namespace.
     source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
-    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    tree = ast.parse(source.read_text(encoding="utf-8"))
     funcs = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "remove_special_tokens"
     ]
     namespace = {}
-    module = ast.Module(body = funcs, type_ignores = [])
+    module = ast.Module(body=funcs, type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(source), "exec"), namespace)
     return namespace["remove_special_tokens"]

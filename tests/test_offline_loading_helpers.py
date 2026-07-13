@@ -20,33 +20,33 @@ _OFFLINE_FALSE = ("0", "no", "false", "off", "", "  ", "maybe")
 
 @pytest.mark.parametrize("value", _OFFLINE_TRUE)
 def test_env_says_offline_truthy(monkeypatch, value):
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     monkeypatch.setenv("HF_HUB_OFFLINE", value)
     assert L._env_says_offline() is True
 
 
 @pytest.mark.parametrize("value", _OFFLINE_FALSE)
 def test_env_says_offline_falsy(monkeypatch, value):
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     monkeypatch.setenv("HF_HUB_OFFLINE", value)
     assert L._env_says_offline() is False
 
 
 def test_env_says_offline_absent(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     assert L._env_says_offline() is False
 
 
 def test_env_says_offline_transformers_var(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     assert L._env_says_offline() is True
 
 
 def test_effective_lfo_kwarg_wins(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     assert L._get_effective_local_files_only({"local_files_only": True}) is True
 
 
@@ -56,8 +56,8 @@ def test_effective_lfo_env_only(monkeypatch):
 
 
 def test_effective_lfo_neither(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     assert L._get_effective_local_files_only({"local_files_only": False}) is False
 
 
@@ -78,7 +78,7 @@ def _http_error(status):
 
     resp = requests.Response()
     resp.status_code = status
-    return requests.exceptions.HTTPError("http %s" % status, response = resp)
+    return requests.exceptions.HTTPError("http %s" % status, response=resp)
 
 
 def test_none_is_not_offline():
@@ -103,6 +103,7 @@ def test_unrelated_error_is_not_offline():
 
 def test_requests_connection_error_is_offline():
     import requests
+
     assert L._is_offline_related_error(requests.exceptions.ConnectionError("x")) is True
 
 
@@ -118,12 +119,14 @@ def test_http_4xx_propagates(status):
 
 def test_status_less_http_with_network_wording_is_offline():
     import requests
+
     err = requests.exceptions.HTTPError("Couldn't connect to the server")
     assert L._is_offline_related_error(err) is True
 
 
 def test_status_less_http_without_network_wording_propagates():
     import requests
+
     err = requests.exceptions.HTTPError("I'm a teapot")
     assert L._is_offline_related_error(err) is False
 
@@ -139,17 +142,20 @@ def test_gaierror_without_wording_is_offline_by_type():
 
 def test_urllib_urlerror_is_offline():
     import urllib.error
+
     assert L._is_offline_related_error(urllib.error.URLError("connection failed")) is True
 
 
 def test_urllib_httperror_404_propagates():
     import urllib.error
+
     err = urllib.error.HTTPError("http://x", 404, "Not Found", {}, None)
     assert L._is_offline_related_error(err) is False
 
 
 def test_urllib_httperror_503_is_offline():
     import urllib.error
+
     err = urllib.error.HTTPError("http://x", 503, "Service Unavailable", {}, None)
     assert L._is_offline_related_error(err) is True
 
@@ -157,6 +163,7 @@ def test_urllib_httperror_503_is_offline():
 def test_ssl_error_is_not_offline():
     # TLS/cert failure must surface, not silently fall back to cached files.
     import ssl
+
     assert L._is_offline_related_error(ssl.SSLError("certificate verify failed")) is False
 
 
@@ -241,12 +248,14 @@ def _inprocess_offline_flags():
     flags = []
     try:
         import huggingface_hub.constants as hfc
+
         if hasattr(hfc, "HF_HUB_OFFLINE"):
             flags.append(hfc.HF_HUB_OFFLINE)
     except Exception:
         pass
     try:
         import transformers.utils.hub as tuh
+
         for attr in ("_is_offline_mode", "OFFLINE"):
             if hasattr(tuh, attr):
                 flags.append(getattr(tuh, attr))
@@ -256,8 +265,8 @@ def _inprocess_offline_flags():
 
 
 def test_force_offline_sets_and_restores_absent_env(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     with L._force_hf_offline():
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
         assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
@@ -283,8 +292,8 @@ def test_force_offline_flips_inprocess_constants():
 
 
 def test_force_offline_nesting_shares_one_flip(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     with L._force_hf_offline():
         with L._force_hf_offline():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
@@ -294,8 +303,8 @@ def test_force_offline_nesting_shares_one_flip(monkeypatch):
 
 
 def test_force_offline_restores_on_exception(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     with pytest.raises(RuntimeError):
         with L._force_hf_offline():
             assert os.environ.get("HF_HUB_OFFLINE") == "1"
@@ -377,8 +386,8 @@ def test_resolve_tokenizer_nonexistent_dir_falls_back():
 
 
 def test_retry_once_on_offline_error_then_succeed(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     calls = []
 
     @L._offline_aware_load
@@ -396,8 +405,8 @@ def test_retry_once_on_offline_error_then_succeed(monkeypatch):
 
 
 def test_no_retry_on_non_offline_error(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     calls = []
 
     @L._offline_aware_load
@@ -411,8 +420,8 @@ def test_no_retry_on_non_offline_error(monkeypatch):
 
 
 def test_no_retry_when_already_offline_via_kwarg(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     calls = []
 
     @L._offline_aware_load
@@ -422,7 +431,7 @@ def test_no_retry_when_already_offline_via_kwarg(monkeypatch):
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
         return "ok"
 
-    assert fake("model", local_files_only = True) == "ok"
+    assert fake("model", local_files_only=True) == "ok"
     assert len(calls) == 1
     assert L._force_offline_depth == 0
 
@@ -446,8 +455,8 @@ def test_offline_error_when_already_offline_propagates(monkeypatch):
 def test_kwargs_preserved_across_retry(monkeypatch):
     # Callee popping config/tokenizer_name must not change what the retry sees:
     # fn(*args, **kwargs) re-packs a fresh **kwargs per call.
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     seen = []
 
     @L._offline_aware_load
@@ -459,15 +468,15 @@ def test_kwargs_preserved_across_retry(monkeypatch):
             raise ConnectionError("down")
         return cfg, tok
 
-    assert fake("m", config = "CFG", tokenizer_name = "TOK") == ("CFG", "TOK")
+    assert fake("m", config="CFG", tokenizer_name="TOK") == ("CFG", "TOK")
     assert seen == [("CFG", "TOK"), ("CFG", "TOK")]
 
 
 def test_retry_runs_gc_collect_between_attempts(monkeypatch):
     # The retry lives OUTSIDE the except so the failed attempt's traceback (a
     # partial model) is freed by gc.collect() before the second load reallocates.
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     gc_calls = []
     monkeypatch.setattr(L.gc, "collect", lambda *a, **k: gc_calls.append(1))
     calls = []
@@ -497,14 +506,15 @@ def test_force_offline_restores_freshly_imported_constant(monkeypatch):
     # be the pre-window state, not the just-forced "1"; otherwise the process pins offline.
     import sys
 
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     saved_mod = sys.modules.get("huggingface_hub.constants")
     saved_val = getattr(saved_mod, "HF_HUB_OFFLINE", None) if saved_mod else None
     try:
         sys.modules.pop("huggingface_hub.constants", None)  # simulate "not imported yet"
         with L._force_hf_offline():
             import huggingface_hub.constants as hfc_in
+
             assert hfc_in.HF_HUB_OFFLINE is True  # forced offline inside the window
         import huggingface_hub.constants as hfc_after
 
@@ -527,13 +537,13 @@ def test_resolve_tokenizer_vlm_without_processor_falls_back(tmp_path):
     # cached processor still loads instead of AutoProcessor failing on the local dir.
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
-    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) is None
+    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor=True) is None
 
 
 def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
     _touch(tmp_path, "tokenizer_config.json")
     _touch(tmp_path, "tokenizer.json")
     _touch(tmp_path, "preprocessor_config.json")
-    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor = True) == str(
+    assert L._resolve_checkpoint_tokenizer_name(str(tmp_path), {}, require_processor=True) == str(
         tmp_path
     )

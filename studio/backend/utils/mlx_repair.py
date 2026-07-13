@@ -128,6 +128,7 @@ def is_apple_silicon() -> bool:
 def mlx_available() -> bool:
     try:
         import mlx.core  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -253,7 +254,7 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
         return [], None
     except Exception:
         return [], None
-    fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")
+    fd, path = tempfile.mkstemp(prefix="mlx_repair_", suffix=".txt")
     with os.fdopen(fd, "w") as fh:
         fh.write(f"transformers=={transformers_version}\n")
     return ["--constraint", path], path
@@ -286,11 +287,11 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
         result = subprocess.run(
             cmd,
-            env = _mlx_install_env(),
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            timeout = timeout,
+            env=_mlx_install_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         logger.warning("MLX self-heal timed out after %ss; staying chat-only", timeout)
@@ -324,6 +325,7 @@ def _run_repair_and_redetect() -> None:
         return
     try:
         from utils.hardware import hardware as hw
+
         hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
         logger.info(
             "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
@@ -357,8 +359,8 @@ def start_mlx_autorepair_if_needed() -> bool:
         DISABLE_ENV_VAR,
     )
     threading.Thread(
-        target = _run_repair_and_redetect,
-        daemon = True,
-        name = "mlx-autorepair",
+        target=_run_repair_and_redetect,
+        daemon=True,
+        name="mlx-autorepair",
     ).start()
     return True

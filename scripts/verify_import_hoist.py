@@ -97,9 +97,9 @@ class Scope:
     kind: str  # 'module' | 'function' | 'class' | 'lambda' | 'comp'
     qualname: str
     parent: "Scope | None"
-    bindings: dict[str, list[Binding]] = field(default_factory = dict)
-    globals: set[str] = field(default_factory = set)
-    nonlocals: set[str] = field(default_factory = set)
+    bindings: dict[str, list[Binding]] = field(default_factory=dict)
+    globals: set[str] = field(default_factory=set)
+    nonlocals: set[str] = field(default_factory=set)
     star_import: bool = False
 
     def add(self, name: str, b: Binding) -> None:
@@ -509,7 +509,7 @@ def _analyze(src: str):
 def _git_show(ref: str, path: str) -> str | None:
     try:
         return subprocess.run(
-            ["git", "show", f"{ref}:{path}"], capture_output = True, text = True, check = True
+            ["git", "show", f"{ref}:{path}"], capture_output=True, text=True, check=True
         ).stdout
     except subprocess.CalledProcessError:
         return None
@@ -729,7 +729,7 @@ def _pyflakes_undefined(path: str) -> set[str] | None:
     or None if pyflakes failed to run/parse the file."""
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pyflakes", path], capture_output = True, text = True
+            [sys.executable, "-m", "pyflakes", path], capture_output=True, text=True
         )
     except Exception:
         return None
@@ -753,7 +753,7 @@ def audit_files(paths: list[str]) -> int:
     for path in paths:
         n_files += 1
         try:
-            src = open(path, encoding = "utf-8").read()
+            src = open(path, encoding="utf-8").read()
         except Exception as e:  # unreadable
             n_err += 1
             err_detail[path] = f"read: {e}"
@@ -797,15 +797,15 @@ def audit_files(paths: list[str]) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--before", default = "origin/main")
-    ap.add_argument("--after", default = "HEAD")
-    ap.add_argument("--self-test", action = "store_true")
+    ap.add_argument("--before", default="origin/main")
+    ap.add_argument("--after", default="HEAD")
+    ap.add_argument("--self-test", action="store_true")
     ap.add_argument(
         "--audit",
-        action = "store_true",
-        help = "single-version robustness audit on filesystem paths",
+        action="store_true",
+        help="single-version robustness audit on filesystem paths",
     )
-    ap.add_argument("files", nargs = "*")
+    ap.add_argument("files", nargs="*")
     args = ap.parse_args()
 
     if args.self_test:

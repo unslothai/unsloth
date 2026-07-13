@@ -15,13 +15,13 @@ def _table_pdf(path):
 
     doc = pymupdf.open()
     page = doc.new_page()
-    page.insert_textbox(pymupdf.Rect(40, 40, 550, 70), "Quarterly Results", fontsize = 16)
+    page.insert_textbox(pymupdf.Rect(40, 40, 550, 70), "Quarterly Results", fontsize=16)
     rows = [("Quarter", "Revenue", "Growth"), ("Q1", "$1.2M", "12%"), ("Q2", "$1.5M", "25%")]
     y = 90
     for r in rows:
-        page.insert_textbox(pymupdf.Rect(40, y, 250, y + 20), r[0], fontsize = 11)
-        page.insert_textbox(pymupdf.Rect(250, y, 400, y + 20), r[1], fontsize = 11)
-        page.insert_textbox(pymupdf.Rect(400, y, 540, y + 20), r[2], fontsize = 11)
+        page.insert_textbox(pymupdf.Rect(40, y, 250, y + 20), r[0], fontsize=11)
+        page.insert_textbox(pymupdf.Rect(250, y, 400, y + 20), r[1], fontsize=11)
+        page.insert_textbox(pymupdf.Rect(400, y, 540, y + 20), r[2], fontsize=11)
         y += 24
     doc.save(str(path))
     doc.close()
@@ -94,7 +94,7 @@ def _long_text_pdf(path):
     doc = pymupdf.open()
     page = doc.new_page()
     body = "The quick brown fox jumps over the lazy dog. " * 12  # >200 letters
-    page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), body, fontsize = 11)
+    page.insert_textbox(pymupdf.Rect(40, 40, 550, 750), body, fontsize=11)
     doc.save(str(path))
     doc.close()
 
@@ -131,7 +131,7 @@ def _docx_with_table(path):
 
     document = docx.Document()
     document.add_paragraph("Intro before table.")
-    table = document.add_table(rows = 2, cols = 2)
+    table = document.add_table(rows=2, cols=2)
     table.cell(0, 0).text = "NAME"
     table.cell(0, 1).text = "SCORE"
     table.cell(1, 0).text = "Alice"
@@ -163,7 +163,7 @@ def test_docx_table_keeps_columns_and_collapses_cell_newlines(tmp_path):
     from core.rag import parsers
 
     document = docx.Document()
-    table = document.add_table(rows = 2, cols = 3)
+    table = document.add_table(rows=2, cols=3)
     table.cell(0, 0).text = "A"
     table.cell(0, 1).text = ""  # empty middle cell
     table.cell(0, 2).text = "C"
@@ -190,7 +190,7 @@ def test_docx_table_merged_cell_keeps_grid_alignment(tmp_path):
     from core.rag import parsers
 
     document = docx.Document()
-    table = document.add_table(rows = 2, cols = 3)
+    table = document.add_table(rows=2, cols=3)
     table.cell(0, 0).text = "WIDE"
     table.cell(0, 2).text = "END"
     table.cell(0, 0).merge(table.cell(0, 1))  # span the first two columns
@@ -216,7 +216,7 @@ def test_docx_table_pads_omitted_grid_columns(tmp_path):
     from core.rag import parsers
 
     document = docx.Document()
-    table = document.add_table(rows = 2, cols = 3)
+    table = document.add_table(rows=2, cols=3)
     table.cell(0, 0).text = "H1"
     table.cell(0, 1).text = "H2"
     table.cell(0, 2).text = "H3"
@@ -241,9 +241,9 @@ def test_docx_flattens_nested_table(tmp_path):
     from core.rag import parsers
 
     document = docx.Document()
-    outer = document.add_table(rows = 1, cols = 1).cell(0, 0)
+    outer = document.add_table(rows=1, cols=1).cell(0, 0)
     outer.text = "outer"
-    nested = outer.add_table(rows = 1, cols = 2)
+    nested = outer.add_table(rows=1, cols=2)
     nested.cell(0, 0).text = "NESTED-A"
     nested.cell(0, 1).text = "NESTED-B"
     path = tmp_path / "nested.docx"
@@ -262,9 +262,9 @@ def test_docx_nested_table_keeps_in_cell_order(tmp_path):
     from core.rag import parsers
 
     document = docx.Document()
-    cell = document.add_table(rows = 1, cols = 1).cell(0, 0)
+    cell = document.add_table(rows=1, cols=1).cell(0, 0)
     cell.text = "before"
-    nested = cell.add_table(rows = 1, cols = 2)
+    nested = cell.add_table(rows=1, cols=2)
     nested.cell(0, 0).text = "NESTED-A"
     nested.cell(0, 1).text = "NESTED-B"
     cell.add_paragraph("after")
@@ -284,7 +284,7 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     from core.rag import parsers
 
     document = docx.Document()
-    table = document.add_table(rows = 3, cols = 2)
+    table = document.add_table(rows=3, cols=2)
     table.cell(0, 0).merge(table.cell(1, 0)).merge(table.cell(2, 0)).text = "SECTION"
     table.cell(0, 1).text = "r0"
     table.cell(1, 1).text = "r1"

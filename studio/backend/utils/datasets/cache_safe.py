@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 
 def studio_datasets_cache() -> str:
     path = cache_root() / "hf-datasets"
-    path.mkdir(parents = True, exist_ok = True)
+    path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
 
 def load_dataset_cache_safe(*args, **kwargs):
     """datasets.load_dataset, retried in a Studio-owned cache on EACCES."""
     from datasets import load_dataset
+
     try:
         return load_dataset(*args, **kwargs)
     except PermissionError as error:

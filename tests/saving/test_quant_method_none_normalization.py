@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 SAVE_PY = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
-SAVE_SRC = SAVE_PY.read_text(encoding = "utf-8")
-SAVE_TREE = ast.parse(SAVE_SRC, filename = str(SAVE_PY))
+SAVE_SRC = SAVE_PY.read_text(encoding="utf-8")
+SAVE_TREE = ast.parse(SAVE_SRC, filename=str(SAVE_PY))
 
 # The target functions and the list variable each one appends the normalized method to.
 TARGETS = (

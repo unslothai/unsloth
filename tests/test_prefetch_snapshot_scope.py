@@ -47,8 +47,8 @@ def _filter(names, allow_patterns, ignore_patterns):
 def capture(monkeypatch):
     """Run maybe_prefetch_hf_snapshot with a fake repo, capturing the patterns forwarded to a
     fake injected zoo downloader (independent of the installed unsloth_zoo). Offline env cleared."""
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
 
     state = {}
 
@@ -101,7 +101,7 @@ _SAMPLE_FILES = [
 
 def test_weights_at_root_excludes_subdir_weights(capture):
     """A root load ignores subdir weights (fp16/, experimental/, checkpoint-500/) but keeps root weights."""
-    ok, st = capture(weights_at_root = True, use_safetensors = True)
+    ok, st = capture(weights_at_root=True, use_safetensors=True)
     assert ok is True
     assert st["allow_patterns"] is None
     ig = st["ignore_patterns"]
@@ -117,7 +117,7 @@ def test_weights_at_root_excludes_subdir_weights(capture):
 
 def test_adapter_only_excludes_merged_weights(capture):
     """An adapter warm keeps adapter files + root aux, not merged full-model weights."""
-    ok, st = capture(adapter_only = True)
+    ok, st = capture(adapter_only=True)
     assert ok is True
     assert st["ignore_patterns"] is None
     allow = st["allow_patterns"]
@@ -133,7 +133,7 @@ def test_adapter_only_excludes_merged_weights(capture):
 
 def test_adapter_only_warms_sharded_adapter(capture):
     """A sharded adapter is still covered by the adapter_model* glob."""
-    _, st = capture(adapter_only = True)
+    _, st = capture(adapter_only=True)
     sharded = [
         "adapter_config.json",
         "adapter_model-00001-of-00002.safetensors",
@@ -146,7 +146,7 @@ def test_adapter_only_warms_sharded_adapter(capture):
 
 def test_tokenizer_only_warms_only_aux_files(capture):
     """A tokenizer-only repo warms tokenizer/config/vocab files, never weights."""
-    _, st = capture(tokenizer_only = True)
+    _, st = capture(tokenizer_only=True)
     assert st["ignore_patterns"] is None
     assert st["allow_patterns"] == list(U._ROOT_AUX_PREFETCH_PATTERNS)
     kept = _filter(_SAMPLE_FILES, st["allow_patterns"], st["ignore_patterns"])
@@ -157,7 +157,7 @@ def test_tokenizer_only_warms_only_aux_files(capture):
 
 def test_aux_warm_covers_arbitrary_remote_code_modules(capture):
     """The aux warm must cover any *.py, since trust_remote_code auto_map names modules freely."""
-    _, st = capture(tokenizer_only = True)
+    _, st = capture(tokenizer_only=True)
     allow = st["allow_patterns"]
     assert "*.py" in allow
     remote_code = [
@@ -174,7 +174,7 @@ def test_aux_warm_covers_arbitrary_remote_code_modules(capture):
 
 def test_subfolder_warms_subfolder_plus_root_aux(capture):
     """A subfolder load warms that subfolder's weights plus root aux; other subdirs/root weights skipped."""
-    _, st = capture(subfolder = "fp16")
+    _, st = capture(subfolder="fp16")
     allow = st["allow_patterns"]
     assert "fp16/*" in allow
     assert all(p in allow for p in U._ROOT_AUX_PREFETCH_PATTERNS)
@@ -186,7 +186,7 @@ def test_subfolder_warms_subfolder_plus_root_aux(capture):
 
 def test_subfolder_takes_precedence_over_weights_at_root(capture):
     """When a subfolder is requested the subfolder branch wins over weights_at_root."""
-    _, st = capture(subfolder = "fp16", weights_at_root = True)
+    _, st = capture(subfolder="fp16", weights_at_root=True)
     assert "fp16/*" in st["allow_patterns"]
     kept = _filter(_SAMPLE_FILES, st["allow_patterns"], st["ignore_patterns"])
     assert "fp16/model.safetensors" in kept
@@ -196,7 +196,7 @@ def test_local_dir_is_not_warmed(capture, tmp_path):
     """A local directory path skips the warm (returns False)."""
     d = tmp_path / "local-model"
     d.mkdir()
-    ok = U.maybe_prefetch_hf_snapshot(str(d), weights_at_root = True)
+    ok = U.maybe_prefetch_hf_snapshot(str(d), weights_at_root=True)
     assert ok is False
 
 
@@ -225,26 +225,26 @@ def _install_fake_model_info(monkeypatch, filenames):
 def test_variant_keeps_bin_when_only_default_safetensors(monkeypatch):
     """A default model.safetensors must not prove a variant .bin redundant; without a variant it does."""
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.fp16.bin"])
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", variant="fp16", weights_at_root=True)
     assert "*.bin" not in ig
-    ig_default = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    ig_default = U._prefetch_ignore_patterns("org/repo", weights_at_root=True)
     assert "*.bin" in ig_default
 
 
 def test_variant_drops_bin_when_variant_safetensors_present(monkeypatch):
     """A variant-matching safetensors makes the variant .bin redundant, so .bin is dropped."""
     _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", variant="fp16", weights_at_root=True)
     assert "*.bin" in ig
 
 
 def test_no_variant_keeps_bin_when_only_variant_safetensors(monkeypatch):
     """For a no-variant load, only a canonical safetensors (not a lone variant) makes .bin redundant."""
     _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.bin"])
-    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root=True)
     assert "*.bin" not in ig
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin"])
-    ig2 = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    ig2 = U._prefetch_ignore_patterns("org/repo", weights_at_root=True)
     assert "*.bin" in ig2
 
 
@@ -253,10 +253,10 @@ def test_variant_keeps_bin_for_noncanonical_sidecar(monkeypatch):
     _install_fake_model_info(
         monkeypatch, ["consolidated.fp16.safetensors", "pytorch_model.fp16.bin"]
     )
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", variant="fp16", weights_at_root=True)
     assert "*.bin" not in ig
     _install_fake_model_info(monkeypatch, ["model.fp16.safetensors", "pytorch_model.fp16.bin"])
-    ig2 = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    ig2 = U._prefetch_ignore_patterns("org/repo", variant="fp16", weights_at_root=True)
     assert "*.bin" in ig2
 
 
@@ -278,7 +278,7 @@ def test_st_prefetch_resolves_env_cache_and_runs_after_validation():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     tree = ast.parse(src)
     prefetch_calls = [
@@ -307,7 +307,7 @@ def test_st_cache_resolutions_honor_explicit_hf_cache_dir():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
     resolutions = [
         kw
@@ -329,7 +329,7 @@ def test_st_native_loads_map_hf_cache_dir_to_cache_folder():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     tree = ast.parse(src)
     # Every native SentenceTransformer(...) forwarding cache_folder must read cache_dir.
@@ -361,7 +361,7 @@ def test_vision_warms_vllm_tokenizer_after_remap():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "vision.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     guard = "if _vllm_owns_weights and isinstance(tokenizer_name"
     assert guard in src, "expected a vLLM-gated tokenizer warm"
@@ -375,7 +375,7 @@ def test_diffusion_forwards_variant_to_real_load():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "diffusion.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     assert (
         'load_kwargs["variant"] = kwargs["variant"]' in src
@@ -388,7 +388,7 @@ def test_vision_prefetch_runs_after_load_mode_validation():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "vision.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     tree = ast.parse(src)
     prefetch_calls = [
@@ -410,7 +410,7 @@ def test_llama_prefetch_skips_only_real_vllm_loads():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "llama.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
     gated = False
     for n in ast.walk(tree):
@@ -435,7 +435,7 @@ def test_st_fallback_module_loads_resolve_env_cache():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         src = f.read()
     tree = ast.parse(src)
 
@@ -469,7 +469,7 @@ def test_st_fallback_module_loads_forward_revision():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
 
     funcs = {
@@ -538,7 +538,7 @@ def test_st_fallback_model_load_resolves_env_cache():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
 
     def _resolves_st_cache(value_node):
@@ -602,9 +602,9 @@ def test_canonical_variant_model_weight_matches_transformers_names():
 
 def test_variant_is_forwarded_to_downloader(capture):
     """maybe_prefetch_hf_snapshot must forward variant to the downloader (absent a variant, nothing is forwarded)."""
-    _, st = capture(weights_at_root = True, use_safetensors = True, variant = "fp16")
+    _, st = capture(weights_at_root=True, use_safetensors=True, variant="fp16")
     assert st["variant"] == "fp16"
-    _, st = capture(weights_at_root = True, use_safetensors = True)
+    _, st = capture(weights_at_root=True, use_safetensors=True)
     assert st["variant"] is None
 
 
@@ -618,13 +618,13 @@ def test_variant_drops_bin_for_sharded_variant_safetensors(monkeypatch):
             "pytorch_model.fp16-00001-of-00002.bin",
         ],
     )
-    ig = U._prefetch_ignore_patterns("org/repo", variant = "fp16", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", variant="fp16", weights_at_root=True)
     assert "*.bin" in ig
 
 
 def test_tokenizer_only_warms_extra_vocab_files(capture):
     """tokenizer_only must warm SentencePiece / vocab / processor files, including a named jinja template."""
-    _, st = capture(tokenizer_only = True)
+    _, st = capture(tokenizer_only=True)
     allow = st["allow_patterns"]
     for name in (
         "spm.model",
@@ -653,7 +653,7 @@ def test_format_probe_runs_even_when_config_cached(capture, monkeypatch):
         huggingface_hub, "try_to_load_from_cache", lambda *a, **k: "/cache/config.json"
     )
     _install_fake_model_info(monkeypatch, ["model.safetensors", "pytorch_model.bin"])
-    _, st = capture(weights_at_root = True)
+    _, st = capture(weights_at_root=True)
     ig = st["ignore_patterns"] or []
     assert "*.bin" in ig
 
@@ -661,7 +661,7 @@ def test_format_probe_runs_even_when_config_cached(capture, monkeypatch):
 def test_optimizer_safetensors_does_not_drop_bin(monkeypatch):
     """An optimizer.safetensors sidecar must not count as model safetensors, so the real .bin weights are kept."""
     _install_fake_model_info(monkeypatch, ["pytorch_model.bin", "optimizer.safetensors"])
-    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root=True)
     assert "*.bin" not in ig
 
 
@@ -670,16 +670,16 @@ def test_model_safetensors_still_drops_bin(monkeypatch):
     _install_fake_model_info(
         monkeypatch, ["model.safetensors", "pytorch_model.bin", "optimizer.safetensors"]
     )
-    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root=True)
     assert "*.bin" in ig
 
 
 def test_whole_multi_component_snapshot_keeps_subdir_bin(monkeypatch):
     """A whole multi-component snapshot must not drop *.bin (it would strip a subdir module's weight); a root load still does."""
     _install_fake_model_info(monkeypatch, ["model.safetensors", "1_Dense/pytorch_model.bin"])
-    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root = False)
+    ig = U._prefetch_ignore_patterns("org/repo", weights_at_root=False)
     assert "*.bin" not in ig
-    ig_root = U._prefetch_ignore_patterns("org/repo", weights_at_root = True)
+    ig_root = U._prefetch_ignore_patterns("org/repo", weights_at_root=True)
     assert "*.bin" in ig_root
 
 
@@ -697,7 +697,7 @@ def test_is_model_weight_safetensors_classification():
 
 def test_tokenizer_only_warms_slow_sentencepiece_vocab(capture):
     """tokenizer_only must warm the slow-tokenizer SentencePiece / BPE vocab files AutoTokenizer fetches first."""
-    _, st = capture(tokenizer_only = True)
+    _, st = capture(tokenizer_only=True)
     allow = st["allow_patterns"]
     for name in (
         "sentencepiece.bpe.model",
@@ -747,7 +747,7 @@ def test_adapter_safetensors_check_scoped_to_root(monkeypatch):
 
 def test_gguf_file_warm_keeps_gguf(capture):
     """A gguf_file load allow-lists that GGUF while not pulling other quants the repo publishes."""
-    _, st = capture(weights_at_root = True, gguf_file = "model-Q4_K_M.gguf")
+    _, st = capture(weights_at_root=True, gguf_file="model-Q4_K_M.gguf")
     allow = st["allow_patterns"]
     ig = st["ignore_patterns"]
     assert allow is not None and "model-Q4_K_M.gguf" in allow
@@ -771,7 +771,7 @@ def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
     _install_fake_model_info(
         monkeypatch, ["adapter_config.json", "adapter_model.safetensors", "adapter_model.bin"]
     )
-    _, st = capture(adapter_only = True)
+    _, st = capture(adapter_only=True)
     ig = st["ignore_patterns"]
     assert ig is not None and "adapter_model*.bin" in ig
     kept = _filter(
@@ -786,7 +786,7 @@ def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
 def test_adapter_only_bin_only_keeps_bin(capture, monkeypatch):
     """A .bin-only adapter repo must keep adapter_model.bin (no safetensors found -> both formats eligible)."""
     _install_fake_model_info(monkeypatch, ["adapter_config.json", "adapter_model.bin"])
-    _, st = capture(adapter_only = True)
+    _, st = capture(adapter_only=True)
     kept = _filter(
         ["adapter_config.json", "adapter_model.bin"], st["allow_patterns"], st["ignore_patterns"]
     )
@@ -795,7 +795,7 @@ def test_adapter_only_bin_only_keeps_bin(capture, monkeypatch):
 
 def test_adapter_only_explicit_use_safetensors_false_keeps_bin(capture):
     """An explicit use_safetensors=False forces the .bin form without a model_info call."""
-    _, st = capture(adapter_only = True, use_safetensors = False)
+    _, st = capture(adapter_only=True, use_safetensors=False)
     ig = st["ignore_patterns"]
     assert ig is not None and "adapter_model*.safetensors" in ig
     kept = _filter(
@@ -809,7 +809,7 @@ def test_adapter_only_explicit_use_safetensors_false_keeps_bin(capture):
 
 def test_gguf_file_with_subfolder_warms_subfolder_path(capture):
     """gguf_file + subfolder: the warm allow-lists <subfolder>/<gguf_file>, not the bare root name."""
-    _, st = capture(weights_at_root = True, gguf_file = "model-Q4_K_M.gguf", subfolder = "gguf")
+    _, st = capture(weights_at_root=True, gguf_file="model-Q4_K_M.gguf", subfolder="gguf")
     allow = st["allow_patterns"]
     assert "gguf/model-Q4_K_M.gguf" in allow
     kept = _filter(["gguf/model-Q4_K_M.gguf", "config.json"], allow, st["ignore_patterns"])
@@ -818,7 +818,7 @@ def test_gguf_file_with_subfolder_warms_subfolder_path(capture):
 
 def test_from_tf_root_load_ignores_nested_h5(capture):
     """A from_tf root load keeps the root .h5 but drops nested .h5 / .msgpack checkpoints."""
-    _, st = capture(weights_at_root = True, from_tf = True)
+    _, st = capture(weights_at_root=True, from_tf=True)
     ig = st["ignore_patterns"]
     assert "*/*.h5" in ig and "*/*.msgpack" in ig
     kept = _filter(["model.h5", "checkpoint-1/model.h5", "config.json"], st["allow_patterns"], ig)
@@ -832,7 +832,7 @@ def test_sentence_transformer_from_pretrained_is_prefetch_wired():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
     cls = next(
         n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastSentenceTransformer"
@@ -869,7 +869,7 @@ def test_st_module_download_forwards_cache_folder():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
     calls = [
         n
@@ -888,7 +888,7 @@ def test_st_native_sentence_transformer_calls_forward_cache_folder():
     import os
 
     src_path = os.path.join(os.path.dirname(U.__file__), "sentence_transformer.py")
-    with open(src_path, "r", encoding = "utf-8") as f:
+    with open(src_path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read())
     weight_loading_calls = []
     for n in ast.walk(tree):

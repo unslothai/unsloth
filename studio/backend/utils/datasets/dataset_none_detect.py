@@ -33,7 +33,7 @@ CONVERSATION_COLUMNS = ("messages", "conversations", "texts")
 _CHAT_KEY_SETS = (frozenset({"role", "content"}), frozenset({"from", "value"}))
 
 
-def _probe_conversation(dataset: Dataset, candidates = None):
+def _probe_conversation(dataset: Dataset, candidates=None):
     """
     Probe a dataset for its conversation column and turn structure.
 
@@ -385,14 +385,14 @@ def find_none_sharegpt(dataset: Dataset, col: str = None) -> dict:
     if col is None:
         # ShareGPT lives in 'conversations'; probe only that column so a corrupt
         # one is still scanned, not replaced by healthy 'messages' (P1 fix).
-        conv_info = _probe_conversation(dataset, candidates = ("conversations",))
+        conv_info = _probe_conversation(dataset, candidates=("conversations",))
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
                 "Expected a 'conversations' column with 'from'/'value' or 'role'/'content' turn keys."
             )
         col = conv_info["column"]
-    return find_none_chatml(dataset, col = col)
+    return find_none_chatml(dataset, col=col)
 
 
 def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
@@ -401,16 +401,16 @@ def find_none_gptoss(dataset: Dataset, col: str = None) -> dict:
         # gptoss lives in 'messages': target it whenever present (even if
         # corrupt); fall back to 'conversations' only if 'messages' is absent.
         if "messages" in dataset.column_names:
-            conv_info = _probe_conversation(dataset, candidates = ("messages",))
+            conv_info = _probe_conversation(dataset, candidates=("messages",))
         else:
-            conv_info = _probe_conversation(dataset, candidates = ("conversations",))
+            conv_info = _probe_conversation(dataset, candidates=("conversations",))
         if conv_info is None:
             raise ValueError(
                 f"No valid conversation column found in {dataset.column_names}. "
                 "Expected a 'messages' or 'conversations' column with 'role'/'content' turn keys."
             )
         col = conv_info["column"]
-    return find_none_chatml(dataset, col = col)
+    return find_none_chatml(dataset, col=col)
 
 
 # ---------------------------------------------------------------------------
@@ -507,11 +507,13 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     _dict_types = []
     try:
         from datasets import DatasetDict as _DatasetDict
+
         _dict_types.append(_DatasetDict)
     except ImportError:
         pass
     try:
         from datasets import IterableDatasetDict as _IterableDatasetDict
+
         _dict_types.append(_IterableDatasetDict)
     except ImportError:
         pass
@@ -525,6 +527,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # instead of a confusing downstream TypeError.
     try:
         from datasets import IterableDataset as _IterableDataset
+
         if isinstance(dataset, _IterableDataset):
             raise ValueError(
                 "scan_dataset requires a materialized Dataset, not an IterableDataset. "
@@ -569,7 +572,7 @@ def scan_dataset(dataset: Dataset, fmt: str = "auto") -> dict:
     # gptoss has its own messages-first rule. alpaca never takes a column.
     use_probed_col = conv_info is not None and fmt != "alpaca" and was_auto
     if use_probed_col:
-        stats = scanner(dataset, col = conv_info["column"])
+        stats = scanner(dataset, col=conv_info["column"])
     else:
         stats = scanner(dataset)
     stats["format"] = fmt
@@ -786,10 +789,10 @@ if __name__ == "__main__":
     import sys
 
     parser = argparse.ArgumentParser(
-        prog = "dataset_none_detect",
-        description = "Scan a HuggingFace dataset for None/empty content turns.",
-        formatter_class = argparse.RawDescriptionHelpFormatter,
-        epilog = """
+        prog="dataset_none_detect",
+        description="Scan a HuggingFace dataset for None/empty content turns.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
 examples:
   python dataset_none_detect.py org/my-dataset
   python dataset_none_detect.py org/my-dataset --split train
@@ -798,24 +801,24 @@ examples:
   python dataset_none_detect.py org/my-dataset --token hf_...
         """,
     )
-    parser.add_argument("dataset", help = "HuggingFace dataset repo id (e.g. org/my-dataset)")
-    parser.add_argument("--split", default = "train", help = "Dataset split to load (default: train)")
+    parser.add_argument("dataset", help="HuggingFace dataset repo id (e.g. org/my-dataset)")
+    parser.add_argument("--split", default="train", help="Dataset split to load (default: train)")
     parser.add_argument(
         "--format",
-        default = "auto",
-        choices = ["auto"] + FORMAT_NAMES + list(FORMAT_ALIASES),
-        help = "Force a specific format instead of auto-detecting (default: auto). "
+        default="auto",
+        choices=["auto"] + FORMAT_NAMES + list(FORMAT_ALIASES),
+        help="Force a specific format instead of auto-detecting (default: auto). "
         "Documented aliases (e.g. 'gpt-oss' for 'gptoss') are also accepted.",
     )
     parser.add_argument(
         "--summary-only",
-        action = "store_true",
-        help = "Print summary header only - skip the per-turn findings list",
+        action="store_true",
+        help="Print summary header only - skip the per-turn findings list",
     )
     parser.add_argument(
         "--token",
-        default = os.environ.get("HF_TOKEN"),
-        help = (
+        default=os.environ.get("HF_TOKEN"),
+        help=(
             "HuggingFace API token for private datasets (default: $HF_TOKEN). "
             "Prefer setting $HF_TOKEN; passing --token on the command line "
             "exposes it in process listings."
@@ -828,28 +831,28 @@ examples:
     except ImportError:
         print(
             "Error: 'datasets' package not found. Install with: pip install datasets",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         sys.exit(1)
 
     print(f"Loading {args.dataset!r} (split={args.split!r})...")
     try:
-        ds = load_dataset(args.dataset, split = args.split, token = args.token)
+        ds = load_dataset(args.dataset, split=args.split, token=args.token)
     except Exception as exc:
         # Some `datasets` / `requests` versions include the Authorization
         # header in exception messages. Redact the token before printing.
         msg = str(exc)
         if args.token:
             msg = msg.replace(args.token, "hf_***REDACTED***")
-        print(f"Error loading dataset: {msg}", file = sys.stderr)
+        print(f"Error loading dataset: {msg}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Loaded {len(ds)} rows, columns: {ds.column_names}")
 
     try:
-        stats = scan_dataset(ds, fmt = args.format)
+        stats = scan_dataset(ds, fmt=args.format)
     except ValueError as exc:
-        print(f"Error: {exc}", file = sys.stderr)
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print_report(stats, stats["format"], summary_only = args.summary_only)
+    print_report(stats, stats["format"], summary_only=args.summary_only)

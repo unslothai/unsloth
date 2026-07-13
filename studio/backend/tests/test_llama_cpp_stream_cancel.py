@@ -74,7 +74,7 @@ def test_generate_chat_completion_swallows_internal_stream_cancel(monkeypatch):
     chunks = list(
         backend.generate_chat_completion(
             [{"role": "user", "content": "hi"}],
-            cancel_event = threading.Event(),
+            cancel_event=threading.Event(),
         )
     )
 

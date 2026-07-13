@@ -18,7 +18,7 @@ _tool_policy: Optional[bool] = None
 
 # Per-request hard-off so public surfaces refuse tools even under a CLI `--enable-tools`.
 _force_disabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "tool_policy_force_disabled", default = False
+    "tool_policy_force_disabled", default=False
 )
 
 

@@ -42,21 +42,21 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
 
     repos = source.get("repos")
     if not isinstance(repos, list) or not repos:
-        errors.append(ValidateError(message = "GitHub seed requires at least one repo."))
+        errors.append(ValidateError(message="GitHub seed requires at least one repo."))
     else:
         for repo in repos:
             if not isinstance(repo, str) or not repo.strip() or "/" not in repo:
-                errors.append(ValidateError(message = "GitHub repos must be owner/name strings."))
+                errors.append(ValidateError(message="GitHub repos must be owner/name strings."))
                 break
 
     item_types = source.get("item_types")
     if not isinstance(item_types, list) or not item_types:
-        errors.append(ValidateError(message = "GitHub seed requires at least one item type."))
+        errors.append(ValidateError(message="GitHub seed requires at least one item type."))
     else:
         invalid_items = [item for item in item_types if item not in _GITHUB_ITEM_TYPES]
         if invalid_items:
             errors.append(
-                ValidateError(message = "GitHub item types must be issues, pulls, or commits.")
+                ValidateError(message="GitHub item types must be issues, pulls, or commits.")
             )
 
     try:
@@ -64,7 +64,7 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     except (TypeError, ValueError):
         limit = 0
     if limit < 1 or limit > 5000:
-        errors.append(ValidateError(message = "GitHub limit must be from 1 to 5000."))
+        errors.append(ValidateError(message="GitHub limit must be from 1 to 5000."))
 
     return errors
 
@@ -94,9 +94,9 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
         _resolve_and_add_seed_columns(config, resource_provider.seed_reader)
         _add_internal_row_id_column_if_needed(config)
         violations = validate_data_designer_config(
-            columns = config.columns,
-            processor_configs = config.processors or [],
-            allowed_references = _get_allowed_references(config),
+            columns=config.columns,
+            processor_configs=config.processors or [],
+            allowed_references=_get_allowed_references(config),
         )
     except (TypeError, ValueError, AttributeError):
         return []
@@ -110,9 +110,9 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
         message = str(violation.message).strip() or "Validation failed."
         errors.append(
             ValidateError(
-                message = message,
-                path = path,
-                code = code,
+                message=message,
+                path=path,
+                code=code,
             )
         )
     return errors
@@ -131,13 +131,13 @@ def _patch_local_providers(recipe: dict[str, Any]) -> None:
             provider["endpoint"] = "http://127.0.0.1"
 
 
-@router.post("/validate", response_model = ValidateResponse)
+@router.post("/validate", response_model=ValidateResponse)
 def validate(payload: RecipePayload) -> ValidateResponse:
     recipe = payload.recipe
     if not recipe.get("columns"):
         return ValidateResponse(
-            valid = False,
-            errors = [ValidateError(message = "Recipe must include columns.")],
+            valid=False,
+            errors=[ValidateError(message="Recipe must include columns.")],
         )
 
     _patch_local_providers(recipe)
@@ -146,7 +146,7 @@ def validate(payload: RecipePayload) -> ValidateResponse:
     if github_source is not None:
         static_errors = _validate_github_seed_static(github_source)
         if static_errors:
-            return ValidateResponse(valid = False, errors = static_errors)
+            return ValidateResponse(valid=False, errors=static_errors)
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
@@ -158,21 +158,21 @@ def validate(payload: RecipePayload) -> ValidateResponse:
                 raise
             logger.debug(
                 "data_designer not installed; deferring full config validation to run start",
-                missing_module = exc.name,
+                missing_module=exc.name,
             )
         except Exception as exc:
             logger.error(
                 "data_recipe.validate.github_config_failed",
-                error = str(exc),
-                exc_info = True,
+                error=str(exc),
+                exc_info=True,
             )
-            detail = safe_error_detail(exc, fallback = "Validation failed.")
+            detail = safe_error_detail(exc, fallback="Validation failed.")
             return ValidateResponse(
-                valid = False,
-                errors = [ValidateError(message = detail)],
-                raw_detail = detail,
+                valid=False,
+                errors=[ValidateError(message=detail)],
+                raw_detail=detail,
             )
-        return ValidateResponse(valid = True, raw_detail = _GITHUB_VALIDATE_NOTE)
+        return ValidateResponse(valid=True, raw_detail=_GITHUB_VALIDATE_NOTE)
 
     try:
         validate_recipe(recipe)
@@ -181,21 +181,21 @@ def validate(payload: RecipePayload) -> ValidateResponse:
             exc,
             503,
             safe_error_detail(exc),
-            event = "data_recipe.validate.service_unavailable",
-            log = logger,
+            event="data_recipe.validate.service_unavailable",
+            log=logger,
         ) from exc
     except Exception as exc:
         logger.error(
             "data_recipe.validate.recipe_failed",
-            error = str(exc),
-            exc_info = True,
+            error=str(exc),
+            exc_info=True,
         )
-        detail = safe_curated_detail(exc, fallback = "Validation failed.")
+        detail = safe_curated_detail(exc, fallback="Validation failed.")
         parsed_errors = _collect_validation_errors(recipe)
         return ValidateResponse(
-            valid = False,
-            errors = parsed_errors or [ValidateError(message = detail)],
-            raw_detail = detail,
+            valid=False,
+            errors=parsed_errors or [ValidateError(message=detail)],
+            raw_detail=detail,
         )
 
-    return ValidateResponse(valid = True)
+    return ValidateResponse(valid=True)

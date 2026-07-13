@@ -475,9 +475,9 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
         return args
     return strip_shadowing_flags(
         args,
-        strip_context = False,
-        strip_cache = False,
-        strip_spec = False,
-        strip_template = False,
-        strip_split_mode = True,
+        strip_context=False,
+        strip_cache=False,
+        strip_spec=False,
+        strip_template=False,
+        strip_split_mode=True,
     )

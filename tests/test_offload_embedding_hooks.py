@@ -31,7 +31,7 @@ def _emb():
 
 def _lm_head(device):
     # Stand-in decoder reference (untied lm_head) whose weight device is the target.
-    return nn.Linear(8, 32, bias = False).to(device)
+    return nn.Linear(8, 32, bias=False).to(device)
 
 
 def test_install_and_idempotent():
@@ -62,7 +62,7 @@ def test_cuda_input_roundtrip():
     # CPU weight, CUDA decoder + input -> lookup on cpu, output back on cuda.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), torch.device("cuda"))
-    out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))
+    out = emb(torch.randint(0, 32, (2, 5), device="cuda"))
     assert out.device.type == "cuda", out.device
 
 
@@ -73,7 +73,7 @@ def test_cpu_input_still_returns_to_decoder():
     # P1: offload makes the input arrive on cpu; the output must still reach the cuda decoder.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), torch.device("cuda"))
-    out = emb(torch.randint(0, 32, (2, 5), device = "cpu"))
+    out = emb(torch.randint(0, 32, (2, 5), device="cpu"))
     assert out.device.type == "cuda", out.device
 
 
@@ -85,7 +85,7 @@ def test_live_decoder_over_stale_fallback():
     # The output must follow the live lm_head device, not the stale cpu fallback.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), CPU)
-    out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))
+    out = emb(torch.randint(0, 32, (2, 5), device="cuda"))
     assert out.device.type == "cuda", out.device
 
 
@@ -107,7 +107,7 @@ def test_cuda_weight_pulled_back_to_gpu():
     # bf16 weight later pulled back to gpu + cuda input -> no-op, stays on cuda.
     emb = _emb().to("cuda")
     install(emb, _lm_head("cuda"), torch.device("cuda"))
-    out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))
+    out = emb(torch.randint(0, 32, (2, 5), device="cuda"))
     assert out.device.type == "cuda", out.device
 
 

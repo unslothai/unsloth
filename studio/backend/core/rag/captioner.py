@@ -71,6 +71,7 @@ def vision_endpoint() -> tuple[str, str] | None:
     """``(base_url, model)`` for a loaded vision GGUF model, else None."""
     try:
         from routes.inference import get_llama_cpp_backend
+
         backend = get_llama_cpp_backend()
         if getattr(backend, "is_loaded", False) and getattr(backend, "is_vision", False):
             return backend.base_url, "local"
@@ -84,6 +85,7 @@ def _vision_auth_headers() -> dict | None:
     endpoint, so they need the same key under direct-stream (``--api-key``) mode."""
     try:
         from routes.inference import get_llama_cpp_backend
+
         return get_llama_cpp_backend()._auth_headers or None
     except Exception:  # noqa: BLE001 - auth discovery must never break ingestion
         return None
@@ -125,17 +127,17 @@ def _vision_complete(
     try:
         r = httpx.post(
             f"{base_url}/v1/chat/completions",
-            json = payload,
-            timeout = timeout,
-            headers = _vision_auth_headers(),
+            json=payload,
+            timeout=timeout,
+            headers=_vision_auth_headers(),
             # trust_env=False: base_url is the loopback backend; skip any HTTP(S)_PROXY.
-            trust_env = False,
+            trust_env=False,
         )
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
         return text.strip() or None
     except Exception:  # noqa: BLE001 - a failed vision call is non-fatal
-        logger.debug("vision request failed", exc_info = True)
+        logger.debug("vision request failed", exc_info=True)
         return None
 
 
@@ -144,9 +146,9 @@ def _caption_one(base_url: str, model: str, image_bytes: bytes, timeout: float) 
         base_url,
         model,
         image_bytes,
-        prompt = _CAPTION_PROMPT,
-        timeout = timeout,
-        max_tokens = config.CAPTION_MAX_TOKENS,
+        prompt=_CAPTION_PROMPT,
+        timeout=timeout,
+        max_tokens=config.CAPTION_MAX_TOKENS,
     )
 
 
@@ -155,9 +157,9 @@ def _ocr_one(base_url: str, model: str, image_bytes: bytes, timeout: float) -> s
         base_url,
         model,
         image_bytes,
-        prompt = _OCR_PROMPT,
-        timeout = timeout,
-        max_tokens = config.OCR_MAX_TOKENS,
+        prompt=_OCR_PROMPT,
+        timeout=timeout,
+        max_tokens=config.OCR_MAX_TOKENS,
     )
 
 
@@ -244,5 +246,5 @@ def splice_captions(pages: list, captions: dict[int, list[str]]) -> list:
             continue
         extra = "".join(f"\n\n[Figure on page {page.page_number}: {c}]" for c in caps)
         text = page.text + extra
-        out.append(Page(text = text, page_number = page.page_number, char_count = len(text)))
+        out.append(Page(text=text, page_number=page.page_number, char_count=len(text)))
     return out

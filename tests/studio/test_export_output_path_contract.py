@@ -84,7 +84,7 @@ def test_gpu_save_method_bound_for_hub_only():
                 if isinstance(stmt, ast.If):
                     test = stmt.test
                     if isinstance(test, ast.Name) and test.id == "_IS_MLX":
-                        for sub in ast.walk(ast.Module(body = stmt.orelse, type_ignores = [])):
+                        for sub in ast.walk(ast.Module(body=stmt.orelse, type_ignores=[])):
                             if isinstance(sub, ast.Assign) and any(
                                 isinstance(t, ast.Name) and t.id == "save_method"
                                 for t in sub.targets

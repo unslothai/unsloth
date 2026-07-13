@@ -55,8 +55,8 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         _url,
         payload,
         _cancel_event,
-        headers = None,
-        first_token_deadline = None,
+        headers=None,
+        first_token_deadline=None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
@@ -64,7 +64,7 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
     def fake_iter_text_cancellable(
         response,
         _cancel_event,
-        first_token_deadline = None,
+        first_token_deadline=None,
     ):
         yield from response.chunks
 
@@ -182,9 +182,9 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=1,
         )
     )
 
@@ -234,9 +234,9 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "answer"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "answer"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -273,9 +273,9 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "think then answer"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "think then answer"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -312,9 +312,9 @@ def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "just think"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "just think"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -348,9 +348,9 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -367,7 +367,7 @@ def _replay_route_reasoning_extractor(cumulatives: list[str]) -> tuple[str, str]
     consumer) over content snapshots. Returns (visible, reasoning)."""
     from routes.inference import _ResponsesReasoningExtractor
 
-    extractor = _ResponsesReasoningExtractor(parse_think_markers = True)
+    extractor = _ResponsesReasoningExtractor(parse_think_markers=True)
     prev_text = ""
     visible: list[str] = []
     reasoning: list[str] = []
@@ -405,9 +405,9 @@ def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
     tool_cumulatives = [
         e["text"]
         for e in tool_backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "capital of France?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "capital of France?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
         if e.get("type") == "content"
     ]
@@ -416,7 +416,7 @@ def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
     no_tool_cumulatives = [
         y
         for y in no_tool_backend.generate_chat_completion(
-            messages = [{"role": "user", "content": "capital of France?"}],
+            messages=[{"role": "user", "content": "capital of France?"}],
         )
         if isinstance(y, str)
     ]
@@ -457,9 +457,9 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -497,9 +497,9 @@ def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "render then answer"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "render then answer"}],
+            tools=[{"type": "function", "function": {"name": "render_html"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -593,9 +593,9 @@ def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 2,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=2,
         )
     )
 
@@ -666,9 +666,9 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Render this."}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            max_tool_iterations = 3,
+            messages=[{"role": "user", "content": "Render this."}],
+            tools=[{"type": "function", "function": {"name": "render_html"}}],
+            max_tool_iterations=3,
         )
     )
 
@@ -759,9 +759,9 @@ def test_non_consecutive_duplicate_web_search_is_internal_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
-            tools = tools,
-            max_tool_iterations = 3,
+            messages=[{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            tools=tools,
+            max_tool_iterations=3,
         )
     )
 
@@ -874,9 +874,9 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus in 2026 prices and use python"}],
-            tools = tools,
-            max_tool_iterations = 4,
+            messages=[{"role": "user", "content": "search gpus in 2026 prices and use python"}],
+            tools=tools,
+            max_tool_iterations=4,
         )
     )
 
@@ -983,9 +983,9 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 10,
+            messages=[{"role": "user", "content": "search gpus"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=10,
         )
     )
 
@@ -1043,9 +1043,9 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search gpus"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
+            messages=[{"role": "user", "content": "search gpus"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=2,
         )
     )
 
@@ -1103,9 +1103,9 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "render html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            max_tool_iterations = 2,
+            messages=[{"role": "user", "content": "render html"}],
+            tools=[{"type": "function", "function": {"name": "render_html"}}],
+            max_tool_iterations=2,
         )
     )
 
@@ -1162,9 +1162,9 @@ def test_disabled_tool_call_is_internal_noop(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run python"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "run python"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -1242,9 +1242,9 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=1,
         )
     )
 
@@ -1290,9 +1290,9 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=1,
         )
     )
 
@@ -1321,8 +1321,8 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = [
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=[
                 {
                     "type": "function",
                     "function": {
@@ -1336,7 +1336,7 @@ def test_forced_reprompt_plain_final_answer_is_visible(monkeypatch):
                     },
                 }
             ],
-            max_tool_iterations = 1,
+            max_tool_iterations=1,
         )
     )
 
@@ -1375,10 +1375,10 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-            auto_heal_tool_calls = False,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=1,
+            auto_heal_tool_calls=False,
         )
     )
 
@@ -1416,11 +1416,11 @@ def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
-            auto_heal_tool_calls = True,
-            nudge_tool_calls = False,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=1,
+            auto_heal_tool_calls=True,
+            nudge_tool_calls=False,
         )
     )
 
@@ -1453,10 +1453,10 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            auto_heal_tool_calls = False,
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            auto_heal_tool_calls=False,
+            max_tool_iterations=1,
         )
     )
 
@@ -1486,9 +1486,9 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -1516,9 +1516,9 @@ def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -1585,9 +1585,9 @@ def test_reprompted_tool_call_still_streams_final_answer(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "Make a red square."}],
-            tools = tools,
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "Make a red square."}],
+            tools=tools,
+            max_tool_iterations=1,
         )
     )
 
@@ -1621,11 +1621,11 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run python"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
-            confirm_tool_calls = True,
-            session_id = "sess",
+            messages=[{"role": "user", "content": "run python"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=1,
+            confirm_tool_calls=True,
+            session_id="sess",
         )
     )
 
@@ -1653,11 +1653,11 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
         tool_approvals._pending.clear()
 
     gen = backend.generate_chat_completion_with_tools(
-        messages = [{"role": "user", "content": "run python"}],
-        tools = [{"type": "function", "function": {"name": "python"}}],
-        max_tool_iterations = 1,
-        confirm_tool_calls = True,
-        session_id = "sess",
+        messages=[{"role": "user", "content": "run python"}],
+        tools=[{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations=1,
+        confirm_tool_calls=True,
+        session_id="sess",
     )
     try:
         assert next(gen)["type"] == "status"
@@ -1671,7 +1671,7 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
 
     with tool_approvals._lock:
         assert approval_id not in tool_approvals._pending
-    assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
+    assert resolve_tool_decision(approval_id, "allow", session_id="sess") is False
 
 
 def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
@@ -1686,12 +1686,12 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "use docs"}],
-            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
-            max_tool_iterations = 1,
-            confirm_tool_calls = True,
-            session_id = "sess",
-            rag_scope = {"thread_id": "t1"},
+            messages=[{"role": "user", "content": "use docs"}],
+            tools=[{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations=1,
+            confirm_tool_calls=True,
+            session_id="sess",
+            rag_scope={"thread_id": "t1"},
         )
     )
 
@@ -1730,11 +1730,11 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run python"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 2,
-            confirm_tool_calls = True,
-            session_id = "sess",
+            messages=[{"role": "user", "content": "run python"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=2,
+            confirm_tool_calls=True,
+            session_id="sess",
         )
     )
 
@@ -1801,9 +1801,9 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "write code"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "write code"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -1839,9 +1839,9 @@ def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "x"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -1910,12 +1910,12 @@ def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "do both"}],
-            tools = [
+            messages=[{"role": "user", "content": "do both"}],
+            tools=[
                 {"type": "function", "function": {"name": "python"}},
                 {"type": "function", "function": {"name": "terminal"}},
             ],
-            max_tool_iterations = 1,
+            max_tool_iterations=1,
         )
     )
 
@@ -1954,13 +1954,13 @@ def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "do both"}],
-            tools = [
+            messages=[{"role": "user", "content": "do both"}],
+            tools=[
                 {"type": "function", "function": {"name": "python"}},
                 {"type": "function", "function": {"name": "terminal"}},
             ],
-            max_tool_iterations = 1,
-            disable_parallel_tool_use = True,
+            max_tool_iterations=1,
+            disable_parallel_tool_use=True,
         )
     )
 
@@ -2000,9 +2000,9 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     collected: list[dict] = []
     raised = False
     gen = backend.generate_chat_completion_with_tools(
-        messages = [{"role": "user", "content": "write code"}],
-        tools = [{"type": "function", "function": {"name": "python"}}],
-        max_tool_iterations = 1,
+        messages=[{"role": "user", "content": "write code"}],
+        tools=[{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations=1,
     )
     try:
         for event in gen:
@@ -2052,9 +2052,9 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "write code"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "write code"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2091,9 +2091,9 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather in Sydney?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "weather in Sydney?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2128,9 +2128,9 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call(monkeypat
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "give me a person record"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "give me a person record"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2155,9 +2155,9 @@ def test_incomplete_bare_json_truncation_is_not_leaked(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2185,9 +2185,9 @@ def test_gguf_truncated_ordinary_json_with_name_key_is_shown_not_suppressed(monk
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "start a person record"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "start a person record"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2212,9 +2212,9 @@ def test_gguf_truncated_disabled_name_json_is_preserved_when_tools_active(monkey
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "give json"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "give json"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2239,9 +2239,9 @@ def test_gguf_truncated_enabled_name_json_is_still_suppressed(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2269,9 +2269,9 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "long json"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "long json"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2302,9 +2302,9 @@ def test_gemma_wrapperless_call_streamed_is_not_leaked_and_executes(monkeypatch)
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "weather in Sydney?"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "weather in Sydney?"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2353,9 +2353,9 @@ def test_metadata_event_preserves_prompt_tokens_details(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            max_tool_iterations=1,
         )
     )
 
@@ -2380,9 +2380,9 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "hi"}],
-            tools = [],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            max_tool_iterations=1,
         )
     )
 
@@ -2416,9 +2416,9 @@ def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search cats"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2452,9 +2452,9 @@ def test_gguf_initial_buffer_flush_holds_split_rehearsal_name(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search cats"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2489,9 +2489,9 @@ def test_gguf_rehearsal_name_after_prose_in_streaming_is_not_leaked(monkeypatch)
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search cats"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2522,9 +2522,9 @@ def test_gguf_plain_answer_ending_with_tool_name_word_is_preserved(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "advise"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "advise"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2557,9 +2557,9 @@ def test_gguf_long_tool_name_split_rehearsal_is_not_capped_and_executes(monkeypa
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "go"}],
-            tools = [{"type": "function", "function": {"name": name}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "go"}],
+            tools=[{"type": "function", "function": {"name": name}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2591,9 +2591,9 @@ def test_gguf_streaming_keeps_bare_args_before_think_block(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "x"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2623,9 +2623,9 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "x"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
+            messages=[{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=2,
         )
     )
 
@@ -2657,9 +2657,9 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "search cats"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2717,9 +2717,9 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "run"}],
-            tools = [{"type": "function", "function": {"name": "python"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "run"}],
+            tools=[{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2746,9 +2746,9 @@ def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
+            messages=[{"role": "user", "content": "cats"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=2,
         )
     )
 
@@ -2781,9 +2781,9 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "go"}],
-            tools = [{"type": "function", "function": {"name": f"t{i}"}} for i in range(n)],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "go"}],
+            tools=[{"type": "function", "function": {"name": f"t{i}"}} for i in range(n)],
+            max_tool_iterations=1,
         )
     )
 
@@ -2808,9 +2808,9 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "cats"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 1,
+            messages=[{"role": "user", "content": "cats"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=1,
         )
     )
 
@@ -2832,10 +2832,10 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
         )
         events = list(
             backend.generate_chat_completion_with_tools(
-                messages = [{"role": "user", "content": "x"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                max_tool_iterations = 1,
-                auto_heal_tool_calls = auto_heal,
+                messages=[{"role": "user", "content": "x"}],
+                tools=[{"type": "function", "function": {"name": "web_search"}}],
+                max_tool_iterations=1,
+                auto_heal_tool_calls=auto_heal,
             )
         )
         contents = "".join(e.get("text", "") for e in events if e.get("type") == "content")
@@ -2868,9 +2868,9 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
 
     list(
         backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "search repeatedly"}],
-            tools = [{"type": "function", "function": {"name": "web_search"}}],
-            max_tool_iterations = 2,
+            messages=[{"role": "user", "content": "search repeatedly"}],
+            tools=[{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations=2,
         )
     )
 

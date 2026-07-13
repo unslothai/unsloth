@@ -86,9 +86,10 @@ def _find_binary() -> Optional[str]:
     heavy inference module off this module's import path."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._find_llama_server_binary()
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama update: binary discovery failed", error = str(exc))
+        logger.debug("llama update: binary discovery failed", error=str(exc))
         return None
 
 
@@ -150,9 +151,9 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
                 "--output-format",
                 "json",
             ],
-            capture_output = True,
-            text = True,
-            timeout = 60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         out = (proc.stdout or "").strip()
         if proc.returncode == 0 and out:
@@ -160,10 +161,10 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
             if isinstance(parsed, dict):
                 value = parsed
     except Exception as exc:  # pragma: no cover - subprocess/json defensive
-        logger.debug("llama update: resolve-prebuilt failed", error = str(exc))
+        logger.debug("llama update: resolve-prebuilt failed", error=str(exc))
         value = None
     if value is not None:  # cache real answers; let failures retry next poll
-        _resolve_memo.update(at = now, value = value)
+        _resolve_memo.update(at=now, value=value)
     return value
 
 
@@ -174,7 +175,7 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=20)
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -256,7 +257,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     """Update status for a markerless (source-build) install: offer the official
     prebuilt when one exists for this host and is newer than the installed
     binary. None -> caller falls through to the no-marker default (unsupported)."""
-    res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
+    res = _resolve_prebuilt_for_host(force_refresh=force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
     # llama_tag is the upstream base (bNNNN, what --version reports); release_tag
@@ -302,11 +303,11 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         asset_name = res.get("asset")
         if isinstance(asset_name, str) and asset_name:
             try:
-                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                assets = latest_release_assets(res.get("repo"), force_refresh=force_refresh)
                 if assets:
                     update_size_bytes = assets.get(asset_name)
             except Exception as exc:  # pragma: no cover - network defensive
-                logger.debug("llama update: source-build size lookup failed", error = str(exc))
+                logger.debug("llama update: source-build size lookup failed", error=str(exc))
     with _job_lock:
         job = dict(_job)
     return {
@@ -338,6 +339,7 @@ def _is_external_link(path: Optional[Path]) -> bool:
     if os.name == "nt":
         try:
             import stat
+
             attrs = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]
             return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
         except (OSError, AttributeError):
@@ -403,7 +405,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     # half-replaced binary (on Windows that exec can make the installer's
     # os.replace fail) and the poller only consumes job progress.
     if marker is None and binary is not None and not job_running:
-        src = _source_build_status(binary, force_refresh = force_refresh)
+        src = _source_build_status(binary, force_refresh=force_refresh)
         if src is not None:
             return src
 
@@ -412,9 +414,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     if force_refresh and repo:
         # Prime the cache so the freshness read below sees the newest tag.
         try:
-            latest_published_release(repo, force_refresh = True)
+            latest_published_release(repo, force_refresh=True)
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: force refresh failed", error = str(exc))
+            logger.debug("llama update: force refresh failed", error=str(exc))
 
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
@@ -433,10 +435,10 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
                 marker,
                 latest,
                 freshness.get("published_repo") or repo,
-                force_refresh = force_refresh,
+                force_refresh=force_refresh,
             )
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: size lookup failed", error = str(exc))
+            logger.debug("llama update: size lookup failed", error=str(exc))
 
     with _job_lock:
         job = dict(_job)
@@ -482,10 +484,11 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         # Block loads and free the binary while the installer swaps it.
         try:
             from routes.inference import get_llama_cpp_backend
+
             backend = get_llama_cpp_backend()
         except Exception as exc:
             logger.debug(
-                "llama update: backend unavailable, skipping load coordination", error = str(exc)
+                "llama update: backend unavailable, skipping load coordination", error=str(exc)
             )
             backend = None
 
@@ -498,7 +501,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                         model_was_active = True
                         backend.unload_model()
             except Exception as exc:
-                logger.debug("llama update: load coordination failed", error = str(exc))
+                logger.debug("llama update: load coordination failed", error=str(exc))
 
         cmd = [
             sys.executable,
@@ -511,9 +514,9 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             repo,
         ]
         cmd.extend(_rocm_install_args(asset))
-        logger.info("llama update: installing", cmd = " ".join(cmd))
+        logger.info("llama update: installing", cmd=" ".join(cmd))
         # Stream progress lines into job["progress"].
-        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP="5")
         # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm
         # box would otherwise re-route and silently replace the Vulkan build.
         # Re-assert it via the same env flag setup uses (mirrors
@@ -522,10 +525,10 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             env["UNSLOTH_FORCE_VULKAN"] = "1"
         proc = subprocess.Popen(
             cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
             **child_popen_kwargs(),
         )
         timed_out = threading.Event()
@@ -561,36 +564,36 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
 
         # Drop stale caches so the banner re-checks the swapped marker.
         # If GitHub is offline, latest stays unknown and the banner fails open.
-        reset_caches(drop_disk = True)
+        reset_caches(drop_disk=True)
         try:
-            latest_published_release(repo, force_refresh = True)
+            latest_published_release(repo, force_refresh=True)
         except Exception as exc:  # pragma: no cover - network defensive
-            logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
+            logger.debug("llama update: post-install freshness refresh failed", error=str(exc))
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
 
         with _job_lock:
             _job.update(
-                state = _JOB_SUCCESS,
-                message = (
+                state=_JOB_SUCCESS,
+                message=(
                     f"Updated llama.cpp to {new_tag}."
                     + (" Reload your model to use it." if model_was_active else "")
                 ),
-                to_tag = new_tag,
-                reload_required = model_was_active,
-                error = None,
-                progress = 1.0,
-                finished_at = _utcnow(),
+                to_tag=new_tag,
+                reload_required=model_was_active,
+                error=None,
+                progress=1.0,
+                finished_at=_utcnow(),
             )
-        logger.info("llama update: success", to_tag = new_tag)
+        logger.info("llama update: success", to_tag=new_tag)
     except Exception as exc:
-        logger.warning("llama update: failed", error = str(exc))
+        logger.warning("llama update: failed", error=str(exc))
         with _job_lock:
             _job.update(
-                state = _JOB_ERROR,
-                message = "llama.cpp update failed.",
-                error = str(exc),
-                finished_at = _utcnow(),
+                state=_JOB_ERROR,
+                message="llama.cpp update failed.",
+                error=str(exc),
+                finished_at=_utcnow(),
             )
     finally:
         # Always clear maintenance state.
@@ -638,7 +641,7 @@ def start_update() -> dict:
         # Mirror the detection guard: a direct POST or a stale banner must not
         # start an install when the latest is not actually newer (force a fresh
         # check so a stale 24h cache can't wrongly block a real update either).
-        status = get_update_status(force_refresh = True)
+        status = get_update_status(force_refresh=True)
         if not status.get("update_available"):
             return {
                 "started": False,
@@ -654,7 +657,7 @@ def start_update() -> dict:
         # Source build / custom path: only proceed when the same detection logic
         # would offer the update (prebuilt exists, install is behind, root is
         # manageable), so a direct POST cannot downgrade a newer source build.
-        src = _source_build_status(binary, force_refresh = True) if binary else None
+        src = _source_build_status(binary, force_refresh=True) if binary else None
         if src is None:
             return {
                 "started": False,
@@ -690,23 +693,23 @@ def start_update() -> dict:
         if _job["state"] == _JOB_RUNNING:
             return {"started": False, "reason": "already_running", "job": dict(_job)}
         _job.update(
-            state = _JOB_RUNNING,
-            message = "Downloading and installing the latest llama.cpp prebuilt...",
-            from_tag = from_tag,
-            to_tag = None,
-            reload_required = None,
-            error = None,
-            progress = 0.0,
-            started_at = _utcnow(),
-            finished_at = None,
+            state=_JOB_RUNNING,
+            message="Downloading and installing the latest llama.cpp prebuilt...",
+            from_tag=from_tag,
+            to_tag=None,
+            reload_required=None,
+            error=None,
+            progress=0.0,
+            started_at=_utcnow(),
+            finished_at=None,
         )
         job_snapshot = dict(_job)
 
     thread = threading.Thread(
-        target = _run_update,
-        args = (install_dir, repo, asset, script),
-        name = "llama-cpp-update",
-        daemon = True,
+        target=_run_update,
+        args=(install_dir, repo, asset, script),
+        name="llama-cpp-update",
+        daemon=True,
     )
     thread.start()
     return {"started": True, "reason": None, "job": job_snapshot}
@@ -716,13 +719,13 @@ def _reset_job_for_tests() -> None:
     """Test-only: return the job tracker to idle."""
     with _job_lock:
         _job.update(
-            state = _JOB_IDLE,
-            message = "",
-            from_tag = None,
-            to_tag = None,
-            reload_required = None,
-            error = None,
-            progress = None,
-            started_at = None,
-            finished_at = None,
+            state=_JOB_IDLE,
+            message="",
+            from_tag=None,
+            to_tag=None,
+            reload_required=None,
+            error=None,
+            progress=None,
+            started_at=None,
+            finished_at=None,
         )

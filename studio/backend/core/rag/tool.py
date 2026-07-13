@@ -145,9 +145,9 @@ def search_knowledge_base_with_sources(
             conn,
             scope,
             query,
-            k = top_k or config.TOP_K_HYBRID,
-            model_name = model_name,
-            mode = mode,
+            k=top_k or config.TOP_K_HYBRID,
+            model_name=model_name,
+            mode=mode,
         )
         hits = retrieval.filter_min_score(hits, min_score)
         rows = store_rows(conn, hits)
@@ -159,6 +159,7 @@ def search_knowledge_base_with_sources(
 def store_rows(conn, hits):
     """Hydrate chunk rows for a list of hits."""
     from . import store
+
     return store.chunks_by_id(conn, [h.chunk_id for h in hits])
 
 
@@ -192,15 +193,15 @@ def search_for_autoinject(
             conn,
             scope,
             query,
-            k = k,
-            model_name = model_name,
-            mode = mode,
+            k=k,
+            model_name=model_name,
+            mode=mode,
         )
         strong = [
             h for h in hits if h.dense_score is not None and h.dense_score >= min_dense_score
         ][:k]
         if not strong and hits and mode == "lexical":
-            probe = retrieval.retrieve_dense(conn, scope, query, 1, model_name = model_name)
+            probe = retrieval.retrieve_dense(conn, scope, query, 1, model_name=model_name)
             if (
                 probe
                 and probe[0].dense_score is not None
@@ -277,12 +278,12 @@ def search_knowledge_base(
 ) -> str:
     """Text-only variant of :func:`search_knowledge_base_with_sources`."""
     text, _sources = search_knowledge_base_with_sources(
-        query = query,
-        scope_kb_id = scope_kb_id,
-        scope_thread_id = scope_thread_id,
-        scope_project_id = scope_project_id,
-        top_k = top_k,
-        min_score = min_score,
-        model_name = model_name,
+        query=query,
+        scope_kb_id=scope_kb_id,
+        scope_thread_id=scope_thread_id,
+        scope_project_id=scope_project_id,
+        top_k=top_k,
+        min_score=min_score,
+        model_name=model_name,
     )
     return text

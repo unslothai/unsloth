@@ -48,7 +48,7 @@ def test_can_resume_run_rejects_s3_dataset_source(monkeypatch):
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
     run = _stopped_run(
-        config_json = json.dumps(
+        config_json=json.dumps(
             {
                 "dataset_source": "s3",
                 "s3_dataset": {
@@ -67,7 +67,7 @@ def test_can_resume_run_rejects_s3_dataset_source(monkeypatch):
 def test_can_resume_run_rejects_s3_metadata_marker(monkeypatch):
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
 
-    run = _stopped_run(config_json = json.dumps({"s3_dataset": {"bucket": "training-data"}}))
+    run = _stopped_run(config_json=json.dumps({"s3_dataset": {"bucket": "training-data"}}))
 
     assert resume.can_resume_run(run) is False
 
@@ -80,12 +80,12 @@ def test_list_runs_includes_config_json_for_resume_policy(monkeypatch, tmp_path)
     config_json = json.dumps({"dataset_source": "s3", "s3_dataset": {"bucket": "training-data"}})
 
     studio_db.create_run(
-        id = "run-s3",
-        model_name = "unsloth/test-model",
-        dataset_name = "s3://training-data",
-        config_json = config_json,
-        started_at = "2026-01-01T00:00:00Z",
-        total_steps = 10,
+        id="run-s3",
+        model_name="unsloth/test-model",
+        dataset_name="s3://training-data",
+        config_json=config_json,
+        started_at="2026-01-01T00:00:00Z",
+        total_steps=10,
     )
 
     result = studio_db.list_runs()

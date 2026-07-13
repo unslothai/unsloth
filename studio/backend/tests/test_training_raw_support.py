@@ -43,27 +43,27 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-cpt-raw",
-                model_name = "unsloth/test-bnb-4bit",
-                training_type = "Continued Pretraining",
-                format_type = "raw",
-                load_in_4bit = True,
-                embedding_learning_rate = 1e-5,
+                job_id="test-cpt-raw",
+                model_name="unsloth/test-bnb-4bit",
+                training_type="Continued Pretraining",
+                format_type="raw",
+                load_in_4bit=True,
+                embedding_learning_rate=1e-5,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -88,27 +88,27 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-grad-clip",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                max_grad_norm = 0.7,
-                max_grad_value = 3.0,
-                max_grad_leaf_norm = 1.3,
+                job_id="test-grad-clip",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                max_grad_norm=0.7,
+                max_grad_value=3.0,
+                max_grad_leaf_norm=1.3,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -134,25 +134,25 @@ class TestTrainingRawSupport(unittest.TestCase):
         with (
             patch(
                 "core.training.training.prepare_gpu_selection",
-                return_value = ([0], {"selection_mode": "auto"}),
+                return_value=([0], {"selection_mode": "auto"}),
             ),
             patch(
                 "core.training.training._CTX.Queue",
-                side_effect = [dummy_queue, dummy_queue],
+                side_effect=[dummy_queue, dummy_queue],
             ),
             patch(
-                "core.training.training._CTX.Process", return_value = DummyProcess()
+                "core.training.training._CTX.Process", return_value=DummyProcess()
             ) as mock_process,
             patch(
                 "core.training.training.threading.Thread",
-                return_value = DummyThread(),
+                return_value=DummyThread(),
             ),
         ):
             backend.start_training(
-                job_id = "test-seed",
-                model_name = "unsloth/test",
-                training_type = "LoRA/QLoRA",
-                random_seed = 1234,
+                job_id="test-seed",
+                model_name="unsloth/test",
+                training_type="LoRA/QLoRA",
+                random_seed=1234,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
@@ -311,23 +311,23 @@ class TestTrainingRawSupport(unittest.TestCase):
                 return True
 
         request = TrainingStartRequest(
-            model_name = "unsloth/test-bnb-4bit",
-            training_type = "Continued Pretraining",
-            format_type = "raw",
-            load_in_4bit = True,
-            embedding_learning_rate = 1e-5,
+            model_name="unsloth/test-bnb-4bit",
+            training_type="Continued Pretraining",
+            format_type="raw",
+            load_in_4bit=True,
+            embedding_learning_rate=1e-5,
         )
 
         with (
             patch.object(
                 training_route,
                 "get_training_backend",
-                return_value = DummyBackend(),
+                return_value=DummyBackend(),
             ),
-            patch.object(training_route, "load_model_defaults", return_value = {}),
+            patch.object(training_route, "load_model_defaults", return_value={}),
             patch(
                 "core.inference.get_inference_backend",
-                return_value = type(
+                return_value=type(
                     "InferenceBackend",
                     (),
                     {"active_model_name": None},
@@ -335,7 +335,7 @@ class TestTrainingRawSupport(unittest.TestCase):
             ),
             patch(
                 "core.export.get_export_backend",
-                return_value = type(
+                return_value=type(
                     "ExportBackend",
                     (),
                     {"current_checkpoint": None},
@@ -343,7 +343,7 @@ class TestTrainingRawSupport(unittest.TestCase):
             ),
         ):
             response = asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
+                training_route.start_training(request, current_subject="test-user")
             )
 
         self.assertEqual(response.status, "queued")
@@ -359,7 +359,7 @@ class TestTrainingRawSupport(unittest.TestCase):
             }
         )
 
-        result = format_dataset(dataset, format_type = "raw")
+        result = format_dataset(dataset, format_type="raw")
 
         self.assertEqual(result["final_format"], "raw_text")
         self.assertIn("text", result["dataset"].column_names)
@@ -371,9 +371,9 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         result = format_and_template_dataset(
             dataset,
-            model_name = "unsloth/test",
-            tokenizer = None,
-            format_type = "raw",
+            model_name="unsloth/test",
+            tokenizer=None,
+            format_type="raw",
         )
 
         self.assertTrue(result["success"])
@@ -385,10 +385,10 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         result = prepare_raw_text_dataset(
             dataset,
-            mode_label = "CPT",
-            split_name = "train",
-            eos_token = "<eos>",
-            append_eos = True,
+            mode_label="CPT",
+            split_name="train",
+            eos_token="<eos>",
+            append_eos=True,
         )
 
         self.assertEqual(len(result.dataset), 2)

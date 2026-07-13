@@ -30,15 +30,15 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger = _DummyLogger,
-        get_logger = lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger=_DummyLogger,
+        get_logger=lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.models as models_route
 
 
 def _write(path: Path, size: int) -> Path:
-    path.parent.mkdir(parents = True, exist_ok = True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\0" * size)
     return path
 
@@ -48,7 +48,7 @@ def test_resolves_quant_from_parent_directory_layout(tmp_path):
     root = tmp_path / "repo"
     f = _write(root / "BF16" / "model.gguf", 1234)
 
-    path, total = models_route._resolve_quant_gguf(str(root), "BF16", is_local = True)
+    path, total = models_route._resolve_quant_gguf(str(root), "BF16", is_local=True)
 
     assert path == str(f)
     assert total == 1234
@@ -60,7 +60,7 @@ def test_skips_mtp_drafter_for_main_weights(tmp_path):
     main = _write(root / "model-Q8_0.gguf", 100)
     _write(root / "MTP" / "model-Q8_0-MTP.gguf", 50)
 
-    path, total = models_route._resolve_quant_gguf(str(root), "Q8_0", is_local = True)
+    path, total = models_route._resolve_quant_gguf(str(root), "Q8_0", is_local=True)
 
     assert path == str(main)
     # Drafter bytes are excluded from the weight total.
@@ -80,7 +80,7 @@ def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache))
 
-    path, total = models_route._resolve_quant_gguf("org/repo", "Q4_K_M", is_local = False)
+    path, total = models_route._resolve_quant_gguf("org/repo", "Q4_K_M", is_local=False)
 
     # The most complete snapshot (70 bytes) wins over the partial one (10).
     assert total == 70
@@ -92,7 +92,7 @@ def test_returns_none_when_quant_absent(tmp_path):
     root = tmp_path / "repo"
     _write(root / "model-Q4_K_M.gguf", 100)
 
-    path, total = models_route._resolve_quant_gguf(str(root), "Q8_0", is_local = True)
+    path, total = models_route._resolve_quant_gguf(str(root), "Q8_0", is_local=True)
 
     assert path is None
     assert total == 0

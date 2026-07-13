@@ -68,7 +68,7 @@ class LlamaServerBackend:
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
         # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
-        self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
+        self._client = httpx.Client(timeout=config.EMBED_REQUEST_TIMEOUT_S, trust_env=False)
         atexit.register(self._shutdown)
 
     @property
@@ -94,16 +94,16 @@ class LlamaServerBackend:
         return binary
 
     @staticmethod
-    @lru_cache(maxsize = 8)
+    @lru_cache(maxsize=8)
     def _help_text(binary: str) -> str:
         """`llama-server --help`, cached. Ignore exit code (some builds exit
         non-zero on --help)."""
         try:
             proc = subprocess.run(
                 [binary, "--help"],
-                capture_output = True,
-                text = True,
-                timeout = 30,
+                capture_output=True,
+                text=True,
+                timeout=30,
                 **windows_hidden_subprocess_kwargs(),
             )
             return (proc.stdout or "") + (proc.stderr or "")
@@ -137,7 +137,7 @@ class LlamaServerBackend:
                 raise RuntimeError(f"no .gguf file found in local model dir {model!r}")
             variant = config.EMBED_GGUF_VARIANT.lower()
             match = [f for f in files if variant in f.name.lower()] or files
-            return str(sorted(match, key = lambda f: len(f.name))[0])
+            return str(sorted(match, key=lambda f: len(f.name))[0])
         return None
 
     def _resolve_model_path(self) -> str:
@@ -172,7 +172,7 @@ class LlamaServerBackend:
             try:
                 files = [
                     f
-                    for f in list_repo_files(candidate, token = token)
+                    for f in list_repo_files(candidate, token=token)
                     if f.lower().endswith(".gguf") and "mmproj" not in f.lower()
                 ]
             except Exception as e:  # noqa: BLE001 - missing/gated repo -> next candidate
@@ -186,9 +186,9 @@ class LlamaServerBackend:
             raise RuntimeError("no .gguf embedder found; tried " + "; ".join(errors))
         variant = config.EMBED_GGUF_VARIANT.lower()
         match = [f for f in files if variant in f.lower()] or files
-        filename = sorted(match, key = len)[0]
+        filename = sorted(match, key=len)[0]
         logger.info("resolving GGUF embedder %s/%s", repo, filename)
-        self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
+        self._model_path = hf_hub_download(repo_id=repo, filename=filename, token=token)
         self._model_repo = desired
         self._dim = None
         return self._model_path
@@ -311,8 +311,8 @@ class LlamaServerBackend:
         binary = self._resolve_binary()
         model_path = self._resolve_model_path()
         port = config.EMBED_PORT or self._find_free_port()
-        env = self._build_env(binary, use_gpu = use_gpu)
-        cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu)
+        env = self._build_env(binary, use_gpu=use_gpu)
+        cmd = self._build_cmd(binary, model_path, port, use_gpu=use_gpu)
         logger.info(
             "starting llama-server embedder (%s): %s",
             "gpu" if use_gpu else "cpu",
@@ -321,20 +321,20 @@ class LlamaServerBackend:
         self._stdout_lines = []
         proc = subprocess.Popen(
             cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
             **windows_hidden_subprocess_kwargs(),
             **child_popen_kwargs(),
         )
         self._process = proc
         self._port = port
         self._stdout_thread = threading.Thread(
-            target = self._drain_stdout,
-            args = (proc,),
-            daemon = True,
-            name = "llama-embed-stdout",
+            target=self._drain_stdout,
+            args=(proc,),
+            daemon=True,
+            name="llama-embed-stdout",
         )
         self._stdout_thread.start()
         if not self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S):
@@ -347,6 +347,7 @@ class LlamaServerBackend:
     @staticmethod
     def _find_free_port() -> int:
         from core.inference.llama_cpp import LlamaCppBackend
+
         return LlamaCppBackend._find_free_port()
 
     def _wait_for_health(
@@ -364,7 +365,7 @@ class LlamaServerBackend:
                 return False
             try:
                 # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
-                if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
+                if httpx.get(url, timeout=2.0, trust_env=False).status_code == 200:
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
@@ -403,12 +404,12 @@ class LlamaServerBackend:
             return
         try:
             proc.terminate()
-            proc.wait(timeout = 5)
+            proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             logger.warning("llama-server embedder did not exit on SIGTERM; killing")
             proc.kill()
             try:
-                proc.wait(timeout = 5)
+                proc.wait(timeout=5)
             except Exception:  # noqa: BLE001
                 pass
         except Exception as e:  # noqa: BLE001
@@ -416,7 +417,7 @@ class LlamaServerBackend:
         finally:
             self._process = None
             if self._stdout_thread is not None:
-                self._stdout_thread.join(timeout = 2)
+                self._stdout_thread.join(timeout=2)
                 self._stdout_thread = None
 
     def _shutdown(self) -> None:
@@ -436,7 +437,7 @@ class LlamaServerBackend:
         for attempt in range(2):
             self._ensure_ready()
             try:
-                resp = self._client.post(f"{self._base_url}{path}", json = payload)
+                resp = self._client.post(f"{self._base_url}{path}", json=payload)
                 resp.raise_for_status()
                 return resp.json()
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
@@ -455,14 +456,14 @@ class LlamaServerBackend:
         self,
         texts,
         *,
-        model_name = None,
-        normalize = True,
+        model_name=None,
+        normalize=True,
     ):
         """Embed texts -> (N, dim) float32. ``model_name`` is ignored (the GGUF is
         fixed by config). Normalizes in Python to match the ST backend."""
         n = len(texts)
         if n == 0:
-            return np.zeros((0, self.dim()), dtype = np.float32)
+            return np.zeros((0, self.dim()), dtype=np.float32)
         rows: list[list[float]] = []
         batch = max(1, config.EMBED_BATCH)
         for start in range(0, n, batch):
@@ -477,18 +478,18 @@ class LlamaServerBackend:
                     f"embedder returned {len(items)} vectors for {len(chunk)} inputs"
                 )
             # OpenAI spec lets the server reorder; sort back by index.
-            items = sorted(items, key = lambda d: d.get("index", 0))
+            items = sorted(items, key=lambda d: d.get("index", 0))
             rows.extend(d["embedding"] for d in items)
-        arr = np.asarray(rows, dtype = np.float32)
+        arr = np.asarray(rows, dtype=np.float32)
         if arr.ndim != 2:
             raise RuntimeError(f"embedder returned ragged vectors: shape {arr.shape}")
         if normalize:
-            norms = np.linalg.norm(arr, axis = 1, keepdims = True)
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
             norms[norms == 0] = 1.0
             arr = arr / norms
         return arr
 
-    def dim(self, *, model_name = None) -> int:
+    def dim(self, *, model_name=None) -> int:
         """Embedding width, probed via a 1-text encode and cached per model
         (_resolve_model_path clears it when the effective repo changes).
         Unlocked: concurrent probes are benign, and locking would deadlock when
@@ -497,21 +498,21 @@ class LlamaServerBackend:
         cached = self._dim
         if cached is not None:
             return cached
-        vec = self.encode(["x"], normalize = False)
+        vec = self.encode(["x"], normalize=False)
         width = int(vec.shape[1])
         self._dim = width
         return width
 
-    def warm(self, *, model_name = None) -> None:
+    def warm(self, *, model_name=None) -> None:
         """Start the server and probe dim off the request path."""
         self._ensure_ready()
         self.dim()
 
-    def token_counter(self, *, model_name = None):
+    def token_counter(self, *, model_name=None):
         """Count tokens via the GGUF's /tokenize so chunk sizing matches the
         embedder. Cached per text."""
 
-        @lru_cache(maxsize = 4096)
+        @lru_cache(maxsize=4096)
         def _count(text: str) -> int:
             data = self._post("/tokenize", {"content": text, "add_special": False})
             return len(data.get("tokens", []))

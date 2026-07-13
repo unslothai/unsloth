@@ -615,15 +615,15 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     findings: list[Finding] = []
 
     try:
-        lock = json.loads(path.read_text(encoding = "utf-8"))
+        lock = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         findings.append(
             Finding(
-                severity = CRITICAL,
-                package = "<root>",
-                filename = str(path),
-                pattern = "lockfile-unreadable",
-                detail = f"could not parse: {exc}",
+                severity=CRITICAL,
+                package="<root>",
+                filename=str(path),
+                pattern="lockfile-unreadable",
+                detail=f"could not parse: {exc}",
             )
         )
         return entries, findings
@@ -631,11 +631,11 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
     if lock.get("lockfileVersion") not in (2, 3):
         findings.append(
             Finding(
-                severity = HIGH,
-                package = "<root>",
-                filename = str(path),
-                pattern = "unsupported-lockfile-version",
-                detail = (
+                severity=HIGH,
+                package="<root>",
+                filename=str(path),
+                pattern="unsupported-lockfile-version",
+                detail=(
                     f"only lockfileVersion 2 or 3 supported; got "
                     f"{lock.get('lockfileVersion')!r}"
                 ),
@@ -659,11 +659,11 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
         if parsed.scheme != "https" or parsed.hostname != ALLOWED_DOWNLOAD_HOST:
             findings.append(
                 Finding(
-                    severity = CRITICAL,
-                    package = key,
-                    filename = str(path),
-                    pattern = "non-registry-resolved-url",
-                    detail = (
+                    severity=CRITICAL,
+                    package=key,
+                    filename=str(path),
+                    pattern="non-registry-resolved-url",
+                    detail=(
                         f"resolved={resolved!r}; only "
                         f"https://{ALLOWED_DOWNLOAD_HOST}/ is "
                         "permitted. Refusing to download."
@@ -675,11 +675,11 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
         if not integrity:
             findings.append(
                 Finding(
-                    severity = HIGH,
-                    package = key,
-                    filename = str(path),
-                    pattern = "missing-integrity-hash",
-                    detail = "no `integrity` field; cannot verify download",
+                    severity=HIGH,
+                    package=key,
+                    filename=str(path),
+                    pattern="missing-integrity-hash",
+                    detail="no `integrity` field; cannot verify download",
                 )
             )
             continue
@@ -689,11 +689,11 @@ def parse_lockfile(path: Path) -> tuple[list[PackageEntry], list[Finding]]:
         version = entry.get("version") or "<unversioned>"
         entries.append(
             PackageEntry(
-                name = name,
-                version = version,
-                resolved = resolved,
-                integrity = integrity,
-                lockfile_key = key,
+                name=name,
+                version=version,
+                resolved=resolved,
+                integrity=integrity,
+                lockfile_key=key,
             )
         )
     return entries, findings
@@ -713,7 +713,7 @@ def _decode_integrity(integrity: str) -> tuple[str, bytes] | None:
     if algo not in ("sha256", "sha384", "sha512"):
         return None
     try:
-        digest = _b64.b64decode(b64, validate = True)
+        digest = _b64.b64decode(b64, validate=True)
     except Exception:
         return None
     return algo, digest
@@ -744,14 +744,14 @@ def download_tarball(
 
     req = urllib.request.Request(
         entry.resolved,
-        headers = {
+        headers={
             "User-Agent": "unsloth-scan-npm-packages/1.0 (+supply-chain audit)",
             "Accept": "application/octet-stream",
         },
-        method = "GET",
+        method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout = timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             # Advertised length, if any.
             cl = r.headers.get("Content-Length")
             if cl is not None:
@@ -816,12 +816,12 @@ def safe_extract(
     Streams via `r|gz` so we can abort mid-extraction without having
     materialised the rest of the archive.
     """
-    extract_root.mkdir(parents = True, exist_ok = True)
+    extract_root.mkdir(parents=True, exist_ok=True)
     total = 0
     count = 0
     try:
         # Streaming mode (no backward seeks); `r|gz` rejects bad gzip.
-        with tarfile.open(tarball_path, mode = "r|gz") as tf:
+        with tarfile.open(tarball_path, mode="r|gz") as tf:
             for member in tf:
                 count += 1
                 if count > max_members:
@@ -854,12 +854,12 @@ def safe_extract(
                 if not _is_within(extract_root, dest):
                     return f"refused escape: {name!r} resolved outside root"
                 if member.isdir():
-                    dest.mkdir(parents = True, exist_ok = True)
+                    dest.mkdir(parents=True, exist_ok=True)
                     continue
                 if not member.isfile():
                     # Anything we didn't classify above is unknown.
                     return f"refused unknown member type for {name!r}"
-                dest.parent.mkdir(parents = True, exist_ok = True)
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 src = tf.extractfile(member)
                 if src is None:
                     continue
@@ -1490,12 +1490,12 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         if _LIFECYCLE_FETCH_EXEC.search(body):
             findings.append(
                 Finding(
-                    severity = CRITICAL,
-                    package = pkg.display,
-                    filename = rel,
-                    pattern = f"lifecycle-fetch-exec ({hook})",
-                    evidence = f"{_evidence(body, _LIFECYCLE_FETCH_EXEC)} body-sha256:{body_digest}",
-                    detail = (
+                    severity=CRITICAL,
+                    package=pkg.display,
+                    filename=rel,
+                    pattern=f"lifecycle-fetch-exec ({hook})",
+                    evidence=f"{_evidence(body, _LIFECYCLE_FETCH_EXEC)} body-sha256:{body_digest}",
+                    detail=(
                         f"`scripts.{hook}` fetches an external "
                         "resource and pipes/chains it to an "
                         "interpreter; this is the install-time RCE "
@@ -1509,15 +1509,15 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
             if path_substr in body:
                 findings.append(
                     Finding(
-                        severity = HIGH,
-                        package = pkg.display,
-                        filename = rel,
-                        pattern = f"cred-path-in-lifecycle ({hook})",
-                        evidence = (
+                        severity=HIGH,
+                        package=pkg.display,
+                        filename=rel,
+                        pattern=f"cred-path-in-lifecycle ({hook})",
+                        evidence=(
                             f"{_evidence(body, re.compile(re.escape(path_substr)))} "
                             f"body-sha256:{body_digest}"
                         ),
-                        detail = (
+                        detail=(
                             f"`scripts.{hook}` references {why} "
                             f"({path_substr!r}); install-time access "
                             "to local credential files is the "
@@ -1528,12 +1528,12 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         if _JS_ENV_TOKEN.search(body):
             findings.append(
                 Finding(
-                    severity = HIGH,
-                    package = pkg.display,
-                    filename = rel,
-                    pattern = f"cred-env-in-lifecycle ({hook})",
-                    evidence = f"{_evidence(body, _JS_ENV_TOKEN)} body-sha256:{body_digest}",
-                    detail = (
+                    severity=HIGH,
+                    package=pkg.display,
+                    filename=rel,
+                    pattern=f"cred-env-in-lifecycle ({hook})",
+                    evidence=f"{_evidence(body, _JS_ENV_TOKEN)} body-sha256:{body_digest}",
+                    detail=(
                         f"`scripts.{hook}` references a credential "
                         "env var (GITHUB_TOKEN / NPM_TOKEN / AWS_* "
                         "/ etc); install-time access to runner "
@@ -1551,12 +1551,12 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
             ):
                 findings.append(
                     Finding(
-                        severity = HIGH,
-                        package = pkg.display,
-                        filename = rel,
-                        pattern = "optional-dep-non-registry",
-                        evidence = f"{k}={v}",
-                        detail = (
+                        severity=HIGH,
+                        package=pkg.display,
+                        filename=rel,
+                        pattern="optional-dep-non-registry",
+                        evidence=f"{k}={v}",
+                        detail=(
                             "package.json `optionalDependencies` "
                             "points at a non-registry source; this "
                             "is the Shai-Hulud worm injection shape."
@@ -1645,7 +1645,7 @@ def _outbound_host_evidence(text: str, host: str) -> str:
                 overflow_count += 1
     if not chosen:
         return host
-    chosen.sort(key = lambda m: m.start())
+    chosen.sort(key=lambda m: m.start())
     shown = [_format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen]
     if overflow_count:
         shown.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
@@ -1671,12 +1671,12 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         if needle in text:
             findings.append(
                 Finding(
-                    severity = sev,
-                    package = pkg.display,
-                    filename = rel,
-                    pattern = "known-ioc-string",
-                    evidence = _ioc_evidence(text, needle),
-                    detail = f"{why}: {needle!r}",
+                    severity=sev,
+                    package=pkg.display,
+                    filename=rel,
+                    pattern="known-ioc-string",
+                    evidence=_ioc_evidence(text, needle),
+                    detail=f"{why}: {needle!r}",
                 )
             )
 
@@ -1687,12 +1687,12 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         if needle in text:
             findings.append(
                 Finding(
-                    severity = HIGH,
-                    package = pkg.display,
-                    filename = rel,
-                    pattern = "cred-surface-host (always-bad)",
-                    evidence = _outbound_host_evidence(text, needle),
-                    detail = (
+                    severity=HIGH,
+                    package=pkg.display,
+                    filename=rel,
+                    pattern="cred-surface-host (always-bad)",
+                    evidence=_outbound_host_evidence(text, needle),
+                    detail=(
                         f"references {why} ({needle!r}); no legitimate "
                         "frontend use of this surface"
                     ),
@@ -1705,12 +1705,12 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         if needle in text and _host_in_outbound_context(text, needle):
             findings.append(
                 Finding(
-                    severity = HIGH,
-                    package = pkg.display,
-                    filename = rel,
-                    pattern = "cred-surface-host (outbound)",
-                    evidence = _outbound_host_evidence(text, needle),
-                    detail = (
+                    severity=HIGH,
+                    package=pkg.display,
+                    filename=rel,
+                    pattern="cred-surface-host (outbound)",
+                    evidence=_outbound_host_evidence(text, needle),
+                    detail=(
                         f"references {why} ({needle!r}) in an outbound "
                         "call / URL / host config; a defensive blocklist "
                         "literal would not match this rule"
@@ -1725,34 +1725,34 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     if _JS_FETCH_EVAL.search(text):
         findings.append(
             Finding(
-                severity = HIGH,
-                package = pkg.display,
-                filename = rel,
-                pattern = "js-fetch-eval",
-                evidence = _evidence(text, _JS_FETCH_EVAL),
-                detail = ("Function/eval against base64-decoded payload (obfuscated dropper shape)"),
+                severity=HIGH,
+                package=pkg.display,
+                filename=rel,
+                pattern="js-fetch-eval",
+                evidence=_evidence(text, _JS_FETCH_EVAL),
+                detail=("Function/eval against base64-decoded payload (obfuscated dropper shape)"),
             )
         )
     if _JS_ENV_TOKEN.search(text):
         findings.append(
             Finding(
-                severity = MEDIUM,
-                package = pkg.display,
-                filename = rel,
-                pattern = "js-env-token",
-                evidence = _evidence(text, _JS_ENV_TOKEN),
-                detail = ("references credential env vars in package source"),
+                severity=MEDIUM,
+                package=pkg.display,
+                filename=rel,
+                pattern="js-env-token",
+                evidence=_evidence(text, _JS_ENV_TOKEN),
+                detail=("references credential env vars in package source"),
             )
         )
     if _OBFUSC_BLOB.search(text):
         findings.append(
             Finding(
-                severity = HIGH,
-                package = pkg.display,
-                filename = rel,
-                pattern = "obfuscated-blob",
-                evidence = _evidence(text, _OBFUSC_BLOB),
-                detail = (
+                severity=HIGH,
+                package=pkg.display,
+                filename=rel,
+                pattern="obfuscated-blob",
+                evidence=_evidence(text, _OBFUSC_BLOB),
+                detail=(
                     "large base64-ish blob fed to Function/eval; "
                     "matches the TanStack worm dropper shape"
                 ),
@@ -1804,17 +1804,17 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
                 data = header + path.read_bytes()[len(header) :]
             except OSError:
                 continue
-            text = data.decode("utf-8", errors = "replace")
+            text = data.decode("utf-8", errors="replace")
             for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
                 if needle in text:
                     findings.append(
                         Finding(
-                            severity = sev,
-                            package = pkg.display,
-                            filename = rel,
-                            pattern = "known-ioc-string",
-                            evidence = _ioc_evidence(text, needle),
-                            detail = f"{why}: {needle!r}",
+                            severity=sev,
+                            package=pkg.display,
+                            filename=rel,
+                            pattern="known-ioc-string",
+                            evidence=_ioc_evidence(text, needle),
+                            detail=f"{why}: {needle!r}",
                         )
                     )
             continue
@@ -1822,7 +1822,7 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
             data = path.read_bytes()
         except OSError:
             continue
-        text = data.decode("utf-8", errors = "replace")
+        text = data.decode("utf-8", errors="replace")
         if rel.endswith("package.json"):
             findings.extend(scan_package_json(pkg, rel, text))
         findings.extend(scan_text_blob(pkg, rel, text))
@@ -1843,7 +1843,7 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
     exit code from severity.
     """
     pkg_dir = workspace / f"{pkg.name.replace('/', '_')}-{pkg.version}"
-    pkg_dir.mkdir(parents = True, exist_ok = True)
+    pkg_dir.mkdir(parents=True, exist_ok=True)
     tarball = pkg_dir / "pkg.tgz"
     extract = pkg_dir / "x"
     try:
@@ -1857,7 +1857,7 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
     finally:
         # Always wipe per-package data to keep the workspace bounded.
         try:
-            shutil.rmtree(pkg_dir, ignore_errors = True)
+            shutil.rmtree(pkg_dir, ignore_errors=True)
         except Exception:
             pass
 
@@ -1930,19 +1930,19 @@ def _finding_key(f: Finding) -> tuple[str, str, str, str]:
 def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
     try:
-        with open(path, "r", encoding = "utf-8") as fh:
+        with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return set()
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
+        print(f"  [WARN] could not read baseline {path}: {exc}", file=sys.stderr)
         return set()
     if not isinstance(data, dict):
-        print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
+        print(f"  [WARN] baseline {path} is not a JSON object", file=sys.stderr)
         return set()
     entries = data.get("entries", [])
     if not isinstance(entries, list):
-        print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
+        print(f"  [WARN] baseline {path} entries is not a list", file=sys.stderr)
         return set()
     # v2 shares v3's package-relative keying, so its entries migrate by recomputing
     # the evidence hash from their stored evidence; only pre-v2 (basename) is rejected.
@@ -1950,7 +1950,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         print(
             f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
             f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
-            file = sys.stderr,
+            file=sys.stderr,
         )
         return set()
     keys: set[tuple[str, str, str, str]] = set()
@@ -1977,7 +1977,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
             f"not suppress until regenerated with --write-baseline (findings reopen "
             f"rather than risk hiding changed code under a coarse key)",
-            file = sys.stderr,
+            file=sys.stderr,
         )
     return keys
 
@@ -1986,7 +1986,7 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
     """Persist at-or-above-threshold findings as an allowlist for triage."""
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
-    for f in sorted(findings, key = lambda f: (_SEVERITY_RANK[f.severity], f.package)):
+    for f in sorted(findings, key=lambda f: (_SEVERITY_RANK[f.severity], f.package)):
         if _SEVERITY_RANK[f.severity] > threshold_rank:
             continue
         key = _finding_key(f)
@@ -2015,8 +2015,8 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
         "version": _BASELINE_SCHEMA_VERSION,
         "entries": entries,
     }
-    with open(path, "w", encoding = "utf-8") as fh:
-        json.dump(doc, fh, indent = 2, sort_keys = False)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=False)
         fh.write("\n")
     print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
     return len(entries)
@@ -2036,36 +2036,36 @@ def _partition_baseline(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description = "Pre-install npm tarball content scanner.",
+        description="Pre-install npm tarball content scanner.",
     )
     parser.add_argument(
         "--lockfile",
-        default = str(REPO_ROOT / "studio" / "frontend" / "package-lock.json"),
-        help = "Path to package-lock.json (default: studio/frontend).",
+        default=str(REPO_ROOT / "studio" / "frontend" / "package-lock.json"),
+        help="Path to package-lock.json (default: studio/frontend).",
     )
     parser.add_argument(
         "--max-packages",
-        type = int,
-        default = 0,
-        help = (
+        type=int,
+        default=0,
+        help=(
             "Cap on number of packages to scan (0 = no cap). Useful "
             "for local triage; CI runs with 0."
         ),
     )
     parser.add_argument(
         "--fail-on",
-        choices = ("info", "medium", "high", "critical"),
-        default = "high",
-        help = (
+        choices=("info", "medium", "high", "critical"),
+        default="high",
+        help=(
             "Lowest severity that fails the run (default: high). "
             "Medium and below print but exit 0."
         ),
     )
     parser.add_argument(
         "--baseline",
-        metavar = "FILE",
-        default = None,
-        help = (
+        metavar="FILE",
+        default=None,
+        help=(
             "Allowlist JSON of triaged known-good findings to suppress. "
             "Defaults to scan_npm_packages_baseline.json next to this script "
             "if present."
@@ -2073,14 +2073,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--no-baseline",
-        action = "store_true",
-        help = "Ignore the auto-discovered baseline allowlist.",
+        action="store_true",
+        help="Ignore the auto-discovered baseline allowlist.",
     )
     parser.add_argument(
         "--write-baseline",
-        metavar = "FILE",
-        default = None,
-        help = (
+        metavar="FILE",
+        default=None,
+        help=(
             "Write the current at/above-threshold findings to FILE as an "
             "allowlist, then exit 0. Review every entry before committing it."
         ),
@@ -2089,7 +2089,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lockfile = Path(args.lockfile).resolve()
     if not lockfile.exists():
-        print(f"[scan-npm] lockfile not found: {lockfile}", file = sys.stderr)
+        print(f"[scan-npm] lockfile not found: {lockfile}", file=sys.stderr)
         return 2
 
     entries, struct_findings = parse_lockfile(lockfile)
@@ -2098,63 +2098,63 @@ def main(argv: list[str] | None = None) -> int:
             f"[scan-npm] {len(struct_findings)} structural finding(s) "
             "from lockfile pass; subsequent download scan skipped for "
             "those entries.",
-            flush = True,
+            flush=True,
         )
 
     if args.max_packages > 0:
         entries = entries[: args.max_packages]
 
-    workspace = Path(tempfile.mkdtemp(prefix = "npm-scan-")).resolve()
-    atexit.register(lambda: shutil.rmtree(workspace, ignore_errors = True))
+    workspace = Path(tempfile.mkdtemp(prefix="npm-scan-")).resolve()
+    atexit.register(lambda: shutil.rmtree(workspace, ignore_errors=True))
     print(
         f"[scan-npm] workspace: {workspace}\n"
         f"[scan-npm] scanning {len(entries)} package(s) from {lockfile}",
-        flush = True,
+        flush=True,
     )
 
     all_findings: list[Finding] = list(struct_findings)
     hard_errors: list[tuple[str, str]] = []
 
-    for i, pkg in enumerate(entries, start = 1):
+    for i, pkg in enumerate(entries, start=1):
         print(
             f"[scan-npm] [{i}/{len(entries)}] {pkg.display}",
-            flush = True,
+            flush=True,
         )
         blocked = BLOCKED_NPM_VERSIONS.get(pkg.name, set())
         if pkg.version in blocked:
             finding = Finding(
-                severity = CRITICAL,
-                package = pkg.display,
-                filename = "<lockfile>",
-                pattern = "blocked-known-malicious",
-                detail = f"{pkg.name}@{pkg.version} is on the BLOCKED_NPM_VERSIONS list",
+                severity=CRITICAL,
+                package=pkg.display,
+                filename="<lockfile>",
+                pattern="blocked-known-malicious",
+                detail=f"{pkg.name}@{pkg.version} is on the BLOCKED_NPM_VERSIONS list",
             )
             all_findings.append(finding)
-            print(str(finding), flush = True)
+            print(str(finding), flush=True)
             continue
         findings, err = scan_one(pkg, workspace)
         if err:
             hard_errors.append((pkg.display, err))
-            print(f"[scan-npm]   ERROR {pkg.display}: {err}", flush = True)
+            print(f"[scan-npm]   ERROR {pkg.display}: {err}", flush=True)
             continue
         all_findings.extend(findings)
         for f in findings:
-            print(str(f), flush = True)
+            print(str(f), flush=True)
 
     # Sort by severity then package.
-    all_findings.sort(key = lambda f: (_SEVERITY_RANK[f.severity], f.package))
+    all_findings.sort(key=lambda f: (_SEVERITY_RANK[f.severity], f.package))
 
     print(
         f"\n[scan-npm] summary: {len(entries)} package(s), "
         f"{len(all_findings)} finding(s), "
         f"{len(hard_errors)} hard error(s)",
-        flush = True,
+        flush=True,
     )
 
     if hard_errors:
-        print("\n[scan-npm] HARD ERRORS:", file = sys.stderr)
+        print("\n[scan-npm] HARD ERRORS:", file=sys.stderr)
         for pkg, err in hard_errors:
-            print(f"  {pkg}: {err}", file = sys.stderr)
+            print(f"  {pkg}: {err}", file=sys.stderr)
 
     threshold = {
         "info": INFO,
@@ -2173,7 +2173,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  [WARN] {len(hard_errors)} hard error(s): baseline may be "
                 "incomplete (some packages did not scan).",
-                file = sys.stderr,
+                file=sys.stderr,
             )
         _write_baseline(args.write_baseline, all_findings, threshold_rank)
         return 0
@@ -2197,7 +2197,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\n[scan-npm] {len(suppressed)} finding(s) suppressed by baseline "
             f"{baseline_path} ({crit_s} CRITICAL, {high_s} HIGH).",
-            flush = True,
+            flush=True,
         )
 
     # Exit code: 1 on a hard error, or a NON-baselined finding at/above the
@@ -2207,10 +2207,10 @@ def main(argv: list[str] | None = None) -> int:
         if blocking:
             print(
                 f"\n[scan-npm] FAIL: {len(blocking)} finding(s) " f"at or above {threshold}",
-                file = sys.stderr,
+                file=sys.stderr,
             )
         return 1
-    print("\n[scan-npm] OK", flush = True)
+    print("\n[scan-npm] OK", flush=True)
     return 0
 
 

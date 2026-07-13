@@ -16,8 +16,8 @@ SCRIPT = REPO_ROOT / "scripts" / "lint_workflow_triggers.py"
 def _run(workflows_dir: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(SCRIPT), "--workflows-dir", str(workflows_dir)],
-        capture_output = True,
-        text = True,
+        capture_output=True,
+        text=True,
     )
 
 

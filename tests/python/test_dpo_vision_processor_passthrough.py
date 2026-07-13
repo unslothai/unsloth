@@ -36,7 +36,7 @@ class _Tok:
     def __call__(
         self,
         t,
-        add_special_tokens = False,
+        add_special_tokens=False,
     ):
         return {"input_ids": [10]}
 
@@ -52,9 +52,9 @@ class _Capture:
 
     def __call__(
         self,
-        images = None,
-        text = None,
-        add_special_tokens = False,
+        images=None,
+        text=None,
+        add_special_tokens=False,
     ):
         self.last_text = text
         self.last_images = images
@@ -140,7 +140,7 @@ def test_single_pil_like_image_forwarded_verbatim():
 def test_numpy_ndarray_image_forwarded_verbatim():
     ns = _load_helpers()
     proc = _Capture()
-    arr = np.zeros((2, 3, 3), dtype = np.uint8)
+    arr = np.zeros((2, 3, 3), dtype=np.uint8)
     ns["dpo_trainer_vision_process_row"](
         {"prompt": "p", "chosen": "c", "rejected": "r", "images": arr},
         proc,

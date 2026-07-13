@@ -38,7 +38,7 @@ class _FakeApp:
         self.state.llama_cpp_freshness = None
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _fast_capability_probe(monkeypatch):
     # Keep the (local) capability probe instant + offline so the freshness sleep
     # is the only slow thing under test.
@@ -52,7 +52,7 @@ def _fast_capability_probe(monkeypatch):
         "probe_server_capabilities",
         staticmethod(lambda _b: {"found": False}),
     )
-    monkeypatch.delenv("UNSLOTH_DISABLE_UPDATE_CHECK", raising = False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_UPDATE_CHECK", raising=False)
 
 
 def test_probe_does_not_block_startup(monkeypatch):

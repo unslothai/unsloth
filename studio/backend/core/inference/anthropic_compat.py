@@ -14,7 +14,7 @@ import uuid
 from typing import Any, Optional, Union
 
 
-def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> str:
+def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls=False) -> str:
     """Map an OpenAI finish_reason to an Anthropic stop_reason.
     'length' -> 'max_tokens' (truncation wins even mid tool call, so a cut-off
     tool call isn't mislabeled tool_use); tool_calls / had_tool_calls -> 'tool_use';
@@ -32,7 +32,7 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> st
     return "end_turn"
 
 
-def anthropic_tool_use_id(upstream_id = None) -> str:
+def anthropic_tool_use_id(upstream_id=None) -> str:
     """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
     upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
     'toolu_<24 hex>'."""
@@ -316,7 +316,7 @@ class AnthropicStreamEmitter:
     def finish(
         self,
         stop_reason: str = "end_turn",
-        stop_sequence = None,
+        stop_sequence=None,
     ) -> list[str]:
         """Close any open block and emit message_delta + message_stop."""
         events = []

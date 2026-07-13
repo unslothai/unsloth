@@ -78,8 +78,8 @@ def hf_endpoint_unreachable(timeout: int = 3) -> bool:
 
     def _probe():
         try:
-            req = urllib.request.Request(endpoint, method = "HEAD")
-            with urllib.request.urlopen(req, timeout = timeout):
+            req = urllib.request.Request(endpoint, method="HEAD")
+            with urllib.request.urlopen(req, timeout=timeout):
                 result["online"] = True
         except urllib.error.HTTPError as exc:
             # The server/proxy answered: reachable unless it is a gateway error.
@@ -93,7 +93,7 @@ def hf_endpoint_unreachable(timeout: int = 3) -> bool:
         except Exception:
             result["online"] = False
 
-    t = threading.Thread(target = _probe, daemon = True)
+    t = threading.Thread(target=_probe, daemon=True)
     t.start()
     t.join(timeout + 1)
     return t.is_alive() or not result["online"]
@@ -402,6 +402,7 @@ def _resolve_base_model(model_name: str) -> str:
     if _safe_is_file(adapter_cfg_path):
         try:
             from utils.models import get_base_model_from_lora
+
             base = get_base_model_from_lora(model_name)
             if base:
                 logger.info(
@@ -484,7 +485,7 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
                 repo_dir / "snapshots" / ref_main.read_text().strip() / "adapter_config.json"
             )
         candidates += sorted(
-            repo_dir.glob("snapshots/*/adapter_config.json"), key = _mtime, reverse = True
+            repo_dir.glob("snapshots/*/adapter_config.json"), key=_mtime, reverse=True
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
@@ -507,6 +508,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return None
     try:
         from utils.paths import is_local_path
+
         if is_local_path(model_name):
             return None  # an existing relative path is a local checkpoint, not a Hub repo
     except Exception:
@@ -523,8 +525,8 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
             cfg = json.loads(resp.read().decode())
         base = cfg.get("base_model_name_or_path")
         if base:
@@ -591,8 +593,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -642,7 +644,7 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
         # No refs/main (e.g. commit-pinned downloads): newest snapshot by mtime, not a stale
         # lexicographically-first SHA, matching what the Hub cache would actually load.
         candidates += sorted(
-            repo_dir.glob("snapshots/*/config.json"), key = _safe_mtime, reverse = True
+            repo_dir.glob("snapshots/*/config.json"), key=_safe_mtime, reverse=True
         )
         for cfg_path in candidates:
             if cfg_path.is_file():
@@ -701,8 +703,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg
@@ -944,7 +946,7 @@ def _config_model_types(tier: str) -> frozenset[str]:
         if not _safe_is_file(path):
             continue
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 # direct binding, or a CONFIG_MAPPING_NAMES.update({...}) mutation
                 if isinstance(node, ast.Assign) and any(
@@ -978,7 +980,7 @@ def _tier_from_config_mapping(cfg: dict) -> str | None:
                 break
     if not isinstance(model_type, str):
         return None
-    for tier in sorted(_TIER_RANK, key = _TIER_RANK.get):
+    for tier in sorted(_TIER_RANK, key=_TIER_RANK.get):
         if model_type in _config_model_types(tier):
             return tier
     return None
@@ -1060,11 +1062,11 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     try:
         result = subprocess.run(
             [sys.executable, "-c", _PROBE_CONFIG_SCRIPT, target_dir, model_name],
-            capture_output = True,
-            text = True,
-            errors = "replace",
-            timeout = _PROBE_TIMEOUT_SECS,
-            env = env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_PROBE_TIMEOUT_SECS,
+            env=env,
             **_windows_hidden_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
@@ -1158,7 +1160,7 @@ def _probe_tier(
                 model_name,
                 reason,
             )
-            return _cache(tier, skipped = skipped_any)
+            return _cache(tier, skipped=skipped_any)
         if ok is None:
             logger.info("Tier probe inconclusive for %s (%s); using %s", model_name, reason, floor)
             return floor  # transient: retry next load
@@ -1176,7 +1178,7 @@ def _probe_tier(
         model_name,
         reason,
     )
-    return _cache(floor, skipped = False)
+    return _cache(floor, skipped=False)
 
 
 def _norm_separators(s: str) -> str:
@@ -1303,7 +1305,7 @@ def get_transformers_tier(
             resolved = _resolve_base_model(model_name)
             if resolved != model_name:
                 if _safe_is_dir(Path(resolved)):
-                    tier = get_transformers_tier(resolved, hf_token, probe = probe)
+                    tier = get_transformers_tier(resolved, hf_token, probe=probe)
                     if tier != "default":
                         logger.info(
                             "Transformers tier %s selected for %s (resolved local path: %s)",
@@ -1344,8 +1346,8 @@ def get_transformers_tier(
                     model_name,
                     hf_token,
                     "local config saved by transformers 5.x",
-                    include_default = True,
-                    floor = "default",
+                    include_default=True,
+                    floor="default",
                 )
                 if tier != "default":
                     return tier
@@ -1415,8 +1417,8 @@ def get_transformers_tier(
             model_name,
             hf_token,
             "config saved by transformers 5.x",
-            include_default = True,
-            floor = "default",
+            include_default=True,
+            floor="default",
         )
         if tier != "default":
             return tier
@@ -1432,7 +1434,7 @@ def needs_transformers_5(model_name: str) -> bool:
     log-only parent caller never spawns sidecar probes (the worker re-resolves the exact
     tier with ``probe=True`` on the real activation path).
     """
-    return get_transformers_tier(model_name, probe = False) != "default"
+    return get_transformers_tier(model_name, probe=False) != "default"
 
 
 # ---------------------------------------------------------------------------
@@ -1534,7 +1536,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
             metadata = di / "METADATA"
             if not metadata.is_file():
                 continue
-            for line in metadata.read_text(errors = "replace").splitlines():
+            for line in metadata.read_text(errors="replace").splitlines():
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:
@@ -1577,10 +1579,10 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 "--upgrade",
                 pkg,
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
@@ -1600,10 +1602,10 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             "--upgrade",
             pkg,
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        env = child_env_without_native_path_secret(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=child_env_without_native_path_secret(),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -1618,10 +1620,10 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
-    shutil.rmtree(venv_dir, ignore_errors = True)
-    os.makedirs(venv_dir, exist_ok = True)
+    shutil.rmtree(venv_dir, ignore_errors=True)
+    os.makedirs(venv_dir, exist_ok=True)
     total = len(packages)
-    for idx, pkg in enumerate(packages, start = 1):
+    for idx, pkg in enumerate(packages, start=1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
             return False
@@ -1734,8 +1736,8 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
         _VENV_LLMCOMPRESSOR_DIR,
     )
-    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
-    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
+    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors=True)
+    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok=True)
 
     # Prefer uv (faster) then pip; install every spec at once, --no-deps, prereleases allowed
     # (compressed-tensors ships as a pre-release).
@@ -1764,10 +1766,10 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     for cmd in cmds:
         result = subprocess.run(
             cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
         last_out = result.stdout or ""

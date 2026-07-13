@@ -52,12 +52,12 @@ def _make_mod_stub(mod_name):
     m.__path__ = []
     m.__package__ = mod_name
     m._unsloth_stub = _STUB_SENTINEL
-    m.__spec__ = importlib.machinery.ModuleSpec(mod_name, loader = None, is_package = True)
+    m.__spec__ = importlib.machinery.ModuleSpec(mod_name, loader=None, is_package=True)
 
     def _ga(
         attr,
-        _m = m,
-        _n = mod_name,
+        _m=m,
+        _n=mod_name,
     ):
         if attr.startswith("__"):
             raise AttributeError(attr)
@@ -86,7 +86,7 @@ class _StubSubpackageFinder(importlib.abc.MetaPathFinder):
         self,
         fullname,
         path,
-        target = None,
+        target=None,
     ):
         if "." not in fullname:
             return None
@@ -96,7 +96,7 @@ class _StubSubpackageFinder(importlib.abc.MetaPathFinder):
         if getattr(parent, "_unsloth_stub", None) is not _STUB_SENTINEL:
             return None
         return importlib.machinery.ModuleSpec(
-            fullname, _StubSubpackageLoader(fullname), is_package = True
+            fullname, _StubSubpackageLoader(fullname), is_package=True
         )
 
 
@@ -113,6 +113,7 @@ def install_torchao_windows_rocm_stub() -> None:
     if sys.platform == "win32":
         try:
             import torch as _torch_probe
+
             _is_win32_rocm = bool(
                 getattr(getattr(_torch_probe, "version", None), "hip", None)
                 or "rocm" in getattr(_torch_probe, "__version__", "").lower()

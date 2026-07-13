@@ -27,12 +27,12 @@ class _FakeModel:
 def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(save_mod, "_unsloth_save_compressed_tensors", lambda **kw: seen.update(kw))
-    monkeypatch.setattr(save_mod, "unsloth_generic_save", lambda **kw: seen.update(generic = True))
+    monkeypatch.setattr(save_mod, "unsloth_generic_save", lambda **kw: seen.update(generic=True))
     save_mod.unsloth_generic_save_pretrained_merged(
         _FakeModel(),
         str(tmp_path),
-        tokenizer = object(),
-        save_method = "fp8",
+        tokenizer=object(),
+        save_method="fp8",
     )
     assert seen.get("scheme") == "FP8_DYNAMIC"
     assert seen.get("suffix") == "fp8"
@@ -47,8 +47,8 @@ def test_merged_nvfp4_marks_calibration(monkeypatch, tmp_path):
     save_mod.unsloth_generic_save_pretrained_merged(
         _FakeModel(),
         str(tmp_path),
-        tokenizer = object(),
-        save_method = "nvfp4",
+        tokenizer=object(),
+        save_method="nvfp4",
     )
     assert seen.get("scheme") == "NVFP4"
     assert seen.get("needs_calibration") is True
@@ -69,8 +69,8 @@ def test_merged_16bit_does_not_route_compressed(monkeypatch, tmp_path):
     save_mod.unsloth_generic_save_pretrained_merged(
         _FakeModel(),
         str(tmp_path),
-        tokenizer = object(),
-        save_method = "merged_16bit",
+        tokenizer=object(),
+        save_method="merged_16bit",
     )
     assert calls["compressed"] == 0, "merged_16bit must not hit the compressed export"
     assert calls["generic"] == 1, "merged_16bit must go through the normal merge path"
@@ -84,14 +84,14 @@ def test_gguf_lora_passes_valid_outtype(monkeypatch, tmp_path):
     monkeypatch.setattr(
         save_mod,
         "_unsloth_save_lora_gguf",
-        lambda model, tok, sd, outtype = None: seen.update(outtype = outtype),
+        lambda model, tok, sd, outtype=None: seen.update(outtype=outtype),
     )
     save_mod.unsloth_save_pretrained_gguf(
         _FakeModel(),
         str(tmp_path),
-        tokenizer = object(),
-        save_method = "lora",
-        quantization_method = "q8_0",
+        tokenizer=object(),
+        save_method="lora",
+        quantization_method="q8_0",
     )
     assert seen.get("outtype") == "q8_0"
 
@@ -101,14 +101,14 @@ def test_gguf_lora_invalid_outtype_falls_back_to_f16(monkeypatch, tmp_path):
     monkeypatch.setattr(
         save_mod,
         "_unsloth_save_lora_gguf",
-        lambda model, tok, sd, outtype = None: seen.update(outtype = outtype),
+        lambda model, tok, sd, outtype=None: seen.update(outtype=outtype),
     )
     save_mod.unsloth_save_pretrained_gguf(
         _FakeModel(),
         str(tmp_path),
-        tokenizer = object(),
-        save_method = "lora",
-        quantization_method = "q4_k_m",
+        tokenizer=object(),
+        save_method="lora",
+        quantization_method="q4_k_m",
     )
     assert (
         seen.get("outtype") == "f16"
@@ -120,9 +120,9 @@ def test_gguf_lora_push_to_hub_is_rejected(tmp_path):
         save_mod.unsloth_save_pretrained_gguf(
             _FakeModel(),
             "repo/id",
-            tokenizer = object(),
-            save_method = "lora",
-            push_to_hub = True,
+            tokenizer=object(),
+            save_method="lora",
+            push_to_hub=True,
         )
 
 
@@ -132,18 +132,18 @@ def test_gguf_lora_push_to_hub_is_rejected(tmp_path):
 def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(
-        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(given = True)
+        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(given=True)
     )
     monkeypatch.setattr(
         save_mod,
         "_unsloth_save_torchao_with_attached_config",
-        lambda **kw: seen.update(attached = True),
+        lambda **kw: seen.update(attached=True),
     )
     save_mod.unsloth_save_pretrained_torchao(
         _FakeModel(),
         str(tmp_path),
-        tokenizer = object(),
-        torchao_config = object(),
+        tokenizer=object(),
+        torchao_config=object(),
     )
     assert seen.get("given") and not seen.get("attached")
 
@@ -151,20 +151,20 @@ def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):
 def test_torchao_qat_routes_to_attached_config(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(
-        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(given = True)
+        save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(given=True)
     )
     monkeypatch.setattr(
         save_mod,
         "_unsloth_save_torchao_with_attached_config",
-        lambda **kw: seen.update(attached = True),
+        lambda **kw: seen.update(attached=True),
     )
     model = _FakeModel()
     model._torchao_config = object()  # simulates a model trained with qat_scheme
     save_mod.unsloth_save_pretrained_torchao(
         model,
         str(tmp_path),
-        tokenizer = object(),
-        torchao_config = None,
+        tokenizer=object(),
+        torchao_config=None,
     )
     assert seen.get("attached") and not seen.get("given")
 
@@ -175,6 +175,6 @@ def test_torchao_requires_config_or_qat(tmp_path):
         save_mod.unsloth_save_pretrained_torchao(
             _FakeModel(),
             str(tmp_path),
-            tokenizer = object(),
-            torchao_config = None,
+            tokenizer=object(),
+            torchao_config=None,
         )

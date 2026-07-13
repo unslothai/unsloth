@@ -18,14 +18,14 @@ def _fake_torch(
     hip,
     archs,
     *,
-    cuda_ok = True,
+    cuda_ok=True,
 ):
     t = types.ModuleType("torch")
-    t.version = types.SimpleNamespace(hip = hip)
+    t.version = types.SimpleNamespace(hip=hip)
     t.cuda = types.SimpleNamespace(
-        is_available = lambda: cuda_ok,
-        device_count = lambda: len(archs),
-        get_device_properties = lambda i: types.SimpleNamespace(gcnArchName = archs[i]),
+        is_available=lambda: cuda_ok,
+        device_count=lambda: len(archs),
+        get_device_properties=lambda i: types.SimpleNamespace(gcnArchName=archs[i]),
     )
     return t
 
@@ -50,7 +50,7 @@ def test_apu_unified_memory_gating(monkeypatch, hip, archs, expected):
 def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
     # Mixed host: physical id 0 = discrete gfx1100, 1 = gfx1151 APU.
     for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        monkeypatch.delenv(_m, raising = False)
+        monkeypatch.delenv(_m, raising=False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1100", "gfx1151"]))
     # Selecting only the dGPU, or an empty selection, must not be unified-memory.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is False
@@ -63,8 +63,8 @@ def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
 def test_apu_guard_honors_hip_visible_devices_mask(monkeypatch):
     # ROCm resolves ids via HIP first: the mask exposes only the APU as ordinal 0
     # but physical id 1, so the selection [1] must still match.
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
     assert LlamaCppBackend._amd_apu_wants_unified_memory([1]) is True
@@ -72,7 +72,7 @@ def test_apu_guard_honors_hip_visible_devices_mask(monkeypatch):
 
 
 def test_cpu_no_cuda_returns_false(monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", [], cuda_ok = False))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", [], cuda_ok=False))
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is False
 
 

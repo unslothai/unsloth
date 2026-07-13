@@ -14,7 +14,7 @@ import pytest
 from core.rag import config, embeddings
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _pin_st_backend(monkeypatch):
     # Tests patch ST internals (_get), so force the ST backend.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
@@ -48,7 +48,7 @@ class _FakeModel:
 
     def encode(self, texts, **_kw):
         self._probe.enter()
-        return np.zeros((len(texts), 4), dtype = np.float32)
+        return np.zeros((len(texts), 4), dtype=np.float32)
 
 
 class _FakeTokenizer:
@@ -60,7 +60,7 @@ class _FakeTokenizer:
         return list(range(len(text.split())))
 
 
-def _hammer(fn, n = 8):
+def _hammer(fn, n=8):
     errors: list[Exception] = []
 
     def worker():
@@ -69,7 +69,7 @@ def _hammer(fn, n = 8):
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target = worker) for _ in range(n)]
+    threads = [threading.Thread(target=worker) for _ in range(n)]
     for t in threads:
         t.start()
     for t in threads:
@@ -79,7 +79,7 @@ def _hammer(fn, n = 8):
 
 def test_encode_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _FakeModel(probe))
     errors = _hammer(lambda: embeddings.encode(["alpha beta", "gamma"]))
     assert errors == []
     assert probe.saw_overlap is False  # compute lock serialized encode()
@@ -87,7 +87,7 @@ def test_encode_is_serialized(monkeypatch):
 
 def test_token_counter_is_serialized(monkeypatch):
     probe = _ConcurrencyProbe()
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _FakeModel(probe))
     count = embeddings.token_counter()
     errors = _hammer(lambda: count("one two three four"))
     assert errors == []
@@ -102,9 +102,9 @@ def test_encode_enables_parallelism_only_during_call(monkeypatch):
 
         def encode(self, texts, **_kw):
             seen["during"] = os.environ.get("TOKENIZERS_PARALLELISM")
-            return np.zeros((len(texts), 4), dtype = np.float32)
+            return np.zeros((len(texts), 4), dtype=np.float32)
 
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _M())
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _M())
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     embeddings.encode(["alpha", "beta"])
     assert seen["during"] == "true"  # rayon batch tokenization enabled in-call
@@ -122,7 +122,7 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     class _M:
         tokenizer = _Tok()
 
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _M())
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _M())
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     count = embeddings.token_counter()
     count("alpha beta gamma")
@@ -137,7 +137,7 @@ class _SentinelLlamaBackend:
 def _force_st_load_failure(monkeypatch):
     """Make the ST warm-probe raise."""
 
-    def _boom(model_name = None):
+    def _boom(model_name=None):
         raise RuntimeError("torch is broken on this machine")
 
     monkeypatch.setattr(embeddings, "_get", _boom)
@@ -154,7 +154,7 @@ def _patch_llama_backend(monkeypatch, *, binary):
 def test_st_failure_falls_back_to_llama_server(monkeypatch):
     # ST can't load but llama-server is available -> use it.
     _force_st_load_failure(monkeypatch)
-    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    _patch_llama_backend(monkeypatch, binary="/fake/llama-server")
     embeddings._reset_backend()
     backend = embeddings._get_backend()
     assert isinstance(backend, _SentinelLlamaBackend)
@@ -163,16 +163,16 @@ def test_st_failure_falls_back_to_llama_server(monkeypatch):
 def test_st_failure_without_llama_binary_reraises(monkeypatch):
     # No llama-server binary -> surface the failure, don't degrade to nothing.
     _force_st_load_failure(monkeypatch)
-    _patch_llama_backend(monkeypatch, binary = None)
+    _patch_llama_backend(monkeypatch, binary=None)
     embeddings._reset_backend()
-    with pytest.raises(RuntimeError, match = "torch is broken"):
+    with pytest.raises(RuntimeError, match="torch is broken"):
         embeddings._get_backend()
 
 
 def test_st_success_keeps_sentence_transformers(monkeypatch):
     # Clean ST probe -> ST backend stays selected, no fallback.
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: object())
-    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: object())
+    _patch_llama_backend(monkeypatch, binary="/fake/llama-server")
     embeddings._reset_backend()
     backend = embeddings._get_backend()
     assert isinstance(backend, embeddings._SentenceTransformersBackend)
@@ -189,21 +189,21 @@ class _BoomOnEncodeModel:
 
 def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     # encode() blows up mid-run -> switch to llama-server and stay switched.
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
-    _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _BoomOnEncodeModel())
+    _patch_llama_backend(monkeypatch, binary="/fake/llama-server")
     calls = {}
 
     def _sentinel_encode(
         self,
         texts,
         *,
-        model_name = None,
-        normalize = True,
+        model_name=None,
+        normalize=True,
     ):
         calls["used"] = True
-        return np.zeros((len(texts), 4), dtype = np.float32)
+        return np.zeros((len(texts), 4), dtype=np.float32)
 
-    monkeypatch.setattr(_SentinelLlamaBackend, "encode", _sentinel_encode, raising = False)
+    monkeypatch.setattr(_SentinelLlamaBackend, "encode", _sentinel_encode, raising=False)
     embeddings._reset_backend()
 
     out = embeddings.encode(["alpha", "beta"])
@@ -215,8 +215,8 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
     # No llama-server binary -> surface the encode error.
-    monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
-    _patch_llama_backend(monkeypatch, binary = None)
+    monkeypatch.setattr(embeddings, "_get", lambda model_name=None: _BoomOnEncodeModel())
+    _patch_llama_backend(monkeypatch, binary=None)
     embeddings._reset_backend()
-    with pytest.raises(RuntimeError, match = "CUDA error during encode"):
+    with pytest.raises(RuntimeError, match="CUDA error during encode"):
         embeddings.encode(["alpha", "beta"])

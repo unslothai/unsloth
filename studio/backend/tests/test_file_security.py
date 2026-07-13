@@ -22,13 +22,13 @@ def _patch_status(status):
     """Patch huggingface_hub.model_info to return one fixed security_repo_status."""
 
     def _mi(*_args, **_kwargs):
-        return SimpleNamespace(security_repo_status = status)
+        return SimpleNamespace(security_repo_status=status)
 
-    return patch("huggingface_hub.model_info", side_effect = _mi)
+    return patch("huggingface_hub.model_info", side_effect=_mi)
 
 
-def _patch_raises(exc = RuntimeError("offline")):
-    return patch("huggingface_hub.model_info", side_effect = exc)
+def _patch_raises(exc=RuntimeError("offline")):
+    return patch("huggingface_hub.model_info", side_effect=exc)
 
 
 def _patch_no_index():
@@ -36,17 +36,17 @@ def _patch_no_index():
     from huggingface_hub.utils import EntryNotFoundError
 
     def _dl(
-        repo_id = None,
-        filename = None,
-        token = None,
+        repo_id=None,
+        filename=None,
+        token=None,
         **kw,
     ):
         raise EntryNotFoundError(filename or "")
 
-    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+    return patch("huggingface_hub.hf_hub_download", side_effect=_dl)
 
 
-def _patch_index(weight_map, index_filename = "pytorch_model.bin.index.json"):
+def _patch_index(weight_map, index_filename="pytorch_model.bin.index.json"):
     """Serve a root weight index mapping tensor names -> shard paths; others 404."""
     import json
     import tempfile
@@ -55,9 +55,9 @@ def _patch_index(weight_map, index_filename = "pytorch_model.bin.index.json"):
     from huggingface_hub.utils import EntryNotFoundError
 
     def _dl(
-        repo_id = None,
-        filename = None,
-        token = None,
+        repo_id=None,
+        filename=None,
+        token=None,
         **kw,
     ):
         if filename == index_filename:
@@ -66,21 +66,21 @@ def _patch_index(weight_map, index_filename = "pytorch_model.bin.index.json"):
             return str(p)
         raise EntryNotFoundError(filename or "")
 
-    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+    return patch("huggingface_hub.hf_hub_download", side_effect=_dl)
 
 
 def _patch_index_unreadable():
     """Make every index fetch fail transiently (inconclusive lookup -> fail closed)."""
 
     def _dl(
-        repo_id = None,
-        filename = None,
-        token = None,
+        repo_id=None,
+        filename=None,
+        token=None,
         **kw,
     ):
         raise RuntimeError("transient network error")
 
-    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+    return patch("huggingface_hub.hf_hub_download", side_effect=_dl)
 
 
 def _patch_index_mixed(weight_map, readable_index, failing_index):
@@ -93,9 +93,9 @@ def _patch_index_mixed(weight_map, readable_index, failing_index):
     from huggingface_hub.utils import EntryNotFoundError
 
     def _dl(
-        repo_id = None,
-        filename = None,
-        token = None,
+        repo_id=None,
+        filename=None,
+        token=None,
         **kw,
     ):
         if filename == readable_index:
@@ -106,7 +106,7 @@ def _patch_index_mixed(weight_map, readable_index, failing_index):
             raise RuntimeError("transient network error")
         raise EntryNotFoundError(filename or "")
 
-    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+    return patch("huggingface_hub.hf_hub_download", side_effect=_dl)
 
 
 @pytest.mark.parametrize("level", ["unsafe", "suspicious", "malicious"])
@@ -159,7 +159,7 @@ def test_fail_open_scans_done_no_issues():
 
 def test_skips_local_path():
     # A local path has no Hub scan; must not even call model_info.
-    with patch("huggingface_hub.model_info", side_effect = AssertionError("should not be called")):
+    with patch("huggingface_hub.model_info", side_effect=AssertionError("should not be called")):
         d = evaluate_file_security("/tmp/some/local/model")
     assert d.blocked is False
     assert "local" in d.reason
@@ -180,7 +180,7 @@ def test_remote_gguf_named_repo_is_still_scanned():
 
 def test_skips_local_gguf_file():
     # A local .gguf path is caught by is_local_path -- no Hub call.
-    with patch("huggingface_hub.model_info", side_effect = AssertionError("should not be called")):
+    with patch("huggingface_hub.model_info", side_effect=AssertionError("should not be called")):
         d = evaluate_file_security("/tmp/models/model.gguf")
     assert d.blocked is False
     assert "local" in d.reason
@@ -328,8 +328,8 @@ def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
         _patch_status(status),
         _patch_index_mixed(
             safetensors_map,
-            readable_index = "model.safetensors.index.json",
-            failing_index = "pytorch_model.bin.index.json",
+            readable_index="model.safetensors.index.json",
+            failing_index="pytorch_model.bin.index.json",
         ),
     ):
         d = evaluate_file_security("evil/mixed-index")
@@ -401,7 +401,7 @@ def test_flagged_pickle_under_load_subdir_blocks():
         "filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}],
     }
     with _patch_status(status), _patch_no_index():
-        d = evaluate_file_security("org/spark-tts", load_subdirs = ("LLM",))
+        d = evaluate_file_security("org/spark-tts", load_subdirs=("LLM",))
     assert d.blocked is True
     assert d.unsafe_files == [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]
 
@@ -432,9 +432,9 @@ def test_indexed_shard_under_load_subdir_blocks():
     }
     with (
         _patch_status(status),
-        _patch_index(weight_map, index_filename = "LLM/pytorch_model.bin.index.json"),
+        _patch_index(weight_map, index_filename="LLM/pytorch_model.bin.index.json"),
     ):
-        d = evaluate_file_security("org/spark-tts", load_subdirs = ("LLM",))
+        d = evaluate_file_security("org/spark-tts", load_subdirs=("LLM",))
     assert d.blocked is True
 
 
@@ -480,9 +480,9 @@ def _patch_status_capture(status):
 
     def _mi(repo, *_a, **_k):
         seen["repo"] = repo
-        return SimpleNamespace(security_repo_status = status)
+        return SimpleNamespace(security_repo_status=status)
 
-    return patch("huggingface_hub.model_info", side_effect = _mi), seen
+    return patch("huggingface_hub.model_info", side_effect=_mi), seen
 
 
 def test_spark_tts_llm_alias_scans_real_repo():
@@ -490,8 +490,8 @@ def test_spark_tts_llm_alias_scans_real_repo():
     # the literal alias 404s and fails open, missing a flagged LLM/ pickle.
     status = {"filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
-    with cap, patch("utils.paths.is_local_path", return_value = False), _patch_no_index():
-        d = evaluate_file_security("Spark-TTS-0.5B/LLM", load_subdirs = ())
+    with cap, patch("utils.paths.is_local_path", return_value=False), _patch_no_index():
+        d = evaluate_file_security("Spark-TTS-0.5B/LLM", load_subdirs=())
     assert seen["repo"] == "unsloth/Spark-TTS-0.5B"  # scanned the real repo, not the alias
     assert d.model_name == "unsloth/Spark-TTS-0.5B"
     assert d.blocked is True
@@ -502,7 +502,7 @@ def test_non_llm_alias_is_not_rewritten():
     # A normal repo id with one slash must be scanned as-is (no spurious rewrite).
     status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
-    with cap, patch("utils.paths.is_local_path", return_value = False):
+    with cap, patch("utils.paths.is_local_path", return_value=False):
         d = evaluate_file_security("org/model")
     assert seen["repo"] == "org/model"
     assert d.model_name == "org/model"
@@ -513,7 +513,7 @@ def test_generic_slash_llm_repo_is_scanned_as_itself():
     # scanned as itself; rewriting to unsloth/<parent> would scan the wrong repo.
     status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
-    with cap, patch("utils.paths.is_local_path", return_value = False):
+    with cap, patch("utils.paths.is_local_path", return_value=False):
         d = evaluate_file_security("evil/LLM")
     assert seen["repo"] == "evil/LLM"  # scanned the real repo, not unsloth/evil
     assert d.model_name == "evil/LLM"

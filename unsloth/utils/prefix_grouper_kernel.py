@@ -71,8 +71,8 @@ torch._dynamo.config.accumulated_recompile_limit = max(
 # Compiled kernels: torch.compile fuses the sparse mask into one kernel. dynamic=True is
 # required: T changes almost every GRPO batch and dynamic=False recompiles per T (~14s
 # each). T is still padded to a multiple of 128 (_pad_len) for the backward kernel.
-_flex_attention_compiled = torch.compile(flex_attention, dynamic = True)
-_create_block_mask_compiled = torch.compile(create_block_mask, dynamic = True)
+_flex_attention_compiled = torch.compile(flex_attention, dynamic=True)
+_create_block_mask_compiled = torch.compile(create_block_mask, dynamic=True)
 
 # Flash block sizes by Q dtype (env-overridable). The two disjoint key runs (prefix +
 # own-suffix) stress online-softmax accumulation: fp32 needs 32/32 for a ~1e-6 floor;
@@ -150,11 +150,11 @@ def _pad_labels(group_of_kv, is_prefix, suffix_of_kv, device):
         return group_of_kv, is_prefix, suffix_of_kv, T, T_pad
     pad = T_pad - T
     group_of_kv = torch.cat(
-        [group_of_kv, torch.full((pad,), _PAD_GROUP, dtype = torch.long, device = device)]
+        [group_of_kv, torch.full((pad,), _PAD_GROUP, dtype=torch.long, device=device)]
     )
-    is_prefix = torch.cat([is_prefix, torch.zeros(pad, dtype = torch.bool, device = device)])
+    is_prefix = torch.cat([is_prefix, torch.zeros(pad, dtype=torch.bool, device=device)])
     suffix_of_kv = torch.cat(
-        [suffix_of_kv, torch.full((pad,), _PAD_GROUP, dtype = torch.long, device = device)]
+        [suffix_of_kv, torch.full((pad,), _PAD_GROUP, dtype=torch.long, device=device)]
     )
     return group_of_kv, is_prefix, suffix_of_kv, T, T_pad
 
@@ -167,10 +167,10 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
     T = int(layout.flat_ids.shape[1])
     P = int(layout.P)
 
-    group_of_kv = torch.zeros(T, dtype = torch.long, device = device)  # single group -> 0
-    is_prefix = torch.zeros(T, dtype = torch.bool, device = device)
+    group_of_kv = torch.zeros(T, dtype=torch.long, device=device)  # single group -> 0
+    is_prefix = torch.zeros(T, dtype=torch.bool, device=device)
     is_prefix[:P] = True
-    suffix_of_kv = torch.full((T,), -1, dtype = torch.long, device = device)
+    suffix_of_kv = torch.full((T,), -1, dtype=torch.long, device=device)
     for i, (s, e) in enumerate(layout.suffix_slices):
         suffix_of_kv[s:e] = i
 
@@ -179,12 +179,12 @@ def build_seg_info_from_layout(layout, device: Optional[torch.device] = None) ->
     )
     sig = ("single", T_pad, P, tuple((s, e) for (s, e) in layout.suffix_slices))
     return PrefixSegInfo(
-        group_of_kv = group_of_kv,
-        is_prefix = is_prefix,
-        suffix_of_kv = suffix_of_kv,
-        signature = sig,
-        T = T,
-        T_pad = T_pad,
+        group_of_kv=group_of_kv,
+        is_prefix=is_prefix,
+        suffix_of_kv=suffix_of_kv,
+        signature=sig,
+        T=T,
+        T_pad=T_pad,
     )
 
 
@@ -214,16 +214,16 @@ def build_seg_info_multigroup(
     sig_parts = []
     for gid, (P, R_list) in enumerate(group_specs):
         # prefix
-        group_of_list.append(torch.full((P,), gid, dtype = torch.long, device = device))
-        is_prefix_list.append(torch.ones(P, dtype = torch.bool, device = device))
-        suffix_of_list.append(torch.full((P,), -1, dtype = torch.long, device = device))
+        group_of_list.append(torch.full((P,), gid, dtype=torch.long, device=device))
+        is_prefix_list.append(torch.ones(P, dtype=torch.bool, device=device))
+        suffix_of_list.append(torch.full((P,), -1, dtype=torch.long, device=device))
         prefix_last_index = base + P - 1
         suffix_slices = []
         cursor = base + P
         for r in R_list:
-            group_of_list.append(torch.full((r,), gid, dtype = torch.long, device = device))
-            is_prefix_list.append(torch.zeros(r, dtype = torch.bool, device = device))
-            suffix_of_list.append(torch.full((r,), suffix_counter, dtype = torch.long, device = device))
+            group_of_list.append(torch.full((r,), gid, dtype=torch.long, device=device))
+            is_prefix_list.append(torch.zeros(r, dtype=torch.bool, device=device))
+            suffix_of_list.append(torch.full((r,), suffix_counter, dtype=torch.long, device=device))
             suffix_slices.append((cursor, cursor + r))
             cursor += r
             suffix_counter += 1
@@ -246,12 +246,12 @@ def build_seg_info_multigroup(
     )
     sig = ("multi", T_pad, tuple(sig_parts))
     seg = PrefixSegInfo(
-        group_of_kv = group_of_kv,
-        is_prefix = is_prefix,
-        suffix_of_kv = suffix_of_kv,
-        signature = sig,
-        T = T,
-        T_pad = T_pad,
+        group_of_kv=group_of_kv,
+        is_prefix=is_prefix,
+        suffix_of_kv=suffix_of_kv,
+        signature=sig,
+        T=T,
+        T_pad=T_pad,
     )
     return seg, group_meta
 
@@ -322,11 +322,11 @@ def get_block_mask(
         )
         bm = builder(
             mask_mod,
-            B = 1,
-            H = None,
-            Q_LEN = seg.T_pad,
-            KV_LEN = seg.T_pad,
-            device = device,
+            B=1,
+            H=None,
+            Q_LEN=seg.T_pad,
+            KV_LEN=seg.T_pad,
+            device=device,
         )
     # FIFO bound: GRPO lengths change nearly every step, so evict the oldest to cap GPU pins.
     if len(_BLOCK_MASK_CACHE) >= 8:
@@ -344,8 +344,8 @@ def _pad_qkv_seq(x: torch.Tensor, T_pad: int) -> torch.Tensor:
     T = x.shape[2]
     if T_pad == T:
         return x
-    pad = torch.zeros(x.shape[0], x.shape[1], T_pad - T, x.shape[3], device = x.device, dtype = x.dtype)
-    return torch.cat([x, pad], dim = 2)
+    pad = torch.zeros(x.shape[0], x.shape[1], T_pad - T, x.shape[3], device=x.device, dtype=x.dtype)
+    return torch.cat([x, pad], dim=2)
 
 
 def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
@@ -358,10 +358,10 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             qp,
             kp,
             vp,
-            block_mask = block_mask,
-            enable_gqa = enable_gqa,
-            scale = scale,
-            kernel_options = _kernel_options_for_dtype(qp.dtype),
+            block_mask=block_mask,
+            enable_gqa=enable_gqa,
+            scale=scale,
+            kernel_options=_kernel_options_for_dtype(qp.dtype),
         )
     else:
         # eager path (fp64 parity): dense scores, no kernel_options.
@@ -369,9 +369,9 @@ def _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad):
             qp,
             kp,
             vp,
-            block_mask = block_mask,
-            enable_gqa = enable_gqa,
-            scale = scale,
+            block_mask=block_mask,
+            enable_gqa=enable_gqa,
+            scale=scale,
         )
     return out[:, :, :T, :]
 
@@ -419,7 +419,7 @@ def flex_shared_prefix_attention(
     assert T == prefix_seg_info.T, f"Q length {T} != seg.T {prefix_seg_info.T}"
 
     if block_mask is None:
-        block_mask = get_block_mask(prefix_seg_info, device, compile_mask = compiled)
+        block_mask = get_block_mask(prefix_seg_info, device, compile_mask=compiled)
 
     out = _run_flex(q, k, v, block_mask, enable_gqa, scale, compiled, T, T_pad)
     # back to [1, T, n_heads, D]

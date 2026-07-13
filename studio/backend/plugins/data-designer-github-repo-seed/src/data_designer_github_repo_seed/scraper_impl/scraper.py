@@ -54,7 +54,7 @@ class RepoScraper:
         # hitting GitHub's node-count ceiling.
         self.light = light
         self.repo_dir = base_dir / f"{owner}__{name}"
-        self.repo_dir.mkdir(parents = True, exist_ok = True)
+        self.repo_dir.mkdir(parents=True, exist_ok=True)
         self.state = StateStore(base_dir / "state" / f"{owner}__{name}.json")
 
         # Writers
@@ -599,52 +599,53 @@ class RepoScraper:
 
 
 def setup_logging(log_file: Path) -> None:
-    log_file.parent.mkdir(parents = True, exist_ok = True)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_file, mode = "a", encoding = "utf-8"),
+        logging.FileHandler(log_file, mode="a", encoding="utf-8"),
     ]
-    logging.basicConfig(level = logging.INFO, format = fmt, handlers = handlers, force = True)
+    logging.basicConfig(level=logging.INFO, format=fmt, handlers=handlers, force=True)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-dir", default = "/mnt/disks/unslothai/ubuntu/workspace_34/github_scraper")
-    ap.add_argument("--repos", nargs = "+", default = ["unslothai/unsloth", "unslothai/unsloth-zoo"])
-    ap.add_argument("--trial", action = "store_true", help = "Small trial run")
+    ap.add_argument("--base-dir", default="/mnt/disks/unslothai/ubuntu/workspace_34/github_scraper")
+    ap.add_argument("--repos", nargs="+", default=["unslothai/unsloth", "unslothai/unsloth-zoo"])
+    ap.add_argument("--trial", action="store_true", help="Small trial run")
     ap.add_argument(
         "--only",
-        nargs = "+",
-        default = None,
-        help = "Only run these resource keys: issues,pulls,discussions,commits,releases,labels,milestones,meta",
+        nargs="+",
+        default=None,
+        help="Only run these resource keys: issues,pulls,discussions,commits,releases,labels,milestones,meta",
     )
     ap.add_argument(
         "--hf-upload-interval",
-        type = int,
-        default = 900,
-        help = "Seconds between HF uploads (0 to disable)",
+        type=int,
+        default=900,
+        help="Seconds between HF uploads (0 to disable)",
     )
     args = ap.parse_args()
 
     base = Path(args.base_dir)
     data_dir = base / "data"
-    data_dir.mkdir(parents = True, exist_ok = True)
+    data_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(base / "logs" / f"scraper_{time.strftime('%Y%m%d_%H%M%S')}.log")
     log.info("Scraper starting: repos=%s trial=%s", args.repos, args.trial)
 
-    client = GitHubClient(min_remaining_graphql = 80, min_remaining_rest = 80)
+    client = GitHubClient(min_remaining_graphql=80, min_remaining_rest=80)
     rl = client.rate_snapshot()
     log.info(
         "Rate limit snapshot: %s",
-        json.dumps(rl.get("resources", {}), default = str)[:400],
+        json.dumps(rl.get("resources", {}), default=str)[:400],
     )
 
     # Start HF uploader in background if requested
     uploader = None
     if args.hf_upload_interval > 0:
         from hf_uploader import HFUploader
-        uploader = HFUploader(data_dir, interval_s = args.hf_upload_interval)
+
+        uploader = HFUploader(data_dir, interval_s=args.hf_upload_interval)
         uploader.start()
 
     trial_limits = None
@@ -687,13 +688,13 @@ def main():
                         default_ref.get("name") if isinstance(default_ref, dict) else None
                     )
                     branch = f"refs/heads/{default_branch}" if default_branch else "refs/heads/main"
-                    scraper.scrape_commits(branch = branch)
+                    scraper.scrape_commits(branch=branch)
             finally:
                 scraper.close()
     finally:
         if uploader:
             log.info("Stopping uploader and final sync...")
-            uploader.stop(final_upload = True)
+            uploader.stop(final_upload=True)
     log.info(
         "Scraper complete. GraphQL calls=%d REST calls=%d",
         client.calls_graphql,

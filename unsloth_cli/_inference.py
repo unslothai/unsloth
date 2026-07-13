@@ -49,7 +49,7 @@ def urlopen_no_redirect(request, timeout):
                 )
 
         _no_redirect_opener = urllib.request.build_opener(_NoRedirect)
-    return _no_redirect_opener.open(request, timeout = timeout)
+    return _no_redirect_opener.open(request, timeout=timeout)
 
 
 def ensure_studio_backend_path() -> None:
@@ -67,7 +67,7 @@ def configure_quiet_logging() -> None:
     # line prints. LOG_LEVEL is exported so the worker subprocess inherits it.
     level_name = os.environ.setdefault("LOG_LEVEL", "WARNING").upper()
     level = getattr(logging, level_name, logging.WARNING)
-    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
 
@@ -214,7 +214,7 @@ def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.text import Text
 
     raw = ""
-    with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
+    with Live(console=console, refresh_per_second=12, vertical_overflow="visible") as live:
         for chunk in stream:
             if not isinstance(chunk, str):
                 continue
@@ -253,15 +253,15 @@ def render_columns(
     right_label: str,
     right_text: str,
     *,
-    console = None,
+    console=None,
 ) -> None:
     from rich import box
     from rich.console import Console
     from rich.table import Table
 
-    table = Table(box = box.MINIMAL, expand = True, padding = (0, 1), pad_edge = False)
-    table.add_column(left_label, header_style = "bold yellow", ratio = 1, overflow = "fold")
-    table.add_column(right_label, header_style = "bold magenta", ratio = 1, overflow = "fold")
+    table = Table(box=box.MINIMAL, expand=True, padding=(0, 1), pad_edge=False)
+    table.add_column(left_label, header_style="bold yellow", ratio=1, overflow="fold")
+    table.add_column(right_label, header_style="bold magenta", ratio=1, overflow="fold")
     table.add_row(left_text or "", right_text or "")
     (console or Console()).print(table)
 
@@ -292,27 +292,27 @@ class ChatBackend:
             if system_prompt:
                 msgs = [{"role": "system", "content": system_prompt}, *msgs]
             return self._backend.generate_chat_completion(
-                messages = msgs,
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                max_tokens = max_new_tokens,
-                repetition_penalty = repetition_penalty,
-                enable_thinking = enable_thinking,
+                messages=msgs,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_new_tokens,
+                repetition_penalty=repetition_penalty,
+                enable_thinking=enable_thinking,
             )
         gen_kwargs = dict(
-            messages = messages,
-            system_prompt = system_prompt,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            max_new_tokens = max_new_tokens,
-            repetition_penalty = repetition_penalty,
-            enable_thinking = enable_thinking,
+            messages=messages,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_new_tokens=max_new_tokens,
+            repetition_penalty=repetition_penalty,
+            enable_thinking=enable_thinking,
         )
         if use_adapter is not None:
             return self._backend.generate_with_adapter_control(
-                use_adapter = use_adapter, **gen_kwargs
+                use_adapter=use_adapter, **gen_kwargs
             )
         return self._backend.generate_chat_response(**gen_kwargs)
 
@@ -323,7 +323,7 @@ class ChatBackend:
             if self._kind == "gguf":
                 self._backend.unload_model()
             else:
-                self._backend._shutdown_subprocess(timeout = 2.0)
+                self._backend._shutdown_subprocess(timeout=2.0)
         except Exception:
             pass
 
@@ -331,34 +331,35 @@ class ChatBackend:
         self,
         obj,
         *,
-        timeout = 300.0,
+        timeout=300.0,
     ):
         if self._kind != "unsloth" or not hasattr(self._backend, "share_distributed_object"):
             raise RuntimeError(
                 "Distributed MLX chat requires the Unsloth MLX backend; "
                 f"backend '{self._kind}' cannot broadcast chat turns."
             )
-        return self._backend.share_distributed_object(obj, timeout = timeout)
+        return self._backend.share_distributed_object(obj, timeout=timeout)
 
 
 def resolve_model_config(model: str, *, hf_token: Optional[str]):
     ensure_studio_backend_path()
     from utils.models import ModelConfig
 
-    model_config = ModelConfig.from_identifier(model_id = model, hf_token = hf_token)
+    model_config = ModelConfig.from_identifier(model_id=model, hf_token=hf_token)
     if not model_config:
-        typer.echo("Could not resolve model config", err = True)
-        raise typer.Exit(code = 1)
+        typer.echo("Could not resolve model config", err=True)
+        raise typer.Exit(code=1)
     return model_config
 
 
 def _validate_llama_extra_args_or_exit(llama_extra_args: Optional[List[str]]) -> list[str]:
     from core.inference.llama_server_args import validate_extra_args
+
     try:
         return validate_extra_args(llama_extra_args)
     except ValueError as exc:
-        typer.echo(f"Error: {exc}", err = True)
-        raise typer.Exit(code = 1)
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
 
 
 def _load_gguf_backend(
@@ -376,10 +377,10 @@ def _load_gguf_backend(
     llama_backend = LlamaCppBackend()
     extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
     common = dict(
-        hf_variant = model_config.gguf_variant,
-        model_identifier = model_config.identifier,
-        is_vision = model_config.is_vision,
-        n_ctx = max_seq_length,
+        hf_variant=model_config.gguf_variant,
+        model_identifier=model_config.identifier,
+        is_vision=model_config.is_vision,
+        n_ctx=max_seq_length,
     )
 
     async def _attempt_gguf_load(
@@ -387,33 +388,33 @@ def _load_gguf_backend(
     ) -> bool:
         attempt_common = dict(
             common,
-            tensor_parallel = requested_tensor_parallel,
-            extra_args = attempt_extra_args,
+            tensor_parallel=requested_tensor_parallel,
+            extra_args=attempt_extra_args,
         )
         if model_config.gguf_hf_repo:
             return llama_backend.load_model(
-                hf_repo = model_config.gguf_hf_repo,
-                hf_token = hf_token,
+                hf_repo=model_config.gguf_hf_repo,
+                hf_token=hf_token,
                 **attempt_common,
             )
         return llama_backend.load_model(
-            gguf_path = model_config.gguf_file,
-            mmproj_path = model_config.gguf_mmproj_file,
-            mtp_draft_path = model_config.gguf_mtp_file,
+            gguf_path=model_config.gguf_file,
+            mmproj_path=model_config.gguf_mmproj_file,
+            mtp_draft_path=model_config.gguf_mtp_file,
             **attempt_common,
         )
 
     loaded = asyncio.run(
         load_with_tensor_fallback(
             _attempt_gguf_load,
-            requested_tensor = tensor_parallel,
-            extra_args = extra_args,
-            label = model_config.identifier,
+            requested_tensor=tensor_parallel,
+            extra_args=extra_args,
+            label=model_config.identifier,
         )
     )
     if not loaded:
-        typer.echo("Model load failed", err = True)
-        raise typer.Exit(code = 1)
+        typer.echo("Model load failed", err=True)
+        raise typer.Exit(code=1)
     return ChatBackend("gguf", llama_backend)
 
 
@@ -425,7 +426,7 @@ def load_chat_backend(
     load_in_4bit: bool,
     tensor_parallel: bool = False,
     llama_extra_args: Optional[List[str]] = None,
-    model_config = None,
+    model_config=None,
     fresh_backend: bool = False,
 ):
     """Load `model` in-process: GGUF via llama-server, else the orchestrator.
@@ -436,7 +437,7 @@ def load_chat_backend(
     with quiet_if_nonzero_mlx_rank():
         is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
-            model_config = resolve_model_config(model, hf_token = hf_token)
+            model_config = resolve_model_config(model, hf_token=hf_token)
 
         if is_mlx_distributed and model_config.is_gguf:
             if rank == 0:
@@ -444,48 +445,50 @@ def load_chat_backend(
                     "Distributed MLX inference does not support GGUF/llama.cpp models. "
                     "Use a non-GGUF MLX model under mlx.launch, or run GGUF without "
                     "mlx.launch.",
-                    err = True,
+                    err=True,
                 )
-            raise typer.Exit(code = 1)
+            raise typer.Exit(code=1)
 
         if rank == 0:
-            typer.echo(f"Loading {model}", err = True)
+            typer.echo(f"Loading {model}", err=True)
 
         if model_config.is_gguf:
             return _load_gguf_backend(
                 model_config,
-                hf_token = hf_token,
-                max_seq_length = max_seq_length,
-                tensor_parallel = tensor_parallel,
-                llama_extra_args = llama_extra_args,
+                hf_token=hf_token,
+                max_seq_length=max_seq_length,
+                tensor_parallel=tensor_parallel,
+                llama_extra_args=llama_extra_args,
             )
 
         if fresh_backend:
             ensure_studio_backend_path()
             from core.inference import InferenceOrchestrator
+
             backend = InferenceOrchestrator()
         else:
             ensure_studio_backend_path()
             from core.inference import get_inference_backend
+
             backend = get_inference_backend()
         try:
             loaded = backend.load_model(
-                config = model_config,
-                max_seq_length = max_seq_length,
-                load_in_4bit = load_in_4bit,
-                hf_token = hf_token,
-                tensor_parallel = tensor_parallel,
-                mlx_distributed = is_mlx_distributed,
+                config=model_config,
+                max_seq_length=max_seq_length,
+                load_in_4bit=load_in_4bit,
+                hf_token=hf_token,
+                tensor_parallel=tensor_parallel,
+                mlx_distributed=is_mlx_distributed,
             )
         except Exception as exc:
             if not is_mlx_distributed:
                 raise
             if rank == 0:
-                typer.echo(str(exc) or "Model load failed", err = True)
-            raise typer.Exit(code = 1)
+                typer.echo(str(exc) or "Model load failed", err=True)
+            raise typer.Exit(code=1)
         if not loaded:
-            typer.echo("Model load failed", err = True)
-            raise typer.Exit(code = 1)
+            typer.echo("Model load failed", err=True)
+            raise typer.Exit(code=1)
     return ChatBackend("unsloth", backend)
 
 
@@ -507,11 +510,11 @@ def _loopback_candidate_bases(base: str) -> list:
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         ips = {
-            ai[4][0] for ai in socket.getaddrinfo(parsed.hostname, port, type = socket.SOCK_STREAM)
+            ai[4][0] for ai in socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
         }
     except Exception:
         return [base]
-    ordered = sorted(ips, key = lambda ip: (ip != "127.0.0.1", ip))
+    ordered = sorted(ips, key=lambda ip: (ip != "127.0.0.1", ip))
     bases = [
         f"{parsed.scheme}://" + (f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}")
         for ip in ordered
@@ -527,10 +530,10 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     # answers, so the rest of the flow talks to that exact address.
     for candidate in _loopback_candidate_bases(base):
         request = urllib.request.Request(
-            f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
+            f"{candidate}/api/health", headers={"User-Agent": _USER_AGENT}
         )
         try:
-            with urllib.request.urlopen(request, timeout = timeout):
+            with urllib.request.urlopen(request, timeout=timeout):
                 return candidate
         except Exception:
             continue
@@ -548,6 +551,7 @@ def is_loopback_url(base: str) -> bool:
         return True
     try:
         import ipaddress
+
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
@@ -581,7 +585,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     # ::1 while the real Studio is on 127.0.0.1; connecting to the resolved IP and
     # binding to it means a proof relayed from a different address/port won't match.
     try:
-        ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
+        ip = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)[0][4][0]
     except Exception:
         return False
     netloc = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
@@ -589,12 +593,12 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     query = base64.urlsafe_b64encode(nonce).decode()
     request = urllib.request.Request(
         f"{parsed.scheme}://{netloc}/api/auth/identity?nonce={query}",
-        headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
+        headers={"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
         # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
         # Cap the read: the server is still unverified, so don't trust its length.
-        with urlopen_no_redirect(request, timeout = timeout) as response:
+        with urlopen_no_redirect(request, timeout=timeout) as response:
             proof = json.loads(response.read(65536).decode() or "{}").get("proof")
     except Exception:
         return False
@@ -617,7 +621,7 @@ def _studio_token() -> Optional[str]:
         from studio.backend.auth.authentication import create_access_token
 
         row = storage.get_connection().execute("SELECT username FROM auth_user LIMIT 1").fetchone()
-        return create_access_token(row[0], desktop = True) if row else None
+        return create_access_token(row[0], desktop=True) if row else None
     except Exception:
         return None
 
@@ -637,24 +641,24 @@ class HttpChatBackend:
         self,
         method: str,
         path: str,
-        payload = None,
-        timeout = None,
+        payload=None,
+        timeout=None,
     ):
         import json
         import urllib.request
 
         request = urllib.request.Request(
             self._base + path,
-            data = None if payload is None else json.dumps(payload).encode(),
-            headers = {
+            data=None if payload is None else json.dumps(payload).encode(),
+            headers={
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
                 "User-Agent": _USER_AGENT,
             },
-            method = method,
+            method=method,
         )
         # No redirects: this carries a bearer token (see urlopen_no_redirect).
-        return urlopen_no_redirect(request, timeout = timeout)
+        return urlopen_no_redirect(request, timeout=timeout)
 
     def ensure_loaded(
         self,
@@ -666,7 +670,7 @@ class HttpChatBackend:
         tensor_parallel: bool = False,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
-        typer.echo(f"Loading {model} on the Studio server", err = True)
+        typer.echo(f"Loading {model} on the Studio server", err=True)
         payload = {
             "model_path": model,
             "hf_token": hf_token,
@@ -683,8 +687,8 @@ class HttpChatBackend:
                 payload,
             ).close()
         except Exception as exc:
-            typer.echo(f"Model load failed: {exc}", err = True)
-            raise typer.Exit(code = 1)
+            typer.echo(f"Model load failed: {exc}", err=True)
+            raise typer.Exit(code=1)
 
     def stream(
         self,
@@ -784,9 +788,9 @@ def connect_studio_server(
         typer.echo(
             f"Can't attach to the Studio server at {base_url}: {reason} Run Studio "
             "on this machine, or unset UNSLOTH_STUDIO_URL to load the model locally.",
-            err = True,
+            err=True,
         )
-        raise typer.Exit(code = 1)
+        raise typer.Exit(code=1)
 
     # Only hand the self-issued JWT (signed with the local secret) to loopback: a
     # remote URL is unverified and a real remote Studio would reject it anyway.
@@ -807,10 +811,10 @@ def connect_studio_server(
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model,
-        hf_token = hf_token,
-        max_seq_length = max_seq_length,
-        load_in_4bit = load_in_4bit,
-        tensor_parallel = tensor_parallel,
-        llama_extra_args = llama_extra_args,
+        hf_token=hf_token,
+        max_seq_length=max_seq_length,
+        load_in_4bit=load_in_4bit,
+        tensor_parallel=tensor_parallel,
+        llama_extra_args=llama_extra_args,
     )
     return backend

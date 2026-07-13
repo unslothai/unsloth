@@ -45,6 +45,7 @@ def test_reset_helper_is_importable_and_exported():
     # ImportError and every non-RL consumer (SFT trainer.py, the plain-Trainer loop, the RL
     # template's own delegation) silently no-op'd. Pin it as an exported module-level symbol.
     from unsloth.models import _utils
+
     assert callable(_utils._unsloth_reset_stray_compile_cache)
     assert "_unsloth_reset_stray_compile_cache" in _utils.__all__
 
@@ -103,7 +104,7 @@ def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
     trainer = _Trainer()
     trainer.model = m
 
-    with warnings.catch_warnings(record = True) as caught:
+    with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         _unsloth_reset_stray_compile_cache(trainer)
 
@@ -122,7 +123,7 @@ def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):
     trainer = _Trainer()
     trainer.model = m
 
-    with warnings.catch_warnings(record = True) as caught:
+    with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         _unsloth_reset_stray_compile_cache(trainer)
 

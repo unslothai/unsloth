@@ -252,8 +252,8 @@ def _normalize_browse_request_path(path: Optional[str], *, relative_root: Path) 
 def _browse_relative_parts(requested_path: str, root: Path) -> Optional[list[str]]:
     if "\x00" in requested_path:
         raise HTTPException(
-            status_code = 400,
-            detail = "Path cannot contain null bytes",
+            status_code=400,
+            detail="Path cannot contain null bytes",
         )
     root_text = os.path.normcase(os.path.normpath(str(root)))
     requested_text = os.path.normcase(os.path.normpath(requested_path))
@@ -284,23 +284,23 @@ def _match_browse_child(current: Path, name: str) -> Optional[Path]:
         return None
     except PermissionError:
         raise HTTPException(
-            status_code = 403,
-            detail = f"Permission denied reading {current}",
+            status_code=403,
+            detail=f"Permission denied reading {current}",
         ) from None
     except OSError as exc:
         raise HTTPException(
-            status_code = 500,
-            detail = f"Could not read {current}: {exc}",
+            status_code=500,
+            detail=f"Could not read {current}: {exc}",
         ) from exc
     return child
 
 
 def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Path:
     """Resolve a requested browse path by walking from trusted allowlist roots."""
-    requested_path = _normalize_browse_request_path(path, relative_root = Path.home())
+    requested_path = _normalize_browse_request_path(path, relative_root=Path.home())
     resolved_roots: list[Path] = []
     seen_roots: set[str] = set()
-    for root in sorted(allowed_roots, key = lambda p: len(str(p)), reverse = True):
+    for root in sorted(allowed_roots, key=lambda p: len(str(p)), reverse=True):
         try:
             resolved = root.resolve()
         except OSError:
@@ -321,20 +321,20 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
             child = _match_browse_child(current, part)
             if child is None:
                 raise HTTPException(
-                    status_code = 404,
-                    detail = f"Path does not exist: {requested_path}",
+                    status_code=404,
+                    detail=f"Path does not exist: {requested_path}",
                 )
             try:
                 resolved_child = child.resolve()
             except OSError as exc:
                 raise HTTPException(
-                    status_code = 400,
-                    detail = f"Invalid path: {exc}",
+                    status_code=400,
+                    detail=f"Invalid path: {exc}",
                 ) from exc
             if not _is_path_inside_allowlist(resolved_child, resolved_roots):
                 raise HTTPException(
-                    status_code = 403,
-                    detail = (
+                    status_code=403,
+                    detail=(
                         "Path is not in the browseable allowlist. Register it via "
                         "POST /api/hub/scan-folders first, or pick a directory "
                         "under your home folder."
@@ -344,26 +344,26 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
             # registration enforces) a user could browse into ~/.ssh, ~/.aws, etc.
             if contains_sensitive_path_component(str(resolved_child)):
                 raise HTTPException(
-                    status_code = 403,
-                    detail = "Credential or configuration directories are not browseable.",
+                    status_code=403,
+                    detail="Credential or configuration directories are not browseable.",
                 )
             current = resolved_child
 
         if contains_sensitive_path_component(str(current)):
             raise HTTPException(
-                status_code = 403,
-                detail = "Credential or configuration directories are not browseable.",
+                status_code=403,
+                detail="Credential or configuration directories are not browseable.",
             )
         if not current.is_dir():
             raise HTTPException(
-                status_code = 400,
-                detail = f"Not a directory: {current}",
+                status_code=400,
+                detail=f"Not a directory: {current}",
             )
         return current
 
     raise HTTPException(
-        status_code = 403,
-        detail = (
+        status_code=403,
+        detail=(
             "Path is not in the browseable allowlist. Register it via "
             "POST /api/hub/scan-folders first, or pick a directory "
             "under your home folder."
@@ -391,7 +391,7 @@ def browse_folders_response(
     except HTTPException:
         requested_path = _normalize_browse_request_path(
             path,
-            relative_root = Path.home(),
+            relative_root=Path.home(),
         )
         if path is not None and path.strip():
             logger.warning(
@@ -410,13 +410,13 @@ def browse_folders_response(
         it = target.iterdir()
     except PermissionError:
         raise HTTPException(
-            status_code = 403,
-            detail = f"Permission denied reading {target}",
+            status_code=403,
+            detail=f"Permission denied reading {target}",
         )
     except OSError as exc:
         raise HTTPException(
-            status_code = 500,
-            detail = f"Could not read {target}: {exc}",
+            status_code=500,
+            detail=f"Could not read {target}: {exc}",
         )
 
     try:
@@ -442,9 +442,9 @@ def browse_folders_response(
                 continue
             entries.append(
                 BrowseEntry(
-                    name = name,
-                    has_models = _looks_like_model_dir(child),
-                    hidden = is_hidden,
+                    name=name,
+                    has_models=_looks_like_model_dir(child),
+                    hidden=is_hidden,
                 )
             )
     except PermissionError as exc:
@@ -463,7 +463,7 @@ def browse_folders_response(
         bucket = 0 if e.has_models else (2 if e.hidden else 1)
         return (bucket, e.name.lower())
 
-    entries.sort(key = _sort_key)
+    entries.sort(key=_sort_key)
 
     # Parent is None at the FS root and when it would step outside the sandbox,
     # so the up-row never 403s on click.
@@ -519,10 +519,10 @@ def browse_folders_response(
         logger.debug("browse-folders: could not load well-known dirs: %s", exc)
 
     return BrowseFoldersResponse(
-        current = str(target),
-        parent = parent,
-        entries = entries,
-        suggestions = suggestions,
-        truncated = truncated,
-        model_files_here = _count_model_files(target),
+        current=str(target),
+        parent=parent,
+        entries=entries,
+        suggestions=suggestions,
+        truncated=truncated,
+        model_files_here=_count_model_files(target),
     )
