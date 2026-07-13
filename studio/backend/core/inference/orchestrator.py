@@ -888,6 +888,10 @@ class InferenceOrchestrator:
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
 
+    # Monotonic count of load attempts; lets the install route detect a load
+    # (including a same-model reload) that completed while it waited on the gate.
+    load_generation: int = 0
+
     def load_model(
         self,
         config,  # ModelConfig
@@ -907,6 +911,7 @@ class InferenceOrchestrator:
         Always spawns a fresh subprocess per load for a clean interpreter (no
         stale unsloth patches, torch.compile caches, or getsource failures).
         """
+        self.load_generation += 1
         from utils.transformers_version import needs_transformers_5
 
         model_name = config.identifier

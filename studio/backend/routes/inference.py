@@ -4876,6 +4876,13 @@ async def install_latest_transformers_route(
             active = getattr(backend, "active_model_name", None)
             if active:
                 if not backend.unload_model(active):
+                    # A failed unload still clears the orchestrator's model state,
+                    # so the model is gone from the parent's view even though the
+                    # swap aborts: report it so the client rolls back instead of
+                    # pointing at an unloaded model.
+                    if getattr(backend, "active_model_name", None) != active:
+                        unloaded_chat["v"] = True
+                        note_model_unloaded()
                     raise RuntimeError(f"Could not unload '{active}' before the transformers swap")
                 note_model_unloaded()
                 unloaded_chat["v"] = True
@@ -4901,15 +4908,24 @@ async def install_latest_transformers_route(
                 end_sidecar_swap()
 
         # Snapshot before waiting on the gate: a /load already holding it can
-        # complete meanwhile, and the installer must not unload a model whose
-        # successful LoadResponse the client is about to render.
-        active_before_gate = getattr(backend, "active_model_name", None)
+        # complete meanwhile (including a same-model reload with new settings),
+        # and the installer must not unload a model whose successful LoadResponse
+        # the client is about to render. The generation counter catches reloads
+        # the name alone would miss.
+        active_before_gate = (
+            getattr(backend, "active_model_name", None),
+            getattr(backend, "load_generation", 0),
+        )
 
         async def _gated_install() -> dict:
             # Held by THIS task, not the request coroutine: a cancelled POST unwinding an
             # `async with` here would drop the only guard /load honors mid-install.
             async with inference_lifecycle_gate():
-                if getattr(backend, "active_model_name", None) != active_before_gate:
+                _active_now = (
+                    getattr(backend, "active_model_name", None),
+                    getattr(backend, "load_generation", 0),
+                )
+                if _active_now != active_before_gate:
                     end_sidecar_swap()
                     raise HTTPException(
                         status_code = 409,
