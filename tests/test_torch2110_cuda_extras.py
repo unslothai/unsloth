@@ -32,11 +32,14 @@ def _extra(name: str) -> list[str]:
     return data["project"]["optional-dependencies"][name]
 
 
-def _reqs(specs: list[str]) -> dict[str, Requirement]:
-    out = {}
+def _reqs(specs: list[str]) -> dict[str, list[Requirement]]:
+    # Keyed by name -> list: each extra carries one Linux and one Windows
+    # xformers requirement, so a plain name -> Requirement dict would silently
+    # drop the Linux entry.
+    out: dict[str, list[Requirement]] = {}
     for spec in specs:
         r = Requirement(spec)
-        out[r.name.lower()] = r
+        out.setdefault(r.name.lower(), []).append(r)
     return out
 
 
@@ -47,10 +50,37 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
     # CUDA-13 default on PyPI.
     reqs = _reqs(_extra(f"{cuda}onlytorch2110"))
     for pkg in _TORCH_TRIO:
-        spec = str(reqs[pkg].specifier)
+        (req,) = reqs[pkg]
+        spec = str(req.specifier)
         assert (
             spec == f"=={('2.11.0' if pkg != 'torchvision' else '0.26.0')}+{cuda}"
         ), f"{cuda}onlytorch2110: {pkg} pinned as '{spec}', expected the +{cuda} local build"
-    # xformers must come from the same CUDA index.
-    xf = reqs["xformers"]
-    assert xf.url and f"/whl/{cuda}/" in xf.url, f"xformers not on the {cuda} index: {xf.url}"
+    # Both xformers wheels (Linux and Windows) must come from the same CUDA index.
+    xformers = reqs["xformers"]
+    assert len(xformers) == 2, f"expected Linux + Windows xformers wheels, got {xformers}"
+    linux = [r for r in xformers if r.url and r.url.endswith("manylinux_2_28_x86_64.whl")]
+    windows = [r for r in xformers if r.url and r.url.endswith("win_amd64.whl")]
+    assert len(linux) == 1 and len(windows) == 1, f"unexpected xformers wheels: {xformers}"
+    for r in linux + windows:
+        assert f"/whl/{cuda}/xformers-0.0.35-" in r.url, f"xformers not on the {cuda} index: {r.url}"
+        # The wheels are x86-64 only, so the markers must exclude other machines
+        # (e.g. Linux aarch64 such as GB200/DGX Spark, Windows ARM64) where the
+        # torch trio resolves fine but these wheels would abort the install.
+        assert r.marker is not None
+        assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
+        assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
+    assert linux[0].marker.evaluate({"sys_platform": "linux", "platform_machine": "x86_64"})
+    assert windows[0].marker.evaluate({"sys_platform": "win32", "platform_machine": "AMD64"})
+
+
+@pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
+@pytest.mark.parametrize("variant", ["", "ampere-"])
+def test_torch2110_wrapper_references_matching_leaf(cuda: str, variant: str):
+    # The six public wrappers must pull in the usual huggingface + bitsandbytes
+    # pair and reference the internal leaf of the SAME CUDA version.
+    specs = _extra(f"{cuda}-{variant}torch2110")
+    assert specs == [
+        "unsloth[huggingface]",
+        "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+        f"unsloth[{cuda}onlytorch2110]",
+    ]
