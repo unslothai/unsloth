@@ -59,9 +59,14 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
     batch that first crosses the live-output cap: a chatty tool (``yes``, a
     tight print loop) can queue far more than the cap before the consumer
     wakes, and that surplus would only be truncated away, so joining it first
-    would defeat the memory ceiling the cap exists to enforce. Returns
-    ``(joined_text, hit_sentinel)``; the surplus is still scanned so completion
-    is detected promptly.
+    would defeat the memory ceiling the cap exists to enforce. The chunk that
+    first crosses the cap is itself sliced to just one character past the
+    budget: the caller only needs the joined prefix to exceed ``max_chars`` so
+    its own truncation stays byte-identical, so materialising the whole
+    crossing chunk (a single multi-megabyte line, or any chunk pulled once the
+    budget is already met at ``max_chars <= 0``) would waste that allocation.
+    Returns ``(joined_text, hit_sentinel)``; the surplus is still scanned so
+    completion is detected promptly.
     """
     parts: list[str] = []
     total = 0
@@ -77,10 +82,16 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
             break
         if dropping:
             continue
+        if max_chars is not None and total + len(item) > max_chars:
+            # This chunk crosses the cap. Keep only enough of it to push the
+            # gathered length one past the budget -- that preserves the caller's
+            # overflow signal and byte-identical truncation while dropping the
+            # arbitrarily large remainder in place.
+            parts.append(item[: max(0, max_chars - total) + 1])
+            dropping = True
+            continue
         parts.append(item)
         total += len(item)
-        if max_chars is not None and total > max_chars:
-            dropping = True
     return "".join(parts), hit_sentinel
 
 

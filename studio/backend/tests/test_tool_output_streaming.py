@@ -221,6 +221,42 @@ def test_drain_queue_bounds_the_over_cap_batch():
     assert q.empty()  # surplus still drained so completion is detected
 
 
+def test_drain_queue_does_not_materialize_surplus_crossing_chunk():
+    # The single chunk that first crosses the cap must not be joined in full: a
+    # tool can emit one multi-megabyte line, and when the budget is already met
+    # (max_chars <= 0, e.g. an outer item that alone fills the live cap) the
+    # next queued chunk would otherwise be materialized whole only to be
+    # truncated away. Keep just enough (one char past the budget) to preserve
+    # the caller's overflow signal and byte-identical truncation.
+    import queue as _queue
+
+    from core.inference.tool_stream_exec import _drain_queue
+
+    sentinel = object()
+    huge = "z" * 1_000_000
+
+    # Budget already met: still one char past the (non-positive) budget, and the
+    # kept slice is a true prefix so downstream truncation stays byte-identical.
+    for cap in (0, -500):
+        q: _queue.Queue = _queue.Queue()
+        q.put(huge)
+        q.put("more")
+        q.put(sentinel)
+        text, hit_sentinel = _drain_queue(q, sentinel, max_chars = cap)
+        assert hit_sentinel is True
+        assert len(text) == 1
+        assert huge.startswith(text)
+        assert q.empty()
+
+    # Positive cap crossed by one huge chunk: bounded to cap + 1, prefix kept.
+    q = _queue.Queue()
+    q.put(huge)
+    q.put(sentinel)
+    text, hit_sentinel = _drain_queue(q, sentinel, max_chars = 100)
+    assert len(text) == 101
+    assert text == huge[:101]
+
+
 def test_drain_queue_unbounded_joins_everything():
     # Without a cap the join is complete and ordered (the sub-cap path relies on
     # this to stream every chunk verbatim).
