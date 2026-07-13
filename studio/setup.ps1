@@ -203,6 +203,31 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+function Remove-AgentInstructionFiles {
+    param([string[]]$Roots)
+
+    foreach ($root in $Roots) {
+        if (-not $root) { continue }
+        $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+        if (-not $item -or -not $item.PSIsContainer) { continue }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($item)
+        while ($pending.Count -gt 0) {
+            $current = $pending.Pop()
+            foreach ($child in @(Get-ChildItem -LiteralPath $current.FullName -Force -ErrorAction SilentlyContinue)) {
+                if ($child.PSIsContainer) {
+                    if (-not ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                        $pending.Push($child)
+                    }
+                } elseif ($child.Name -in @("AGENTS.md", "CLAUDE.md")) {
+                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -2314,6 +2339,8 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
+Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)
+
 # ==========================================================================
 #  PHASE 3: Python environment + dependencies
 # ==========================================================================
@@ -3259,6 +3286,7 @@ if ($LocalLlamaCppSrc) {
         if ($LASTEXITCODE -ne 0) {
             substep "Could not create directory junction; copying instead..." "Yellow"
             Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
         }
         Write-Host ""
         step "llama.cpp" "linked local directory: $ResolvedLocal"
@@ -4022,6 +4050,16 @@ if ($LocalLlamaCppLinked) {
             $script:LlamaCppDegraded = $true
         }
     }
+}
+
+$llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+$llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+if (-not $llamaCppIsLink -and (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $LlamaCppDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-StudioOwnedAdoptable $LlamaCppDir)
+    )) {
+    Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
 }
 
 # ─────────────────────────────────────────────
