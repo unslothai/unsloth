@@ -112,7 +112,7 @@ _FORGET_EVIDENCE_RE = re.compile(
     re.I,
 )
 _COMMAND_RE = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$", re.I)
-_FORGET_RE = re.compile(r"^\s*(?:please\s+)?forget\s+(.+?)\s*$", re.I)
+_FORGET_RE = re.compile(r"^\s*(?:please\s+)?forget(?:\s+that)?\s+(.+?)\s*$", re.I)
 _DIRECT_RE = re.compile(
     r"^\s*(?:i (?:prefer|like|use)|i work (?:as|at|with|on)|my preference|"
     r"we (?:use|prefer)|this (?:project|repo|app) (?:uses|is))\b(.+)",
@@ -439,13 +439,6 @@ def render_context(
         row for row in memories if row["scope"] == "global" or row["projectId"] == project_id
     ]
     relevant = [row for row in rank_memories(applicable, query) if _relevance(row, query) > 0]
-    # First-person queries may fall back to one global user fact.
-    if not relevant and re.search(r"\b(?:i|my|me)\b", query, re.I):
-        relevant = [
-            row
-            for row in rank_memories(applicable, query)
-            if row["scope"] == "global" and row["sourceType"] in {"manual", "explicit"}
-        ][:1]
     selected, estimate = [], 0
     for scope in ("global", "project"):
         candidate = next((row for row in relevant if row["scope"] == scope), None)
@@ -697,6 +690,9 @@ def recall_context(
     include_ids: bool = False,
 ) -> str | None:
     thread, _, text = verify_source(thread_id, source_message_id)
+
+    if "\n" not in text and "```" not in text and _FORGET_RE.fullmatch(text):
+        return None
     rows = [
         row
         for row in list_chat_memories("global")

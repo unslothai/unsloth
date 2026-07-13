@@ -154,7 +154,7 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
         "get_chat_message",
         lambda *_: {
             "role": "user",
-            "content": [{"type": "text", "text": "Please forget Use dark mode"}],
+            "content": [{"type": "text", "text": "Please forget that Use dark mode"}],
         },
     )
     assert memory.explicit_command("thread", "message") == [saved]
@@ -168,6 +168,40 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
     )
     captured = memory.explicit_command("thread", "message")
     assert captured and captured[0]["sourceType"] == "explicit"
+
+
+def test_forget_command_skips_recall(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    memory.create_memory(content = "My phone number is 415-555-0199", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please forget that My phone number is 415-555-0199"}
+            ],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
+
+
+def test_recall_requires_relevant_content(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    memory.create_memory(content = "My favorite editor is Helix", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "Help me debug this error"}],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
 
 
 def test_memory_settings_are_global(tmp_path, monkeypatch):
