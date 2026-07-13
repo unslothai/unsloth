@@ -689,7 +689,9 @@ def test_failed_load_preserves_preview_marker(slot_state):
     async def _run():
         with pytest.raises(HTTPException) as exc:
             await inference._load_model_impl(
-                LoadRequest(model_path = "/outputs/run/ckpt-a", llama_extra_args = ["--host", "0.0.0.0"]),
+                LoadRequest(
+                    model_path = "/outputs/run/ckpt-a", llama_extra_args = ["--host", "0.0.0.0"]
+                ),
                 SimpleNamespace(app = None),
                 "admin",
             )
