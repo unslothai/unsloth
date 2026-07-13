@@ -30,7 +30,7 @@ interface SettingsDialogState {
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   // Set when something asks to jump straight to the archived chats list (the
-  // archive toast). DataTab consumes it to open the dialog, then clears it.
+  // archive toast). DataTab uses it as its initial subpage, then clears it.
   archivedChatsRequested: boolean;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;

@@ -53,7 +53,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
+import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
   createFineTuneRecipeFromChats,
   loadFineTuneDatasetInTrainTab,
@@ -66,11 +66,18 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 export function DataTab() {
   const t = useT();
   const navigate = useNavigate();
+  const archivedChatsRequested = useSettingsDialogStore(
+    (s) => s.archivedChatsRequested,
+  );
+  const consumeArchivedChatsRequest = useSettingsDialogStore(
+    (s) => s.consumeArchivedChatsRequest,
+  );
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
-  const [archivedOpen, setArchivedOpen] = useState(false);
-  // "files" swaps the tab body for the Uploaded files subpage.
-  const [subpage, setSubpage] = useState<"main" | "files">("main");
+  // Subpages swap the Data tab body instead of opening nested dialogs.
+  const [subpage, setSubpage] = useState<"main" | "archived" | "files">(
+    archivedChatsRequested ? "archived" : "main",
+  );
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -94,17 +101,9 @@ export function DataTab() {
       setFineTuneAction((a) => (a === "train" ? "export" : a));
     }
   }, [chatOnly]);
-  const archivedChatsRequested = useSettingsDialogStore(
-    (s) => s.archivedChatsRequested,
-  );
-  const consumeArchivedChatsRequest = useSettingsDialogStore(
-    (s) => s.consumeArchivedChatsRequest,
-  );
-
-  // Open the archived list when the archive toast asked to jump here.
+  // The initial subpage handles this request; clear it once Data mounts.
   useEffect(() => {
     if (!archivedChatsRequested) return;
-    setArchivedOpen(true);
     consumeArchivedChatsRequest();
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
 
@@ -117,7 +116,7 @@ export function DataTab() {
 
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Open chat id from the route (single thread or compare pair), mirroring
-  // ArchivedChatsDialog: compare panes only live in the search params.
+  // ArchivedChatsView: compare panes only live in the search params.
   const openChatId = useRouterState({
     select: (s) => {
       if (!s.location.pathname.startsWith("/chat")) return undefined;
@@ -297,6 +296,35 @@ export function DataTab() {
     }
   };
 
+  if (subpage === "archived") {
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={`Back to ${t("settings.data.title")}`}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {t("settings.data.archivedChats")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {t("settings.data.archivedChatsDescription")}
+          </p>
+        </div>
+        <ArchivedChatsView />
+      </div>
+    );
+  }
+
   if (subpage === "files") {
     return (
       <div className="flex flex-col gap-6">
@@ -407,7 +435,7 @@ export function DataTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setArchivedOpen(true)}
+            onClick={() => setSubpage("archived")}
           >
             {t("settings.data.manageAction")}
           </Button>
@@ -579,8 +607,6 @@ export function DataTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
-
-      <ArchivedChatsDialog open={archivedOpen} onOpenChange={setArchivedOpen} />
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">
