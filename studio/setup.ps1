@@ -211,9 +211,20 @@ function Remove-AgentInstructionFiles {
         $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
         if (-not $item -or -not $item.PSIsContainer) { continue }
         if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-        Get-ChildItem -LiteralPath $root -Include "AGENTS.md", "CLAUDE.md" -File -Recurse -Force `
-            -ErrorAction SilentlyContinue |
-            Remove-Item -Force -ErrorAction SilentlyContinue
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($item)
+        while ($pending.Count -gt 0) {
+            $current = $pending.Pop()
+            foreach ($child in @(Get-ChildItem -LiteralPath $current.FullName -Force -ErrorAction SilentlyContinue)) {
+                if ($child.PSIsContainer) {
+                    if (-not ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                        $pending.Push($child)
+                    }
+                } elseif ($child.Name -in @("AGENTS.md", "CLAUDE.md")) {
+                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
 }
 

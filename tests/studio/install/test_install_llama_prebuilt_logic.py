@@ -2206,6 +2206,8 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     assert 'if [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ]; then' in setup_sh
     assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" in setup_ps1
     assert '"CLAUDE.md"' in setup_ps1
+    assert '-Include "AGENTS.md", "CLAUDE.md"' not in setup_ps1
+    assert '$child.Name -in @("AGENTS.md", "CLAUDE.md")' in setup_ps1
     assert "if (-not $LocalLlamaCppLinked)" in setup_ps1
     assert (
         "Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir\n"
