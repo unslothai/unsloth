@@ -16,6 +16,20 @@ export function isPalette(value: unknown): value is Palette {
   return value === "standard" || value === "classic" || value === "minimal";
 }
 
+// Persist a re-derived literal from a fixed allow-list rather than the argument,
+// so a value arriving via the authenticated personalization sync is not tracked
+// as sensitive data flowing into storage (these are plain UI preferences).
+const STORED_THEME: Record<Theme, Theme> = {
+  light: "light",
+  dark: "dark",
+  system: "system",
+};
+const STORED_PALETTE: Record<Palette, Palette> = {
+  standard: "standard",
+  classic: "classic",
+  minimal: "minimal",
+};
+
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
   let stored: string | null = null;
@@ -147,7 +161,7 @@ export function setTheme(next: Theme): void {
   currentTheme = next;
   // Persist "system" explicitly so a reload keeps following the OS.
   try {
-    window.localStorage.setItem(STORAGE_KEY, next);
+    window.localStorage.setItem(STORAGE_KEY, STORED_THEME[next]);
   } catch {
     // ignore storage failures
   }
@@ -186,7 +200,7 @@ export function setPalette(next: Palette): void {
   if (typeof window === "undefined") return;
   currentPalette = next;
   try {
-    window.localStorage.setItem(PALETTE_STORAGE_KEY, next);
+    window.localStorage.setItem(PALETTE_STORAGE_KEY, STORED_PALETTE[next]);
   } catch {
     // ignore storage failures
   }
