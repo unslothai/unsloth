@@ -1189,8 +1189,7 @@ def _looks_like_model_dir(directory: Path) -> bool:
 
 
 def _build_browse_allowlist(
-    media_roots: Optional[list[Path]] = None,
-    drive_roots: Optional[list[Path]] = None,
+    media_roots: Optional[list[Path]] = None, drive_roots: Optional[list[Path]] = None
 ) -> list[Path]:
     """Return the root directories the folder browser may walk.
 
