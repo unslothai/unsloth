@@ -490,6 +490,45 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     assert not sentinel.exists(), "pre-captured group failed to reap the grandchild"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, monkeypatch):
+    # The proc.wait() timeout branch normally kills the whole group via
+    # _kill_process_tree because the leader is still alive when the wait expires.
+    # But the leader can exit in the tiny window before _kill_process_tree
+    # samples its pgid, which then short-circuits on the reaped leader and leaves
+    # a stdout-holding grandchild running. Model that race by making
+    # _kill_process_tree a no-op; the captured-pgid kill in the timeout branch
+    # must still reap the grandchild, matching the non-streaming timeout path.
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+    from core.inference.tools import _capture_process_group, _drain_process_output
+
+    monkeypatch.setattr(_tools_mod, "_kill_process_tree", lambda proc: None)
+
+    sentinel = tmp_path / "grandchild_ran"
+    # Leader sleeps well past the timeout so proc.wait() genuinely times out
+    # (enters the TimeoutExpired branch); a same-group grandchild holds stdout
+    # and would touch the sentinel after the timeout unless the group is killed.
+    proc = _sp.Popen(
+        ["bash", "-c", f"( sleep 3; touch '{sentinel}' ) & sleep 30"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        preexec_fn = os.setsid,
+    )
+    pgid = _capture_process_group(proc)
+    assert pgid is not None
+
+    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    assert timed_out
+    time.sleep(4.0)  # past the grandchild's 3s sleep
+    assert not sentinel.exists(), (
+        "streamed wait timeout leaked a stdout-holding grandchild when the "
+        "process-tree kill short-circuited on the reaped leader"
+    )
+
+
 # ── GGUF loop regression: model-visible messages unchanged ───────
 
 

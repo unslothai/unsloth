@@ -2993,6 +2993,12 @@ def _drain_process_output(
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_tree(proc)
+        # The leader can exit in the small window between proc.wait() timing out
+        # and _kill_process_tree() sampling its pgid; _kill_process_tree then
+        # short-circuits on the reaped leader, so also kill the group captured
+        # before the wait to reap a stdout-holding grandchild that outlived it --
+        # matching the non-streaming communicate() timeout path.
+        _killpg_captured(pgid)
         try:
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
