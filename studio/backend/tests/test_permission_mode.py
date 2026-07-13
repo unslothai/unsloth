@@ -415,9 +415,18 @@ def test_terminal_classifier(command, unsafe):
             True,
         ),  # listener
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
-        ("from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()", True),  # Path aliased
-        ("import os\nj = os.path.join\nopen(j('/etc', 'passwd')).read()", True),  # os.path.join aliased
-        ("from pathlib import Path\nP = Path\n(P('/tmp') / 'x').read_text()", False),  # benign alias
+        (
+            "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
+            True,
+        ),  # Path aliased
+        (
+            "import os\nj = os.path.join\nopen(j('/etc', 'passwd')).read()",
+            True,
+        ),  # os.path.join aliased
+        (
+            "from pathlib import Path\nP = Path\n(P('/tmp') / 'x').read_text()",
+            False,
+        ),  # benign alias
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
