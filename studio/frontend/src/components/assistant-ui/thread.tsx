@@ -1859,21 +1859,27 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Active-mode badge: always visible when bypass is on, even while
-              the pill row is collapsed (returns null when off). */}
-          <BypassPermissionsToggle />
-          {composerExpanded ? (
+          {/* While dictating, show only the "+" like ChatGPT; hide the mode
+              badge and tool toggles so just the waveform reads. */}
+          {!isDictating && (
             <>
-              <WebSearchToggle />
-              <CodeToolsToggle />
-              <ImagesToggle />
-              <KnowledgeBaseComposerButton side={effectiveMenuSide} />
-              {artifactsEnabled ? <ArtifactsToggle /> : null}
-              {mcpEnabledForChat ? (
-                <McpComposerButton side={effectiveMenuSide} />
+              {/* Active-mode badge: always visible when bypass is on, even
+                  while the pill row is collapsed (returns null when off). */}
+              <BypassPermissionsToggle />
+              {composerExpanded ? (
+                <>
+                  <WebSearchToggle />
+                  <CodeToolsToggle />
+                  <ImagesToggle />
+                  <KnowledgeBaseComposerButton side={effectiveMenuSide} />
+                  {artifactsEnabled ? <ArtifactsToggle /> : null}
+                  {mcpEnabledForChat ? (
+                    <McpComposerButton side={effectiveMenuSide} />
+                  ) : null}
+                </>
               ) : null}
             </>
-          ) : null}
+          )}
         </div>
         {isDictating ? (
           // ChatGPT-style recording UI replaces the input + send controls while

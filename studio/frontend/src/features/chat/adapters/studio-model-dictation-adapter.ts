@@ -21,7 +21,7 @@ const SEGMENT_TIMESLICE_MS = 250;
 // natural pauses so word boundaries are preserved, but bounded so no single
 // clip is too short to be accurate or too long to keep the tick snappy.
 const MIN_SEGMENT_MS = 2500;
-const MAX_SEGMENT_MS = 9000;
+const MAX_SEGMENT_MS = 6000;
 const SILENCE_CUT_MS = 350;
 // Raw RMS (0..1) above which a frame counts as speech. Noise suppression keeps
 // the room floor well below this.

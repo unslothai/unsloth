@@ -169,7 +169,11 @@ class WhisperSttSidecar:
             segments, info = whisper_model.transcribe(
                 io.BytesIO(audio),
                 language=lang,
-                beam_size=5,
+                # Greedy decoding (beam_size=1) is several times faster on CPU
+                # than a beam search, with negligible accuracy loss on the short,
+                # clean clips dictation produces. Speed is what dictation needs.
+                beam_size=1,
+                # Trim leading/trailing silence so short clips decode fast.
                 vad_filter=True,
                 condition_on_previous_text=False,
             )

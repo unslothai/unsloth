@@ -9,9 +9,11 @@ import { type FC, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
 import { TooltipIconButton } from "./tooltip-icon-button";
 
-// Number of bars in the waveform. Enough to read as speech, few enough to stay
-// crisp at any composer width.
-const BAR_COUNT = 56;
+// Dense row of dots that rise into thin centered bars, ChatGPT-style. Many,
+// thin dots read as a smooth waveform across any composer width.
+const BAR_COUNT = 96;
+// Peak multiple of a dot's height for the loudest audio (dot is ~3px tall).
+const MAX_SCALE = 9;
 // If no real mic level arrives for this long (e.g. the browser speech engine
 // gives us no stream), fall back to a gentle idle shimmer so the bar is alive.
 const IDLE_AFTER_MS = 350;
@@ -50,10 +52,12 @@ export const ChatDictationBar: FC = () => {
       : [];
     // Paint the bars imperatively (not via React state) so the ~60fps waveform
     // does not thrash renders. The spans carry no style prop, so React never
-    // overwrites these transforms when the elapsed timer re-renders.
+    // overwrites these transforms when the elapsed timer re-renders. At rest
+    // each span is a small round dot (scaleY 1); louder audio scales it up into
+    // a thin centered bar.
     for (const el of barEls) {
-      el.style.transform = "scaleY(0.08)";
-      el.style.opacity = "0.35";
+      el.style.transform = "scaleY(1)";
+      el.style.opacity = "0.3";
     }
 
     // Push a new level onto the rolling waveform and paint it. Painting the DOM
@@ -64,8 +68,8 @@ export const ChatDictationBar: FC = () => {
       if (bars.length > BAR_COUNT) bars.shift();
       for (let i = 0; i < barEls.length; i++) {
         const v = bars[i] ?? 0;
-        barEls[i].style.transform = `scaleY(${Math.max(0.08, v)})`;
-        barEls[i].style.opacity = `${0.35 + v * 0.65}`;
+        barEls[i].style.transform = `scaleY(${1 + v * (MAX_SCALE - 1)})`;
+        barEls[i].style.opacity = `${0.3 + v * 0.7}`;
       }
     };
 
@@ -116,12 +120,12 @@ export const ChatDictationBar: FC = () => {
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave flex h-8 min-w-0 flex-1 items-center gap-[3px] overflow-hidden"
+        className="unsloth-dictation-wave flex h-8 min-w-0 flex-1 items-center justify-between overflow-hidden"
       >
         {Array.from({ length: BAR_COUNT }).map((_, i) => (
           <span
             key={`wave-bar-${i}`}
-            className="h-full w-[3px] shrink-0 origin-center scale-y-[0.08] rounded-full bg-foreground/80 opacity-35 transition-transform duration-75"
+            className="h-[3px] w-[3px] shrink-0 origin-center rounded-full bg-foreground opacity-30 transition-transform duration-75"
           />
         ))}
       </div>
