@@ -56,6 +56,7 @@ const TABS: TabDef[] = [
     id: "resources",
     labelKey: "settings.tabs.resources",
     icon: CpuIcon,
+    badgeKey: "common.new",
   },
   {
     id: "chat",
@@ -72,7 +73,6 @@ const TABS: TabDef[] = [
     id: "connections",
     labelKey: "settings.tabs.connections",
     icon: CloudIcon,
-    badgeKey: "common.new",
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];

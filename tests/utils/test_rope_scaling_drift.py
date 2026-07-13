@@ -257,6 +257,96 @@ def test_recompute_helper_scales_on_cpu():
     ), "_unsloth_recompute_inv_freq must return vanilla inv_freq when unscaled."
 
 
+def test_extended_rope_scaling_keeps_llama3_and_carries_theta():
+    # Long-context extension keeps native llama3, but falls back to linear for every other
+    # type (the patched attention constructor only rebuilds linear/llama3/longrope), and the
+    # linear dict carries rope_theta so transformers v5 does not fall back to base 10000.
+    from types import SimpleNamespace
+
+    from unsloth.models.llama import _extended_rope_scaling
+
+    # llama3 model: keep native scaling, do not synthesize linear.
+    scaling, native = _extended_rope_scaling(_make_config(LLAMA3_ROPE_SCALING), 2.0)
+    assert (
+        scaling is None and native == "llama3"
+    ), "must keep native llama3 scaling instead of overwriting it with linear."
+
+    # yarn is not rebuildable by the patcher -> keep the safe linear fallback, not native.
+    yarn = SimpleNamespace(rope_scaling = {"rope_type": "yarn", "factor": 2.0}, rope_theta = 500000.0)
+    scaling, _ = _extended_rope_scaling(yarn, 2.0)
+    assert scaling == {
+        "type": "linear",
+        "factor": 2.0,
+        "rope_theta": 500000.0,
+    }, f"yarn must fall back to linear (patcher cannot rebuild it), got {scaling}."
+
+    # plain RoPE with theta only under v5 rope_parameters: linear must carry rope_theta.
+    v5 = SimpleNamespace(rope_parameters = {"rope_type": "default", "rope_theta": 1000000.0})
+    scaling, _ = _extended_rope_scaling(v5, 2.0)
+    assert scaling == {
+        "type": "linear",
+        "factor": 2.0,
+        "rope_theta": 1000000.0,
+    }, f"linear override dropped rope_theta on v5 (got {scaling}); base would fall back to 10000."
+
+
+def test_extended_rotary_reads_config_factor():
+    # LlamaExtendedRotaryEmbedding must honor the config factor, not hardcode 8
+    # (Llama-3.2 uses 32); otherwise the subclass path re-drops scaling (#2405).
+    from types import SimpleNamespace
+
+    from unsloth.models.llama import LlamaExtendedRotaryEmbedding
+
+    rot = object.__new__(LlamaExtendedRotaryEmbedding)
+    rot.base = ROPE_THETA
+    rot.dim = HEAD_DIM
+    rot._unsloth_rope_config = SimpleNamespace(
+        rope_scaling = {
+            "rope_type": "llama3",
+            "factor": 32.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192,
+        }
+    )
+    vanilla = _vanilla_inv_freq()
+    scaled = rot._apply_inv_freq_scaling(vanilla).reshape(-1)
+    ratio = float(vanilla[-1]) / float(scaled[-1])
+    assert abs(ratio - 32.0) < 1e-3, (
+        f"LlamaExtendedRotaryEmbedding ignored config factor 32 (ratio {ratio}); the "
+        "low-frequency band must be divided by the config factor (issue #2405)."
+    )
+
+
+def test_extended_rotary_reads_rope_parameters_v5():
+    # transformers v5 stores scaling under rope_parameters (rope_scaling is a
+    # back-compat shim that may be removed); the factor must still be read.
+    from types import SimpleNamespace
+
+    from unsloth.models.llama import LlamaExtendedRotaryEmbedding
+
+    rot = object.__new__(LlamaExtendedRotaryEmbedding)
+    rot.base = ROPE_THETA
+    rot.dim = HEAD_DIM
+    rot._unsloth_rope_config = SimpleNamespace(
+        rope_scaling = None,
+        rope_parameters = {
+            "rope_type": "llama3",
+            "factor": 32.0,
+            "low_freq_factor": 1.0,
+            "high_freq_factor": 4.0,
+            "original_max_position_embeddings": 8192,
+        },
+    )
+    vanilla = _vanilla_inv_freq()
+    scaled = rot._apply_inv_freq_scaling(vanilla).reshape(-1)
+    ratio = float(vanilla[-1]) / float(scaled[-1])
+    assert abs(ratio - 32.0) < 1e-3, (
+        f"Extended rotary ignored rope_parameters factor 32 (ratio {ratio}); v5 "
+        "keeps the factor under rope_parameters, not rope_scaling."
+    )
+
+
 def _cos_at_position(rot, position):
     """cos row at one position, built like _set_cos_sin_cache but CPU-only."""
     inv_freq = rot.inv_freq.float().cpu()
@@ -322,6 +412,87 @@ def test_extended_cache_keeps_scaling_after_growth():
         "scaling of inv_freq; long-context decode loses scaling otherwise "
         "(issue #2405)."
     )
+
+
+def _blank_nonpersistent_buffers(module):
+    """Mimic transformers v5 meta-load: overwrite non-persistent buffers with garbage."""
+    for name, buf in list(module.named_buffers()):
+        leaf = module
+        *parents, attr = name.split(".")
+        for part in parents:
+            leaf = getattr(leaf, part)
+        if attr in getattr(leaf, "_non_persistent_buffers_set", set()):
+            setattr(leaf, attr, torch.rand_like(buf))
+
+
+def _build_llama3_rotary():
+    from unsloth.models import llama as llama_mod
+    config = _make_config(LLAMA3_ROPE_SCALING)
+    return llama_mod.LlamaRotaryEmbedding(config = config), config
+
+
+def _build_longrope_rotary():
+    from types import SimpleNamespace
+
+    from unsloth.models import llama as llama_mod
+
+    short_factor, long_factor = [1.05] * 48, [1.3] * 48
+    rot = llama_mod.LongRopeRotaryEmbedding(
+        dim = 96,
+        max_position_embeddings = 131072,
+        original_max_position_embeddings = 4096,
+        base = ROPE_THETA,
+        short_factor = short_factor,
+        long_factor = long_factor,
+    )
+    config = SimpleNamespace(
+        rope_scaling = {
+            "rope_type": "longrope",
+            "short_factor": short_factor,
+            "long_factor": long_factor,
+            "original_max_position_embeddings": 4096,
+        }
+    )
+    return rot, config
+
+
+@requires_cuda
+@pytest.mark.parametrize(
+    "build", [_build_llama3_rotary, _build_longrope_rotary], ids = ["llama3", "longrope"]
+)
+def test_v5_blank_repair_roundtrip(build):
+    # Build scaled -> blank non-persistent buffers (what transformers v5 does on
+    # load) -> run the repair -> every buffer must return to its scaled value.
+    # Family-agnostic: encodes no scaling math, so it guards any rotary that
+    # keeps scaling in a buffer (issue #2405 / PR #6907).
+    from unsloth.models import loader
+
+    # The repair only runs on transformers v5 (it is what blanks the buffers);
+    # on v4 _fix_rope_inv_freq is a no-op, so the round-trip cannot restore.
+    if not loader._NEEDS_ROPE_FIX:
+        pytest.skip("transformers < 5 does not blank rope buffers; repair is a no-op")
+
+    rot, config = build()
+    snapshot = {name: buf.detach().clone() for name, buf in rot.named_buffers()}
+    assert snapshot, "rotary registers no buffers; nothing to guard"
+
+    _blank_nonpersistent_buffers(rot)
+    assert any(
+        not torch.equal(rot.get_buffer(name), snapshot[name]) for name in snapshot
+    ), "blanking changed no buffer; the round-trip would be vacuous"
+
+    wrapper = torch.nn.Module()
+    wrapper.add_module("rotary_emb", rot)
+    wrapper.config = config
+    loader._fix_rope_inv_freq(wrapper)
+
+    for name in snapshot:
+        assert torch.allclose(
+            rot.get_buffer(name).cpu(), snapshot[name].cpu(), rtol = 1e-4, atol = 1e-6
+        ), (
+            f"{name} was not restored to its scaled value by loader._fix_rope_inv_freq "
+            "after the transformers v5 buffer blank (issue #2405 / PR #6907)."
+        )
 
 
 def test_object_style_rope_scaling_does_not_crash():
