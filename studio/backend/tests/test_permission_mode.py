@@ -400,11 +400,20 @@ def test_terminal_classifier(command, unsafe):
         ("from pathlib import Path\np = Path('out').open\np('w')", True),  # bound .open aliased
         ("import zipfile\nz = zipfile.ZipFile\nz('a.zip', 'w')", True),  # attribute archive ctor
         ("import numpy as np\nx = np.mean\nx(a)", False),  # a benign attribute alias stays safe
-        ("import numpy as np\nnp.memmap('o', dtype='u1', mode='w+', shape=(1,))", True),  # memmap w+
-        ("import pandas as pd\npd.ExcelWriter('o.xlsx')", True),  # pandas ExcelWriter creates a file
+        (
+            "import numpy as np\nnp.memmap('o', dtype='u1', mode='w+', shape=(1,))",
+            True,
+        ),  # memmap w+
+        (
+            "import pandas as pd\npd.ExcelWriter('o.xlsx')",
+            True,
+        ),  # pandas ExcelWriter creates a file
         ("import pandas as pd\npd.HDFStore('o.h5')", True),  # pandas HDFStore creates a file
         ("import asyncio\nasyncio.open_connection('h', 80)", True),  # asyncio outbound connection
-        ("import asyncio\nl = asyncio.get_event_loop()\nl.create_server(P, 'h', 80)", True),  # listener
+        (
+            "import asyncio\nl = asyncio.get_event_loop()\nl.create_server(P, 'h', 80)",
+            True,
+        ),  # listener
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
