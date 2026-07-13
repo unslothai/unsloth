@@ -240,7 +240,6 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # expert weights into unvalidated paths (same flip as the chat worker).
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
-
         if latest_tier_active_for(checkpoint_path, cmd.get("hf_token")):
             load_in_4bit = False
             logger.info(

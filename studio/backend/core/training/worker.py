@@ -3015,7 +3015,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _train_load_in_4bit = config["load_in_4bit"]
         if _train_load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
-
             if latest_tier_active_for(model_name, hf_token):
                 _train_load_in_4bit = False
                 logger.info(
