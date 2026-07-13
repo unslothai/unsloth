@@ -115,11 +115,12 @@ let _yamlLearningRate: number | undefined = undefined;
 let _datasetFormatBeforeCpt: DatasetFormat | null = null;
 let _datasetFormatAutoForcedByCpt = false;
 
+// isVisionModel / isAudioModel persist so multimodal-only UI paints right on
+// reload; the model-config fetch still re-derives them afterwards.
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
   "modelType",
   "isCheckingVision",
   "isEmbeddingModel",
-  "isAudioModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
   "modelDefaultsAppliedFor",
@@ -128,7 +129,6 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
-  "isVisionModel",
   "s3Config",
 ]);
 
