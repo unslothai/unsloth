@@ -393,6 +393,9 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     assert "--llama-tag" in cmd and "latest" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
+    # No pin: source-build detection and the unpinned apply share the same
+    # "latest" resolver, so they already agree.
+    assert "--published-release-tag" not in cmd
 
 
 def test_start_update_happy_path(monkeypatch, tmp_path):
@@ -661,6 +664,26 @@ def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tm
     assert "--rocm-gfx" not in cmd
     assert "--has-rocm" not in cmd
     assert "--cpu-fallback" not in cmd
+
+
+def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):
+    # Apply must install exactly the release the banner offered. The installer's
+    # own "latest" comes from commit-date-ordered sources, which can lag the
+    # published_at-newest tag detection picked; unpinned, that lag makes Update
+    # reinstall the current build while the banner never clears.
+    monkeypatch.setattr(sys, "platform", "linux")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path, latest = "b9601-mix-a0e2906")
+    # The full release identity is pinned, not the bare upstream base.
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9601-mix-a0e2906"
+
+
+def test_install_cmd_does_not_pin_on_macos(monkeypatch, tmp_path):
+    # A pinned tag disables the installer's older-release walk-back, which macOS
+    # needs to skip prebuilts built for a newer macOS than the host.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path)
+    assert "--published-release-tag" not in cmd
+    assert "--llama-tag" in cmd and "latest" in cmd
 
 
 # --- refusal + maintenance-state coordination ---

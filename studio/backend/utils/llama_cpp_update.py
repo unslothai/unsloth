@@ -473,9 +473,21 @@ def _rocm_install_args(asset: Optional[str]) -> list[str]:
     return ["--has-rocm"]
 
 
-def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path) -> None:
+def _run_update(
+    install_dir: Path,
+    repo: str,
+    asset: Optional[str],
+    script: Path,
+    pin_release_tag: Optional[str] = None,
+) -> None:
     """Worker: put the backend into a maintenance state, run the installer for
-    the latest prebuilt, then refresh caches so the next load uses the new build."""
+    the latest prebuilt, then refresh caches so the next load uses the new build.
+
+    pin_release_tag pins the installer to that exact published release. Without
+    it the installer re-resolves "latest" itself (via GitHub's /releases/latest
+    pointer or list order, both commit-date based), which can lag the
+    published_at-newest release the update banner offered; the apply then
+    reinstalls the current build and the banner never clears (see #6219)."""
     backend = None
     model_was_active = False
     try:
@@ -510,6 +522,8 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
             "--published-repo",
             repo,
         ]
+        if pin_release_tag:
+            cmd.extend(["--published-release-tag", pin_release_tag])
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
         # Stream progress lines into job["progress"].
@@ -650,6 +664,12 @@ def start_update() -> dict:
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
+        # Install exactly the release the banner offered, not whatever the
+        # installer's own "latest" resolves to at apply time (commit-date
+        # ordered, can lag the published_at pick above -- reinstalling the
+        # current build in a loop). Not on macOS: a pinned tag disables the
+        # older-release walk-back that skips prebuilts built for a newer macOS.
+        pin_release_tag = None if sys.platform == "darwin" else status.get("latest_tag")
     else:
         # Source build / custom path: only proceed when the same detection logic
         # would offer the update (prebuilt exists, install is behind, root is
@@ -677,6 +697,9 @@ def start_update() -> dict:
         repo = (res or {}).get("repo") or DEFAULT_PUBLISHED_REPO
         from_tag = None
         asset = (res or {}).get("asset")
+        # No pin: source-build detection resolves via --resolve-prebuilt latest,
+        # the same resolver the unpinned apply uses, so the two already agree.
+        pin_release_tag = None
 
     if install_dir is None:
         return {
@@ -704,7 +727,7 @@ def start_update() -> dict:
 
     thread = threading.Thread(
         target = _run_update,
-        args = (install_dir, repo, asset, script),
+        args = (install_dir, repo, asset, script, pin_release_tag),
         name = "llama-cpp-update",
         daemon = True,
     )
