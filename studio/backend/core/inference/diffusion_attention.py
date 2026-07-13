@@ -687,14 +687,10 @@ def install_hunyuan_attention_trim(
         if getattr(dit, "_unsloth_trim_hook", None) is None:
             pre_handle = None
             try:
-                pre_handle = dit.register_forward_pre_hook(
-                    _hunyuan_trim_pre_hook, with_kwargs = True
-                )
+                pre_handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs = True)
                 # always_call: clear the flag even when the forward raises, so an exception can
                 # never leave the null-mask authorisation latched for a later direct forward.
-                post_handle = dit.register_forward_hook(
-                    _hunyuan_trim_post_hook, always_call = True
-                )
+                post_handle = dit.register_forward_hook(_hunyuan_trim_post_hook, always_call = True)
                 dit._unsloth_trim_hook = (pre_handle, post_handle)
             except Exception as exc:  # noqa: BLE001 — optimisation only
                 if pre_handle is not None:

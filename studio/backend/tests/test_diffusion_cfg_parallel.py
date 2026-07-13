@@ -659,13 +659,19 @@ def test_replica_mirrors_max_tier_compile_and_fusion(monkeypatch):
     speed = _engage_stubs(monkeypatch)
     compile_kwargs: list = []
     monkeypatch.setattr(
-        speed, "_compile_repeated_blocks",
+        speed,
+        "_compile_repeated_blocks",
         lambda view, logger, **kw: compile_kwargs.append(kw) or True,
     )
     pipe = _CtxPipe(_LoadableFuseDiT())
     proxy, reason = _gate(
-        monkeypatch, pipe, _fam(), requested = "on", compiled = True,
-        speed_mode = "max", attention_backend = None,
+        monkeypatch,
+        pipe,
+        _fam(),
+        requested = "on",
+        compiled = True,
+        speed_mode = "max",
+        attention_backend = None,
     )
     assert proxy is not None, reason
     try:
@@ -682,13 +688,19 @@ def test_replica_default_tier_no_max_autotune_no_fuse(monkeypatch):
     speed = _engage_stubs(monkeypatch)
     compile_kwargs: list = []
     monkeypatch.setattr(
-        speed, "_compile_repeated_blocks",
+        speed,
+        "_compile_repeated_blocks",
         lambda view, logger, **kw: compile_kwargs.append(kw) or True,
     )
     pipe = _CtxPipe(_LoadableFuseDiT())
     proxy, reason = _gate(
-        monkeypatch, pipe, _fam(), requested = "on", compiled = True,
-        speed_mode = "default", attention_backend = None,
+        monkeypatch,
+        pipe,
+        _fam(),
+        requested = "on",
+        compiled = True,
+        speed_mode = "default",
+        attention_backend = None,
     )
     assert proxy is not None, reason
     try:
@@ -709,12 +721,17 @@ def test_replica_pins_native_when_backend_unsupported_on_secondary(monkeypatch):
     monkeypatch.setattr(attn, "attention_backend_supported_on_device", lambda backend, idx: False)
     applied: list = []
     monkeypatch.setattr(
-        attn, "apply_attention_backend",
+        attn,
+        "apply_attention_backend",
         lambda view, backend, logger = None: applied.append(backend) or backend,
     )
     pipe = _CtxPipe(_LoadableFuseDiT())
     proxy, reason = _gate(
-        monkeypatch, pipe, _fam(), requested = "on", attention_backend = "_flash_3_hub",
+        monkeypatch,
+        pipe,
+        _fam(),
+        requested = "on",
+        attention_backend = "_flash_3_hub",
     )
     assert proxy is not None, reason
     try:

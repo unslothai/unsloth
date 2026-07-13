@@ -2148,12 +2148,14 @@ def test_step_cache_all_or_none_raises_when_rollback_fails(monkeypatch):
 
     pipe, fam, _t1, _t2 = _moe_pipe_and_fam()
     monkeypatch.setattr(
-        video, "_disengage_step_cache",
+        video,
+        "_disengage_step_cache",
         lambda transformer, *, reason, logger = None: False,  # rollback fails
     )
     with pytest.raises(RuntimeError, match = "rollback failed"):
         video._step_cache_all_or_none(
-            pipe, fam,
+            pipe,
+            fam,
             lambda view, expert_name: "fbcache" if expert_name == "transformer" else None,
             logger = None,
         )
@@ -2174,7 +2176,8 @@ def test_explicit_magcache_hard_errors_when_disable_fails(fake_runtime, monkeypa
     reapplied: list = []
     monkeypatch.setattr(video, "_disengage_step_cache", lambda *a, **k: False)
     monkeypatch.setattr(
-        video, "apply_step_cache",
+        video,
+        "apply_step_cache",
         lambda *a, **k: reapplied.append(k.get("steps")) or "magcache",
     )
     with pytest.raises(RuntimeError, match = "reload the video model"):

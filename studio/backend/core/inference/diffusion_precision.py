@@ -340,6 +340,7 @@ def quantize_text_encoders(
             # upcast hooks + fp8 storage in place, leaving no torchao params). Detect a leftover
             # layerwise hook directly and fail closed there too; a clean failure stays dense.
             from .diffusion_transformer_quant import raise_if_partially_quantized
+
             if mode == TE_QUANT_FP8 and _has_layerwise_casting(encoder):
                 raise RuntimeError(
                     f"text_encoder_quant fp8:{attr} failed after partially installing layerwise "

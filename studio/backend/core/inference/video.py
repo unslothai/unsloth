@@ -2189,9 +2189,7 @@ class VideoBackend:
                     # Transactional across MoE experts (like the load / AUTO paths): refuse to
                     # stack a fresh cache over one whose removal failed, and roll back a mixed
                     # resize so status never reports MagCache over an asymmetric pair.
-                    def _resize_explicit_magcache(
-                        view: Any, expert_name: str
-                    ) -> Optional[str]:
+                    def _resize_explicit_magcache(view: Any, expert_name: str) -> Optional[str]:
                         transformer = getattr(view, "transformer", None)
                         marker = getattr(transformer, "_unsloth_step_cache", None)
                         # endswith, not substring: "#s5" would match inside "#s50".

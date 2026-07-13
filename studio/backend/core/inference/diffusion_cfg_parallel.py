@@ -558,9 +558,7 @@ def maybe_enable_cfg_parallel(
         need = weight_bytes + _REPLICA_HEADROOM_BYTES
         # Filter by the replica's memory need FIRST so a viable heterogeneous GPU is preferred
         # over an identical GPU too small to hold the replica.
-        secondary, free, device_match = _pick_secondary_device(
-            primary_index, min_free_bytes = need
-        )
+        secondary, free, device_match = _pick_secondary_device(primary_index, min_free_bytes = need)
         if secondary is None:
             return None, "no queryable secondary CUDA device"
         if not device_match:
@@ -645,9 +643,7 @@ def maybe_enable_cfg_parallel(
             # the whole parallel run. A cache may engage/toggle on this DiT, so fullgraph stays
             # off like the loader.
             max_speed = str(speed_mode) == SPEED_MAX
-            _compile_repeated_blocks(
-                view, logger, max_autotune = max_speed, cache_active = True
-            )
+            _compile_repeated_blocks(view, logger, max_autotune = max_speed, cache_active = True)
             if max_speed:
                 # Fuse the REPLICA's QKV projections directly: _fuse_qkv(view) would resolve the
                 # pipe-level fuse_qkv_projections through _ReplicaView delegation and re-fuse the
