@@ -7,8 +7,8 @@ transformers.
 ``core/_torchao_stub.py:install_torchao_windows_rocm_stub`` stubs torchao so transformers can import
 without an absent RCCL backend on Windows ROCm (no-op on every other runtime). If transformers imports
 first, a legacy Windows-ROCm venv that still carries a real torchao crashes on import (issue #6833).
-Three workers already guard this (training, export, rag); the inference worker -- the most-used path --
-regressed by omitting it.
+Three entrypoints already guard this (the training and export workers, and the main-process rag
+embedder); the inference worker -- the most-used path -- never had the call.
 
 CPU-only: parses source with ``ast``, no torch/transformers/GPU/weights needed.
 """
@@ -18,9 +18,11 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from core._torchao_stub import install_torchao_windows_rocm_stub
+
 _BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
 _CORE = _BACKEND / "core"
-_STUB = "install_torchao_windows_rocm_stub"
+_STUB = install_torchao_windows_rocm_stub.__name__  # a rename breaks the import loudly
 
 _ENTRYPOINTS = [
     _CORE / "training" / "worker.py",
@@ -48,7 +50,7 @@ def _func(tree, name):
 
 def test_all_entrypoints_call_stub():
     """Every entrypoint that imports transformers must call the stub at all -- this is the exact
-    regression that shipped (the inference worker dropped the call). This is a presence check (the call
+    gap that shipped (the inference worker never gained the call). This is a presence check (the call
     exists in the file); ordering is asserted only for the inference worker below, the path this fix
     hardened. The other three import transformers at structurally different sites."""
     for path in _ENTRYPOINTS:
@@ -58,15 +60,34 @@ def test_all_entrypoints_call_stub():
         )
 
 
+_INFERENCE_MOD = "core.inference.inference"
+
+
 def _imports_transformers(node) -> bool:
     """A statement that imports transformers directly (``import transformers[.x]`` /
-    ``from transformers[.x] import ...``) or transitively at load (via ``core.inference.inference``,
-    whose module imports transformers)."""
+    ``from transformers[.x] import ...``) or transitively at load: any absolute or relative import
+    form resolving to ``core.inference.inference`` (whose module imports transformers), so a style
+    refactor of the section-2 import can't slip past the anchor."""
     if isinstance(node, ast.Import):
-        return any(a.name.split(".")[0] == "transformers" for a in node.names)
-    if isinstance(node, ast.ImportFrom) and node.module:
-        return (
-            node.module.split(".")[0] == "transformers" or node.module == "core.inference.inference"
+        return any(
+            a.name.split(".")[0] == "transformers"
+            or a.name == _INFERENCE_MOD
+            or a.name.startswith(_INFERENCE_MOD + ".")
+            for a in node.names
+        )
+    if isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        if node.level == 0:
+            return (
+                module.split(".")[0] == "transformers"
+                or module == _INFERENCE_MOD
+                or module.startswith(_INFERENCE_MOD + ".")
+                or (module == "core.inference" and any(a.name == "inference" for a in node.names))
+            )
+        # Relative forms inside core/inference/worker.py: ``from .inference import X`` and
+        # ``from . import inference`` both resolve to core.inference.inference.
+        return module == "inference" or (
+            not module and any(a.name == "inference" for a in node.names)
         )
     return False
 

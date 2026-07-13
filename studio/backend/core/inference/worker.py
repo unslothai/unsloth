@@ -906,10 +906,9 @@ def run_inference_process(
                 )
         return
 
-    # ── Windows: check Triton availability (must precede import torch) ──
-    # Must run before the torchao stub below, which imports torch itself to detect ROCm --
-    # otherwise this check runs against an already-imported torch and TORCHDYNAMO_DISABLE
-    # would race the training/export workers' ordering (see their "1c" Triton gate).
+    # ── Windows: check Triton availability ──
+    # Placed ahead of the torchao stub below (which imports torch on win32 to detect ROCm),
+    # matching the training and export workers' gate-then-stub ordering.
     if sys.platform == "win32":
         try:
             import triton  # noqa: F401
@@ -929,7 +928,9 @@ def run_inference_process(
 
     install_torchao_windows_rocm_stub()
 
-    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # ── Resolve the effective base once, before activation/gates/install ──
+    # No ML import on the common path; a local adapter with no recorded base pulls
+    # transformers via utils.models, which is why the stub above precedes this.
     # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
     # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
