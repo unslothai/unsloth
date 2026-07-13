@@ -415,6 +415,9 @@ def test_terminal_classifier(command, unsafe):
             True,
         ),  # listener
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
+        ("from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()", True),  # Path aliased
+        ("import os\nj = os.path.join\nopen(j('/etc', 'passwd')).read()", True),  # os.path.join aliased
+        ("from pathlib import Path\nP = Path\n(P('/tmp') / 'x').read_text()", False),  # benign alias
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -957,6 +960,12 @@ def test_confirm_gate_needs_stream():
             req(permission_mode = "auto", enabled_tools = ["web_search"], confirm_tool_calls = True)
         )
         is True
+    )
+    # An explicit empty selection runs no built-in tool, so nothing can prompt and
+    # no stream is needed (distinct from an omitted list, which means all tools).
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enable_tools = True, enabled_tools = []))
+        is False
     )
     # ask prompts for every call, so even a safe-only selection needs streaming.
     assert _confirm_gate_needs_stream(req(permission_mode = "ask", enabled_tools = safe)) is True

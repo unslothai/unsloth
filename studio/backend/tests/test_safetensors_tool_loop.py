@@ -2591,6 +2591,49 @@ class TestLoopBasic:
         assert tool_starts[0]["arguments"] == {}
         assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
 
+    def test_render_html_auto_mode_keeps_early_provisional(self):
+        """permission_mode="auto" ships confirm_tool_calls=true, but render_html is
+        always safe and never prompts, so its early provisional canvas card must
+        still surface (mirrors the GGUF path's is_always_safe_tool exemption)."""
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        assert len(tool_starts) == 2
+        assert tool_starts[0]["arguments"] == {}
+        assert tool_starts[0]["tool_name"] == "render_html"
+        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+        # A safe auto-mode tool runs without an approval gate.
+        assert tool_starts[1].get("awaiting_confirmation") in (False, None)
+
     def test_render_html_provisional_card_closed_on_generator_exception(self):
         """If the model generator raises mid-stream after a provisional render_html
         card was surfaced, the loop must close that card as errored before the

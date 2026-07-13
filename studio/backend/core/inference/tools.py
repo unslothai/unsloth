@@ -1514,6 +1514,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 writer_aliases.update(targets)  # s = save (numpy save alias)
             elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
                 archive_ctor_aliases.update(targets)  # z = ZipFile
+            elif isinstance(value, ast.Name) and value.id in path_ctor_aliases:
+                path_ctor_aliases.update(targets)  # P = Path
+            elif isinstance(value, ast.Name) and value.id in pathjoin_aliases:
+                pathjoin_aliases.update(targets)  # j = join
+            elif isinstance(value, ast.Attribute) and value.attr == "join":
+                pathjoin_aliases.update(targets)  # j = os.path.join
             elif (
                 isinstance(value, ast.Attribute)
                 and value.attr == "open"

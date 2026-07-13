@@ -556,7 +556,16 @@ def run_safetensors_tool_loop(
         # provisional card (keyed by tool_call_id, no approval) would show the
         # tool as "running" before the user has approved it. Suppress the early
         # card in that case and let the gated tool_start be the first signal.
-        _provisional_confirm_gated = bool(confirm_tool_calls) and not bypass_permissions
+        # In auto mode render_html is always safe and never prompts, so keep its
+        # early canvas card (the frontend sends confirm_tool_calls=true alongside
+        # auto); mirrors the GGUF path's _confirm_gated exemption.
+        from core.inference.tools import is_always_safe_tool
+
+        _provisional_confirm_gated = (
+            bool(confirm_tool_calls)
+            and not bypass_permissions
+            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        )
 
         gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""

@@ -2103,8 +2103,12 @@ def _confirm_gate_needs_stream(payload) -> bool:
     if getattr(payload, "mcp_enabled", False):
         return True
     enabled = getattr(payload, "enabled_tools", None)
-    if not enabled:
+    if enabled is None:
         return True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
+    if not enabled:
+        # An explicit empty selection runs no built-in tool (_select_request_tools
+        # skips the loop), so there is nothing to prompt and no stream is needed.
+        return False
     from core.inference.tools import is_always_safe_tool
 
     return not all(is_always_safe_tool(t) for t in enabled)
