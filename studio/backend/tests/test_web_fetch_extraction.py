@@ -635,7 +635,7 @@ def test_fetch_page_text_keeps_markdown_readme_with_leading_table(monkeypatch):
     # body onto one line).
     md_readme = (
         '<table align="center">\n'
-        "<tr><td><img src=\"logo.png\"></td><td>Badges</td></tr>\n"
+        '<tr><td><img src="logo.png"></td><td>Badges</td></tr>\n'
         "</table>\n\n"
         "# My Project\n\n"
         "- feature one\n"
