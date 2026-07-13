@@ -452,9 +452,8 @@ def main(argv = None) -> int:
     )
     t0 = time.perf_counter()
     pipe = _build_pipe(repo, force_fp32)
-    # _build_pipe returns a CPU pipeline (the bench applies levers first, then places on CUDA).
-    # The ablation captures a forward directly with a CUDA generator and reads the DiT off the
-    # GPU below, so place the pipeline on CUDA here rather than crashing on a cpu/cuda mismatch.
+    # _build_pipe returns a CPU pipeline; the ablation captures a forward with a CUDA generator,
+    # so place it on CUDA here to avoid a cpu/cuda mismatch.
     pipe = pipe.to("cuda")
     print(f"[load] pipe built in {time.perf_counter()-t0:.1f}s", flush = True)
 

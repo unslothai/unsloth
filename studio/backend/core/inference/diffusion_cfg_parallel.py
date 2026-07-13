@@ -230,10 +230,8 @@ class CFGParallelProxy:
             raise
 
     def disable_cache(self) -> None:
-        # Removal must be transactional: if the primary's disable_cache raised while it ran
-        # outside this guard, the replica was never cleaned and _broken stayed False, so a
-        # half-removed pair kept routing. Attempt BOTH, record every failure, and only then
-        # decide _broken -- any failure disables routing and surfaces so the caller reloads.
+        # Transactional removal: attempt BOTH branches, record every failure, then decide
+        # _broken. A primary-only failure previously left the replica cached and kept routing.
         failures: list[tuple[str, Exception]] = []
         for name, module in (("primary", self._primary), ("replica", self._replica)):
             try:
@@ -412,10 +410,8 @@ def _install_threadsafe_cudnn_attention(logger: Any = None) -> bool:
                     return_lse = return_lse,
                     _parallel_config = _parallel_config,
                 )
-            # F.scaled_dot_product_attention (what the stock backend calls) treats a boolean
-            # mask as "True participates" and converts it to an ADDITIVE bias internally; the
-            # lower-level cuDNN op takes that bias directly, so a bool mask passed straight
-            # through is misread for any partial (non-all-True) mask. Convert to match SDPA.
+            # SDPA converts a bool mask ("True participates") to an additive bias internally;
+            # the cuDNN op takes the bias directly, so convert to match it for partial masks.
             if attn_mask is not None and attn_mask.dtype == torch.bool:
                 attn_mask = torch.zeros_like(attn_mask, dtype = query.dtype).masked_fill_(
                     ~attn_mask, float("-inf")

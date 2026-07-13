@@ -457,10 +457,9 @@ def _step_cache_all_or_none(
         for view, expert_name in pairs:
             results.append((view, expert_name, engage_fn(view, expert_name)))
     except BaseException as exc:
-        # A later expert raising mid-loop leaves the experts engaged BEFORE it still cached
-        # while the load unwinds -- the same silent all-or-none violation as a mixed outcome,
-        # so tear down every expert that got a marker, then re-raise (or a reload-required
-        # error if rollback itself fails).
+        # A later expert raising mid-loop leaves earlier experts cached (an all-or-none
+        # violation), so tear down every marked expert then re-raise, or raise reload-required
+        # if rollback itself fails.
         rollback_failed: list[str] = []
         for view, name in pairs:
             transformer = getattr(view, "transformer", None)
@@ -645,9 +644,8 @@ class VideoBackend:
         normalize_te_quant(text_encoder_quant)
         # Same for vae_quant (the dense VAE is resident for every load kind).
         normalize_vae_quant(vae_quant)
-        # Reject malformed cache-quality / cfg-parallel here too: the HTTP Literal fields gate
-        # the route, but a direct backend caller (bench, plugin, test) would otherwise start a
-        # worker and do checkpoint/download work before an invalid value fails deep in the load.
+        # Reject malformed cache-quality / cfg-parallel here too: a direct backend caller
+        # (bench, plugin, test) would otherwise do checkpoint/download work before failing deep.
         normalize_cache_quality(transformer_cache_quality)
         normalize_cfg_parallel(cfg_parallel)
         _ensure_mp4_encoder_available()
@@ -1590,8 +1588,7 @@ class VideoBackend:
                 # THROUGH the proxy so the replica carries the same hooks and each branch's
                 # cache state matches the single-GPU run (the bit-identity precondition).
                 # If the primary-only cache cannot be removed, reapplying through the proxy
-                # would double-hook the primary and desync the branches, so fail the load
-                # (the _precommit_cfg_parallel rollback then tears the proxy back down).
+                # double-hooks the primary and desyncs the branches, so fail the load.
                 if not _disengage_step_cache(
                     cfg_parallel_proxy._primary,
                     reason = "re-engaging through the cfg-parallel proxy",

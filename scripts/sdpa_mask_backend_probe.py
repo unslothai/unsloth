@@ -30,8 +30,7 @@ def timed(fn, iters = 20):
         torch.cuda.synchronize()
         return (time.perf_counter() - t0) / iters * 1e3
     except torch.OutOfMemoryError:
-        # An occupied / too-small cuda:0 OOMs on the dense NxN mask; that is a memory limit,
-        # not a backend rejecting the mask, so don't mislabel it UNSUPPORTED.
+        # OOM on the dense NxN mask is a memory limit, not a backend rejecting it; don't mislabel UNSUPPORTED.
         torch.cuda.empty_cache()
         return "OOM"
     except Exception as e:  # noqa: BLE001

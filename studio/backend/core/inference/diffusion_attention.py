@@ -64,7 +64,7 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
 # mid-generation). Gate by a (min, max-exclusive) capability range: FA3 is Hopper-SM90 only
 # (upper bound, so flash3 on a B200 drops to native), FA4 is Blackwell+ (no upper bound).
 _ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
-    "flash": ((8, 0), None),  # Dao-AILab FlashAttention 2 -> Ampere (SM80)+ (no Turing)
+    "flash": ((8, 0), None),  # FlashAttention 2 -> Ampere (SM80)+
     "_flash_3_hub": ((9, 0), (10, 0)),  # FlashAttention 3 -> Hopper (SM90) only
     "flash_4_hub": ((10, 0), None),  # FlashAttention 4 -> Blackwell (SM100)+
 }
