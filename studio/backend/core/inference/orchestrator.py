@@ -962,6 +962,22 @@ class InferenceOrchestrator:
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
 
+            # Recheck the sidecar reservation BEFORE tearing the old worker down:
+            # an install reserving after the route's under-gate check would
+            # otherwise only be caught at spawn time, after the previous model is
+            # already gone, failing both requests. Raising here keeps the current
+            # model loaded and the install proceeds cleanly behind the gate.
+            from utils.transformers_version import (
+                SidecarSwapInProgress,
+                sidecar_swap_in_progress,
+            )
+
+            if sidecar_swap_in_progress():
+                raise SidecarSwapInProgress(
+                    "A transformers installation is replacing the latest sidecar; "
+                    "retry when it completes."
+                )
+
             # Always kill the existing subprocess and spawn fresh: reusing one
             # after unsloth patches torch internals breaks getsource on reload.
             if self._ensure_subprocess_alive():

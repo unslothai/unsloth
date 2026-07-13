@@ -261,13 +261,15 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
     ``hf_token`` is forwarded to tier detection so a gated/private model whose only 5.x
     signal is an authenticated config/tokenizer reaches the right sidecar, not the default.
     """
-    # Pre-resolve only LoRA adapters; full checkpoints go to get_transformers_tier so their
-    # local config.json drives the tier (a full checkpoint with a private/offline
-    # _name_or_path must not resolve to an unreachable HF id and skip its own config).
+    # Pre-resolve LoRA adapters (local dir or remote adapter repo); full checkpoints
+    # go to get_transformers_tier so their local config.json drives the tier (a full
+    # checkpoint with a private/offline _name_or_path must not resolve to an
+    # unreachable HF id and skip its own config). Remote adapters activate for their
+    # BASE model, matching latest_tier_active_for and the inference worker.
     if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:
-        resolved = model_name
+        resolved = _remote_lora_base(model_name, hf_token = hf_token) or model_name
     tier = get_transformers_tier(resolved, hf_token)
     if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
         # Gate on a real local config.json: a checkpoint carries config the base may not
@@ -1959,11 +1961,35 @@ def _swap_lock_path() -> Path:
     return Path(_VENV_T5_LATEST_DIR + ".swaplock")
 
 
-def _swap_lock_is_stale(path: Path) -> bool:
+def _pid_alive(pid) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
     try:
-        return (time.time() - path.stat().st_mtime) > _SWAP_LOCK_STALE_SECS
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except Exception:
+        pass
+    try:
+        os.kill(pid, 0)
+        return True
     except OSError:
         return False
+    except Exception:
+        return False
+
+
+def _swap_lock_is_stale(path: Path) -> bool:
+    """Old AND owner-dead. Age alone is not enough: a slow but live pip install
+    can exceed the cutoff, and breaking its lock would let two processes rename
+    the same staging dirs concurrently."""
+    try:
+        if (time.time() - path.stat().st_mtime) <= _SWAP_LOCK_STALE_SECS:
+            return False
+    except OSError:
+        return False
+    data = _read_swap_lock(path) or {}
+    return not _pid_alive(data.get("pid"))
 
 
 class SidecarSwapInProgress(RuntimeError):
@@ -2168,11 +2194,24 @@ def _ensure_venv_t5_latest_exists() -> bool:
             version,
         )
         return False
+    # Repairs are a parent-process action: a worker child's backend singletons are
+    # empty, so it cannot see live siblings that may still lazy-import from the
+    # sidecar. Fail activation in the child instead; the parent's routing
+    # self-heal (guarded below) performs the actual repair.
+    try:
+        import multiprocessing as _mp
+
+        if _mp.parent_process() is not None:
+            logger.warning(
+                ".venv_t5_latest is incomplete; repairs run in the parent process. "
+                "Retry after the parent repairs the sidecar."
+            )
+            return False
+    except Exception:
+        pass
     # The install route quiesces workers before its swap; a lazy repair has no such
     # teardown, so refuse while any parent-visible worker is active rather than
-    # replace a directory a live process may lazy-import from. In worker
-    # subprocesses these backends are fresh singletons with no state, so the check
-    # only bites in the parent (routes/probes), where the backends are real.
+    # replace a directory a live process may lazy-import from.
     if _workers_active_for_repair():
         logger.warning(
             "Cannot repair .venv_t5_latest: active chat/training/export workers "
@@ -2421,7 +2460,8 @@ def ensure_transformers_version(model_name: str) -> None:
     if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:
-        resolved = model_name
+        # A remote adapter's tier is its BASE model's (see activation above).
+        resolved = _remote_lora_base(model_name) or model_name
     tier = get_transformers_tier(resolved)
     if model_name != resolved and _safe_is_file(Path(model_name) / "config.json"):
         # Gate on a real local config.json: a checkpoint carries config the base may not
