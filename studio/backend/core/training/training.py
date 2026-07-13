@@ -1149,7 +1149,6 @@ class TrainingBackend:
             self._spawn_in_progress = False
             raise
 
-
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
 
