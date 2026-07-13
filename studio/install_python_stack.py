@@ -1756,11 +1756,13 @@ def _ensure_pinned_known_family_torch() -> None:
     -- that path reinstalls from the arch AUTO-DETECTED via hipinfo (so a pin to a
     different gfx family or a private mirror would be restored from the WRONG source) and
     returns early on a headless box (so an authoritative cross-install pin would be
-    skipped). It uses the same per-arch floor setup.ps1 pins (2.11-line gfx leaves) or a
-    bare trio (older arches / rocm<d>). Unknown-family pins are owned by
-    _ensure_verbatim_torch_index; ROCm makes no sense on macOS ARM, so it stays Windows-
-    only. Intel mac / no-torch: nothing to do; a failed probe or a still-matching flavor
-    is left alone (no forced reinstall, no loop).
+    skipped). It uses the same spec the initial ROCm paths pin: the rocm7.2 floor for
+    2.11-line gfx leaves and rocm<d> index leaves that serve torch 2.11, the <2.11
+    default for older rocm versions, and a bare trio only for older gfx per-arch leaves
+    (which publish no floor). Unknown-family pins are owned by _ensure_verbatim_torch_index;
+    ROCm makes no sense on macOS ARM, so it stays Windows-only. Intel mac / no-torch:
+    nothing to do; a failed probe or a still-matching flavor is left alone (no forced
+    reinstall, no loop).
     """
     if NO_TORCH or IS_MAC_INTEL:
         return
@@ -1782,14 +1784,21 @@ def _ensure_pinned_known_family_torch() -> None:
     if _torch_flavor_matches_pin(pin, flavor) is not False:
         return  # matches (True) or unknown (None) -> nothing to enforce
     if _is_win_rocm:
-        # The same per-arch floor setup.ps1 pins for the 2.11-line gfx indexes; other
-        # arches / rocm<d> stay bare (no published floor), matching the PowerShell side
-        # and _ensure_rocm_torch's Windows spec selection.
-        _spec = (
-            _ROCM_TORCH_PKG_SPECS["rocm7.2"]
-            if leaf in _ROCM_GFX_TORCH211_LEAVES
-            else ("torch", "torchvision", "torchaudio")
-        )
+        # Mirror the spec the initial ROCm paths pin so this repair never resolves an
+        # unbounded or ABI-mismatched trio from an exclusive --index-url:
+        #   * 2.11-line gfx leaves (gfx120x-all/gfx1151/gfx1150) -> the rocm7.2 floor,
+        #     as setup.ps1's FloorMap / _WINDOWS_ROCM_TORCH_PKG_SPECS pin them;
+        #   * a rocm<d> index leaf -> its own known floor (rocm7.2 serves torch 2.11),
+        #     else the <2.11 default, matching _ROCM_TORCH_PKG_SPECS as _ensure_rocm_torch
+        #     uses on Linux (a rocm7.2 mirror must not be left bare);
+        #   * older gfx per-arch leaves ship <2.11 wheels with no published floor, so
+        #     they stay bare -- same as the Windows auto-detect path.
+        if leaf in _ROCM_GFX_TORCH211_LEAVES:
+            _spec = _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+        elif leaf.startswith("gfx"):
+            _spec = ("torch", "torchvision", "torchaudio")
+        else:
+            _spec = _ROCM_TORCH_PKG_SPECS.get(leaf, _ROCM_TORCH_PKG_SPECS["_default"])
     else:
         _spec = _CUDA_TORCH_PKG_SPEC
     print(f"   torch drifted from the pinned {leaf} index -- reinstalling from it")

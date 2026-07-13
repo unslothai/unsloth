@@ -1245,8 +1245,13 @@ class TestEnsureRocmTorchMarker:
         # The verbatim clobber snapshot is per-run module state; reset it so one
         # test's snapshot can never leak into another's clobber comparison.
         stack_mod._VERBATIM_TRIO_SNAPSHOT = None
+        # _TORCH_BACKEND is computed once at import from UNSLOTH_TORCH_BACKEND; a runner
+        # that starts with a cuda/cpu backend (or an installer pin) makes _ensure_rocm_torch
+        # early-return and skip the mocked repair these tests exercise. Neutralize it so
+        # the marker tests are independent of the caller's installer-pin environment.
         with patch.object(stack_mod, "_torch_index_marker_path", return_value = self._marker_path):
-            yield
+            with patch.object(stack_mod, "_TORCH_BACKEND", ""):
+                yield
         stack_mod._VERBATIM_TRIO_SNAPSHOT = None
 
     def _seed(self, url):
@@ -1448,18 +1453,25 @@ class TestEnsureRocmTorchMarker:
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.dict(stack_mod.os.environ, env, clear = False):
-                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                    stack_mod._ensure_verbatim_torch_index()
-                    assert mock_pip.call_count == 1
-                    call = str(mock_pip.call_args_list[0])
-                    assert "https://mirror.local/current" in call
-                    assert "torch" in call
-                    # Marker now recorded -> a second call with the pin still set is
-                    # idempotent (marker == pin -> no reinstall loop).
-                    assert "current" in self._marker_path.read_text()
-                    stack_mod._ensure_verbatim_torch_index()
-                    assert mock_pip.call_count == 1
+                # The second call hits the matching-marker path, which probes torch
+                # health; pip_install is mocked so torch never becomes importable, and
+                # in a no-torch env the probe would return None and force another
+                # reinstall. Pin a healthy flavor so the idempotence check is about the
+                # marker, not ambient torch. (The first call takes the no-marker reinstall
+                # branch, which does not probe, so the mock does not affect it.)
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._ensure_verbatim_torch_index()
+                        assert mock_pip.call_count == 1
+                        call = str(mock_pip.call_args_list[0])
+                        assert "https://mirror.local/current" in call
+                        assert "torch" in call
+                        # Marker now recorded -> a second call with the pin still set is
+                        # idempotent (marker == pin -> no reinstall loop).
+                        assert "current" in self._marker_path.read_text()
+                        stack_mod._ensure_verbatim_torch_index()
+                        assert mock_pip.call_count == 1
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
@@ -1974,23 +1986,26 @@ class TestEnsureRocmTorchMarker:
             self._marker_path.unlink(missing_ok = True)
 
     def test_pinned_known_family_windows_rocm_gfx_uses_floor_spec(self):
-        """A Windows 2.11-line gfx pin (gfx1151) reinstalls with the per-arch floor
-        setup.ps1 uses (torch>=2.11), while a rocm<d> mirror stays bare -- matching the
-        PowerShell side and _ensure_rocm_torch's Windows spec selection."""
-        gfx = self._ensure_known(
-            "https://repo.amd.com/rocm/whl/gfx1151", ("cpu", "", "2.10.0"), is_windows = True
+        """A Windows 2.11-line gfx pin (gfx1151) AND a rocm7.2 mirror pin both reinstall
+        with the rocm7.2 floor (torch>=2.11) that setup.ps1 / _ensure_rocm_torch use for
+        that index -- a rocm7.2 mirror must NOT be left bare, or an exclusive --index-url
+        could resolve an unbounded/ABI-mismatched trio (round-8 P2)."""
+        for url in ("https://repo.amd.com/rocm/whl/gfx1151", "https://mirror.local/rocm7.2"):
+            hit = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = True)
+            args = [str(a) for a in hit.call_args.args]
+            for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
+                assert spec in args, f"{url} must use the rocm7.2 floor spec {spec}"
+            self._marker_path.unlink(missing_ok = True)
+
+    def test_pinned_known_family_windows_older_rocm_uses_default_floor(self):
+        """A rocm<d> mirror without a dedicated 2.11 floor (rocm7.1) falls back to the
+        <2.11 default spec, never a bare trio."""
+        hit = self._ensure_known(
+            "https://mirror.local/rocm7.1", ("cpu", "", "2.10.0"), is_windows = True
         )
-        gfx_args = [str(a) for a in gfx.call_args.args]
-        for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
-            assert spec in gfx_args, f"gfx1151 must use the rocm7.2 floor spec {spec}"
-        self._marker_path.unlink(missing_ok = True)
-        rocm = self._ensure_known(
-            "https://mirror.local/rocm7.2", ("cpu", "", "2.10.0"), is_windows = True
-        )
-        rocm_args = [str(a) for a in rocm.call_args.args]
-        assert {"torch", "torchvision", "torchaudio"}.issubset(
-            rocm_args
-        ), "a rocm<d> mirror pin stays bare (no published floor)"
+        args = [str(a) for a in hit.call_args.args]
+        for spec in stack_mod._ROCM_TORCH_PKG_SPECS["_default"]:
+            assert spec in args, f"rocm7.1 must use the <2.11 default spec {spec}"
 
     def test_pinned_known_family_windows_rocm_matching_no_reinstall(self):
         """A Windows gfx pin whose torch already matches (an AMD per-arch +rocm7.13.0
