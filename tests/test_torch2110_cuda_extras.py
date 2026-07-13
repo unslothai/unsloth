@@ -86,3 +86,19 @@ def test_torch2110_wrapper_references_matching_leaf(cuda: str, variant: str):
         "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
         f"unsloth[{cuda}onlytorch2110]",
     ]
+
+
+@pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
+def test_cuda12_torch2100_keeps_torch_pinned_off_x86(cuda: str):
+    # The torch2100 leaves used to rely on the xformers 0.0.34 wheel's transitive
+    # torch==2.10.0 pin. Now that the x86-64-only wheels carry platform_machine
+    # markers, the leaf must pin torch explicitly so an ARM64 install stays on
+    # torch 2.10 (Linux aarch64 wheels exist) or fails loudly (Windows ARM64)
+    # instead of resolving an unpinned newer torch.
+    reqs = _reqs(_extra(f"{cuda}onlytorch2100"))
+    (torch_req,) = reqs["torch"]
+    assert str(torch_req.specifier) == "==2.10.0", (
+        f"{cuda}onlytorch2100 must pin torch==2.10.0 for machines where the "
+        f"x86-64-only xformers wheel (and its transitive pin) is skipped"
+    )
+    assert torch_req.marker is None, "the torch pin must apply on every machine"
