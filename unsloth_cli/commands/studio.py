@@ -790,6 +790,38 @@ def _require_servable_frontend_or_exit(
     raise typer.Exit(1)
 
 
+def _validate_inproc_backend_before_strip(
+    *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
+) -> None:
+    """In-venv (in-process) analogue of the re-exec launcher check.
+
+    When Studio runs inside its own venv there is no re-exec, so the backend is
+    imported in-process by _load_run_module() only AFTER the pre-exposure gate.
+    On the headless public path the gate strips the seeded .bootstrap_password,
+    so a partial/broken venv that fails at import would be left with
+    must_change_password=1 and no password to log in (lockout until
+    reset-password). Import the backend up front on that path and exit cleanly if
+    it is broken, before anything is stripped. Restricted to the headless path so
+    an interactive password prompt is not delayed behind a full backend import.
+    """
+    if not _should_prompt_password_change(
+        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+    ):
+        return
+    if _prompt_streams_interactive():
+        return
+    try:
+        _load_run_module()
+    except Exception as exc:
+        typer.echo(
+            f"Error: the Studio backend could not be loaded ({exc}); refusing to "
+            "expose Studio publicly before it is confirmed runnable. Re-run: "
+            "unsloth studio setup",
+            err = True,
+        )
+        raise typer.Exit(1)
+
+
 def _enforce_password_change_before_exposure(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> None:
@@ -1184,6 +1216,17 @@ def studio_default(
         # forward an explicitly resolved dist for the same silent-404 reason.
         if resolved_frontend is None and not api_only:
             resolved_frontend = _find_frontend_dist()
+    else:
+        # Already inside the studio venv: no re-exec, the backend runs in-process
+        # below (_load_run_module). On the headless public path the gate strips
+        # the seeded .bootstrap_password, so validate the backend is importable
+        # FIRST -- a broken/partial venv that only fails at _load_run_module()
+        # would otherwise leave must_change_password=1 with no password to log in
+        # (lockout until reset-password). Only the headless path (no interactive
+        # prompt to delay behind a full backend import).
+        _validate_inproc_backend_before_strip(
+            cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+        )
 
     # Public (tunnel) exposure with the seeded default password: force a
     # terminal password change first, before any re-exec or server exists.
@@ -1609,6 +1652,12 @@ def run(
             cloudflare = cloudflare,
             host = host,
             secure = secure,
+        )
+    else:
+        # In-venv (in-process) run: validate the backend is importable before the
+        # headless gate strips the seeded password (same lockout guard as above).
+        _validate_inproc_backend_before_strip(
+            cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
         )
 
     # Public (tunnel) exposure with the seeded default password: force a
@@ -2325,21 +2374,44 @@ def reset_password():
     ]
     had_db = db_file.exists()
 
-    # Invalidate the stale credential files BEFORE deleting the DB. unlink only
-    # ignores FileNotFoundError, so a locked/undeletable file (Windows AV,
-    # read-only dir) would otherwise survive while auth.db is gone, and the next
-    # startup's re-seed would read that stale plaintext bootstrap password back
-    # and re-validate the credential this reset revoked. Truncate on failure so
-    # its contents can never be reused.
+    # Delete auth.db FIRST and prove it is gone before touching the seeded
+    # credential files. If it cannot be removed (a running Studio or Windows
+    # holds it open, or a read-only auth dir), abort with the credential files
+    # untouched: deleting them while an un-resettable DB (must_change_password=1)
+    # survives would lock a forgotten-password reset out of any recovery
+    # credential. Failing here leaves a consistent, still-recoverable state.
+    try:
+        db_file.unlink(missing_ok = True)
+    except OSError as exc:
+        typer.echo(
+            f"Error: could not delete the auth database ({exc}). Stop any running "
+            "Studio and retry; no credential files were changed.",
+            err = True,
+        )
+        raise typer.Exit(1)
+
+    # The DB is gone, so the next start re-seeds. Invalidate the seeded plaintext
+    # credential files so that re-seed generates a FRESH password instead of
+    # reusing a stale one: unlink only ignores FileNotFoundError, so a
+    # locked/undeletable file (Windows AV, read-only dir) would otherwise survive
+    # and generate_bootstrap_password() would read it back and re-validate the
+    # credential this reset revoked. Truncate on unlink failure; if a file can be
+    # neither removed nor truncated, fail closed -- the DB is already gone, so a
+    # surviving plaintext would be reused, and the user must remove it manually.
     for path in stale_files:
         try:
             path.unlink(missing_ok = True)
         except OSError:
             try:
                 path.write_text("")
-            except OSError:
-                pass
-    db_file.unlink(missing_ok = True)
+            except OSError as exc:
+                typer.echo(
+                    f"Error: could not remove or clear {path.name} ({exc}); delete "
+                    "it manually before restarting Studio or the old password may "
+                    "be reused.",
+                    err = True,
+                )
+                raise typer.Exit(1)
 
     if not had_db:
         typer.echo("No auth database found -- nothing to reset.")

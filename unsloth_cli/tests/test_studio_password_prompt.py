@@ -573,6 +573,42 @@ def test_studio_default_missing_frontend_loopback_cloudflare_still_launches(monk
     assert "frontend not built" not in combined.lower()
 
 
+def test_studio_default_in_venv_broken_backend_exits_before_stripping_bootstrap(
+    monkeypatch, tmp_path
+):
+    # Regression (item B / reviewer finding): the in-venv (in-process) path skips
+    # the re-exec launcher check, so a headless public launch would seed + strip
+    # the seeded .bootstrap_password in the gate before _load_run_module() later
+    # fails on a broken/partial venv -> lockout. Validate the backend is
+    # importable BEFORE the strip and abort without stripping.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    # Pretend we are already inside the studio venv, with a broken backend.
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "unsloth_studio"))
+
+    def _boom():
+        raise ImportError("cannot import backend run.py")
+
+    monkeypatch.setattr(studio_mod, "_load_run_module", _boom)
+
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    result = CliRunner().invoke(app, ["--secure"], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    assert bootstrap_file.exists()  # not stripped
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert events == [], events  # gate never stripped/prompted
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "backend could not be loaded" in combined.lower()
+
+
 def test_studio_default_query_failure_strips_bootstrap_file(monkeypatch, tmp_path):
     # The DB opens and the admin is seeded + committed (so .bootstrap_password is
     # on disk), but reading must_change_password back fails. Returning here would
@@ -799,11 +835,11 @@ def test_bootstrap_deadline_active_mirrors_backend_parsing(monkeypatch, raw, exp
     assert studio_mod._bootstrap_deadline_active() is expected
 
 
-def test_reset_password_invalidates_locked_bootstrap_before_db_delete(monkeypatch, tmp_path):
-    # reset-password must invalidate the seeded credential files BEFORE deleting
-    # auth.db, and survive a locked/undeletable .bootstrap_password by truncating
-    # it. Otherwise the file's stale plaintext outlives auth.db and the next
-    # re-seed re-validates the revoked bootstrap password.
+def test_reset_password_truncates_locked_bootstrap_after_db_delete(monkeypatch, tmp_path):
+    # reset-password deletes auth.db first, then invalidates the seeded credential
+    # files. A locked/undeletable .bootstrap_password must be truncated so its
+    # stale plaintext cannot be re-seeded (generate_bootstrap_password reuses a
+    # non-empty file), while the reset still succeeds.
     import pathlib
 
     studio_mod = _studio()
@@ -835,6 +871,88 @@ def test_reset_password_invalidates_locked_bootstrap_before_db_delete(monkeypatc
     # The locked file survives, but truncated -- no reusable plaintext.
     assert bootstrap_file.exists()
     assert bootstrap_file.read_text() == ""
+
+
+def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):
+    # If auth.db cannot be removed (running Studio / Windows lock, read-only dir),
+    # reset must abort BEFORE touching the credential files -- deleting them while
+    # an un-resettable must_change_password=1 DB survives would lock a
+    # forgotten-password reset out with no recovery credential.
+    import pathlib
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    auth_dir = tmp_path / "auth"
+    bootstrap_file = auth_dir / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    db_file = auth_dir / "auth.db"
+    assert bootstrap_file.exists() and db_file.exists()
+
+    _real_unlink = pathlib.Path.unlink
+
+    def _boom_unlink(self, *a, **k):
+        if self.name == "auth.db":
+            raise OSError("database is locked")
+        return _real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command()(studio_mod.reset_password)
+    result = CliRunner().invoke(app, [], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    # DB still there; credential files untouched (no lockout, no half-done reset).
+    assert db_file.exists()
+    assert bootstrap_file.exists()
+    assert bootstrap_file.read_text().strip()
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "could not delete the auth database" in combined.lower()
+
+
+def test_reset_password_fails_closed_when_credential_cannot_be_invalidated(monkeypatch, tmp_path):
+    # If a seeded credential file can be neither unlinked nor truncated, reset must
+    # fail closed: auth.db is already gone, so a surviving plaintext would be
+    # re-seeded and re-validate the revoked password.
+    import pathlib
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    auth_dir = tmp_path / "auth"
+    bootstrap_file = auth_dir / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    db_file = auth_dir / "auth.db"
+    assert bootstrap_file.exists() and db_file.exists()
+
+    _real_unlink = pathlib.Path.unlink
+    _real_write_text = pathlib.Path.write_text
+
+    def _boom_unlink(self, *a, **k):
+        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
+            raise OSError("locked")
+        return _real_unlink(self, *a, **k)
+
+    def _boom_write_text(self, *a, **k):
+        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
+            raise OSError("read-only")
+        return _real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
+    monkeypatch.setattr(pathlib.Path, "write_text", _boom_write_text)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command()(studio_mod.reset_password)
+    result = CliRunner().invoke(app, [], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    # auth.db was deleted first; the un-invalidatable file is reported for manual removal.
+    assert not db_file.exists()
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "delete it manually" in combined.lower()
 
 
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
