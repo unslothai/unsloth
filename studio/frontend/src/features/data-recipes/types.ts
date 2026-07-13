@@ -7,16 +7,18 @@ export type RecipeRecord = {
   id: string;
   name: string;
   payload: RecipePayload;
+  revision: number;
   createdAt: number;
   updatedAt: number;
-  learningRecipeId?: string;
-  learningRecipeTitle?: string;
+  learningRecipeId?: string | null;
+  learningRecipeTitle?: string | null;
 };
 
 export type SaveRecipeInput = {
   id?: string | null;
   name: string;
   payload: RecipePayload;
-  learningRecipeId?: string;
-  learningRecipeTitle?: string;
+  revision?: number;
+  learningRecipeId?: string | null;
+  learningRecipeTitle?: string | null;
 };

@@ -22,7 +22,6 @@ export type PublishRecipeJobRequest = {
   description: string;
   hf_token?: string | null;
   private?: boolean;
-  artifact_path?: string | null;
 };
 
 export type PublishRecipeJobResponse = {

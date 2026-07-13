@@ -13,13 +13,27 @@ export async function loadSortedRecipeExecutions(
   recipeId: string,
 ): Promise<RecipeExecutionRecord[]> {
   const records = await listRecipeExecutions(recipeId);
-  return sortExecutions(records.map(withExecutionDefaults));
+  return sortExecutions(
+    records.map((record) =>
+      withExecutionDefaults({
+        ...record,
+        artifact_path: null,
+        log_lines: [],
+        dataset: [],
+        datasetPage: 1,
+        datasetPageSize: 20,
+        processor_artifacts: null,
+      }),
+    ),
+  );
 }
 
 export function findResumableExecution(
   records: RecipeExecutionRecord[],
 ): RecipeExecutionRecord | null {
   return (
-    records.find((record) => record.jobId && isExecutionInProgress(record.status)) ?? null
+    records.find(
+      (record) => record.jobId && isExecutionInProgress(record.status),
+    ) ?? null
   );
 }

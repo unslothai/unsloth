@@ -25,7 +25,7 @@ export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-st
 export { listLocalDatasets, uploadTrainingDataset } from "./api/datasets-api";
 export type { LocalDatasetInfo } from "./types/datasets";
 export { listLocalModels } from "./api/models-api";
-export type { LocalModelInfo } from "./api/models-api";
+export type { BackendModelConfig, LocalModelInfo } from "./api/models-api";
 export type {
   TrainingPhase,
   TrainingViewData,
@@ -53,4 +53,6 @@ export {
   emitTrainingRunsChanged,
 } from "./events";
 export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
+export { buildPortableTrainingConfig } from "./lib/yaml-config";
+export { useTrainingPresets } from "./hooks/use-training-presets";
 export { validateTrainingConfig } from "./lib/validation";

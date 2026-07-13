@@ -68,6 +68,9 @@ class ModelUsage:
 @dataclass
 class Job:
     job_id: str
+    # A default keeps low-level event/parser fixtures source-compatible; jobs
+    # created through JobManager.start always receive an authenticated owner.
+    owner_subject: str = ""
     status: JobStatus = "created"
     stage: str | None = None
     current_column: str | None = None

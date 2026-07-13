@@ -53,10 +53,6 @@ class PublishDatasetRequest(BaseModel):
         default = False,
         description = "Create or update the dataset repo as private",
     )
-    artifact_path: str | None = Field(
-        default = None,
-        description = "Execution artifact path captured by the UI for completed runs",
-    )
 
 
 class PublishDatasetResponse(BaseModel):

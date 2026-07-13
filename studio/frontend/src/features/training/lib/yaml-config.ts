@@ -20,9 +20,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   }
 
   const raw = parsed as Record<string, unknown>;
-  const unknownKeys = Object.keys(raw).filter(
-    (k) => !EXPECTED_TOP_KEYS.has(k),
-  );
+  const unknownKeys = Object.keys(raw).filter((k) => !EXPECTED_TOP_KEYS.has(k));
   if (unknownKeys.length > 0) {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
@@ -37,13 +35,13 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     typeof rawTraining === "object" &&
     !Array.isArray(rawTraining);
   let trainingObj: Record<string, unknown>;
-  if (!isPlainTrainingObject) {
-    trainingObj = { vision_image_size: null };
-  } else {
+  if (isPlainTrainingObject) {
     trainingObj = { ...(rawTraining as Record<string, unknown>) };
     if (!Object.hasOwn(trainingObj, "vision_image_size")) {
       trainingObj.vision_image_size = null;
     }
+  } else {
+    trainingObj = { vision_image_size: null };
   }
 
   return {
@@ -62,6 +60,30 @@ export function serializeConfigToYaml(
   includeVisionFields: boolean,
   includeVisionImageSize: boolean = includeVisionFields,
 ): string {
+  return yaml.dump(
+    buildPortableTrainingConfig(
+      state,
+      includeVisionFields,
+      includeVisionImageSize,
+    ),
+    { lineWidth: -1, noRefs: true },
+  );
+}
+
+export type PortableTrainingConfig = {
+  training: Record<string, unknown>;
+  lora: Record<string, unknown>;
+};
+
+/**
+ * The account-persistence allowlist. It intentionally excludes credentials,
+ * datasets/S3 paths, uploaded files, model selection, and runtime state.
+ */
+export function buildPortableTrainingConfig(
+  state: TrainingConfigState,
+  includeVisionFields: boolean,
+  includeVisionImageSize: boolean = includeVisionFields,
+): PortableTrainingConfig {
   const lora: Record<string, unknown> = {
     lora_r: state.loraRank,
     lora_alpha: state.loraAlpha,
@@ -101,10 +123,8 @@ export function serializeConfigToYaml(
     training.vision_image_size = state.visionImageSize;
   }
 
-  const config = {
+  return {
     training,
     lora,
   };
-
-  return yaml.dump(config, { lineWidth: -1, noRefs: true });
 }

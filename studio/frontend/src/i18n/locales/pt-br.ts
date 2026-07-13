@@ -62,7 +62,8 @@ export const ptBR = {
       },
       deleteRun: {
         title: "Excluir execução de treino",
-        description: 'Tem certeza de que deseja excluir esta execução "{name}"?',
+        description:
+          'Tem certeza de que deseja excluir esta execução "{name}"?',
       },
       renameChat: {
         title: "Renomear chat",
@@ -74,11 +75,68 @@ export const ptBR = {
       },
     },
     toast: {
-      cannotDeleteRunningRun: "Não é possível excluir uma execução de treino em andamento",
+      cannotDeleteRunningRun:
+        "Não é possível excluir uma execução de treino em andamento",
       failedToDeleteChat: "Falha ao excluir o chat",
       failedToDeleteRun: "Falha ao excluir a execução",
       failedToRenameChat: "Falha ao renomear o chat",
       failedToRenameRun: "Falha ao renomear a execução",
+    },
+  },
+  dataRecipes: {
+    import: {
+      title: "Importar receitas legadas",
+      description:
+        "Importe receitas e histórico deste navegador para a conta {account}.",
+      confirm: "Importar dados legados",
+      cancel: "Agora não",
+      close: "Fechar",
+      importing: "Importando...",
+      complete: "Importação legada concluída",
+      failed: "Falha na importação legada",
+      failedDescription:
+        "Não foi possível importar os dados legados. Tente novamente.",
+      noData: "Não há dados legados para importar.",
+      imported: "Importados",
+      redacted: "Redigidos",
+      skipped: "Ignorados",
+      rejected: "Rejeitados",
+      alreadyImported: "Já importados",
+      retired: "ID aposentado",
+      missingParent: "Receita ausente",
+      recipeCountOne: "{count} receita",
+      recipeCountOther: "{count} receitas",
+      executionCountOne: "{count} registro de execução",
+      executionCountOther: "{count} registros de execução",
+      unknownId: "ID desconhecido",
+      unknownOutcome: "Resultado desconhecido",
+      redactedFields: "Campos ocultados: {fields}",
+      reasons: {
+        alreadyExists: "Já existe um item com este ID",
+        idRetired: "Este ID foi excluído anteriormente",
+        missingParent: "A receita relacionada não está disponível",
+        invalidIdentifier: "O ID é inválido",
+        invalidData: "Os dados armazenados são inválidos",
+        invalidName: "O nome é inválido",
+        invalidExecution: "Os dados da execução são inválidos",
+        fieldLimit: "Um campo excede o limite de tamanho",
+        secretField: "Um campo secreto foi removido por segurança",
+        batchLimit: "O lote de importação é grande demais",
+        unknown: "Não foi possível importar o item",
+      },
+    },
+    conflict: {
+      title: "A receita mudou no servidor",
+      description:
+        "Seu rascunho local foi preservado. Recarregue a versão do servidor ou salve como nova receita.",
+      reload: "Recarregar versão do servidor",
+      saveAsNew: "Salvar como nova receita",
+      unavailable: "Esta receita não está mais disponível.",
+    },
+    server: {
+      loading: "Carregando receitas...",
+      loadError: "Falha ao carregar receitas.",
+      retry: "Tentar novamente",
     },
   },
   settings: {
@@ -122,8 +180,7 @@ export const ptBR = {
           "A senha atual deve ter no mínimo {minLength} caracteres.",
         newTooShort: "A nova senha deve ter no mínimo {minLength} caracteres.",
         mismatch: "As senhas não coincidem.",
-        samePassword:
-          "A nova senha deve ser diferente da senha atual.",
+        samePassword: "A nova senha deve ser diferente da senha atual.",
         update: "Atualizar senha",
         updating: "Atualizando...",
         updated: "Senha atualizada.",
@@ -157,14 +214,12 @@ export const ptBR = {
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Limite de upload do dataset de treino",
-        maxUploadSizeDescription:
-          "O padrão é {defaultSize} MB.",
+        maxUploadSizeDescription: "O padrão é {defaultSize} MB.",
       },
       storage: {
         sectionTitle: "Armazenamento",
         modelsFolder: "Pasta de modelos",
-        modelsFolderDescription:
-          "Onde os modelos baixados são armazenados.",
+        modelsFolderDescription: "Onde os modelos baixados são armazenados.",
         openAction: "Abrir",
         copyAction: "Copiar caminho",
         copied: "Caminho copiado",
@@ -231,7 +286,8 @@ export const ptBR = {
     },
     resources: {
       title: "Sistema",
-      description: "Monitore o hardware e o armazenamento deste servidor Studio.",
+      description:
+        "Monitore o hardware e o armazenamento deste servidor Studio.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",
       disableOverlay: "Desativar sobreposição",
@@ -248,7 +304,8 @@ export const ptBR = {
       },
       gpu: {
         title: "Dispositivos GPU",
-        noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noGpu:
+          "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
         unknownDevice: "GPU desconhecida",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -322,7 +379,8 @@ export const ptBR = {
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
       clearAction: "Limpar",
       clearAllChats: "Limpar todos os chats",
-      clearAllChatsDescription: "Exclui permanentemente todos os chats deste dispositivo.",
+      clearAllChatsDescription:
+        "Exclui permanentemente todos os chats deste dispositivo.",
       noChatsToClear: "Nenhum chat para limpar.",
       clearOneChatDescription:
         "Exclui permanentemente o único chat deste dispositivo.",
@@ -346,7 +404,8 @@ export const ptBR = {
         "{clearedCount} chats limpos; {remainingCount} chats restantes. Por favor, tente novamente.",
       oneChatClearedRemain:
         "1 chat limpo; {remainingCount} chats restantes. Por favor, tente novamente.",
-      oneChatClearedRemainOne: "1 chat limpo; 1 chat restante. Por favor, tente novamente.",
+      oneChatClearedRemainOne:
+        "1 chat limpo; 1 chat restante. Por favor, tente novamente.",
       storageClearFailedOne:
         "Falha ao limpar o armazenamento; 1 chat pode ter restado. Por favor, tente novamente.",
       storageClearFailed:
@@ -359,8 +418,7 @@ export const ptBR = {
     },
     apiKeys: {
       title: "API",
-      description:
-        "Acesse o Unsloth por meio da API compatível com OpenAI.",
+      description: "Acesse o Unsloth por meio da API compatível com OpenAI.",
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
       accessTokens: "Tokens de acesso",
@@ -437,8 +495,7 @@ export const ptBR = {
         sectionTitle: "Licença",
         studioLabel: "Unsloth Studio",
         studioLicense: "AGPL-3.0",
-        studioDescription:
-          "Código aberto sob a licença GNU AGPL v3.0.",
+        studioDescription: "Código aberto sob a licença GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Licenciado sob Apache 2.0.",
@@ -462,7 +519,8 @@ export const ptBR = {
         installCommandWindows: "Comando de instalação para Windows",
         localInstallDetected:
           "Instalação local detectada. Atualize a partir do seu repositório original para evitar substituí-lo pelo PyPI.",
-        pullThenUpdate: "Puxe as últimas alterações (git pull) e depois execute o instalador local:",
+        pullThenUpdate:
+          "Puxe as últimas alterações (git pull) e depois execute o instalador local:",
         gitPullCommand: "comando git pull",
         localInstallerCommand: "comando do instalador local",
         sourceInstallDetected:
@@ -517,6 +575,33 @@ export const ptBR = {
       checkingDataset: "Verificando dataset...",
       trainingConfig: "Configuração de Treino",
     },
+    trainingPresets: {
+      title: "Predefinições de treinamento",
+      selectPlaceholder: "Selecione uma predefinição salva",
+      save: "Salvar predefinição",
+      saveAs: "Salvar como predefinição",
+      load: "Carregar predefinição",
+      delete: "Excluir predefinição",
+      deleteConfirmTitle: "Excluir esta predefinição de treinamento?",
+      deleteConfirmDescription: "Esta ação não pode ser desfeita.",
+      noPresets: "Ainda não há predefinições salvas.",
+      loading: "Carregando predefinições...",
+      loadError: "Falha ao carregar predefinições de treinamento.",
+      saveError: "Falha ao salvar a predefinição de treinamento.",
+      deleteError: "Falha ao excluir a predefinição de treinamento.",
+      conflictTitle: "A predefinição mudou no servidor",
+      conflictDescription:
+        "Recarregue a predefinição ou salve o rascunho como nova.",
+      reload: "Recarregar predefinição do servidor",
+      reloadError: "Falha ao recarregar a predefinição do servidor.",
+      reloadUnavailable:
+        "Esta predefinição não está mais disponível no servidor.",
+      saveAsNew: "Salvar como nova predefinição",
+      importYaml: "Importar YAML",
+      exportYaml: "Exportar YAML",
+      yamlDescription:
+        "Use YAML para transportar uma configuração de treinamento entre ambientes.",
+    },
     model: {
       title: "Modelo",
       description: "Selecione o modelo base e o método de treinamento",
@@ -529,7 +614,8 @@ export const ptBR = {
       scanning: "Escaneando...",
       scanningLocalModels: "Escaneando modelos locais...",
       noLocalModelsFound: "Nenhum modelo local encontrado",
-      noLocalModelsFoundManual: "Nenhum modelo local encontrado. Insira o caminho manualmente.",
+      noLocalModelsFoundManual:
+        "Nenhum modelo local encontrado. Insira o caminho manualmente.",
       failedToLoadLocalModels: "Falha ao carregar modelos locais",
       hfCache: "Cache do HF",
       customFolders: "Pastas Customizadas",
@@ -573,7 +659,8 @@ export const ptBR = {
       noLocalDatasetsYet: "Nenhum dataset local ainda.",
       noLocalDatasetsMatchSearch: "Nenhum dataset local corresponde à busca.",
       openDataRecipes: "Abrir Receitas de Dados",
-      browsingSource: "Navegando em {browsing}. A seleção atual permanece {current}.",
+      browsingSource:
+        "Navegando em {browsing}. A seleção atual permanece {current}.",
       localDatasets: "Datasets locais",
       localDataset: "Dataset local",
       localDatasetRows: " / {count} linhas",
@@ -622,25 +709,29 @@ export const ptBR = {
       subset: "Subconjunto (Subset)",
       s3: {
         title: "Configuração do S3",
-        description: "Carregue datasets em .parquet, .json, .jsonl ou .csv do Amazon S3",
+        description:
+          "Carregue datasets em .parquet, .json, .jsonl ou .csv do Amazon S3",
         bucket: "Nome do Bucket",
         bucketPlaceholder: "meu-bucket-de-dados-de-treino",
         region: "Região da AWS",
         regionPlaceholder: "us-east-1",
         prefix: "Prefixo do Caminho",
         prefixPlaceholder: "datasets/whisper/",
-        prefixTooltip: "Caminho opcional dentro do bucket para os arquivos do seu dataset",
+        prefixTooltip:
+          "Caminho opcional dentro do bucket para os arquivos do seu dataset",
         accessKeyId: "ID da Chave de Acesso",
         accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
         secretAccessKey: "Chave de Acesso Secreta",
         secretAccessKeyPlaceholder: "Sua chave de acesso secreta da AWS",
         useIamRole: "Usar Função IAM",
-        useIamRoleTooltip: "Usa credenciais de função IAM em vez de chaves de acesso (recomendado para EC2/SageMaker)",
+        useIamRoleTooltip:
+          "Usa credenciais de função IAM em vez de chaves de acesso (recomendado para EC2/SageMaker)",
         testConnection: "Testar Conexão",
         connectionSuccess: "Conectado com sucesso ao bucket S3",
         connectionFailed: "Falha ao conectar ao bucket S3",
         comingSoon: "Integração com S3 em breve",
-        comingSoonDescription: "O carregamento de datasets do S3 requer o boto3. Este recurso está em desenvolvimento.",
+        comingSoonDescription:
+          "O carregamento de datasets do S3 requer o boto3. Este recurso está em desenvolvimento.",
       },
     },
     params: {
@@ -658,9 +749,11 @@ export const ptBR = {
       maxStepsDescription:
         "Limita o treinamento a um número fixo de passos do otimizador.",
       contextLength: "Comprimento do Contexto",
-      contextLengthTooltip: "Número máximo de tokens por amostra de treinamento.",
+      contextLengthTooltip:
+        "Número máximo de tokens por amostra de treinamento.",
       customContextLength: "Insira um valor personalizado",
-      contextLengthDescription: "Comprimento máximo de sequência para amostras de treino",
+      contextLengthDescription:
+        "Comprimento máximo de sequência para amostras de treino",
       learningRate: "Taxa de Aprendizado (Learning Rate)",
       learningRateTooltip:
         "Tamanho do passo para atualizações de peso. Valores menores treinam mais lentamente, mas com mais estabilidade.",
@@ -675,7 +768,8 @@ export const ptBR = {
       rankTooltip:
         "Dimensão das matrizes de baixo rank. Maior = mais capacidade.",
       alpha: "Alpha",
-      alphaTooltip: "Fator de escala para atualizações LoRA. Geralmente o dobro do rank.",
+      alphaTooltip:
+        "Fator de escala para atualizações LoRA. Geralmente o dobro do rank.",
       dropout: "Dropout",
       dropoutTooltip:
         "Probabilidade de dropout para as camadas LoRA para reduzir o overfitting.",
@@ -710,9 +804,11 @@ export const ptBR = {
         cosine: "Cosine",
       },
       batchSize: "Tamanho do Lote (Batch Size)",
-      batchSizeTooltip: "Amostras processadas por passo. Maior consome mais VRAM.",
+      batchSizeTooltip:
+        "Amostras processadas por passo. Maior consome mais VRAM.",
       gradAccum: "Acúmulo de Gradiente",
-      gradAccumTooltip: "Simula tamanhos de lote maiores sem gastar VRAM extra.",
+      gradAccumTooltip:
+        "Simula tamanhos de lote maiores sem gastar VRAM extra.",
       weightDecay: "Decaimento de Peso",
       weightDecayTooltip: "Regularização L2 para evitar overfitting.",
       warmupSteps: "Passos de Aquecimento (Warmup)",
@@ -721,7 +817,8 @@ export const ptBR = {
       scheduleEpochsTooltip:
         "Número de passagens completas pelo dataset. Defina 0 para rodar por passos máximos.",
       saveSteps: "Passos para Salvar",
-      saveStepsTooltip: "Salva um checkpoint a cada N passos. 0 para desativar.",
+      saveStepsTooltip:
+        "Salva um checkpoint a cada N passos. 0 para desativar.",
       evalSteps: "Passos de Validação",
       evalStepsTooltip:
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",
@@ -740,7 +837,8 @@ export const ptBR = {
       title: "Treinamento",
       description: "Monitore e controle o treinamento",
       chartNoDataTitle: "Nenhum dado de treinamento ainda",
-      chartNoDataDescription: "Inicie o treinamento para ver o progresso da loss",
+      chartNoDataDescription:
+        "Inicie o treinamento para ver o progresso da loss",
       startTraining: "Iniciar Treinamento",
       starting: "Iniciando...",
       loadingModel: "Carregando modelo...",
@@ -766,7 +864,8 @@ export const ptBR = {
       continueAction: "Continuar Treinamento",
       cancelAction: "Cancelar Treinamento",
       stopTitle: "Interromper Treinamento",
-      stopDescription: "Escolha como você deseja interromper a execução de treinamento atual.",
+      stopDescription:
+        "Escolha como você deseja interromper a execução de treinamento atual.",
       stopAction: "Interromper",
       stopping: "Interrompendo...",
       stopAndSave: "Interromper e Salvar",
@@ -783,7 +882,8 @@ export const ptBR = {
       emptyDescription:
         "Nenhuma execução de treino ainda. Inicie sua primeira execução na aba Configurar.",
       loadError: "Falha ao carregar as execuções de treino",
-      deleteError: "Falha ao excluir a execução de treino. Por favor, tente novamente.",
+      deleteError:
+        "Falha ao excluir a execução de treino. Por favor, tente novamente.",
       retry: "Tentar novamente",
       loadMore: "Carregar mais",
       loading: "Carregando...",
@@ -825,13 +925,15 @@ export const ptBR = {
         "Ajuste a apresentação do gráfico enquanto o treinamento continua rodando.",
       openSettings: "Abrir configurações do gráfico",
       viewWindow: "Janela de visualização",
-      viewWindowDescription: "Mostra apenas os passos mais recentes ou o histórico completo.",
+      viewWindowDescription:
+        "Mostra apenas os passos mais recentes ou o histórico completo.",
       window: "Janela",
       all: "Tudo",
       trainingLoss: "Loss de Treinamento",
       trainingLossDescription: "Controle as sobreposições e a suavização EMA.",
       smoothing: "Suavização",
-      smoothingDescription: "Mova para a direita para mais suavização. `0` = bruto.",
+      smoothingDescription:
+        "Mova para a direita para mais suavização. `0` = bruto.",
       showRawLoss: "Mostrar loss bruta",
       showSmoothedLoss: "Mostrar loss suavizada",
       showAverageLine: "Mostrar linha média",
@@ -854,9 +956,11 @@ export const ptBR = {
       gradientNorm: "Norma do Gradiente",
       step: "Passo {step}",
       averageValue: "média {value}",
-      waitingForFirstEvaluationStep: "Aguardando o primeiro passo de validação...",
+      waitingForFirstEvaluationStep:
+        "Aguardando o primeiro passo de validação...",
       evaluationNotConfigured: "Validação não configurada",
-      evalChartWillAppear: "O gráfico aparecerá assim que o eval_steps for alcançado",
+      evalChartWillAppear:
+        "O gráfico aparecerá assim que o eval_steps for alcançado",
       setEvalDatasetAndSteps:
         "Defina o dataset de validação e eval_steps para acompanhar a loss de validação",
     },
@@ -919,7 +1023,8 @@ export const ptBR = {
       terminalStart: "> treinamento do unsloth iniciado...",
       preparingResources: "> Preparando modelo e dataset...",
       gettingReady: "> Estamos deixando tudo pronto para a sua execução...",
-      waitingForFirstStep: "> {message} | aguardando o primeiro passo... ({step})",
+      waitingForFirstStep:
+        "> {message} | aguardando o primeiro passo... ({step})",
       resumingTraining: "Retomando treinamento...",
       startingTraining: "iniciando treinamento...",
       dataset: "Dataset",

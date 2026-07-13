@@ -9,3 +9,4 @@ export type {
 } from "./recipe-studio-page";
 export type { RecipePayload } from "./utils/payload/types";
 export { createEmptyRecipePayload } from "./utils/payload/empty";
+export { readLegacyRecipeExecutions } from "./data/legacy-executions-db";

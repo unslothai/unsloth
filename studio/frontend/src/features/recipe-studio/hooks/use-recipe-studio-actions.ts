@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useRecipeExecutions } from "./use-recipe-executions";
-import { useRecipePersistence } from "./use-recipe-persistence";
 import type {
   RecipeExecutionKind,
   RecipeExecutionRecord,
 } from "../execution-types";
 import type { RecipeRunSettings } from "../stores/recipe-executions";
 import type { RecipeSnapshot } from "../utils/import";
-import type { RecipePayload, RecipePayloadResult } from "../utils/payload/types";
+import type {
+  RecipePayload,
+  RecipePayloadResult,
+} from "../utils/payload/types";
+import { useRecipeExecutions } from "./use-recipe-executions";
+import { useRecipePersistence } from "./use-recipe-persistence";
 
 type SaveTone = "success" | "error";
 
@@ -17,9 +20,11 @@ type PersistRecipeFn = (input: {
   id: string | null;
   name: string;
   payload: RecipePayload;
+  revision?: number;
 }) => Promise<{
   id: string;
   updatedAt: number;
+  revision: number;
 }>;
 
 type UseRecipeStudioActionsParams = {
@@ -27,8 +32,15 @@ type UseRecipeStudioActionsParams = {
   initialRecipeName: string;
   initialPayload: RecipePayload;
   initialSavedAt: number;
+  initialRevision: number;
   payloadResult: RecipePayloadResult;
   onPersistRecipe: PersistRecipeFn;
+  onReloadRecipe: () => Promise<{
+    name: string;
+    payload: RecipePayload;
+    revision: number;
+    updatedAt: number;
+  } | null>;
   resetRecipe: () => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   getCurrentPayloadFromStore: () => RecipePayload;
@@ -81,6 +93,9 @@ type UseRecipeStudioActionsResult = {
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
+  conflict: "changed" | "unavailable" | null;
+  reloadServerRecipe: () => Promise<void>;
+  saveDraftAsNew: () => Promise<void>;
 };
 
 export function useRecipeStudioActions({
@@ -88,8 +103,10 @@ export function useRecipeStudioActions({
   initialRecipeName,
   initialPayload,
   initialSavedAt,
+  initialRevision,
   payloadResult,
   onPersistRecipe,
+  onReloadRecipe,
   resetRecipe,
   loadRecipe,
   getCurrentPayloadFromStore,
@@ -101,8 +118,10 @@ export function useRecipeStudioActions({
     initialRecipeName,
     initialPayload,
     initialSavedAt,
+    initialRevision,
     payloadResult,
     onPersistRecipe,
+    onReloadRecipe,
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
@@ -161,5 +180,8 @@ export function useRecipeStudioActions({
     loadExecutionDatasetPage: executions.loadExecutionDatasetPage,
     copyRecipe: persistence.copyRecipe,
     importRecipe: persistence.importRecipe,
+    conflict: persistence.conflict,
+    reloadServerRecipe: persistence.reloadServerRecipe,
+    saveDraftAsNew: persistence.saveDraftAsNew,
   };
 }

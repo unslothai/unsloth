@@ -2,31 +2,39 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
+import {
+  createServerRecipe,
+  deleteServerRecipe,
+  getServerRecipe,
+  listServerRecipes,
+  updateServerRecipe,
+} from "@/features/user-assets";
 import { normalizeNonEmptyName } from "@/utils";
-import Dexie, { type EntityTable, liveQuery } from "dexie";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
-const db = new Dexie("unsloth-data-recipes") as Dexie & {
-  recipes: EntityTable<RecipeRecord, "id">;
-};
-
-db.version(1).stores({
-  recipes: "id, name, updatedAt, createdAt",
-});
-
 const recentRecipeCache = new Map<string, RecipeRecord>();
+const repositoryListeners = new Set<() => void>();
+
+function notifyRepositoryChanged(): void {
+  for (const listener of repositoryListeners) listener();
+}
 
 export function listRecipes(): Promise<RecipeRecord[]> {
-  return db.recipes.orderBy("updatedAt").reverse().toArray();
+  return listServerRecipes<RecipeRecord["payload"]>();
 }
 
-export function getRecipe(id: string): Promise<RecipeRecord | undefined> {
-  return db.recipes.get(id);
-}
-
-function writeRecipeCache(record: RecipeRecord): void {
-  recentRecipeCache.set(record.id, record);
+export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
+  try {
+    const record = await getServerRecipe<RecipeRecord["payload"]>(id);
+    primeRecipeCache(record);
+    return record;
+  } catch (error) {
+    if (error instanceof Error && "status" in error && error.status === 404) {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 export function getCachedRecipe(id: string): RecipeRecord | null {
@@ -34,40 +42,46 @@ export function getCachedRecipe(id: string): RecipeRecord | null {
 }
 
 export function primeRecipeCache(record: RecipeRecord): void {
-  writeRecipeCache(record);
+  recentRecipeCache.set(record.id, record);
 }
 
 export async function saveRecipe(
   input: SaveRecipeInput,
 ): Promise<RecipeRecord> {
-  const now = Date.now();
-  const id = input.id ?? crypto.randomUUID();
-  const existing = input.id ? await db.recipes.get(input.id) : undefined;
-  const record: RecipeRecord = {
-    id,
-    name: normalizeNonEmptyName(input.name),
-    payload: input.payload,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-    learningRecipeId: input.learningRecipeId ?? existing?.learningRecipeId,
-    learningRecipeTitle:
-      input.learningRecipeTitle ?? existing?.learningRecipeTitle,
-  };
-  await db.recipes.put(record);
-  writeRecipeCache(record);
+  const name = normalizeNonEmptyName(input.name);
+  const record =
+    input.id && input.revision !== undefined
+      ? await updateServerRecipe({
+          id: input.id,
+          name,
+          payload: input.payload,
+          revision: input.revision,
+          learningRecipeId: input.learningRecipeId,
+          learningRecipeTitle: input.learningRecipeTitle,
+        })
+      : await createServerRecipe({
+          id: input.id ?? crypto.randomUUID(),
+          name,
+          payload: input.payload,
+          learningRecipeId: input.learningRecipeId,
+          learningRecipeTitle: input.learningRecipeTitle,
+        });
+  primeRecipeCache(record);
+  notifyRepositoryChanged();
   return record;
 }
 
-export async function deleteRecipe(id: string): Promise<void> {
-  await db.recipes.delete(id);
+export async function deleteRecipe(
+  id: string,
+  revision: number,
+): Promise<void> {
+  await deleteServerRecipe(id, revision);
   recentRecipeCache.delete(id);
+  notifyRepositoryChanged();
 }
 
 export function createRecipeDraft(): Promise<RecipeRecord> {
-  return saveRecipe({
-    name: "Unnamed",
-    payload: createEmptyRecipePayload(),
-  });
+  return saveRecipe({ name: "Unnamed", payload: createEmptyRecipePayload() });
 }
 
 export function createRecipeFromLearningRecipe(input: {
@@ -86,26 +100,49 @@ export function createRecipeFromLearningRecipe(input: {
 export function useRecipes(): {
   recipes: RecipeRecord[];
   ready: boolean;
+  error: Error | null;
+  refresh: () => void;
 } {
   const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
   const [ready, setReady] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const refresh = useCallback(
+    () => setRefreshVersion((value) => value + 1),
+    [],
+  );
 
   useEffect(() => {
-    const sub = liveQuery(() => listRecipes()).subscribe({
-      next: (value) => {
-        for (const recipe of value) {
-          writeRecipeCache(recipe);
-        }
-        setRecipes(value);
-        setReady(true);
-      },
-      error: (error) => {
-        console.error("data-recipes liveQuery:", error);
-        setReady(true);
-      },
-    });
-    return () => sub.unsubscribe();
-  }, []);
+    repositoryListeners.add(refresh);
+    return () => {
+      repositoryListeners.delete(refresh);
+    };
+  }, [refresh]);
 
-  return { recipes, ready };
+  useEffect(() => {
+    let active = true;
+    listRecipes()
+      .then((records) => {
+        if (!active) return;
+        for (const recipe of records) primeRecipeCache(recipe);
+        setRecipes(records);
+        setError(null);
+        setReady(true);
+      })
+      .catch((caught: unknown) => {
+        if (!active) return;
+        setRecipes([]);
+        setError(
+          caught instanceof Error
+            ? caught
+            : new Error("Failed to load recipes."),
+        );
+        setReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [refreshVersion]);
+
+  return { recipes, ready, error, refresh };
 }
