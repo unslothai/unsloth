@@ -123,7 +123,6 @@ class _prompt_raw_mode:
         if self._old_attrs is None:
             return
         import termios
-
         try:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_attrs)
         finally:
