@@ -123,7 +123,7 @@ def _wait_until(predicate, timeout = 5.0):
 def _record_force_terminate(monkeypatch, b):
     """Replace force_terminate + escalation finalize with recorders (no DB/OS)."""
     calls: list = []
-    monkeypatch.setattr(b, "force_terminate", lambda: calls.append("force"))
+    monkeypatch.setattr(b, "force_terminate", lambda target_proc = None: calls.append("force"))
     monkeypatch.setattr(b, "_finalize_stopped_after_escalation", lambda: calls.append("final"))
     return calls
 
@@ -143,7 +143,7 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
     b._proc = proc
     b._complete_seen.set()  # worker reported "complete" -> save is done
 
-    b._start_stop_watchdog()
+    b._start_stop_watchdog(cancel = False)
     assert _wait_until(
         lambda: calls == ["force", "final"]
     ), "watchdog must force_terminate a worker still alive after the post-save grace"
@@ -151,24 +151,59 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
 
 
 # ----------------------------------------------------------------------------
-# (b) Escalate after the absolute timeout when no "complete" ever arrives.
+# (b) The absolute cap is a last-resort backstop, not a save killer.
 # ----------------------------------------------------------------------------
 
 
-def test_watchdog_escalates_after_absolute_timeout(monkeypatch):
-    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)  # never trips (no complete anyway)
-    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 0.05)
+def test_watchdog_does_not_kill_save_still_saving_within_window(monkeypatch):
+    # save=True, no "complete" yet: a large/slow save is in progress. It must not be
+    # force-killed while inside the (long) absolute window.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
     calls = _record_force_terminate(monkeypatch, b)
 
     proc = _FakeProc(alive = True)
     b._proc = proc
-    # No _complete_seen: simulates a hang during save, no "complete" ever sent.
+    b._start_stop_watchdog(cancel = False)
 
-    b._start_stop_watchdog()
+    time.sleep(0.3)
+    assert calls == [], "an in-progress save must not be killed within the absolute window"
+    assert b._stop_watchdog.is_alive()
+
+    proc._alive = False
+    b._stop_watchdog.join(timeout = 5)
+
+
+def test_watchdog_backstop_fires_for_save_after_absolute_timeout(monkeypatch):
+    # Past the long save=True cap with no completion: force-terminate as last resort.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)  # never trips (no complete)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 0.05)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+
+    b._proc = _FakeProc(alive = True)
+    b._start_stop_watchdog(cancel = False)
     assert _wait_until(
         lambda: calls == ["force", "final"]
-    ), "watchdog must force_terminate a worker that never exits within the timeout"
+    ), "the absolute backstop must force_terminate a save that never completes"
+    b._stop_watchdog.join(timeout = 5)
+
+
+def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
+    # A cancel has nothing to save, so it escalates on the shorter cancel cap even
+    # when the long save cap has not elapsed.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
+    monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+
+    b._proc = _FakeProc(alive = True)
+    b._start_stop_watchdog(cancel = True)
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "a cancel must escalate on the shorter cancel timeout"
     b._stop_watchdog.join(timeout = 5)
 
 
@@ -187,7 +222,7 @@ def test_watchdog_no_op_on_clean_quick_exit(monkeypatch):
     b._proc = proc
     b._complete_seen.set()  # save done; worker is about to exit on its own
 
-    b._start_stop_watchdog()
+    b._start_stop_watchdog(cancel = False)
     # Worker exits promptly, well before the grace period elapses.
     time.sleep(0.1)
     proc._alive = False
@@ -208,7 +243,7 @@ def test_watchdog_no_op_when_worker_superseded(monkeypatch):
     old_proc = _FakeProc(alive = True)
     b._proc = old_proc
     b._complete_seen.set()
-    b._start_stop_watchdog()
+    b._start_stop_watchdog(cancel = False)
 
     # A new run takes over the handle before the grace elapses.
     b._proc = _FakeProc(alive = True)
@@ -217,9 +252,81 @@ def test_watchdog_no_op_when_worker_superseded(monkeypatch):
     assert calls == [], "watchdog must not force_terminate a superseded worker"
 
 
+def test_new_run_gets_its_own_watchdog(monkeypatch):
+    # A stale watchdog still sleeping on an old proc must not stop a new run's stop
+    # from creating its own watcher.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = TrainingBackend()
+    _record_force_terminate(monkeypatch, b)
+
+    old_proc = _FakeProc(alive = True)
+    b._proc = old_proc
+    b._start_stop_watchdog(cancel = False)
+    first_wd = b._stop_watchdog
+
+    # New run: fresh worker replaces the handle; its stop must get a new watcher
+    # even though the old (superseded) watchdog is still alive.
+    new_proc = _FakeProc(alive = True)
+    b._proc = new_proc
+    b._start_stop_watchdog(cancel = False)
+    second_wd = b._stop_watchdog
+
+    try:
+        assert first_wd.is_alive()
+        assert second_wd is not first_wd, "a new run must get its own watchdog"
+        assert b._stop_watchdog_proc is new_proc
+    finally:
+        old_proc._alive = False
+        new_proc._alive = False
+        first_wd.join(timeout = 5)
+        second_wd.join(timeout = 5)
+
+
+def test_force_terminate_targets_only_captured_proc():
+    # Superseded: force_terminate(target) must not touch a different current worker.
+    b = TrainingBackend()
+    old_proc = _FakeProc(alive = True)
+    new_proc = _FakeProc(alive = True)
+    b._proc = new_proc
+    b.force_terminate(target_proc = old_proc)
+    assert new_proc.terminated is False, "must not terminate the new run's worker"
+    assert old_proc.terminated is False, "must not terminate a handle that is not current"
+
+    # Matching: the captured handle is the current worker, so it is terminated.
+    p = _FakeProc(alive = True)
+    b._proc = p
+    b.force_terminate(target_proc = p)
+    assert p.terminated is True
+
+
 # ----------------------------------------------------------------------------
 # Post-escalation finalize leaves the parent ready for a new run.
 # ----------------------------------------------------------------------------
+
+
+def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
+    # A wedged child can make force_terminate() raise; finalize must still run so the
+    # run does not stay stuck in "Stopping...".
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = TrainingBackend()
+
+    def _boom(target_proc = None):
+        raise RuntimeError("kill() failed on wedged child")
+
+    finalized: list = []
+    monkeypatch.setattr(b, "force_terminate", _boom)
+    monkeypatch.setattr(b, "_finalize_stopped_after_escalation", lambda: finalized.append(True))
+
+    b._proc = _FakeProc(alive = True)
+    b._complete_seen.set()
+    b._start_stop_watchdog(cancel = False)
+
+    assert _wait_until(
+        lambda: finalized == [True]
+    ), "finalize must run even when force_terminate raises"
+    b._stop_watchdog.join(timeout = 5)
 
 
 def test_finalize_after_escalation_clears_state(monkeypatch):
@@ -241,6 +348,24 @@ def test_finalize_after_escalation_clears_state(monkeypatch):
     assert b._progress.status_message == "Training stopped."
     assert finalized.get("status") == "stopped"
     assert b.is_training_active() is False
+
+
+def test_finalize_after_escalation_preserves_output_dir(monkeypatch):
+    # A save-stop that already emitted "complete" has the checkpoint dir; run history
+    # must record it even if the watchdog wins the finalize race against the pump.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = True)
+    b._should_stop = True
+    b._output_dir = "/tmp/outputs/run-123"
+
+    b._finalize_stopped_after_escalation()
+
+    assert finalized.get("status") == "stopped"
+    assert finalized.get("output_dir") == "/tmp/outputs/run-123"
 
 
 def test_stop_training_starts_watchdog_only_when_worker_alive(monkeypatch):

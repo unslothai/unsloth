@@ -49,11 +49,13 @@ def _env_int(name: str, default: int) -> int:
 
 
 # Stop-watchdog escalation timeouts. After a Stop is requested, force-terminate the
-# worker if it does not exit on its own: a short grace once "complete" (save done)
-# is seen, plus an absolute cap covering a hang during save. Guards against a wedged
-# post-save GPU/driver teardown that never exits.
+# worker if it does not exit on its own. Primary trigger is a short grace once
+# "complete" (save done) is seen. The absolute cap is a last-resort backstop only:
+# for a save=True stop it is long so a slow save is never killed mid-write; for a
+# cancel (save=False) there is nothing to save, so the backstop is shorter.
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
-_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 120)
+_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
+_CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 
 _pyplot = None
 _pyplot_failed = False
@@ -758,8 +760,10 @@ class TrainingBackend:
         self._lock = threading.Lock()
 
         # Stop watchdog: after a stop is requested, escalates to force_terminate()
-        # if the worker does not exit on its own within a bounded time.
+        # if the worker does not exit on its own within a bounded time. The watched
+        # proc is tracked so a new run always gets its own watcher.
         self._stop_watchdog: Optional[threading.Thread] = None
+        self._stop_watchdog_proc: Optional[mp.Process] = None
         self._complete_seen = threading.Event()
 
         # Progress state (updated by pump thread from subprocess events)
@@ -976,32 +980,46 @@ class TrainingBackend:
                 "Stopping training and saving checkpoint..." if save else "Cancelling training..."
             )
         # Guarantee the run finalizes even if the worker wedges after saving.
-        self._start_stop_watchdog()
+        self._start_stop_watchdog(cancel = not save)
         return True
 
-    def _start_stop_watchdog(self) -> None:
+    def _start_stop_watchdog(self, cancel: bool) -> None:
         """Start a daemon that force-terminates the worker if a requested stop does
-        not exit on its own. No-op if one is already running or no worker is alive.
+        not exit on its own. No-op if no worker is alive or an existing watchdog is
+        already watching the current worker; a stale watchdog on an old proc does
+        not stop a new run from getting its own watcher.
         """
         with self._lock:
-            if self._stop_watchdog is not None and self._stop_watchdog.is_alive():
-                return
             proc = self._proc
             if proc is None or not proc.is_alive():
                 return
-            watchdog = threading.Thread(target = self._stop_watchdog_loop, args = (proc,), daemon = True)
+            if (
+                self._stop_watchdog is not None
+                and self._stop_watchdog.is_alive()
+                and self._stop_watchdog_proc is proc
+            ):
+                return
+            watchdog = threading.Thread(
+                target = self._stop_watchdog_loop,
+                args = (proc, cancel),
+                name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
+                daemon = True,
+            )
             self._stop_watchdog = watchdog
+            self._stop_watchdog_proc = proc
             watchdog.start()
 
-    def _stop_watchdog_loop(self, target_proc: "mp.Process") -> None:
+    def _stop_watchdog_loop(self, target_proc: "mp.Process", cancel: bool) -> None:
         """Escalate a stuck stop to force_terminate().
 
         A worker normally exits shortly after saving; this only fires when it does
-        not. Two triggers: a short grace after the worker's "complete" (save done),
-        and an absolute cap covering a hang during save. No-ops on a clean exit;
-        exits silently if a new run replaces the worker it was watching.
+        not. Primary trigger is a short grace after "complete" (save done). The
+        absolute cap is a last-resort backstop: long for save=True so a slow save is
+        never killed mid-write, shorter for a cancel that has nothing to save.
+        No-ops on a clean exit; exits silently if a new run replaces the worker.
         """
         started = time.monotonic()
+        abs_timeout = _CANCEL_TIMEOUT_S if cancel else _STOP_TIMEOUT_S
         complete_at: Optional[float] = None
         reason = ""
         while True:
@@ -1015,8 +1033,8 @@ class TrainingBackend:
             if complete_at is not None and now - complete_at >= _STOP_GRACE_S:
                 reason = "worker still alive after save"
                 break
-            if now - started >= _STOP_TIMEOUT_S:
-                reason = "worker did not stop within timeout"
+            if now - started >= abs_timeout:
+                reason = "worker did not exit within the absolute timeout"
                 break
             time.sleep(0.5)
 
@@ -1024,29 +1042,52 @@ class TrainingBackend:
             superseded = self._proc is not target_proc
         if superseded or not target_proc.is_alive():
             return
-        logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
-        self.force_terminate()
-        self._finalize_stopped_after_escalation()
+        if complete_at is None:
+            # Backstop fired before completion: warn loudly since a save may still
+            # have been in progress (only reachable past the long save=True cap).
+            logger.warning(
+                "Stop watchdog: absolute timeout with no completion signal; "
+                "force-terminating a possibly-mid-save worker: %s",
+                reason,
+            )
+        else:
+            logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
+        # force_terminate can raise on a wedged child (re-issued kill); finalize
+        # regardless so the run never stays stuck in "Stopping...".
+        try:
+            self.force_terminate(target_proc = target_proc)
+        except Exception:
+            logger.exception("Stop watchdog: force_terminate failed; finalizing anyway")
+        finally:
+            self._finalize_stopped_after_escalation()
 
     def _finalize_stopped_after_escalation(self) -> None:
         """Finalize parent state after a watchdog force-terminate so the UI leaves
         "Stopping..." even if the worker is wedged in driver teardown and unreaped.
         Dropping the handle is safe: the worker is a daemon bound to parent lifetime.
+        Preserve output_dir so a saved checkpoint is still recorded in run history.
         """
         with self._lock:
             self._progress.is_training = False
             self._progress.status_message = "Training stopped."
+            output_dir = self._output_dir
             self._proc = None
         self._ensure_db_run_created()
-        self._finalize_run_in_db(status = "stopped")
+        self._finalize_run_in_db(status = "stopped", output_dir = output_dir)
 
-    def force_terminate(self) -> None:
-        """Force-kill the training subprocess so state can be reset immediately."""
+    def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
+        """Force-kill the training subprocess so state can be reset immediately.
+
+        When ``target_proc`` is given, terminate only that handle and no-op if a new
+        run has since replaced it, so the watchdog can never kill a fresh worker.
+        """
         with self._lock:
-            if self._proc is not None and self._proc.is_alive():
-                logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
-                self._proc.terminate()
             proc = self._proc
+            if target_proc is not None and proc is not target_proc:
+                return  # superseded by a new run; do not touch the new worker
+            if proc is not None and proc.is_alive():
+                logger.info("Force-terminating training subprocess (pid=%s)", proc.pid)
+                proc.terminate()
             cancelled = self._cancel_requested
             output_dir = self._output_dir
 
