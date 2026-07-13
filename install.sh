@@ -2315,15 +2315,26 @@ _strip_index_url_credentials() {
 
 # Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX); a
 # custom mirror leaf keeps its case so a verbatim URL pin is not falsely matched
-# equal. The rocm prefix is digit-gated: rocm7.2 is a family leaf, but a
-# rocm-rel-7.2.1 / rocm-Current leaf is a verbatim pin whose case must survive.
+# equal. The rocm prefix is digit-gated and the cu leaf is matched EXACTLY (cu +
+# digits): rocm7.2 / cu128 are family leaves, but rocm-rel-7.2.1 / rocm-Current /
+# cu128-private are verbatim pins whose case must survive.
 # Mirrors _normalize_family_leaf in install_python_stack.py / setup.ps1.
 _normalize_family_leaf() {
     _l_low=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$_l_low" in
-        rocm[0-9]*|gfx*|cpu|cu[0-9]*) printf '%s' "$_l_low" ;;
-        *) printf '%s' "$1" ;;
+        rocm[0-9]*|gfx*|cpu) printf '%s' "$_l_low"; return ;;
     esac
+    # cu + digits ONLY (cu128, not cu128-private): strip a leading "cu" and keep
+    # the leaf as a family only when the remainder is non-empty and all digits.
+    case "$_l_low" in
+        cu[0-9]*)
+            case "${_l_low#cu}" in
+                *[!0-9]*) ;;                          # a non-digit follows -> custom
+                *) printf '%s' "$_l_low"; return ;;   # all digits -> cu family
+            esac
+            ;;
+    esac
+    printf '%s' "$1"
 }
 
 # Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,

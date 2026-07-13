@@ -468,13 +468,15 @@ $TorchIndexMarkerName = ".unsloth-torch-index"
 
 # Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
 # strip ALL trailing slashes, lowercase ONLY the final path segment (the leaf).
-# Lowercase ONLY a known wheel-family leaf (rocm* / gfx* / cpu / cuXXX); a custom
-# mirror leaf keeps its case so a verbatim URL pin is not falsely matched equal.
+# Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX); a
+# custom mirror leaf keeps its case so a verbatim URL pin is not falsely matched
+# equal. The cu leaf is matched EXACTLY (cu + digits): cu128 is a family leaf, but
+# cu128-private is a verbatim pin whose case must survive.
 # Mirrors _normalize_family_leaf in install.sh / install_python_stack.py.
 function Get-NormalizedFamilyLeaf {
     param([string]$Leaf)
     $low = $Leaf.ToLowerInvariant()
-    if ($low -match '^(rocm[0-9]|gfx)' -or $low -eq 'cpu' -or $low -match '^cu[0-9]') { return $low }
+    if ($low -match '^(rocm[0-9]|gfx)' -or $low -eq 'cpu' -or $low -match '^cu[0-9]+$') { return $low }
     return $Leaf
 }
 
@@ -579,7 +581,10 @@ function Test-RocmKnown211Version {
 function Test-CudaFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
-    return $Leaf -match '^cu[0-9]'
+    # EXACT cu+digits: a custom leaf like cu128-private is NOT a CUDA family leaf,
+    # so it must not become the expected tag (cu128-private != installed cu128 would
+    # rebuild the venv on every update). It routes through the unknown-leaf path.
+    return $Leaf -match '^cu[0-9]+$'
 }
 
 # Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns a hashtable

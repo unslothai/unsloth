@@ -143,14 +143,14 @@ def _normalize_family_leaf(leaf: str) -> str:
     The canonical gfx120X-all (capital X) must match AMD's lowercase gfx120x-all, so
     known-family leaves are lowercased. A custom mirror leaf (/Current, /simple, ...)
     keeps its case: an unknown-family URL pin is applied verbatim, so /Current and
-    /current must NOT compare equal. The rocm prefix is digit-gated like
-    _is_pip_rocm_family_leaf: rocm7.2 is a family leaf, but rocm-rel-7.2.1 /
-    rocm-Current are verbatim pins whose case must survive normalization (URL
-    paths can be case-sensitive). Mirrors the gate in install.sh / setup.ps1.
-    Pure function.
+    /current must NOT compare equal. The rocm prefix is digit-gated and the cu leaf
+    is matched EXACTLY (cu + digits) like _is_cuda_family_leaf: rocm7.2 / cu128 are
+    family leaves, but rocm-rel-7.2.1 / rocm-Current / cu128-private are verbatim
+    pins whose case must survive normalization (URL paths can be case-sensitive).
+    Mirrors the gate in install.sh / setup.ps1. Pure function.
     """
     low = leaf.lower()
-    if low.startswith("gfx") or low == "cpu" or re.match(r"^(rocm|cu)[0-9]", low):
+    if low.startswith("gfx") or low == "cpu" or re.match(r"^rocm[0-9]", low) or re.fullmatch(r"cu[0-9]+", low):
         return low
     return leaf
 
@@ -1425,9 +1425,13 @@ def _is_cuda_family_leaf(leaf: str) -> bool:
     A bare startswith("cu") wrongly matches arbitrary mirror leaves like "custom"
     or "current", which would let _ensure_cuda_torch treat a generic mirror pin as
     CUDA authority and force a CUDA reinstall over a CPU/ROCm venv on a non-NVIDIA
-    host -- exactly what _explicit_cuda_torch_index_url's contract forbids.
+    host -- exactly what _explicit_cuda_torch_index_url's contract forbids. The
+    match is EXACT (cu + digits + end): a custom mirror leaf like "cu128-private"
+    is NOT a wheel-family leaf, so it must route to the verbatim/unknown path
+    instead of being compared against the installed +cu128 tag (which never equals
+    "cu128-private" -> a reinstall on every update).
     """
-    return re.match(r"^cu[0-9]", leaf) is not None
+    return re.fullmatch(r"cu[0-9]+", leaf) is not None
 
 
 def _explicit_cuda_torch_index_url() -> "str | None":
@@ -1542,6 +1546,13 @@ def _ensure_verbatim_torch_index() -> None:
     (_CUSTOM_INDEX_TORCH_PKG_SPEC): a FRESH install.sh / install.ps1 install from the
     same unknown-leaf pin caps torch at <2.11.0, so the update path uses that same
     ceiling and does not drift above it when the mirror publishes a newer torch.
+
+    Known limitation: an unknown-family index wheel carries no flavor tag, so a
+    torch clobbered to a WORKING-but-wrong build (a healthy PyPI CPU wheel) under a
+    matching marker cannot be distinguished from a correct one -- reinstalling every
+    update to be safe would be exactly the loop this avoids. The marker is therefore
+    a best-effort SOURCE record for unknown families; only a broken/unimportable
+    torch (detectable) or a drift from this run's applied snapshot is repaired here.
     """
     global _VERBATIM_TRIO_SNAPSHOT
     if NO_TORCH or IS_MAC_INTEL:
@@ -1555,14 +1566,21 @@ def _ensure_verbatim_torch_index() -> None:
         # remember what the applied trio looks like and stop (no per-update
         # loop). On a LATER pass (the final safety repair), a trio that drifted
         # from that snapshot means an intermediate dependency install clobbered
-        # the pinned torch -- fall through and reapply. A failed probe skips the
-        # comparison (never loop on missing evidence).
+        # the pinned torch -- fall through and reapply.
         _snap = _installed_trio_snapshot()
-        if _VERBATIM_TRIO_SNAPSHOT is None or _snap is None or _snap == _VERBATIM_TRIO_SNAPSHOT:
+        if _snap is None:
+            # torch is missing or unimportable: a matching marker cannot vouch for
+            # a torch that does not import, so reapply the pin rather than trusting
+            # (or snapshotting) a broken state that the final pass would then see as
+            # "no drift" and skip. After the reinstall the trio imports again, so
+            # the next pass/run snapshots a healthy trio (no loop).
+            _why = "is not importable and must be reapplied from the recorded index"
+        elif _VERBATIM_TRIO_SNAPSHOT is None or _snap == _VERBATIM_TRIO_SNAPSHOT:
             if _VERBATIM_TRIO_SNAPSHOT is None:
                 _VERBATIM_TRIO_SNAPSHOT = _snap
             return
-        _why = "was clobbered by a later dependency install"
+        else:
+            _why = "was clobbered by a later dependency install"
     else:
         _why = (
             "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
@@ -1648,7 +1666,7 @@ def _torch_flavor_matches_pin(pin: str, flavor: "tuple[str, str, str]") -> "bool
     """
     marker, cutag, version = flavor
     leaf = _torch_index_leaf(pin)
-    if re.match(r"^cu[0-9]", leaf):
+    if re.fullmatch(r"cu[0-9]+", leaf):
         if marker != "cuda":
             return False
         # An untagged CUDA build (empty cutag) cannot be confirmed to match the
@@ -1734,7 +1752,7 @@ def _ensure_pinned_known_family_torch() -> None:
     if _explicit_unknown_family_torch_index_url() is not None:
         return  # unknown-family pin -> _ensure_verbatim_torch_index owns it
     leaf = _torch_index_leaf(pin)
-    if not (re.match(r"^cu[0-9]", leaf) or leaf == "cpu"):
+    if not (re.fullmatch(r"cu[0-9]+", leaf) or leaf == "cpu"):
         return  # rocm/gfx per-arch specs are owned by setup.ps1 on Windows
     flavor = _probe_torch_flavor()
     if flavor is None:
@@ -3494,10 +3512,17 @@ def install_python_stack() -> int:
             # but an explicit pin applied earlier (setup.ps1 / step 2b) can still be
             # clobbered by a later dependency install while the matching marker masks
             # it. Enforce a known-family cu*/cpu pin (no host probing needed -- the pin
-            # is authoritative) and run the verbatim owner for unknown-family pins;
-            # rocm/gfx per-arch repair stays with setup.ps1.
+            # is authoritative) and run the verbatim owner for unknown-family pins.
             _progress(_torch_step_label("final"))
             _ensure_pinned_known_family_torch()
+            # On Windows, an explicit rocm/gfx pin's wheel (installed by setup.ps1
+            # from AMD's per-arch index) can be clobbered the same way. _ensure_rocm_torch
+            # has a Windows path (repo.amd.com per-arch) that no-ops when torch already
+            # links HIP, so it only reinstalls a genuinely clobbered ROCm venv (loop-safe).
+            # Gate on an explicit rocm/gfx pin so non-ROCm Windows installs are untouched;
+            # macOS has no ROCm so this stays IS_WINDOWS-only.
+            if IS_WINDOWS and _explicit_rocm_torch_index_url() is not None:
+                _ensure_rocm_torch()
             _ensure_verbatim_torch_index()
             _record_torch_index_pin_baseline()
 
@@ -3523,9 +3548,13 @@ def _torch_pin_needs_apply() -> bool:
     from the pinned family. The marker records the last install SOURCE, not proof
     the current torch still matches: a later pip install or failed update can replace
     a cu128 wheel with a cpu one while the marker still matches, so the flavor check
-    forces the pass to let _ensure_{cuda,rocm,cpu}_torch repair it. An unknown-family
-    pin has no flavor tag to validate (the marker is the only signal) and a failed
-    probe cannot prove a drift, so both keep the fast path. Pure query (no writes)."""
+    forces the pass to let _ensure_{cuda,rocm,cpu}_torch repair it. A FAILED probe
+    (torch missing or unimportable) also forces the pass: a matching marker cannot
+    vouch for a torch that does not import, and forcing is safe -- the pass is
+    idempotent, and once torch imports again the probe succeeds and the forcing
+    stops (self-resolving, not a permanent loop). An unknown-family pin with a
+    WORKING torch has no flavor tag to validate (the marker is the only signal), so
+    it keeps the fast path. Pure query (no writes)."""
     pin = _explicit_torch_index_url()
     if pin is None:
         return False
@@ -3533,7 +3562,7 @@ def _torch_pin_needs_apply() -> bool:
         return True
     flavor = _probe_torch_flavor()
     if flavor is None:
-        return False
+        return True
     return _torch_flavor_matches_pin(pin, flavor) is False
 
 

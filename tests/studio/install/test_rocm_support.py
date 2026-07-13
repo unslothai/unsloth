@@ -1510,6 +1510,24 @@ class TestEnsureRocmTorchMarker:
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
+    def test_verbatim_matching_marker_broken_torch_reinstalls(self, mock_pip):
+        """Marker matches the custom pin but torch is unimportable (snapshot None): a
+        matching marker cannot vouch for a torch that does not import, so the verbatim
+        pin is reapplied rather than snapshotting the broken state (which the final pass
+        would then see as 'no drift' and skip). Item 4 broken-torch case."""
+        self._seed("https://mirror.local/current")
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.object(stack_mod, "_installed_trio_snapshot", return_value = None):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._ensure_verbatim_torch_index()
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/current" in str(mock_pip.call_args_list[0])
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
     def test_verbatim_skips_known_family_pins(self, mock_pip):
         """A known-family pin (rocm/gfx/cu/cpu) is NOT handled by the verbatim path --
         the dedicated _ensure_{rocm,cuda,cpu} helpers own those. cu128 stays CUDA."""
@@ -1764,11 +1782,27 @@ class TestEnsureRocmTorchMarker:
             is False
         )
 
-    def test_probe_failed_flavor_trusts_matching_marker(self):
-        # A failed torch probe cannot prove a drift -> keep the fast path (no loop).
+    def test_probe_failed_flavor_forces_pass(self):
+        # A failed probe (torch missing/unimportable) under a matching marker must
+        # force the pass: the marker cannot vouch for a torch that does not import,
+        # and forcing is safe (the pass is idempotent and self-resolving once torch
+        # imports again). Round 4 kept the fast path here -- item 3 reverses that.
         assert (
             self._needs_apply(
                 "https://mirror.local/cu128", None, marker = "https://mirror.local/cu128"
+            )
+            is True
+        )
+
+    def test_probe_custom_cu_suffix_leaf_keeps_fast_path(self):
+        # A custom mirror leaf like cu128-private is NOT a CUDA family (exact cu+digits
+        # only), so it routes through the unknown/verbatim path: a matching marker and a
+        # healthy torch must NOT force a reinstall on every update (item 2 loop fix).
+        assert (
+            self._needs_apply(
+                "https://mirror.local/cu128-private",
+                ("cuda", "cu128", "2.11.0+cu128"),
+                marker = "https://mirror.local/cu128-private",
             )
             is False
         )

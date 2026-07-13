@@ -329,15 +329,19 @@ class TestCudaLeafDigitParity:
 
     def test_stack_py_requires_cu_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
+        # EXACT cu+digits: a custom leaf like cu128-private must route to the
+        # verbatim/unknown path, not be compared against the installed +cu128 tag.
         assert re.search(
-            r'r"\^cu\[0-9\]"', text
-        ), "install_python_stack.py _is_cuda_family_leaf must match ^cu[0-9]"
+            r'r"cu\[0-9\]\+"', text
+        ), "install_python_stack.py _is_cuda_family_leaf must fullmatch cu[0-9]+"
 
     def test_setup_ps1_requires_cu_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
+        # EXACT cu+digits: cu128-private must not classify as CUDA (it would become
+        # the expected tag and rebuild the venv on every update).
         assert re.search(
-            r"'\^cu\[0-9\]'", text
-        ), "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9], not a bare cu* glob"
+            r"'\^cu\[0-9\]\+\$'", text
+        ), "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9]+$, not a cu* prefix"
         # The stale-venv branch must go through the digit-guarded helper.
         assert (
             "Test-CudaFamilyLeaf $_pinLeaf" in text
@@ -609,22 +613,34 @@ class TestPinnedRocmLeafDigitParity:
         ), "install_python_stack.py _is_pip_rocm_family_leaf must match ^rocm\\d"
 
     def test_normalize_family_leaf_digit_gates_rocm(self):
-        """_normalize_family_leaf lowercases only true family leaves. rocm7.2 is a
-        family (lowercased), but rocm-Current / rocm-rel-7.2.1 keep their case so a
-        case-only custom-index change is not falsely matched equal (URL paths can be
-        case-sensitive). All three installers must digit-gate the rocm prefix."""
+        """_normalize_family_leaf lowercases only true family leaves. rocm7.2 / cu128
+        are families (lowercased), but rocm-Current / rocm-rel-7.2.1 / cu128-private
+        keep their case so a custom-index leaf is not falsely matched equal (URL paths
+        can be case-sensitive). All three installers digit-gate the rocm prefix and
+        match the cu leaf EXACTLY (cu + digits)."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert re.search(
-            r"rocm\[0-9\]\*\|gfx\*\|cpu\|cu\[0-9\]\*", sh
+            r"rocm\[0-9\]\*\|gfx\*\|cpu", sh
         ), "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
+        # cu is exact: the leaf is a family only when stripping "cu" leaves all digits.
+        assert '"${_l_low#cu}"' in sh, (
+            "install.sh _normalize_family_leaf must match cu EXACTLY (strip cu, require "
+            "an all-digit remainder) so cu128-private stays a custom leaf"
+        )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
         assert (
             "-match '^(rocm[0-9]|gfx)'" in setup
         ), "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
+        assert "-match '^cu[0-9]+$'" in setup, (
+            "setup.ps1 Get-NormalizedFamilyLeaf must match cu EXACTLY (^cu[0-9]+$)"
+        )
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert re.search(
-            r'r"\^\(rocm\|cu\)\[0-9\]"', stack
-        ), "install_python_stack.py _normalize_family_leaf must digit-gate rocm (^(rocm|cu)[0-9])"
+            r'r"\^rocm\[0-9\]"', stack
+        ), "install_python_stack.py _normalize_family_leaf must digit-gate rocm (^rocm[0-9])"
+        assert re.search(
+            r'r"cu\[0-9\]\+"', stack
+        ), "install_python_stack.py _normalize_family_leaf must fullmatch cu[0-9]+"
 
     def test_setup_ps1_marker_compare_is_case_sensitive(self):
         """Test-MarkerPinMismatch must use -cne, not -ne: normalization preserves
@@ -777,10 +793,21 @@ class TestFirstCustomPinAppliedWithoutMarker:
         # clobber it, and _ensure_{cuda,cpu}_torch self-skip on Windows -- so the branch
         # must also call _ensure_pinned_known_family_torch (the known-family analog of
         # the verbatim unknown-family repair).
-        win_branch = text[text.find("elif IS_WINDOWS or IS_MAC_ARM:") :][:1200]
+        win_branch = text[text.find("elif IS_WINDOWS or IS_MAC_ARM:") :][:1800]
         assert "_ensure_pinned_known_family_torch()" in win_branch, (
             "the Windows/macOS-ARM branch must repair a clobbered known-family cu*/cpu pin "
             "via _ensure_pinned_known_family_torch (the family helpers no-op on Windows)"
+        )
+        # An explicit rocm/gfx pin's wheel (installed by setup.ps1 from AMD's per-arch
+        # index) can be clobbered the same way; _ensure_rocm_torch has a Windows path
+        # and no-ops when torch already links HIP (loop-safe), so the branch must run it
+        # gated on IS_WINDOWS + an explicit rocm/gfx pin (item, round 6).
+        assert (
+            "if IS_WINDOWS and _explicit_rocm_torch_index_url() is not None:" in win_branch
+            and "_ensure_rocm_torch()" in win_branch
+        ), (
+            "the Windows branch must repair a clobbered rocm/gfx pin via _ensure_rocm_torch "
+            "gated on IS_WINDOWS and an explicit rocm/gfx pin"
         )
 
     def test_setup_ps1_forces_reinstall_when_marker_absent(self):
