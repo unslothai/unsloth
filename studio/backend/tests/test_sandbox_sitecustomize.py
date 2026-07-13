@@ -194,6 +194,38 @@ def test_write_fallback_never_clobbers_same_basename(monkeypatch, tmp_path):
     assert mod._remap_open(fresh, "w") == os.path.join(os.getcwd(), "brand_new.txt")
 
 
+def test_write_fallback_reserves_same_target_on_repeated_writes(monkeypatch, tmp_path):
+    # Iterative overwrite of the SAME invented absolute path must keep landing on
+    # the CWD target the fallback first healed it to. The first write creates
+    # ./app.html; a naive anti-clobber guard would then see that file exist and
+    # return the original (parent-missing) path, so every later regenerate would
+    # raise FileNotFoundError. The fallback must recognise its own prior remap of
+    # this exact source and re-serve it.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+    invented = "/home/ubuntu/Sandbox/app.html"
+    target = os.path.join(cwd, "app.html")
+
+    # First write: healed into the CWD, and actually create the file so the
+    # collision guard would trigger on the next call without the fix.
+    assert mod._remap_open(invented, "w") == target
+    with open(mod._remap_open(invented, "w"), "w") as fh:
+        fh.write("v1")
+
+    # Repeated overwrites of the same invented path stay on the same target.
+    for _ in range(3):
+        assert mod._remap_open(invented, "w") == target
+    with open(mod._remap_open(invented, "w"), "w") as fh:
+        fh.write("v2")
+    assert Path(target).read_text() == "v2"
+
+    # A DIFFERENT invented source that collides on basename is still refused, so
+    # it can never clobber the artifact the first path owns.
+    other = "/opt/other/app.html"
+    assert mod._remap_open(other, "w") == other
+
+
 @pytest.mark.parametrize("mode", ["r+", "rb+"])
 def test_read_update_modes_never_redirected_even_with_missing_parent(monkeypatch, tmp_path, mode):
     # r+ / rb+ REQUIRE the target to already exist; they never create. A "+" in

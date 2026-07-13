@@ -1498,6 +1498,65 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
     assert any("Let me search." in t for t in content_texts)
 
 
+def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
+    # A textual Mistral-style call that carries an explicit ``id`` must reconcile
+    # onto the already-open provisional TEXT card (keyed "call_0") instead of
+    # spawning a second, duplicate card under the explicit id. The parser keeps
+    # the explicit id for execution, so without reuse the live card and the
+    # finished card mismatch.
+    big_query = "cats " * 80  # push the drained call past the provisional floor
+    call = "[TOOL_CALLS]" + json.dumps(
+        [{"name": "web_search", "arguments": {"query": big_query}, "id": "explicit-42"}]
+    )
+    assert len(call) > 256
+    # Stream the textual call in small chunks so the live-args provisional card
+    # opens mid-generation (a single-shot delta parses instantly and never shows
+    # a provisional, so it could not exercise the duplicate-card path).
+    chunks = [call[i : i + 24] for i in range(0, len(call), 24)]
+    streams = [
+        [_sse({"content": c}) for c in chunks] + [_done()],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": big_query})]
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    # The empty-args card is the provisional open; the full-args card is the
+    # reconciled real start (both carry provisional provenance by design).
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    real = [e for e in tool_starts if e.get("arguments", {}).get("query")]
+    # The provisional card actually opened (guards against a vacuous test).
+    assert len(provisional) == 1, tool_starts
+    prov_id = provisional[0]["tool_call_id"]
+    # Exactly one real card, sharing the provisional id rather than opening a
+    # duplicate under the explicit "explicit-42" id.
+    assert len(real) == 1, tool_starts
+    assert real[0]["tool_call_id"] == prov_id
+    assert real[0]["tool_name"] == "web_search"
+    assert {e["tool_call_id"] for e in tool_starts} == {prov_id}
+    # A single tool_end reconciles that card with the real result; there is no
+    # extra provisional close with an empty result under a stale id.
+    ends = [e for e in events if e.get("type") == "tool_end"]
+    assert [e["tool_call_id"] for e in ends] == [prov_id]
+    assert ends[0]["result"] == "result"
+
+
 def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
     # Same leak class for the Llama-3 built-in ``<|python_tag|>NAME.call(...)`` form.
     streams = [

@@ -38,6 +38,10 @@ _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # below applies to every prefix alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
+# Invented absolute write path -> the CWD target the fallback healed it to, so a
+# repeated overwrite of the same generated artifact re-serves that target
+# instead of tripping the anti-clobber guard on the file it created earlier.
+_remapped_writes: dict = {}
 
 
 def _note(subject, original, mapped):
@@ -137,10 +141,16 @@ def _remap_open(file, mode):
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never overwrite an already-present workspace file (lexists catches dangling
-    # symlinks too); refuse and let open raise, preserving it.
-    if os.path.lexists(remapped):
+    # Never CLOBBER an unrelated workspace file that happens to share this
+    # basename (lexists catches dangling symlinks too): refuse and let open
+    # raise, preserving it. But a target THIS fallback already healed for the
+    # exact same invented path is the same artifact the model is re-writing, so
+    # re-serve it -- otherwise an iterative overwrite of e.g.
+    # ``/home/ubuntu/Sandbox/app.html`` would create ``./app.html`` on the first
+    # write and then FileNotFoundError on every later one (missing parent).
+    if os.path.lexists(remapped) and _remapped_writes.get(text) != remapped:
         return file
+    _remapped_writes[text] = remapped
     _note(text, text, remapped)
     return remapped
 

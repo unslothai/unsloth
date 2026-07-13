@@ -1628,9 +1628,40 @@ def _fetch_url_raw(
         return f"Failed to fetch URL: {e}", "", ""
 
 
+# Tags whose appearance at the very START of a response (after leading
+# whitespace) marks the body itself as HTML. Restricted to document-structure
+# and container tags a Markdown README never opens with as content: ``<div>``,
+# ``<p>``, ``<span>``, ``<a>``, ``<img>`` and ``<h1>``..``<h6>`` are excluded
+# because centered-logo READMEs legitimately begin with ``<p align=...>`` /
+# ``<div align=...>`` / ``<h1 align=...>`` and must stay Markdown.
+_HTML_LEADING_TAGS = (
+    "html", "head", "body", "title", "meta", "link", "script", "style",
+    "article", "section", "main", "header", "footer", "nav", "aside",
+    "figure", "table", "thead", "tbody", "tr", "td", "th", "form",
+    "ul", "ol", "dl", "pre", "blockquote",
+)
+_HTML_LEADING_RE = re.compile(
+    r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)"
+)
+
+
 def _looks_like_html(body: str) -> bool:
+    """True only when the document ITSELF opens with HTML.
+
+    The sniff matches an HTML doctype or a leading document/structure tag after
+    optional whitespace, not a mere substring anywhere in the first 256 chars.
+    That tightens the old ``"<!doctype html" in probe`` check so a Markdown
+    README that begins with a fenced HTML example (```` ```html ... ````) or
+    embeds tags further down stays Markdown instead of being corrupted by
+    ``html_to_markdown``. It also broadens detection to bare HTML fragments
+    (``<body>...``, ``<article>...``, ``<section>...``) that carry no
+    ``<html>``/doctype, so a page served with a missing or wrong Content-Type is
+    still converted. Ambiguous inline tags (``<div>``/``<p>``/``<h1>``) are
+    deliberately excluded: they open legitimate centered-header Markdown READMEs
+    and cannot be told apart from a fragment by content alone.
+    """
     probe = body.lstrip()[:256].lower()
-    return "<!doctype html" in probe or "<html" in probe
+    return bool(_HTML_LEADING_RE.match(probe))
 
 
 def _truncate_page_text(text: str, max_chars: int) -> str:

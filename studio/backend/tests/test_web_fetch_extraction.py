@@ -547,6 +547,60 @@ def test_looks_like_html():
     assert not _looks_like_html("plain text")
 
 
+def test_looks_like_html_markdown_with_leading_fenced_example_stays_markdown():
+    # A Markdown README that OPENS with a fenced HTML example must not be
+    # sniffed as HTML just because a doctype/tag appears in the first 256 chars;
+    # converting it through html_to_markdown would corrupt the fences and prose.
+    fenced = "```html\n<!DOCTYPE html>\n<html><body><div>hi</div></body></html>\n```\n\n# Real README\n"
+    assert not _looks_like_html(fenced)
+    # Prose that mentions a tag inline, and a centered-logo README that opens
+    # with <p align>/<div align>/<h1 align>, also stay Markdown.
+    assert not _looks_like_html("Use the <html> element to start a page.")
+    assert not _looks_like_html('<p align="center"><img src="logo.png"></p>\n\n# Project\n')
+    assert not _looks_like_html('<div align="center">\n\n# Project\n\n</div>\n')
+    assert not _looks_like_html('<h1 align="center">Project</h1>\n\nMarkdown body.\n')
+    # An autolink is not a tag opener.
+    assert not _looks_like_html("<https://example.com> is the homepage")
+
+
+def test_looks_like_html_detects_bare_fragments():
+    # A wrong/missing Content-Type page whose body is a bare HTML fragment (no
+    # <html>/doctype) must still be recognized so it is converted to Markdown.
+    assert _looks_like_html("<body><p>hello</p></body>")
+    assert _looks_like_html("\n<article><h1>Title</h1><p>Body</p></article>")
+    assert _looks_like_html("<section>content</section>")
+    assert _looks_like_html("<table><tr><td>cell</td></tr></table>")
+
+
+def test_fetch_page_text_keeps_markdown_readme_with_html_example(monkeypatch):
+    # A repo whose README is Markdown but opens with a fenced HTML tutorial
+    # snippet returns Markdown from the README API. It must be served verbatim,
+    # never run through html_to_markdown (which would drop the fences/tags).
+    md_readme = (
+        "```html\n"
+        "<!DOCTYPE html>\n"
+        "<html><body><h1>Demo</h1></body></html>\n"
+        "```\n\n"
+        "# My Project\n\nInstall and run.\n"
+    )
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
+        return None, md_readme, "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    assert "README of https://github.com/unslothai/unsloth" in out
+    # Markdown preserved verbatim: the fence and literal tags survive.
+    assert "```html" in out
+    assert "<!DOCTYPE html>" in out
+    assert "# My Project" in out
+
+
 def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
     # email.message.Message.get_content_type() falls back to the RFC 2045
     # "text/plain" default when the header is absent; _fetch_url_raw must
@@ -593,6 +647,25 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
     assert "Unsloth Studio" in out
     assert "<html" not in out
     assert "Uh oh!" not in out
+
+
+def test_fetch_page_text_missing_content_type_fragment_converted(monkeypatch):
+    # A header-less server returning a bare HTML fragment (no <html>/doctype)
+    # must still be sniffed as HTML and converted, not served as raw markup.
+    fragment = "<article><h1>Doc Title</h1><p>Readable fragment body.</p></article>"
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        return None, fragment, ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://example.com/fragment")
+    assert "Doc Title" in out
+    assert "Readable fragment body." in out
+    assert "<article" not in out
 
 
 def test_fetch_page_text_missing_content_type_plain_text_raw(monkeypatch):
