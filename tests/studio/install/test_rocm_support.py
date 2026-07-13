@@ -1459,7 +1459,9 @@ class TestEnsureRocmTorchMarker:
                 # reinstall. Pin a healthy flavor so the idempotence check is about the
                 # marker, not ambient torch. (The first call takes the no-marker reinstall
                 # branch, which does not probe, so the mock does not affect it.)
-                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                with patch.object(
+                    stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
+                ):
                     with patch.dict(stack_mod.os.environ, env, clear = False):
                         stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                         stack_mod._ensure_verbatim_torch_index()
