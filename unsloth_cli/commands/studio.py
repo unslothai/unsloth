@@ -822,6 +822,37 @@ def _validate_inproc_backend_before_strip(
         raise typer.Exit(1)
 
 
+def _tunnel_binary_confirmed_unavailable() -> bool:
+    """True only if cloudflared is provably unavailable: found nowhere on PATH or
+    in the Studio cache AND the download failed, so the tunnel cannot start.
+
+    Used on the --secure path (loopback bind, so the tunnel is the ONLY public
+    exposure) to skip stripping the seeded recovery password before a public URL
+    that will never come up. Loads the stdlib-only backend cloudflare_tunnel
+    helper by file path so the check runs in the parent, before the strip.
+    ensure_cloudflared() also caches the binary the re-exec'd child would use.
+
+    Returns False on ANY uncertainty (helper not loadable, unexpected error): a
+    possible credential leak outweighs a recoverable lockout, so the caller keeps
+    the security-critical strip when it cannot prove the tunnel is dead.
+    """
+    run_py = _find_run_py()
+    if run_py is None:
+        return False
+    tunnel_py = run_py.parent / "cloudflare_tunnel.py"
+    if not tunnel_py.is_file():
+        return False
+    try:
+        spec = importlib.util.spec_from_file_location("studio.backend.cloudflare_tunnel", tunnel_py)
+        if spec is None or spec.loader is None:
+            return False
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.ensure_cloudflared() is None
+    except Exception:
+        return False
+
+
 def _enforce_password_change_before_exposure(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> None:
@@ -922,6 +953,25 @@ def _enforce_password_change_before_exposure(
                     "or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the "
                     "password first (run `unsloth studio` locally and log in, "
                     "or re-run with a terminal attached), then retry.",
+                    err = True,
+                )
+                raise typer.Exit(1)
+            # The strip permanently removes the only plaintext recovery
+            # credential. On --secure the bind is loopback, so the Cloudflare
+            # tunnel is the ONLY public exposure: if cloudflared is provably
+            # unavailable (found nowhere and undownloadable) no public URL can
+            # start, nothing needs stripping, and stripping would just lock the
+            # user out. Refuse the launch with the credential preserved. (Wildcard
+            # --cloudflare binds 0.0.0.0 publicly regardless of the tunnel, so it
+            # still strips below; any uncertainty also still strips.)
+            if secure and _tunnel_binary_confirmed_unavailable():
+                typer.echo(
+                    "Error: refusing to expose Studio: the Cloudflare tunnel binary "
+                    "(cloudflared) is unavailable and could not be downloaded, so no "
+                    "public URL can start. The seeded bootstrap password is preserved "
+                    "for recovery; fix connectivity and retry, or change the password "
+                    "first (`unsloth studio` locally, or `unsloth studio "
+                    "reset-password`).",
                     err = True,
                 )
                 raise typer.Exit(1)
@@ -1217,13 +1267,21 @@ def studio_default(
         if resolved_frontend is None and not api_only:
             resolved_frontend = _find_frontend_dist()
     else:
-        # Already inside the studio venv: no re-exec, the backend runs in-process
-        # below (_load_run_module). On the headless public path the gate strips
-        # the seeded .bootstrap_password, so validate the backend is importable
-        # FIRST -- a broken/partial venv that only fails at _load_run_module()
-        # would otherwise leave must_change_password=1 with no password to log in
-        # (lockout until reset-password). Only the headless path (no interactive
-        # prompt to delay behind a full backend import).
+        # Already inside the studio venv: no re-exec, the frontend + backend are
+        # served in-process below. On the headless public path the gate strips
+        # the seeded .bootstrap_password, so validate BOTH FIRST -- otherwise a
+        # missing/bad dist or a broken/partial venv would only fail after the
+        # strip, leaving must_change_password=1 with no password to log in
+        # (lockout until reset-password). The frontend check is cheap, so run it
+        # before the backend import; the backend import is restricted to the
+        # headless path so an interactive prompt is not delayed behind it.
+        resolved_frontend = _require_servable_frontend_or_exit(
+            frontend = resolved_frontend,
+            api_only = api_only,
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+        )
         _validate_inproc_backend_before_strip(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
         )
@@ -1316,8 +1374,10 @@ def studio_default(
         secure = secure,
         enable_tools = enable_tools,
     )
-    if frontend is not None:
-        run_kwargs["frontend_path"] = frontend
+    # Forward the frontend validated before the gate (in-venv path), so the
+    # in-process server serves exactly the dist we vouched for.
+    if resolved_frontend is not None:
+        run_kwargs["frontend_path"] = resolved_frontend
     run_server(**run_kwargs)
 
     try:
@@ -1632,6 +1692,7 @@ def run(
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
     studio_bin = None
+    resolved_frontend = frontend
     if not in_studio_venv:
         studio_python = _studio_venv_python()
         if not studio_python:
@@ -1645,8 +1706,10 @@ def run(
         # `run` serves the same Studio UI (unless --api-only); a public launch
         # must have a servable login page BEFORE the gate strips the seeded
         # password, or the re-exec'd child is left with no way to change it
-        # (same lockout as `unsloth studio`). Validate here, before the strip.
-        _require_servable_frontend_or_exit(
+        # (same lockout as `unsloth studio`). Validate here, before the strip, and
+        # forward the resolved dist so a shadowed child that cannot self-resolve
+        # one still serves what the parent vouched for.
+        resolved_frontend = _require_servable_frontend_or_exit(
             frontend = frontend,
             api_only = api_only,
             cloudflare = cloudflare,
@@ -1654,8 +1717,17 @@ def run(
             secure = secure,
         )
     else:
-        # In-venv (in-process) run: validate the backend is importable before the
-        # headless gate strips the seeded password (same lockout guard as above).
+        # In-venv (in-process) run: validate the servable frontend and the
+        # importable backend before the headless gate strips the seeded password
+        # (same lockout guard as `unsloth studio`). Frontend check first (cheap);
+        # backend import is headless-only so an interactive prompt is not delayed.
+        resolved_frontend = _require_servable_frontend_or_exit(
+            frontend = frontend,
+            api_only = api_only,
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+        )
         _validate_inproc_backend_before_strip(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
         )
@@ -1687,8 +1759,12 @@ def run(
         # Forward the explicit polarity; a future default flip on one
         # layer must not silently invert behaviour for the other.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
-        if frontend:
-            args.extend(["--frontend", str(frontend)])
+        # Forward the frontend resolved/validated before the gate, not just a
+        # user-supplied one: on a public launch the parent may have found a built
+        # dist the shadowed child cannot, and stripping without forwarding it
+        # would abort the child during frontend setup (lockout).
+        if resolved_frontend is not None:
+            args.extend(["--frontend", str(resolved_frontend)])
         if api_only:
             args.append("--api-only")
         if silent:
@@ -1753,8 +1829,9 @@ def run(
         # TAURI_PORT line would corrupt that machine-parseable output.
         emit_tauri_port = False,
     )
-    if frontend is not None:
-        run_kwargs["frontend_path"] = frontend
+    # Forward the frontend validated before the gate (in-venv path).
+    if resolved_frontend is not None:
+        run_kwargs["frontend_path"] = resolved_frontend
     app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
 

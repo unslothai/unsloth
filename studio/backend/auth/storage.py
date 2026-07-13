@@ -103,15 +103,26 @@ def clear_bootstrap_password() -> None:
             # auth.db, which would re-validate this revoked credential.
             try:
                 _BOOTSTRAP_PW_PATH.write_text("")
+                cleared = True
             except OSError:
-                pass
+                cleared = False
             import sys
-            print(
-                f"Warning: could not delete {_BOOTSTRAP_PW_PATH.name} ({e}); "
-                "cleared its contents so the old bootstrap password cannot be reused.",
-                file = sys.stderr,
-                flush = True,
-            )
+
+            if cleared:
+                message = (
+                    f"Warning: could not delete {_BOOTSTRAP_PW_PATH.name} ({e}); "
+                    "cleared its contents so the old bootstrap password cannot be reused."
+                )
+            else:
+                # Neither removed nor truncated: the stale plaintext is still on
+                # disk and would be reused if auth.db is later reset. Do not claim
+                # it was made unreusable.
+                message = (
+                    f"Warning: could not delete or clear {_BOOTSTRAP_PW_PATH.name} ({e}); "
+                    "its old bootstrap password is still on disk. Remove it manually to "
+                    "prevent reuse after a reset."
+                )
+            print(message, file = sys.stderr, flush = True)
 
 
 def _hash_token(token: str) -> str:

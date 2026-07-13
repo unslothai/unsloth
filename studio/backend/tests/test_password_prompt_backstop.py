@@ -274,3 +274,42 @@ def test_clear_bootstrap_password_truncates_when_unlink_fails(monkeypatch, tmp_p
     # generates fresh rather than resurrecting the revoked credential.
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
     assert auth_storage._load_bootstrap_password() is None
+
+
+def test_clear_bootstrap_password_warns_truthfully_when_not_cleared(monkeypatch, tmp_path, capsys):
+    # If the file can be neither unlinked NOR truncated, the stale plaintext stays
+    # on disk. The warning must NOT claim it was made unreusable (Codex 3571888584):
+    # it must say it could not be cleared and ask the user to remove it manually.
+    import pathlib
+
+    pw_path = tmp_path / ".bootstrap_password"
+    pw_path.write_text("old-diceware-passphrase")
+    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", pw_path)
+    monkeypatch.setattr(auth_storage, "_bootstrap_password", "old-diceware-passphrase")
+
+    _real_unlink = pathlib.Path.unlink
+    _real_write_text = pathlib.Path.write_text
+
+    def _boom_unlink(self, *a, **k):
+        if self == pw_path:
+            raise OSError("locked")
+        return _real_unlink(self, *a, **k)
+
+    def _boom_write_text(self, *a, **k):
+        if self == pw_path:
+            raise OSError("read-only")
+        return _real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
+    monkeypatch.setattr(pathlib.Path, "write_text", _boom_write_text)
+
+    auth_storage.clear_bootstrap_password()
+
+    # The stale plaintext survives untouched.
+    assert pw_path.read_text() == "old-diceware-passphrase"
+    warning = capsys.readouterr().err.lower()
+    assert "could not delete or clear" in warning
+    assert "still on disk" in warning
+    assert "remove it manually" in warning
+    # Must not falsely claim the contents were cleared (the bug being fixed).
+    assert "cleared its contents" not in warning
