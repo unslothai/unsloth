@@ -74,10 +74,6 @@ verbose_substep() {
     return 0
 }
 
-# AGENTS.md and CLAUDE.md are contributor/agent instructions, not Studio runtime
-# data. Upstream npm packages may publish them, so remove them from dependency
-# trees after installation. Never follow a linked root: --with-llama-cpp-dir
-# points at a user-owned checkout and must remain under the user's control.
 _remove_agent_instruction_files() {
     local _root
     for _root in "$@"; do
@@ -1935,9 +1931,6 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     fi
 fi
 
-# The managed source-build path clones a complete llama.cpp repository. Keep
-# contributor-only agent instructions out of the installed runtime, while
-# leaving a user-supplied --with-llama-cpp-dir tree untouched.
 if [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ]; then
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
 fi

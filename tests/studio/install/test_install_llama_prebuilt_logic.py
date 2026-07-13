@@ -2209,8 +2209,6 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     assert "if (-not $LocalLlamaCppLinked)" in setup_ps1
     assert (
         "Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir\n"
-        "            # The fallback is a Studio-owned copy, not a link into the user's\n"
-        "            # checkout, so it is safe and necessary to prune the copied files.\n"
         "            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)"
     ) in setup_ps1
     assert not (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "AGENTS.md").exists()

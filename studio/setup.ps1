@@ -203,9 +203,6 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
-# AGENTS.md and CLAUDE.md are contributor/agent instructions, not Studio runtime
-# data. Do not traverse a linked root because --with-llama-cpp-dir points at a
-# user-owned checkout.
 function Remove-AgentInstructionFiles {
     param([string[]]$Roots)
 
@@ -3278,8 +3275,6 @@ if ($LocalLlamaCppSrc) {
         if ($LASTEXITCODE -ne 0) {
             substep "Could not create directory junction; copying instead..." "Yellow"
             Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
-            # The fallback is a Studio-owned copy, not a link into the user's
-            # checkout, so it is safe and necessary to prune the copied files.
             Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
         }
         Write-Host ""
@@ -4046,8 +4041,6 @@ if ($LocalLlamaCppLinked) {
     }
 }
 
-# A managed source build clones the complete llama.cpp repository. Prune its
-# contributor-only instructions, but never mutate a user-provided linked tree.
 if (-not $LocalLlamaCppLinked) {
     Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
 }

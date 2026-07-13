@@ -4392,8 +4392,6 @@ def _is_link_or_junction(path: Path) -> bool:
         if path.is_symlink():
             return True
     except OSError:
-        # Cleanup is optional. If link ownership cannot be established, preserve
-        # the path rather than risk deleting files outside the managed tree.
         return True
 
     is_junction = getattr(path, "is_junction", None)
@@ -4404,8 +4402,7 @@ def _is_link_or_junction(path: Path) -> bool:
         except OSError:
             return True
 
-    # Path.is_junction was added in Python 3.12, while Studio also supports
-    # Python 3.10 and 3.11. Detect Windows reparse points on those versions.
+    # Path.is_junction is unavailable on Python 3.10 and 3.11.
     if os.name == "nt":
         try:
             attributes = getattr(path.lstat(), "st_file_attributes", 0)
@@ -4423,9 +4420,7 @@ def remove_agent_instruction_files(root: Path) -> int:
     removed = 0
     for current_dir, dirnames, filenames in os.walk(root, topdown = True, followlinks = False):
         current_path = Path(current_dir)
-        # os.walk(followlinks=False) excludes symbolic links but follows Windows
-        # directory junctions. Prune every redirect explicitly, and re-check a
-        # yielded directory to limit link-swap races between iterations.
+        # followlinks=False still follows Windows junctions.
         if current_path != root and _is_link_or_junction(current_path):
             dirnames.clear()
             continue
@@ -4437,7 +4432,6 @@ def remove_agent_instruction_files(root: Path) -> int:
             try:
                 candidate.unlink()
             except FileNotFoundError:
-                # Another cleanup may have won the race.
                 continue
             except OSError as exc:
                 log(f"could not remove contributor-only instruction {candidate}: {exc}")
@@ -6902,9 +6896,6 @@ def install_prebuilt(
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
-            # Upgrade an existing managed prebuilt in place as well as fresh
-            # staging trees, so installs made before this cleanup do not retain
-            # upstream contributor instructions on a tag-match fast path.
             if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
                 removed = remove_agent_instruction_files(install_dir)
                 if removed:
@@ -7242,9 +7233,7 @@ def main() -> int:
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
     install_prebuilt(
-        # Keep the lexical install path so link/junction ownership checks remain
-        # effective. Path.resolve() would collapse a user-owned linked root before
-        # remove_agent_instruction_files() can identify and preserve it.
+        # Preserve link identity for cleanup ownership checks.
         install_dir = Path(args.install_dir).expanduser().absolute(),
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
