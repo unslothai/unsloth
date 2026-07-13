@@ -109,7 +109,9 @@ _SENSITIVE_RE = re.compile(
 )
 
 _SENSITIVE_ATTRIBUTE_RE = re.compile(
-    r"\b(?:i|we)\s+(?:have|had|suffer from)\b|"
+    r"\b(?:i|we)\s+(?:have|had|suffer from)\s+(?:"
+    r"diabetes|cancer|asthma|hiv|aids|epilepsy|arthritis|depression|anxiety|"
+    r"bipolar disorder|schizophrenia|autism|adhd|ptsd)\b|"
     r"\b(?:i\s+am|i'm|we\s+are|we're)\s+allergic to\b|"
     r"\b(?:i\s+am|i'm|we\s+are|we're)\s+(?:an?\s+)?(?:"
     r"hiv[- ]positive|muslim|christian|jewish|hindu|buddhist|sikh|atheist)\b",
@@ -129,7 +131,7 @@ _STREET_ADDRESS_RE = re.compile(
 _CONTACT_PII_RE = re.compile(
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
     r"\b(?:(?:phone|mobile|cell|telephone|contact)(?:\s+number)?\s*(?:is|:|=)?|"
-    r"(?:call|text|reach|contact)\s+me\s+at)\s*\+?\d[\d(). -]{5,}\d\b",
+    r"my\s+number\s+is|(?:call|text|reach|contact)\s+me\s+at)\s*\+?\d[\d(). -]{5,}\d\b",
     re.I,
 )
 _TRANSIENT_RE = re.compile(
@@ -152,7 +154,7 @@ _COMMAND_RE = re.compile(
     re.I,
 )
 _FORGET_RE = re.compile(
-    _POLITE_COMMAND_PREFIX + r"forget(?:\s+that)?\s+(.+?)\??\s*$",
+    _POLITE_COMMAND_PREFIX + r"forget(?:\s+that)?\s+(.+?)(?:\s*,?\s+please)?[?.]?\s*$",
     re.I,
 )
 _MEMORY_DELETE_RE = re.compile(
@@ -275,6 +277,7 @@ def _validate_content(content: str, automatic: bool) -> str:
         raise MemoryValidationError(
             f"memory content must be at most {MAX_CONTENT_CHARS} characters"
         )
+    # Automatic heuristics favor false negatives, but each guard must identify concrete risk.
     if automatic and (
         _AUTOMATIC_PROFILE_RE.search(normalized)
         or _is_profile_equivalent(normalized)

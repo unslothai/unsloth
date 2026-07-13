@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+from functools import wraps
 import os
 import sys
 import time
@@ -9090,11 +9091,14 @@ async def _dispatch_openai_chat_completions(
 
 
 @router.post("/chat/completions")
+@wraps(_openai_chat_completions_impl, assigned = ())
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    if not hasattr(request, "state"):
+        return await _openai_chat_completions_impl(payload, request, current_subject)
     return await _dispatch_openai_chat_completions(
         payload,
         request,

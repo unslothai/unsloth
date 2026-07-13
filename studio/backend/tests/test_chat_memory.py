@@ -121,6 +121,7 @@ def test_model_forget_requires_user_correction_evidence(tmp_path, monkeypatch):
         "My email is me@example.com",
         "My phone number is +1 (415) 555-0199",
         "Text me at 415-555-0199",
+        "My number is 415-555-0199",
     ),
 )
 def test_automatic_capture_rejects_contact_pii(content):
@@ -233,6 +234,8 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
         "delete the memory about my phone number",
         "Delete my phone number memory",
         "Can you delete the memory about my phone number?",
+        "forget my phone number please",
+        "forget my phone number, please?",
     ),
 )
 def test_explicit_forget_matches_partial_targets_and_aliases(tmp_path, monkeypatch, command):
@@ -451,6 +454,13 @@ def test_automatic_capture_rejects_concrete_sensitive_attributes(tmp_path, monke
 
     with pytest.raises(memory.MemoryValidationError):
         memory.create_memory(content = content, scope = "global", source_type = "model")
+
+
+@pytest.mark.parametrize("content", ("I have a dog", "We have a monorepo"))
+def test_automatic_capture_allows_non_sensitive_possessions(tmp_path, monkeypatch, content):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = content, scope = "global", source_type = "model")
+    assert saved["content"] == content
 
 
 def test_memory_settings_are_global(tmp_path, monkeypatch):
