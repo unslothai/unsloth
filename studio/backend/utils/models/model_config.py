@@ -907,13 +907,13 @@ def _is_vision_model_uncached(
     if raw is not None:
         if raw is False and not local_files_only:
             # Raw heuristics predate latest-only architectures; on the latest tier,
-            # trust that sidecar's AutoConfig probe over the heuristic False.
+            # trust that sidecar's AutoConfig probe over the heuristic False. An
+            # inconclusive probe (sidecar mid-repair, timeout) is transient: return
+            # None so the heuristic False is not cached and the model is re-probed.
             try:
                 from utils.transformers_version import get_transformers_tier
                 if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
-                    sub = _is_vision_model_subprocess(model_name, hf_token = hf_token)
-                    if sub is not None:
-                        return sub
+                    return _is_vision_model_subprocess(model_name, hf_token = hf_token)
             except Exception:
                 pass
         return raw

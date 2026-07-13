@@ -4825,12 +4825,24 @@ async def install_latest_transformers_route(
                     "installing a new transformers version."
                 ),
             )
-        if get_export_backend().is_export_active():
+        _export = get_export_backend()
+        if _export.is_export_active():
             raise HTTPException(
                 status_code = 409,
                 detail = (
                     "An export is running. Wait for it to finish before "
                     "installing a new transformers version."
+                ),
+            )
+        # A loaded (idle) export checkpoint would be torn down by the pre-swap
+        # cleanup; if the swap then failed, that state would be silently lost
+        # with no rollback signal. Make the user unload it deliberately first.
+        if getattr(_export, "current_checkpoint", None):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An export checkpoint is loaded. Unload it from the Export "
+                    "page before installing a new transformers version."
                 ),
             )
         # In-flight streams passed the middleware already, so the lifecycle gate can't
