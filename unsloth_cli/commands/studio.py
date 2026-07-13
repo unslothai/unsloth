@@ -714,6 +714,33 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             )
 
 
+def _strip_seeded_bootstrap_password_or_exit(*, context: str) -> None:
+    """Remove the seeded plaintext bootstrap password before a public re-exec.
+
+    Deleting the file is the version-independent protection: a re-exec'd child
+    of ANY version (including an old studio-venv predating the pre-bind gate)
+    then reads None instead of injecting the default credential into the public
+    page. must_change_password stays set in the DB, so the login page still
+    forces a change and the bootstrap shutdown timer still arms; only the
+    plaintext-on-disk copy is removed. Removal IS the protection, so if it fails
+    (locked file, read-only auth dir) fail closed rather than publish it.
+    """
+    bootstrap_file = STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE
+    try:
+        bootstrap_file.unlink(missing_ok = True)
+    except OSError as exc:
+        typer.echo(
+            "Error: refusing to publish Studio on a public Cloudflare URL: "
+            f"could not remove the seeded bootstrap password file ({exc}), so an "
+            f"older Studio child could still serve the default credential ({context}). "
+            "Delete it manually or change the admin password (run `unsloth studio` "
+            "locally with a terminal attached, or `unsloth studio reset-password`), "
+            "then retry.",
+            err = True,
+        )
+        raise typer.Exit(1)
+
+
 def _enforce_password_change_before_exposure(
     *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
 ) -> None:
@@ -731,17 +758,25 @@ def _enforce_password_change_before_exposure(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
-    # Inspection failures (unwritable STUDIO_HOME, locked DB) must not kill the
-    # launch: the backend still enforces auth and its shutdown timer. A failure
-    # AFTER the user typed a new password stays fatal, below.
+    # Inspection failures (unwritable STUDIO_HOME, locked DB) do not kill the
+    # launch on their own -- the backend still enforces auth and its shutdown
+    # timer -- but they defensively strip any seeded bootstrap password first so
+    # a re-exec'd old child cannot serve it (failing closed only if that strip
+    # fails). A failure AFTER the user typed a new password stays fatal, below.
     try:
         conn = _connect_auth_db()
     except (OSError, sqlite3.Error) as exc:
+        # Cannot confirm whether the password was changed. A seeded
+        # .bootstrap_password may already be on disk from a prior run; re-exec'ing
+        # without removing it would let an old studio-venv child serve it on the
+        # public page. Strip it defensively (fail closed if we cannot), then fall
+        # back to the backend auth + bootstrap shutdown timer.
         typer.echo(
             f"Warning: could not inspect the Studio auth database ({exc}); "
-            "skipping the pre-exposure password check.",
+            "removing any seeded bootstrap password before public exposure.",
             err = True,
         )
+        _strip_seeded_bootstrap_password_or_exit(context = "auth DB not readable")
         return
     try:
         try:
@@ -759,11 +794,16 @@ def _enforce_password_change_before_exposure(
                 (DEFAULT_ADMIN_USERNAME,),
             ).fetchone()
         except (OSError, sqlite3.Error) as exc:
+            # The seeded admin was already committed above, so .bootstrap_password
+            # is on disk; we just could not read must_change_password back. Strip
+            # the seeded file so no re-exec'd child serves it (the DB flag and the
+            # shutdown timer still force a change), failing closed if we cannot.
             typer.echo(
                 f"Warning: could not inspect the Studio auth database ({exc}); "
-                "skipping the pre-exposure password check.",
+                "removing the seeded bootstrap password before public exposure.",
                 err = True,
             )
+            _strip_seeded_bootstrap_password_or_exit(context = "auth DB row unreadable")
             return
         if not row or not row[2]:
             return
@@ -793,23 +833,7 @@ def _enforce_password_change_before_exposure(
             # must_change_password stays set in the DB, so the login page still
             # forces a change and the bootstrap shutdown timer still arms; only
             # the plaintext-on-disk copy of the credential is removed.
-            bootstrap_file = STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE
-            try:
-                bootstrap_file.unlink(missing_ok = True)
-            except OSError as exc:
-                # Removal IS the protection here; if it fails (locked file,
-                # read-only auth dir) an older child could still serve the
-                # credential. Fail closed rather than publish it.
-                typer.echo(
-                    "Error: refusing to publish Studio on a public Cloudflare URL: "
-                    f"could not remove the seeded bootstrap password file ({exc}), so "
-                    "an older Studio child could still serve the default credential. "
-                    "Delete it manually or change the admin password (run `unsloth "
-                    "studio` locally with a terminal attached, or `unsloth studio "
-                    "reset-password`), then retry.",
-                    err = True,
-                )
-                raise typer.Exit(1)
+            _strip_seeded_bootstrap_password_or_exit(context = "no terminal to change it")
             typer.echo(
                 "Warning: Studio is being exposed publicly while the admin account "
                 "still uses its auto-generated bootstrap password. The seeded password "
