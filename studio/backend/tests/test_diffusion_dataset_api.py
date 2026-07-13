@@ -495,6 +495,113 @@ def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypa
     assert calls["count"] == 2  # the failed attempt did not leave a dataset that blocks a reload
 
 
+def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
+    # Re-uploading a.txt and b.txt (an allowed overwrite of two files already on disk) stages both,
+    # then commits them. A plain replace loop is NOT atomic: if the SECOND commit fails after the
+    # first destination was already overwritten, the live dataset is left partially updated with the
+    # request returning an error -- the user's original a.txt is gone. The transactional commit must
+    # back up each displaced original and, on any failure, restore every one so the dataset is left
+    # exactly as it was, with no stray temp/backup files.
+    from pathlib import Path
+
+    app = FastAPI()
+    app.include_router(training_router, prefix = "/api/train")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    noraise = TestClient(app, raise_server_exceptions = False)
+
+    folder = ds_root / "styleset"
+    folder.mkdir()
+    (folder / "a.txt").write_bytes(b"ORIGINAL-A")
+    (folder / "b.txt").write_bytes(b"ORIGINAL-B")
+
+    real_replace = Path.replace
+    state = {"failed": False}
+
+    def flaky_replace(self, target, *a, **k):
+        # Fail exactly once, on the tmp -> b.txt promotion (source is the staged .upload-* part, NOT
+        # a .upload-backup-* part), so the subsequent backup -> b.txt restore still succeeds.
+        if (
+            not state["failed"]
+            and str(target).endswith("b.txt")
+            and self.name.startswith(".upload-")
+            and not self.name.startswith(".upload-backup-")
+        ):
+            state["failed"] = True
+            raise OSError("simulated second commit failure")
+        return real_replace(self, target, *a, **k)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    parts = [
+        ("files", ("a.txt", b"NEW-A", "application/octet-stream")),
+        ("files", ("b.txt", b"NEW-B", "application/octet-stream")),
+    ]
+    r = noraise.post("/api/train/diffusion/dataset", data = {"name": "styleset"}, files = parts)
+    assert r.status_code == 500
+    monkeypatch.setattr(Path, "replace", real_replace)
+
+    # Both originals are intact -- no partial overwrite of the live dataset.
+    assert (folder / "a.txt").read_bytes() == b"ORIGINAL-A"
+    assert (folder / "b.txt").read_bytes() == b"ORIGINAL-B"
+    # No staging or backup artifacts left behind.
+    assert not list(folder.glob(".upload-*.part"))
+    assert not list(folder.glob(".upload-backup-*.part"))
+
+
+def test_resolve_dataset_folder_rejects_symlink(ds_root, tmp_path):
+    # A dataset directory that is a symlink pointing OUTSIDE the datasets root must be rejected: the
+    # per-image containment check only proves paths stay under folder.resolve(), so without this a
+    # delete/caption/read could operate on external files through the link.
+    from routes.training import _resolve_dataset_folder
+
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "victim.png").write_bytes(_png_bytes())
+    (ds_root / "linked").symlink_to(external, target_is_directory = True)
+
+    with pytest.raises(HTTPException) as exc:
+        _resolve_dataset_folder("linked")
+    assert exc.value.status_code == 400
+
+
+def test_delete_through_symlinked_dataset_cannot_escape_root(client, ds_root, tmp_path):
+    # End to end: a DELETE against an image inside a symlinked dataset dir is refused (400) and the
+    # external file it points at is NOT removed.
+    external = tmp_path / "external"
+    external.mkdir()
+    victim = external / "victim.png"
+    _write_png(victim)
+    (ds_root / "linked").symlink_to(external, target_is_directory = True)
+
+    r = client.delete("/api/train/diffusion/dataset/linked/image/victim.png")
+    assert r.status_code == 400
+    assert victim.exists()  # the external file survives
+
+
+def test_delete_image_with_glob_chars_only_removes_own_thumbs(client, ds_root):
+    # A legal uploaded filename may contain glob metacharacters ('[', ']', '*', '?'). Deleting it
+    # must remove ONLY its own thumbnails; interpolating the raw name into Path.glob would make
+    # "[ab].png" match "a.png_*.jpg"/"b.png_*.jpg" -- deleting a sibling's thumbs while leaving its
+    # own (literally "[ab].png_32.jpg") behind.
+    from urllib.parse import quote
+
+    folder = ds_root / "d"
+    folder.mkdir()
+    _write_png(folder / "[ab].png")
+    _write_png(folder / "a.png")
+    thumbs = folder / ".thumbs"
+    thumbs.mkdir()
+    (thumbs / "[ab].png_32.jpg").write_bytes(b"own")
+    (thumbs / "a.png_32.jpg").write_bytes(b"sibling")
+
+    r = client.delete("/api/train/diffusion/dataset/d/image/" + quote("[ab].png", safe = ""))
+    assert r.status_code == 200, r.text
+    # Its own thumbnail is gone; the sibling a.png's thumbnail is untouched.
+    assert not (thumbs / "[ab].png_32.jpg").exists()
+    assert (thumbs / "a.png_32.jpg").exists()
+    assert not (folder / "[ab].png").exists()
+    assert (folder / "a.png").exists()
+
+
 def test_import_preserves_unrelated_files_when_folder_not_empty(client, ds_root, monkeypatch):
     # If the target folder already holds unrelated NON-image files (so image_count is still 0 and
     # the import runs), the atomic rmdir refuses and the code falls back to a per-file move: the

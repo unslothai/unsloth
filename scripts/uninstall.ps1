@@ -364,9 +364,18 @@ function Uninstall-UnslothStudio {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
+    # The default sd.cpp dir is only killed+deleted when it carries our owner marker (the deletion
+    # below is marker-gated). Passing it to the locking-process stop UNCONDITIONALLY would terminate
+    # a user's own sd-server running from an unowned checkout at this default path -- a process we
+    # then decide to keep the directory for. Gate the kill on the same predicate so stop and delete
+    # agree: include it only when marked owned (and present).
+    $defaultSdCppToStop = $null
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        $defaultSdCppToStop = $defaultSdCpp
+    }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultSdCpp, $defaultCache, $defaultNode))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode) + @($defaultSdCppToStop | Where-Object { $_ }))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."

@@ -262,6 +262,52 @@ def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
     assert (tmp_path / ".unsloth-studio-owned").is_file()
 
 
+def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
+    # An empty (or freshly created) target may be adopted: the marker is written so the uninstaller
+    # can later remove the Studio-installed tree.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    empty = tmp_path / "sdcpp"
+    empty.mkdir()  # exists but empty
+    install(install_dir = empty)
+    assert (empty / ".unsloth-studio-owned").is_file()
+
+
+def test_install_into_nonempty_unowned_dir_does_not_claim_ownership(tmp_path, monkeypatch):
+    # A pre-existing, non-empty directory that Studio did not create (e.g. a user's own
+    # stable-diffusion.cpp checkout) must NOT be marked owned: writing the marker would make the
+    # uninstaller recursively delete the user's directory. The install still proceeds (extracts the
+    # binary) but leaves the directory unowned so the uninstaller keeps it.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "stable-diffusion.cpp"
+    target.mkdir()
+    user_file = target / "USER_WORK"
+    user_file.write_text("keep", encoding = "utf-8")
+
+    sd_cli = install(install_dir = target)
+
+    # The user's file survives and no ownership marker was written.
+    assert user_file.read_text(encoding = "utf-8") == "keep"
+    assert not (target / ".unsloth-studio-owned").exists()
+    # The binary was still installed (install is not refused).
+    assert sd_cli.is_file() and sd_cli.name == "sd-cli"
+
+
+def test_reinstall_into_owned_dir_keeps_ownership(tmp_path, monkeypatch):
+    # A directory that already carries our marker (a prior Studio install / upgrade) stays owned
+    # even though it is now non-empty.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "stable-diffusion.cpp"
+    target.mkdir()
+    (target / ".unsloth-studio-owned").touch()
+    (target / "old-junk").write_text("x", encoding = "utf-8")
+
+    install(install_dir = target)
+    assert (target / ".unsloth-studio-owned").is_file()
+
+
 def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):
     zb = _zip_with_sd_cli()
     name = _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + "0" * 64)

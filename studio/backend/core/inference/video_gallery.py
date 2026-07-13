@@ -14,6 +14,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
@@ -34,12 +35,27 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist encoded MP4 bytes plus their recipe sidecar; return the record."""
     video_id = uuid.uuid4().hex
     directory = gallery_dir()
-    (directory / f"{video_id}.mp4").write_bytes(mp4_bytes)
-    # Write the sidecar via tmp + os.replace so a reader never sees a half-written recipe.
+    mp4_path = directory / f"{video_id}.mp4"
+    mp4_tmp = directory / f".{video_id}.mp4.tmp"
     sidecar = directory / f"{video_id}.json"
-    tmp = directory / f"{video_id}.json.tmp"
-    tmp.write_text(json.dumps(meta), encoding = "utf-8")
-    os.replace(tmp, sidecar)
+    sidecar_tmp = directory / f".{video_id}.json.tmp"
+    # Stage BOTH files, then publish. The sidecar is the pair's commit marker (list_videos scans
+    # mp4s but skips any without a readable sidecar), so writing the MP4 straight to its final name
+    # before the sidecar meant a sidecar write/replace failure left an invisible, undeletable orphan
+    # MP4 (gallery delete resolves by id, but the record never appears to be deleted). Rename the MP4
+    # in first, then the sidecar; on ANY failure remove every artifact so nothing is stranded.
+    try:
+        mp4_tmp.write_bytes(mp4_bytes)
+        sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
+        os.replace(mp4_tmp, mp4_path)
+        os.replace(sidecar_tmp, sidecar)
+    except BaseException:
+        for path in (mp4_tmp, sidecar_tmp, mp4_path, sidecar):
+            try:
+                path.unlink(missing_ok = True)
+            except OSError:
+                pass
+        raise
     return _record(video_id, meta)
 
 
@@ -177,11 +193,22 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-def list_videos(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, Any]]:
+def list_videos(
+    limit: Optional[int] = None,
+    offset: int = 0,
+    *,
+    valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+) -> list[dict[str, Any]]:
     """A newest-first window of videos for infinite scroll.
 
     Ordered by MP4 mtime (a cheap stat ~= generation order); only the window's sidecars are read.
-    limit=None returns everything from ``offset`` on. A file without its pair is skipped."""
+    limit=None returns everything from ``offset`` on. A file without its pair is skipped.
+
+    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and the
+    caller's has_more all count over the same accepted-record domain. Passing the route's schema
+    validator here keeps a sidecar that parses as JSON but fails the response schema from being
+    counted in this window yet dropped by the route after slicing -- which would otherwise return a
+    short or empty page with more remaining and stall infinite scroll."""
     try:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
@@ -195,7 +222,10 @@ def list_videos(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, 
         meta = _read_meta(_sidecar_path(path.stem))
         if meta is None:  # orphan mp4 (no readable sidecar)
             continue
-        records.append(_record(path.stem, meta))
+        record = _record(path.stem, meta)
+        if valid is not None and not valid(record):  # parses but schema-invalid
+            continue
+        records.append(record)
         if want is not None and len(records) >= want:
             break
     return records[offset:] if limit is None else records[offset : offset + limit]

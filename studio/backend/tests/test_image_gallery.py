@@ -145,3 +145,53 @@ def test_list_skips_recipe_missing_required_fields(tmp_path):
     gallery.save(_img(), _meta(prompt = "ours"))
     listed = gallery.list_images()
     assert [r["prompt"] for r in listed] == ["ours"]
+
+
+def test_valid_callback_paginates_over_accepted_records():
+    # A record that passes _read_meta (every required key present) but fails the caller's stricter
+    # schema check must be filtered BEFORE pagination, so offset/limit/has_more all count over the
+    # accepted domain. Otherwise a leading bad record returns an empty/short page with more still
+    # remaining, and the frontend (which advances by valid records) stalls at offset 0.
+    _save_with_mtime("BAD", 300.0)  # newest, sorts first
+    _save_with_mtime("g1", 200.0)
+    _save_with_mtime("g2", 100.0)
+
+    def _valid(rec):
+        return rec.get("prompt") != "BAD"
+
+    # First page of 2 over VALID records returns both good ones -- not [g1] (bad eating a slot)
+    # and not [] (bad filling the whole window).
+    page = gallery.list_images(limit = 2, offset = 0, valid = _valid)
+    assert [r["prompt"] for r in page] == ["g1", "g2"]
+    # The has_more probe (limit + 1) sees no extra VALID record beyond the two returned.
+    assert len(gallery.list_images(limit = 3, offset = 0, valid = _valid)) == 2
+
+
+def test_valid_callback_leading_bad_record_does_not_stall_at_offset_zero():
+    # Reproduces the exact stall: every record in the first window is schema-invalid. Without
+    # in-pager filtering the route returned images=[] with has_more=True at offset 0 forever.
+    for i in range(3):
+        _save_with_mtime(f"BAD{i}", 300.0 - i)  # newest three are all invalid
+    _save_with_mtime("good", 10.0)
+
+    def _valid(rec):
+        return not str(rec.get("prompt", "")).startswith("BAD")
+
+    # limit+1 = 3: the pager must look PAST the invalid leaders and return the one good record,
+    # so has_more (len > limit) is False and the client advances off offset 0.
+    records = gallery.list_images(limit = 2, offset = 0, valid = _valid)
+    assert [r["prompt"] for r in records] == ["good"]
+
+
+def test_save_is_atomic_no_partial_png_on_publish_failure(monkeypatch):
+    # A crash between writing the bytes and publishing the file must leave neither a truncated
+    # {id}.png nor a leftover temp: the listing only ever sees fully-written records.
+    def _boom(*a, **k):
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(gallery.os, "replace", _boom)
+    with pytest.raises(OSError, match = "simulated rename failure"):
+        gallery.save(_img(), _meta())
+    # No final PNG surfaced, and the hidden temp was cleaned up.
+    assert list(gallery.gallery_dir().glob("*.png")) == []
+    assert list(gallery.gallery_dir().iterdir()) == []

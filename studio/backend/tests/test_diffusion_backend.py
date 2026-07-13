@@ -3006,3 +3006,59 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
     )
     assert _FakePipeline.last["base"] == str(tmp_path)
     backend.unload()
+
+
+def test_unload_waits_for_in_flight_denoise_before_teardown():
+    # Regression for the unload/denoise teardown race: unload() must WAIT for a running denoise to
+    # exit (acquire _generate_lock) BEFORE _unload_locked() tears down PROCESS-WIDE state (eager /
+    # arch attention patches, gguf compile hooks, backend flags, compile cache) that the denoise
+    # still depends on. Mirror the load path, which already waits on _generate_lock before teardown.
+    import threading
+
+    backend = DiffusionBackend()
+
+    denoise_active = {"v": False}
+    teardown_saw = []  # records denoise_active at the moment _unload_locked runs
+
+    cancel = threading.Event()
+    backend._active_generate_cancel = cancel
+    started = threading.Event()
+    finish = threading.Event()
+
+    # _generate_lock is the only lock a real denoise holds for its whole body.
+    def _denoise():
+        with backend._generate_lock:
+            denoise_active["v"] = True
+            started.set()
+            cancel.wait(2.0)   # unload signals this
+            finish.wait(2.0)   # the test lets us finish
+            denoise_active["v"] = False  # about to release _generate_lock
+
+    def _fake_unload_locked():
+        teardown_saw.append(denoise_active["v"])
+
+    backend._unload_locked = _fake_unload_locked  # instance attr shadows the method
+
+    d = threading.Thread(target = _denoise)
+    d.start()
+    assert started.wait(2.0)  # denoise holds _generate_lock
+
+    unloaded = threading.Event()
+
+    def _unload():
+        backend.unload()
+        unloaded.set()
+
+    u = threading.Thread(target = _unload)
+    u.start()
+    assert cancel.wait(2.0)  # unload has signalled the denoise and is now waiting on _generate_lock
+    # unload must NOT have torn down yet -- it is blocked on the denoise's _generate_lock.
+    assert teardown_saw == []
+    assert not unloaded.wait(0.3)
+
+    finish.set()  # let the denoise release _generate_lock
+    d.join(2.0)
+    u.join(2.0)
+    assert unloaded.is_set()
+    # Teardown ran exactly once, and only AFTER the denoise had exited (denoise_active was False).
+    assert teardown_saw == [False]

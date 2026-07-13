@@ -2588,18 +2588,22 @@ class DiffusionBackend:
         # Abort an in-flight (lock-free) download so unload/eviction returns promptly.
         self._cancel_event.set()
         with self._lock:
-            # Abort an in-flight denoise via ITS cancel event; the running generate keeps its
-            # own pipe ref, so freeing _state can't crash it (VRAM reclaimed when it exits).
+            # Abort an in-flight denoise via ITS cancel event.
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
-            self._unload_locked()
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
-        # Barrier: wait for the signalled denoise to exit before reporting unloaded (callers
-        # treat this return as "VRAM is free"). generate() holds _generate_lock for its full body.
+        # WAIT for the signalled denoise to exit BEFORE tearing down (mirrors begin_load's
+        # pre-teardown barrier at the top of the locked load path). _unload_locked uninstalls
+        # PROCESS-WIDE state the running denoise still depends on -- the eager/arch attention
+        # patches, the GGUF compile hooks, the flipped backend flags and the compile cache -- none
+        # of which the denoise's own pipe ref pins. Uninstalling them before the denoise exits would
+        # corrupt or crash its in-flight forward passes. The denoise holds _generate_lock for its
+        # whole body, so acquiring it here blocks until it has finished; only then do we tear down.
         with self._generate_lock:
-            pass
+            with self._lock:
+                self._unload_locked()
         return self.status()
 
     def _unload_locked(self) -> None:
@@ -2618,9 +2622,10 @@ class DiffusionBackend:
 
             uninstall_patches()
             uninstall_arch_patches()
-        # NOTE: deliberately NOT unload_lora_weights() here. unload() acquires _generate_lock only
-        # AFTER this teardown, so a LoRA-backed denoise may still run for one more callback; mutating
-        # its adapters now would race it. The whole pipe is dropped below, freeing the adapters with it.
+        # NOTE: deliberately NOT unload_lora_weights() here. Both callers (unload() and begin_load's
+        # locked path) now hold _generate_lock across this teardown, so no denoise is in flight; the
+        # whole pipe is dropped below, freeing any LoRA adapters with it, so a separate adapter unload
+        # would be redundant work.
         # Drop the workflow pipes so they don't pin the freed pipeline's modules past unload.
         self._aux_pipes.clear()
         # Drop any ControlNet models + pipelines so the freed load carries no extra modules.

@@ -401,6 +401,23 @@ def install(
     has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
+    # Decide up front whether this install may claim ownership of ``target``. We only mark a
+    # directory as Studio-owned (and therefore eligible for the uninstaller's recursive delete)
+    # when this install actually created it or it was empty -- NEVER when it already held a user's
+    # own stable-diffusion.cpp checkout or unrelated files. Adopting a pre-existing, unowned,
+    # non-empty directory would let a later uninstall wipe the user's own work. A directory that
+    # already carries our marker (a prior Studio install / upgrade) stays owned.
+    marker = target / ".unsloth-studio-owned"
+    _may_own = True
+    if target.exists():
+        if not target.is_dir():
+            raise RuntimeError(f"sd.cpp install target is not a directory: {target}")
+        try:
+            _pre_existing_entries = any(target.iterdir())
+        except OSError:
+            _pre_existing_entries = True
+        # Empty dir, or one we already own, may be (re)claimed; a non-empty unowned dir may not.
+        _may_own = (not _pre_existing_entries) or marker.is_file()
     used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
 
     if release is None or not chosen:
@@ -443,11 +460,14 @@ def install(
         print(f"installed sd-server -> {sd_server}", flush = True)
     # Ownership marker (the same one setup.sh/_is_studio_root use, and setup.ps1 writes into the
     # Node sibling dir) so the uninstaller can tell a Studio-installed sd.cpp from a user's own
-    # stable-diffusion.cpp checkout beside a custom Studio root, and delete only ours.
-    try:
-        (target / ".unsloth-studio-owned").touch()
-    except OSError:
-        pass
+    # stable-diffusion.cpp checkout beside a custom Studio root, and delete only ours. Written only
+    # when this install created the directory or it was empty (see _may_own above): a pre-existing,
+    # unowned, non-empty directory keeps its unowned status so the uninstaller leaves it alone.
+    if _may_own:
+        try:
+            marker.touch()
+        except OSError:
+            pass
     return sd_cli
 
 

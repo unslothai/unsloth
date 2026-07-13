@@ -180,8 +180,10 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery_module, "save", _save)
     monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
 
-    def _list_images(limit = None, offset = 0):
+    def _list_images(limit = None, offset = 0, *, valid = None):
         ordered = sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True)
+        if valid is not None:
+            ordered = [r for r in ordered if valid(r)]
         return ordered[offset:] if limit is None else ordered[offset : offset + limit]
 
     monkeypatch.setattr(gallery_module, "list_images", _list_images)

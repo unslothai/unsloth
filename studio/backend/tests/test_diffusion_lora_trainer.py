@@ -57,6 +57,40 @@ def test_discover_sidecar_overrides_metadata_row(tmp_path):
     assert pairs[str(tmp_path / "a.png")] == "edited sidecar"
 
 
+def test_discover_empty_sidecar_suppresses_metadata_but_uses_instance_prompt(tmp_path):
+    # Clearing a metadata caption in the labeling grid writes an EMPTY sidecar tombstone. It must
+    # suppress the metadata caption (so the stale text is not resurrected) yet leave the image
+    # UNCAPTIONED so the dreambooth instance_prompt still applies. Treating "" as a present caption
+    # would skip the instance prompt AND drop the image, so a dataset whose every caption was
+    # cleared would fail with "No captioned images found".
+    _touch(tmp_path / "cat.png")
+    (tmp_path / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "cat.png", "text": "old metadata caption"}) + "\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "cat.txt").write_text("", encoding = "utf-8")  # empty tombstone
+    pairs = discover_image_caption_pairs(tmp_path, instance_prompt = "a photo of sks cat")
+    assert pairs == [(str(tmp_path / "cat.png"), "a photo of sks cat")]
+
+
+def test_discover_empty_sidecar_without_instance_prompt_skips_image(tmp_path):
+    # With no instance prompt an empty tombstone leaves the image uncaptioned, so it is skipped and
+    # the suppressed metadata caption is NOT resurrected -- while a sibling with a real caption is
+    # still discovered.
+    _touch(tmp_path / "cat.png")
+    _touch(tmp_path / "cap.png")
+    (tmp_path / "metadata.jsonl").write_text(
+        json.dumps({"file_name": "cat.png", "text": "old"})
+        + "\n"
+        + json.dumps({"file_name": "cap.png", "text": "kept"})
+        + "\n",
+        encoding = "utf-8",
+    )
+    (tmp_path / "cat.txt").write_text("", encoding = "utf-8")  # empty tombstone
+    pairs = dict(discover_image_caption_pairs(tmp_path))
+    assert pairs == {str(tmp_path / "cap.png"): "kept"}
+
+
 def test_discover_skips_uncaptioned_without_instance_prompt(tmp_path):
     _touch(tmp_path / "cap.png")
     _touch(tmp_path / "nocap.png")

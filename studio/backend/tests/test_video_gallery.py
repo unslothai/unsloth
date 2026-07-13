@@ -199,6 +199,59 @@ def test_list_skips_corrupt_sidecar():
     assert [r["prompt"] for r in listed] == ["ours"]
 
 
+def test_valid_callback_paginates_over_accepted_records():
+    # A sidecar that parses as JSON (so the read accepts it) but fails the caller's stricter schema
+    # check must be filtered BEFORE pagination, so offset/limit/has_more count over accepted records
+    # only. Otherwise a leading bad record returns a short/empty page with more remaining and stalls
+    # infinite scroll at offset 0.
+    _save_with_mtime("BAD", 300.0)  # newest, sorts first
+    _save_with_mtime("g1", 200.0)
+    _save_with_mtime("g2", 100.0)
+
+    def _valid(rec):
+        return rec.get("prompt") != "BAD"
+
+    page = gallery.list_videos(limit = 2, offset = 0, valid = _valid)
+    assert [r["prompt"] for r in page] == ["g1", "g2"]
+    assert len(gallery.list_videos(limit = 3, offset = 0, valid = _valid)) == 2
+
+
+def test_valid_callback_leading_bad_records_do_not_stall_at_offset_zero():
+    # Every record in the first window is schema-invalid: the pager must look past them and return
+    # the good record so has_more is False and the client advances off offset 0.
+    for i in range(3):
+        _save_with_mtime(f"BAD{i}", 300.0 - i)
+    _save_with_mtime("good", 10.0)
+
+    def _valid(rec):
+        return not str(rec.get("prompt", "")).startswith("BAD")
+
+    records = gallery.list_videos(limit = 2, offset = 0, valid = _valid)
+    assert [r["prompt"] for r in records] == ["good"]
+
+
+def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
+    # The sidecar is the pair's commit marker. If it fails to publish, the MP4 must NOT be left
+    # behind as an invisible orphan (list_videos would skip it and gallery delete could never reach
+    # it). Fail the SECOND os.replace (the sidecar) after the mp4 is renamed in, and assert nothing
+    # is stranded.
+    real_replace = gallery.os.replace
+    calls = {"n": 0}
+
+    def _replace(src, dst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the sidecar publish
+            raise OSError("simulated sidecar failure")
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(gallery.os, "replace", _replace)
+    with pytest.raises(OSError, match = "simulated sidecar failure"):
+        gallery.save(_mp4(), _meta())
+    # No mp4, no sidecar, no temp files -- the whole record was rolled back.
+    assert list(gallery.gallery_dir().iterdir()) == []
+    assert gallery.list_videos() == []
+
+
 def _real_mp4_bytes() -> bytes:
     # A real (tiny) MP4 for the transcode tests: 8 frames of flat color at
     # 32x32, encoded with mpeg4 (bundled in every PyAV build, unlike libx264).

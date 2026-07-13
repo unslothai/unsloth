@@ -235,17 +235,25 @@ async def list_gallery_videos(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    # Fetch one extra to learn whether more remain, without a second scan.
-    records = await asyncio.to_thread(video_gallery.list_videos, limit + 1, offset)
-    has_more = len(records) > limit
-    # Build per record, dropping any that fail schema validation, so one bad sidecar
-    # (wrong value type) doesn't 500 the whole listing.
-    videos = []
-    for r in records[:limit]:
+
+    # Validate against the response schema INSIDE the pager so offset / limit / has_more all count
+    # over the same accepted-record domain. A sidecar that parses as JSON but has a wrong value type
+    # passes the read yet fails GalleryVideo(**r); dropping such records only after pagination made a
+    # leading bad record return an empty page with has_more=True, stalling infinite scroll at offset
+    # 0. Filtering here keeps the window and has_more consistent.
+    def _valid_gallery_video(record: dict) -> bool:
         try:
-            videos.append(GalleryVideo(**r))
+            GalleryVideo(**record)
         except ValidationError:
-            continue
+            return False
+        return True
+
+    # Fetch one extra to learn whether more remain, without a second scan.
+    records = await asyncio.to_thread(
+        video_gallery.list_videos, limit + 1, offset, valid = _valid_gallery_video
+    )
+    has_more = len(records) > limit
+    videos = [GalleryVideo(**r) for r in records[:limit]]
     return VideoGalleryListResponse(videos = videos, has_more = has_more)
 
 

@@ -14511,18 +14511,25 @@ async def list_gallery_images(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    # Fetch one extra to learn whether more remain, without a second scan.
-    records = await asyncio.to_thread(image_gallery.list_images, limit + 1, offset)
-    has_more = len(records) > limit
-    # Drop records that fail schema validation: a PNG whose recipe chunk has all keys but a
-    # wrong value type (hand-dropped or corrupted) passes the presence-only read yet raises
-    # inside GalleryImage(**r). Skipping it keeps one bad file from 500-ing the listing.
-    images = []
-    for r in records[:limit]:
+
+    # Validate against the response schema INSIDE the pager so offset / limit / has_more all count
+    # over the same accepted-record domain. A PNG whose recipe chunk has all keys but a wrong value
+    # type passes the presence-only read yet fails GalleryImage(**r); dropping such records only
+    # after pagination made a leading bad record return an empty page with has_more=True, stalling
+    # infinite scroll at offset 0. Filtering here keeps the window and has_more consistent.
+    def _valid_gallery_image(record: dict) -> bool:
         try:
-            images.append(GalleryImage(**r))
+            GalleryImage(**record)
         except ValidationError:
-            continue
+            return False
+        return True
+
+    # Fetch one extra to learn whether more remain, without a second scan.
+    records = await asyncio.to_thread(
+        image_gallery.list_images, limit + 1, offset, valid = _valid_gallery_image
+    )
+    has_more = len(records) > limit
+    images = [GalleryImage(**r) for r in records[:limit]]
     return GalleryListResponse(images = images, has_more = has_more)
 
 

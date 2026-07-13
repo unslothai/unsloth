@@ -1732,9 +1732,46 @@ async def upload_diffusion_dataset(
                         )
                     out.write(chunk)
             uploaded += 1
-        for tmp, dest in staged:
-            tmp.replace(dest)  # atomic on the same filesystem
-        committed = True
+        # Commit every staged file as one transaction. A plain replace loop is NOT atomic across
+        # files: if the second-or-later tmp.replace(dest) fails (disk/quota error, a Windows file
+        # lock, antivirus, a destination that became a directory), an earlier destination has
+        # already been overwritten while the request returns an error -- the user's original file
+        # is gone. Back up each pre-existing destination before overwriting it, then on ANY failure
+        # remove the versions this request installed and restore every displaced original, so the
+        # dataset is left exactly as it was before the upload.
+        backups: list[tuple[Path, Optional[Path]]] = []  # (dest, backup path or None)
+        installed: list[Path] = []
+        try:
+            for tmp, dest in staged:
+                backup: Optional[Path] = None
+                if dest.exists():
+                    backup = folder / f".upload-backup-{_uuid.uuid4().hex}.part"
+                    dest.replace(backup)
+                backups.append((dest, backup))
+                tmp.replace(dest)  # atomic on the same filesystem
+                installed.append(dest)
+            committed = True
+        except BaseException:
+            # Roll back: drop every new version, then restore every displaced original.
+            for dest in reversed(installed):
+                try:
+                    dest.unlink(missing_ok = True)
+                except OSError:
+                    pass
+            for dest, backup in reversed(backups):
+                if backup is not None and backup.exists():
+                    try:
+                        backup.replace(dest)
+                    except OSError:
+                        pass
+            raise
+        else:
+            for _, backup in backups:
+                if backup is not None:
+                    try:
+                        backup.unlink(missing_ok = True)
+                    except OSError:
+                        pass
     finally:
         if not committed:
             for tmp, _ in staged:
@@ -1766,9 +1803,27 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     from utils.paths import datasets_root
 
     cleaned = _clean_diffusion_dataset_name(name)
-    folder = datasets_root() / cleaned
+    root = datasets_root().resolve()
+    folder = root / cleaned
+    # Reject a symlinked dataset directory. _safe_dataset_image_path only proves each image path
+    # stays under folder.resolve(); it never proves the folder itself stays under the datasets
+    # root. A dataset dir that is a symlink to an external directory would therefore let image
+    # read / caption / delete operate on files outside Studio (a reproduced delete removed an
+    # external file through such a link). Prove the resolved folder is contained in the root too.
+    if folder.is_symlink():
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Dataset '{cleaned}' must not be a symbolic link.",
+        )
     if must_exist and not folder.is_dir():
         raise HTTPException(status_code = 404, detail = f"Dataset '{cleaned}' not found.")
+    try:
+        folder.resolve(strict = must_exist).relative_to(root)
+    except (OSError, ValueError):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Dataset '{cleaned}' escapes the Studio datasets directory.",
+        )
     return folder
 
 
@@ -1995,6 +2050,8 @@ async def delete_diffusion_dataset_image(
         raise HTTPException(status_code = 404, detail = "Image not found.")
 
     def remove() -> dict:
+        import glob as _glob
+
         image_path.unlink(missing_ok = True)
         for ext in (".txt", ".caption"):
             image_path.with_suffix(ext).unlink(missing_ok = True)
@@ -2002,7 +2059,10 @@ async def delete_diffusion_dataset_image(
         if thumbs_dir.is_dir():
             # Thumbs are keyed on the full filename (stem + extension), so match that here too;
             # a stem-only glob would strand this image's thumbs or delete a same-stem sibling's.
-            for t in thumbs_dir.glob(f"{image_path.name}_*.jpg"):
+            # Escape the filename first: an uploaded name may legally contain glob metacharacters
+            # ('[', ']', '*', '?'), and interpolating those raw would make e.g. "[ab].png" match
+            # "a.png_*.jpg"/"b.png_*.jpg" -- deleting siblings' thumbs while leaving its own behind.
+            for t in thumbs_dir.glob(f"{_glob.escape(image_path.name)}_*.jpg"):
                 t.unlink(missing_ok = True)
         return {"deleted": image_path.name}
 
