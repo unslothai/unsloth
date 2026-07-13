@@ -48,11 +48,9 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Stop-watchdog escalation timeouts. After a Stop is requested, force-terminate the
-# worker if it does not exit on its own. Primary trigger is a short grace once
-# "complete" (save done) is seen. The absolute cap is a last-resort backstop only:
-# for a save=True stop it is long so a slow save is never killed mid-write; for a
-# cancel (save=False) there is nothing to save, so the backstop is shorter.
+# Stop-watchdog escalation timeouts. Primary trigger is a short grace once "complete"
+# (save done) is seen. The absolute cap is a backstop: long for save=True so a slow
+# save is never killed mid-write, shorter for a cancel that has nothing to save.
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
@@ -984,11 +982,9 @@ class TrainingBackend:
         return True
 
     def _start_stop_watchdog(self, cancel: bool) -> None:
-        """Start a daemon that force-terminates the worker if a requested stop does
-        not exit on its own. No-op if no worker is alive or an existing watchdog is
-        already watching the current worker; a stale watchdog on an old proc does
-        not stop a new run from getting its own watcher.
-        """
+        """Start a daemon that force-terminates the worker if a requested stop does not
+        exit on its own. No-op if no worker is alive or a live watchdog already watches
+        this proc (a stale watchdog on an old proc never blocks a new run's watcher)."""
         with self._lock:
             proc = self._proc
             if proc is None or not proc.is_alive():
@@ -1010,14 +1006,9 @@ class TrainingBackend:
             watchdog.start()
 
     def _stop_watchdog_loop(self, target_proc: "mp.Process", cancel: bool) -> None:
-        """Escalate a stuck stop to force_terminate().
-
-        A worker normally exits shortly after saving; this only fires when it does
-        not. Primary trigger is a short grace after "complete" (save done). The
-        absolute cap is a last-resort backstop: long for save=True so a slow save is
-        never killed mid-write, shorter for a cancel that has nothing to save.
-        No-ops on a clean exit; exits silently if a new run replaces the worker.
-        """
+        """Escalate a stuck stop to force_terminate(): grace after "complete", else the
+        absolute backstop (see the module timeouts). No-ops on a clean exit; exits
+        silently if a new run replaces the worker."""
         started = time.monotonic()
         abs_timeout = _CANCEL_TIMEOUT_S if cancel else _STOP_TIMEOUT_S
         complete_at: Optional[float] = None
@@ -1043,8 +1034,7 @@ class TrainingBackend:
         if superseded or not target_proc.is_alive():
             return
         if complete_at is None:
-            # Backstop fired before completion: warn loudly since a save may still
-            # have been in progress (only reachable past the long save=True cap).
+            # Backstop fired pre-completion: a save may still be in progress.
             logger.warning(
                 "Stop watchdog: absolute timeout with no completion signal; "
                 "force-terminating a possibly-mid-save worker: %s",
@@ -1052,8 +1042,7 @@ class TrainingBackend:
             )
         else:
             logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
-        # force_terminate can raise on a wedged child (re-issued kill); finalize
-        # regardless so the run never stays stuck in "Stopping...".
+        # force_terminate can raise on a wedged child; finalize regardless.
         try:
             self.force_terminate(target_proc = target_proc)
         except Exception:
@@ -1062,11 +1051,9 @@ class TrainingBackend:
             self._finalize_stopped_after_escalation()
 
     def _finalize_stopped_after_escalation(self) -> None:
-        """Finalize parent state after a watchdog force-terminate so the UI leaves
-        "Stopping..." even if the worker is wedged in driver teardown and unreaped.
-        Dropping the handle is safe: the worker is a daemon bound to parent lifetime.
-        Preserve output_dir so a saved checkpoint is still recorded in run history.
-        """
+        """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
+        even if the worker is wedged in driver teardown. Dropping the handle is safe
+        (daemon bound to parent). Preserves output_dir so a saved checkpoint is kept."""
         with self._lock:
             self._progress.is_training = False
             self._progress.status_message = "Training stopped."
@@ -1076,11 +1063,9 @@ class TrainingBackend:
         self._finalize_run_in_db(status = "stopped", output_dir = output_dir)
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
-        """Force-kill the training subprocess so state can be reset immediately.
-
-        When ``target_proc`` is given, terminate only that handle and no-op if a new
-        run has since replaced it, so the watchdog can never kill a fresh worker.
-        """
+        """Force-kill the training subprocess so state can be reset immediately. With
+        ``target_proc``, terminate only that handle and no-op if a new run has replaced
+        it, so the watchdog can never kill a fresh worker."""
         with self._lock:
             proc = self._proc
             if target_proc is not None and proc is not target_proc:
