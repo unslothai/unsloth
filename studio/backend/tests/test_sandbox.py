@@ -304,6 +304,25 @@ def test_python_read_paths_includes_user_site_when_opted_in(monkeypatch, tmp_pat
     assert os.path.realpath(str(fake_user_site)) in paths
 
 
+def test_python_read_paths_survives_missing_site_helpers(monkeypatch):
+    """site.getsitepackages / getusersitepackages are absent or raise in some
+    Python environments (older virtualenv site.py, embedded / frozen builds).
+    _python_read_paths runs in the sandboxed exec path, so it must degrade
+    gracefully rather than raise: sys.prefix must still appear."""
+    sandbox = _load_sandbox_module()
+    import site
+
+    def _boom():
+        raise AttributeError("getsitepackages not defined in this environment")
+
+    monkeypatch.setattr(site, "getsitepackages", _boom)
+    monkeypatch.setattr(site, "getusersitepackages", _boom)
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE", "1")
+    # Must not raise, and the interpreter prefix (always bindable) is retained.
+    paths = sandbox._python_read_paths()
+    assert os.path.realpath(sys.prefix) in paths
+
+
 def test_bwrap_probe_bin_exists_and_executable():
     sandbox = _load_sandbox_module()
     bin_path = sandbox._BWRAP_PROBE_BIN

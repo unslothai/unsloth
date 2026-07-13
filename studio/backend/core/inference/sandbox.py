@@ -264,10 +264,23 @@ def _python_read_paths() -> list[str]:
     Used by both the macOS Seatbelt profile and the Linux bwrap argv.
     """
     candidates: list[str] = [sys.prefix, sys.base_prefix]
-    candidates.extend(site.getsitepackages())
+    # site.getsitepackages / getusersitepackages are absent (older virtualenv
+    # site.py) or can raise (embedded / frozen builds) in some environments.
+    # This runs in the sandboxed exec path, so degrade gracefully instead of
+    # failing the tool call: sys.prefix / sys.base_prefix are bound regardless,
+    # so a venv's site-packages under the prefix stays visible even if these do
+    # not resolve.
+    try:
+        candidates.extend(site.getsitepackages())
+    except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
+        logger.debug("site.getsitepackages() unavailable: %s", e)
     # user-site is under real $HOME; exposing it defeats the deny-$HOME stance.
     if os.environ.get("UNSLOTH_STUDIO_SANDBOX_ALLOW_USER_SITE") == "1":
-        user_site = site.getusersitepackages()
+        try:
+            user_site = site.getusersitepackages()
+        except Exception as e:  # noqa: BLE001 - best-effort; never break tool exec
+            logger.debug("site.getusersitepackages() unavailable: %s", e)
+            user_site = None
         if user_site:
             candidates.append(user_site)
     candidates.extend(_editable_source_paths())
