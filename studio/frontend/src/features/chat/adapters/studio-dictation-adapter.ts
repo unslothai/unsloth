@@ -9,6 +9,19 @@ import {
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
 
+// The one live dictation session, so the recording bar's discard (X) button can
+// cancel it without going through assistant-ui (which only exposes stop, i.e.
+// transcribe). Cancelling ends the session without emitting a transcript, so
+// the user's existing composer text is untouched.
+let activeSession: StudioDictationSession | null = null;
+
+/** Discard the current dictation without transcribing. Safe to call when idle. */
+export function cancelActiveStudioDictation(): void {
+  const session = activeSession;
+  activeSession = null;
+  session?.cancel();
+}
+
 /**
  * Routes dictation to the engine chosen in Voice settings, resolved at listen()
  * time so switching engines applies without reloading the chat runtime.
@@ -23,6 +36,18 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   listen(): StudioDictationSession {
+    const session = this.createSession();
+    activeSession = session;
+    // Forget the session once it ends so a later cancel is a no-op.
+    const clear = () => {
+      if (activeSession === session) activeSession = null;
+    };
+    session.onSpeechEnd(clear);
+    session.onEnd?.(clear);
+    return session;
+  }
+
+  private createSession(): StudioDictationSession {
     const { dictationEngine } = useVoiceSettingsStore.getState();
     const preferModel =
       dictationEngine === "model" && StudioModelDictationAdapter.isSupported();

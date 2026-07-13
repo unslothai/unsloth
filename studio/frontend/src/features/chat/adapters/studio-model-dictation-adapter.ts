@@ -18,6 +18,24 @@ import {
 // moment the user stops.
 const RECORD_TIMESLICE_MS = 1000;
 
+// Live microphone level (0..1), published while recording so the composer can
+// draw a waveform. One recording is active at a time, so a single module-level
+// emitter is enough.
+type LevelListener = (level: number) => void;
+const levelListeners = new Set<LevelListener>();
+
+/** Subscribe to the live mic level (0..1) during model dictation. */
+export function subscribeDictationLevel(listener: LevelListener): () => void {
+  levelListeners.add(listener);
+  return () => {
+    levelListeners.delete(listener);
+  };
+}
+
+function emitLevel(level: number): void {
+  for (const listener of levelListeners) listener(level);
+}
+
 // Prefer Opus (small, widely supported); fall back to whatever the browser
 // records. The backend decodes any of these with PyAV.
 const PREFERRED_MIME_TYPES = [
@@ -153,6 +171,53 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let transcribed = false;
     const abortController = new AbortController();
     const mimeType = pickMimeType();
+    // Web Audio graph for the waveform; torn down with the session.
+    let audioContext: AudioContext | null = null;
+    let levelRaf = 0;
+
+    const stopLevelMeter = () => {
+      if (levelRaf) cancelAnimationFrame(levelRaf);
+      levelRaf = 0;
+      audioContext?.close().catch(() => {});
+      audioContext = null;
+      emitLevel(0);
+    };
+
+    // Tap the mic stream with an analyser and publish a smoothed RMS level so
+    // the composer can animate a waveform while recording.
+    const startLevelMeter = (source: MediaStream) => {
+      try {
+        const Ctx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext })
+            .webkitAudioContext;
+        if (!Ctx) return;
+        audioContext = new Ctx();
+        // Browsers can create the context suspended; resume so the analyser
+        // actually receives samples.
+        void audioContext.resume().catch(() => {});
+        const node = audioContext.createMediaStreamSource(source);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 512;
+        node.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          // Perceptual boost so quiet speech still moves the bars.
+          emitLevel(Math.min(1, rms * 3.2));
+          levelRaf = requestAnimationFrame(tick);
+        };
+        levelRaf = requestAnimationFrame(tick);
+      } catch {
+        // Waveform is cosmetic; ignore any Web Audio failure.
+      }
+    };
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
@@ -164,6 +229,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     ) => {
       if (ended) return;
       ended = true;
+      stopLevelMeter();
       session.status = { type: "ended", reason };
       stopStream(stream);
       stream = null;
@@ -305,6 +371,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           if (event.data.size > 0) chunks.push(event.data);
         });
         recorder.start(RECORD_TIMESLICE_MS);
+        startLevelMeter(stream);
         session.status = { type: "running" };
         for (const callback of speechStartCallbacks) callback();
       } catch (error) {

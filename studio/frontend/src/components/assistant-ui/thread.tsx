@@ -34,6 +34,7 @@ import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html"
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
@@ -1849,9 +1850,11 @@ const Composer: FC<{
       />
       <ToolStatusDisplay />
       <div
-        className="unsloth-composer-line"
+        className="unsloth-composer-line relative"
         data-expanded={composerExpanded ? "true" : "false"}
       >
+        {/* ChatGPT-style recording bar; covers the input row while dictating. */}
+        <ChatDictationBar />
         <div
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
@@ -3366,6 +3369,8 @@ const ComposerRightControls: FC<{
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
+      {/* Starts dictation; the recording bar (ChatDictationBar) then covers the
+          input row and owns stop/discard, ChatGPT-style. */}
       <ComposerPrimitive.If dictation={false}>
         <ComposerPrimitive.Dictate asChild={true}>
           <TooltipIconButton
@@ -3377,18 +3382,6 @@ const ComposerRightControls: FC<{
             <MicIcon className="size-5" />
           </TooltipIconButton>
         </ComposerPrimitive.Dictate>
-      </ComposerPrimitive.If>
-      <ComposerPrimitive.If dictation={true}>
-        <ComposerPrimitive.StopDictation asChild={true}>
-          <TooltipIconButton
-            tooltip="Stop dictation"
-            aria-label="Stop dictation"
-            variant="ghost"
-            className="size-8 rounded-full text-destructive"
-          >
-            <SquareIcon className="size-3 animate-pulse fill-current" />
-          </TooltipIconButton>
-        </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
       <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>
