@@ -61,35 +61,54 @@ def get_memory_settings() -> tuple[bool, bool]:
 
 _STOP_WORDS = {
     "a",
+    "am",
     "an",
     "and",
     "are",
+    "be",
+    "been",
+    "being",
     "for",
     "i",
+    "i'd",
+    "i'll",
+    "i'm",
+    "i've",
     "in",
     "is",
     "it",
+    "me",
+    "mine",
     "my",
     "of",
     "or",
+    "our",
+    "ours",
     "the",
     "this",
     "to",
+    "us",
+    "was",
     "we",
+    "were",
     "with",
     "you",
+    "your",
+    "yours",
 }
 _SECRET_RE = re.compile(
-    r"(?:api[_ -]?key|password|secret|token|private key)\s*[:=]|"
+    r"(?:api[_ -]?key|password|secret|token|private key)\s*(?::|=|\b(?:is|are)\b)|"
     r"(?:sk-|ghp_|github_pat_|AKIA|xox[baprs]-)[A-Za-z0-9_-]{8,}",
     re.I,
 )
 _SENSITIVE_RE = re.compile(
     r"\b(?:diagnos(?:is|ed)|medication|medical|health|religion|politic(?:al|s)|"
-    r"gay|lesbian|trans|sexuality|credit card|social security|passport|bank account|"
+    r"gay|lesbian|trans|sexuality|credit card|social security|ssn|passport|bank account|"
     r"routing number|latitude|longitude|address)\b",
     re.I,
 )
+
+_STRUCTURED_IDENTIFIER_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b|(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 
 _CONTACT_PII_RE = re.compile(
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
@@ -222,6 +241,7 @@ def _validate_content(content: str, automatic: bool) -> str:
         or _SECRET_RE.search(normalized)
         or _SENSITIVE_RE.search(normalized)
         or _CONTACT_PII_RE.search(normalized)
+        or _STRUCTURED_IDENTIFIER_RE.search(normalized)
         or _TRANSIENT_RE.search(normalized)
     ):
         raise MemoryValidationError(
@@ -416,7 +436,8 @@ def _relevance(row: dict, query: str) -> int:
     query_tokens, content_tokens = _tokens(query), _tokens(row["content"])
     overlap = len(query_tokens & content_tokens)
     phrase = int(
-        normalize_content(query).casefold() in normalize_content(row["content"]).casefold()
+        bool(query_tokens)
+        and normalize_content(query).casefold() in normalize_content(row["content"]).casefold()
     )
     return overlap + phrase
 

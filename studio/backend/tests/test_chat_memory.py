@@ -128,6 +128,31 @@ def test_automatic_capture_rejects_contact_pii(content):
         memory.create_memory(content = content, scope = "global", source_type = "model")
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "My password is hunter2",
+        "My API key is abc123secret",
+        "My private key is hidden-value",
+    ),
+)
+def test_automatic_capture_rejects_natural_language_secrets(content):
+    with pytest.raises(memory.MemoryValidationError):
+        memory.create_memory(content = content, scope = "global", source_type = "model")
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "My SSN is 123-45-6789",
+        "Use account 4111 1111 1111 1111",
+    ),
+)
+def test_automatic_capture_rejects_structured_identifiers(content):
+    with pytest.raises(memory.MemoryValidationError):
+        memory.create_memory(content = content, scope = "global", source_type = "model")
+
+
 def test_direct_statement_skips_transient_and_profile_claims(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
 
@@ -198,6 +223,30 @@ def test_recall_requires_relevant_content(tmp_path, monkeypatch):
             "threadId": "thread",
             "role": "user",
             "content": [{"type": "text", "text": "Help me debug this error"}],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
+
+
+@pytest.mark.parametrize(
+    ("saved_content", "query"),
+    (
+        ("I am HIV positive", "I am debugging a TypeError"),
+        ("You can reach me in Berlin", "Please help me debug this"),
+        ("I'm allergic to latex", "I'm seeing a TypeError"),
+    ),
+)
+def test_recall_ignores_first_person_filler_overlap(tmp_path, monkeypatch, saved_content, query):
+    _setup_source(tmp_path, monkeypatch)
+    memory.create_memory(content = saved_content, scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": query}],
         },
     )
 
