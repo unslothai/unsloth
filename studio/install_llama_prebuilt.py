@@ -20,6 +20,7 @@ import re
 import shutil
 import site
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -4385,6 +4386,48 @@ def copy_directory_contents(source_dir: Path, destination: Path) -> None:
             shutil.copy2(item, target)
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    """Return whether ``path`` redirects to another filesystem location."""
+    if os.name == "nt":
+        try:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        except OSError:
+            return True
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    try:
+        return path.is_symlink()
+    except OSError:
+        return True
+
+
+def remove_agent_instruction_files(root: Path) -> int:
+    """Best-effort removal inside a managed tree without following links."""
+    if _is_link_or_junction(root) or not root.is_dir():
+        return 0
+
+    removed = 0
+    for current_dir, dirnames, filenames in os.walk(root, topdown = True, followlinks = False):
+        current_path = Path(current_dir)
+        # followlinks=False still follows Windows junctions.
+        if current_path != root and _is_link_or_junction(current_path):
+            dirnames.clear()
+            continue
+        dirnames[:] = [
+            dirname for dirname in dirnames if not _is_link_or_junction(current_path / dirname)
+        ]
+        for filename in sorted({"AGENTS.md", "CLAUDE.md"}.intersection(filenames)):
+            candidate = current_path / filename
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                log(f"could not remove contributor-only instruction {candidate}: {exc}")
+            else:
+                removed += 1
+    return removed
+
+
 def hydrate_source_tree(
     source_ref: str,
     install_dir: Path,
@@ -4447,6 +4490,9 @@ def hydrate_source_tree(
                 "upstream source archive was missing required repo files: " + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
+        removed = remove_agent_instruction_files(install_dir)
+        if removed:
+            log(f"removed {removed} contributor-only agent instruction file(s) from staged source")
     except PrebuiltFallback:
         raise
     except Exception as exc:
@@ -6824,6 +6870,7 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    instruction_cleanup_root: Path | None = None,
 ) -> None:
     host = detect_host()
     host = _apply_host_overrides(
@@ -6836,8 +6883,15 @@ def install_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
     choice: AssetChoice | None = None
+    cleanup_root = install_dir if instruction_cleanup_root is None else instruction_cleanup_root
     try:
         with install_lock(install_lock_path(install_dir)):
+            if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
+                removed = remove_agent_instruction_files(cleanup_root)
+                if removed:
+                    log(
+                        f"removed {removed} contributor-only agent instruction file(s) from install"
+                    )
             if install_dir.exists():
                 log(
                     f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"
@@ -7168,14 +7222,16 @@ def main() -> int:
     # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
+    install_arg = Path(args.install_dir).expanduser()
     install_prebuilt(
-        install_dir = Path(args.install_dir).expanduser().resolve(),
+        install_dir = install_arg.resolve(),
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,
+        instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS
 
