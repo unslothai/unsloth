@@ -587,7 +587,11 @@ def test_stdio_cache_trims_overshoot_after_burst(fake_clients, monkeypatch):
     # calls finish, release-time trimming must bring the cache back within cap.
     monkeypatch.setattr(mcp_client, "_STDIO_MAX_SESSIONS", 2)
 
-    def slow_client(url, headers, use_oauth = False):
+    def slow_client(
+        url,
+        headers,
+        use_oauth = False,
+    ):
         client = FakeClient(url)
         client.call_delay = 0.5  # keep every session in-flight during the burst
         return client
