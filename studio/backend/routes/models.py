@@ -305,9 +305,8 @@ def _has_non_gguf_weights(path: Path) -> bool:
 
 
 def _local_pipeline_index(d: Path) -> bool:
-    """True when *d* is a standard diffusers PIPELINE root: component weights/configs live in
-    subdirs (``transformer/``, ``vae/``, ...) under a top-level ``model_index.json``, so
-    ``_is_model_directory`` (which wants a root config + loose weights) rejects it."""
+    """True when *d* is a diffusers PIPELINE root (top-level ``model_index.json``, weights in
+    component subdirs), which ``_is_model_directory`` (root config + loose weights) rejects."""
     try:
         return (d / "model_index.json").is_file()
     except OSError:
@@ -318,11 +317,10 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
-    # A scan folder can point directly at a diffusers PIPELINE dir, not only at a parent of
-    # model repos. _is_model_directory rejects such a root (weights live in transformer/, vae/,
-    # ... not beside a root config.json), so without this the child scan below surfaces the
-    # component subdirs as bogus models and hides the real pipeline. The Images/Video load path
-    # loads a local pipeline dir, so admit the root as one model (task tagging classifies it).
+    # A scan folder can point directly at a diffusers PIPELINE dir, which _is_model_directory
+    # rejects; without admitting it the child scan surfaces the component subdirs as bogus models
+    # and hides the real pipeline. The Images/Video load path loads it, so admit the root as one
+    # model (task tagging classifies it).
     _is_self_model = _is_model_directory(models_dir) or _local_pipeline_index(models_dir)
 
     if _is_self_model:
@@ -353,11 +351,9 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             has_config = (child / "config.json").exists() or (
                 child / "adapter_config.json"
             ).exists()
-            # A standard diffusers PIPELINE folder keeps its weights/configs in component
-            # subdirs (transformer/, vae/, ...) and carries only model_index.json at the
-            # root, so the checks above miss it. The Images/Video load path accepts such a
-            # local pipeline dir, so admit it here too (task tagging then classifies it via
-            # _local_is_diffusers); otherwise it is hidden from the On Device picker.
+            # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at
+            # the root) is missed by the checks above; the Images/Video load path accepts it, so
+            # admit it too or it is hidden from the On Device picker.
             has_pipeline_index = _local_pipeline_index(child)
             has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
@@ -3277,13 +3273,11 @@ def _repo_gguf_task(repo_info) -> Optional[str]:
 
 
 def _local_family_needles(model: "LocalModelInfo") -> tuple[str, ...]:
-    """Family-detection hints for a local (non-GGUF) checkpoint: its model id, display name, and
-    leaf directory name, plus -- for a bare single-file directory -- the sole checkpoint's
-    filename. A generically named folder holding one loadable ``qwen-image-*.safetensors`` /
-    ``ltx-*.safetensors`` identifies its family only from that filename, and the load route already
-    resolves that sole file via ``resolve_local_single_file``, so feed the same name here or a
-    task-scoped Images/Video picker (which rejects ``task: null``) hides the on-device model. Only
-    the basename is used (not the parent path), so a family token in a parent dir can't match."""
+    """Family-detection hints for a local (non-GGUF) checkpoint: model id, display name, leaf dir
+    name, and -- for a bare single-file dir -- the sole checkpoint's filename (a generic folder
+    holding one ``qwen-image-*.safetensors`` identifies its family only there, and the load route
+    resolves it via ``resolve_local_single_file``). Only basenames, so a parent-dir token can't
+    match."""
     needles = [model.model_id, model.display_name, Path(model.id).name]
     try:
         from core.inference.diffusion import resolve_local_single_file
@@ -3332,14 +3326,10 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
                     return _VIDEO_GEN_TASK
         except Exception:
             pass
-        # The Images load path resolves the family via detect_family_for_pick and REJECTS a pick
-        # whose id / name / checkpoint filename carries no supported image-family token
-        # (diffusion.py validate_load_request), 400ing AFTER it has already evicted the GPU owner.
-        # A bare model_index.json directory alone (a generically named on-device pipeline) is not
-        # enough. Tag text-to-image only when that same family detection succeeds, so the picker
-        # never advertises a local pipeline the load will always reject. Detection uses the same
-        # _local_family_needles the video branch does (leaf name / id / sole-file, not the raw
-        # path), so a family token in a parent directory can't spuriously tag it.
+        # The Images load path rejects a pick with no supported image-family token, 400ing AFTER
+        # evicting the GPU owner (a bare model_index.json dir is not enough). Tag text-to-image
+        # only when that same detection succeeds, so the picker never advertises a pipeline the
+        # load will always reject.
         try:
             from core.inference.diffusion_families import detect_family
             for needle in _local_family_needles(model):
@@ -3347,8 +3337,8 @@ def _local_model_task(model: "LocalModelInfo") -> Optional[str]:
                     return "text-to-image"
             return None
         except Exception:
-            # Detection unavailable (import/exec error): fall back to the prior permissive tag
-            # rather than hiding a possibly-loadable pipeline.
+            # Detection unavailable: fall back to the prior permissive tag rather than hiding a
+            # possibly-loadable pipeline.
             return "text-to-image"
     return None
 
@@ -3358,9 +3348,8 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
     ``_repo_is_diffusers`` heuristics: a full pipeline carries a top-level
     ``model_index.json``, while single-file / safetensors image checkpoints ship none, so
     fall back to the model id resolving to a known diffusion family (the same resolver the
-    Images backend loads from). Family detection uses the clean model id / name and the sole
-    checkpoint's filename (via _local_family_needles), not the on-disk path, so a parent
-    directory keyword can't spuriously match while a filename-only family is still caught."""
+    Images backend loads from). Family detection uses _local_family_needles (id / name / sole
+    checkpoint filename, not the on-disk path), so a parent-dir keyword can't spuriously match."""
     try:
         p = Path(model.path)
         if p.is_dir() and (p / "model_index.json").is_file():
@@ -3374,12 +3363,9 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
                 return True
     except Exception:
         pass
-    # A single-file VIDEO checkpoint (LTX / Wan / Hunyuan .safetensors, no model_index.json) has no
-    # pipeline index and no image family, so the checks above miss it. The video load route loads it
-    # as a single_file (routes/video.py), so it must be surfaced or _local_model_task returns
-    # task=null and the picker hides it. Match clean id / name / checkpoint-filename needles (not
-    # the raw path) so a parent-dir token can't spuriously match; _local_model_task then routes it
-    # to text-to-video.
+    # A single-file VIDEO checkpoint (LTX / Wan / Hunyuan .safetensors, no model_index.json) is
+    # missed above but loaded as a single_file by the video route, so surface it or the picker
+    # hides it. Uses _local_family_needles; _local_model_task then routes it to text-to-video.
     try:
         from core.inference.video_families import detect_video_family
         for needle in _local_family_needles(model):
@@ -3488,15 +3474,12 @@ def _repo_is_diffusers(repo_info) -> bool:
 
 
 def _repo_pipeline_missing_denoiser(repo_info) -> bool:
-    """True for a diffusers-pipeline snapshot (root ``model_index.json``) whose denoiser
-    component (``transformer/`` or ``unet/``) carries NO weight file. This is the shape of a
-    companion-only prefetch: a GGUF image load pulls the base repo's VAE / text-encoder /
-    ``model_index.json`` into the cache but deliberately skips the multi-GB transformer (the GGUF
-    supplies it), so the snapshot has a pipeline manifest yet is not a loadable BF16 pipeline --
-    ``from_pretrained`` on it re-downloads the missing shards. ``_cached_repo_partial`` misses this
-    (no cancel marker / .incomplete blob, and hf_hub_download writes no manifest), so ``/cached-models``
-    would advertise it as fully on-device. The caller marks such rows partial. Best-effort: any scan
-    error reports not-missing so a glitch never hides a genuinely complete pipeline."""
+    """True for a diffusers-pipeline snapshot (root ``model_index.json``) whose denoiser component
+    (``transformer/`` or ``unet/``) carries NO weight file -- the shape of a companion-only prefetch
+    where a GGUF image load pulled the base repo's VAE / text-encoder / manifest but skipped the
+    multi-GB transformer (the GGUF supplies it). ``_cached_repo_partial`` misses this, so the caller
+    marks such rows partial. Best-effort: any scan error reports not-missing so a glitch never hides
+    a genuinely complete pipeline."""
     if not _repo_has_pipeline_index(repo_info):
         return False
     _DENOISER_DIRS = ("transformer", "unet")
@@ -3514,8 +3497,8 @@ def _repo_pipeline_missing_denoiser(repo_info) -> bool:
                     except ValueError:
                         parts = ()
                 if not parts:
-                    # No snapshot scoping (or file outside it): fall back to the recorded name,
-                    # which may itself carry the component subdir (e.g. 'transformer/model...').
+                    # No snapshot scoping: fall back to the recorded name, which may itself carry
+                    # the component subdir (e.g. 'transformer/model...').
                     parts = Path(name).parts
                 if (
                     len(parts) >= 2
@@ -3607,9 +3590,9 @@ async def list_cached_models(
                     )
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
-                    # A companion-only prefetch (root model_index.json + VAE / text-encoder but no
-                    # transformer/ shards, pulled to back a GGUF load) is not a loadable BF16
-                    # pipeline; treat it as partial so the picker does not advertise it as on-device.
+                    # A companion-only prefetch (manifest + VAE/text-encoder but no transformer
+                    # shards) is not a loadable pipeline; treat it as partial so the picker does
+                    # not advertise it as on-device.
                     is_partial = _cached_repo_partial(
                         repo_id, Path(repo_info.repo_path)
                     ) or _repo_pipeline_missing_denoiser(repo_info)

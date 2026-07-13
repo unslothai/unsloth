@@ -220,10 +220,9 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
-    # The single-file GGUF basename this load committed. Kept so companion resolution
-    # (sd_cpp_text_encoders_for) reproduces the load identity -- some variants pick their
-    # encoder by filename (FLUX.2-klein-9B -> Qwen3-8B), and a local *klein-9B*.gguf carries
-    # that keyword only in the basename, not the repo id.
+    # The GGUF basename this load committed, so companion resolution reproduces the load identity:
+    # some variants pick their encoder by filename (FLUX.2-klein-9B -> Qwen3-8B) and a local
+    # *klein-9B*.gguf carries that keyword only in the basename, not the repo id.
     gguf_filename: Optional[str] = None
 
 
@@ -606,8 +605,7 @@ class SdCppDiffusionBackend:
         specs: list[tuple[str, str, str]] = [(repo_id, gguf_filename, "diffusion_model")]
         if fam.sd_cpp_vae:
             specs.append((fam.sd_cpp_vae[0], fam.sd_cpp_vae[1], "vae"))
-        # Select the text encoder per variant (FLUX.2-klein 4B->Qwen3-4B, 9B->Qwen3-8B) from the
-        # load identity, not the family's single default, so a 9B GGUF fetches the right encoder.
+        # Pick the encoder per variant from the load identity so a 9B GGUF fetches the right one.
         for terepo, tefile, kind in sd_cpp_text_encoders_for(fam, repo_id, gguf_filename):
             specs.append((terepo, tefile, kind))
         return specs
@@ -703,11 +701,9 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
-            # Same per-variant encoder selection as _asset_specs, keyed on the loaded repo id AND
-            # GGUF filename, so the cache-deletion guard protects the encoder repo this load actually
-            # downloaded (the 9B variant's Qwen3-8B, not the 4B default) -- a local *klein-9B*.gguf
-            # carries that keyword only in the basename, so dropping the filename would fall back to
-            # the 4B default and protect the wrong repo.
+            # Same per-variant selection as _asset_specs (keyed on repo id AND GGUF filename) so the
+            # cache-deletion guard protects the encoder repo this load actually downloaded; dropping
+            # the filename would fall back to the 4B default and protect the wrong repo.
             repos.extend(
                 terepo
                 for terepo, _f, _k in sd_cpp_text_encoders_for(
@@ -783,11 +779,10 @@ class SdCppDiffusionBackend:
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
-                # Publish an active (step 0) state now, before the slow pre-generate setup
-                # (LoRA listing/download), so a reload's progress probe doesn't read idle
-                # while this generation already holds _generate_lock and let a second generate
-                # queue behind it. The parsed sd-cli progress lines advance this step count.
-                # Mirrors DiffusionBackend.generate, which publishes _gen before its setup.
+                # Publish an active (step 0) state before the slow pre-generate setup (LoRA
+                # listing/download) so a reload's progress probe doesn't read idle while this
+                # generation holds _generate_lock and let a second generate queue behind it.
+                # Mirrors DiffusionBackend.generate; sd-cli progress lines advance this count.
                 self._gen = _SdGen(total_steps = int(steps))
             try:
                 if seed is None:

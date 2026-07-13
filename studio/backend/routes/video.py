@@ -133,11 +133,10 @@ async def load_video_model(
             )
 
         if device != "cpu":
-            # Register the in-flight load UNDER the arbiter lock (not after acquire_for
-            # returns): a competing Images/chat acquire in that gap would otherwise evict
-            # VIDEO before begin_load marks a load in-flight, so eviction finds nothing to
-            # cancel and both loaders allocate VRAM at once. begin_load returns at once, so
-            # the lock is held only briefly. Mirrors the images/load handoff.
+            # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns):
+            # otherwise a competing Images/chat acquire in that gap evicts VIDEO before the load is
+            # marked in-flight, finds nothing to cancel, and both loaders allocate VRAM at once.
+            # Mirrors the images/load handoff.
             status_dict = await asyncio.to_thread(acquire_for, VIDEO, _begin_load)
         else:
             await asyncio.to_thread(release, VIDEO)
@@ -225,11 +224,9 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
     backend = get_video_backend()
     status_dict = await asyncio.to_thread(backend.unload)
     # Drop VIDEO ownership only if nothing is resident AND no new load is in flight: a concurrent
-    # /video/load that re-acquired VIDEO must keep ownership (release is owner-guarded but
-    # identity-less, so an unconditional release would clear the newer claim). The idle check and
-    # the release must be ATOMIC (release_if): the load's acquire_for register runs under the same
-    # arbiter lock, so a plain check-then-release could pass the stale check and then clear the
-    # newer claim. Mirrors the images route.
+    # /video/load that re-acquired VIDEO must keep ownership. The idle check and release must be
+    # ATOMIC (release_if): the load's register runs under the same lock, so a plain
+    # check-then-release could clear the newer claim. Mirrors the images route.
     await asyncio.to_thread(
         release_if,
         VIDEO,

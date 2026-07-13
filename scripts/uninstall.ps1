@@ -370,11 +370,9 @@ function Uninstall-UnslothStudio {
     if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
         $defaultSdCppToStop = $defaultSdCpp
     }
-    # Custom/env-mode sd.cpp builds sit BESIDE each custom root at <parent>\stable-diffusion.cpp
-    # (find_sd_cpp_binary resolves from UNSLOTH_STUDIO_HOME.parent), so a running owned sd-server
-    # there is outside every root above ($knownRoots holds the custom root, not its sibling). We
-    # delete those marker-owned dirs below, so add them to the handle scan too -- gated on the same
-    # owner marker as the delete, matching the default-root handling.
+    # Custom/env-mode sd.cpp builds sit BESIDE each custom root at <parent>\stable-diffusion.cpp,
+    # outside $knownRoots. We delete those marker-owned dirs below, so add them to the handle scan
+    # too, gated on the same owner marker.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
         $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"

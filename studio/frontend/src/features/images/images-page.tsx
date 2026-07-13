@@ -1287,10 +1287,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setNegativePrompt(image.guidance > 0 ? (image.negative_prompt ?? "") : "");
     setSteps(image.steps);
     setGuidance(image.guidance);
-    // Restore from the BASE batch seed, not this image's own seed. The native engine derives
-    // per-image seeds as base + index, so replaying with the derived seed AND the original
-    // batch_size would advance a second time and reproduce a different image. Diffusers shares one
-    // seed, so batch_seed == seed there; older records without batch_seed fall back to seed.
+    // Restore from the BASE batch seed, not this image's own derived seed (base + index), or
+    // replaying with batch_size would advance again and reproduce a different image. Diffusers
+    // shares one seed (batch_seed == seed); older records without batch_seed fall back to seed.
     setSeed(String(image.batch_seed ?? image.seed));
     setWidth(image.width);
     setHeight(image.height);

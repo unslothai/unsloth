@@ -221,9 +221,8 @@ def test_list_skips_corrupt_sidecar():
 
 
 def test_clear_preserves_mp4_with_present_but_invalid_sidecar():
-    # A hand-dropped MP4 whose sidecar PARSES as JSON but lacks the required recipe keys (e.g. "{}")
-    # is hidden by list_videos (fails the GalleryVideo schema filter), so clear must not destroy it
-    # while removing the owned pair. Regression for the sidecar-validation gap.
+    # A hand-dropped MP4 whose sidecar parses but lacks the required recipe keys (e.g. "{}") is
+    # hidden by list_videos, so clear must not destroy it while removing the owned pair.
     directory = gallery.gallery_dir()
     (directory / "foreign.mp4").write_bytes(_mp4())
     (directory / "foreign.json").write_text("{}", encoding = "utf-8")

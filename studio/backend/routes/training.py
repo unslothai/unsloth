@@ -1140,10 +1140,9 @@ def _diffusion_training_active() -> bool:
 def _require_diffusion_dataset_mutable() -> None:
     """Reject a dataset mutation while a diffusion run is active.
 
-    The trainer enumerates and (when the latent cache is off / over budget) re-opens dataset images
-    during the loop, so uploading, importing, captioning, or deleting underneath it makes the run
-    nondeterministic or raises a FileNotFoundError mid-step. Best-effort: a service-import failure
-    fails open (never blocks a mutation on an unknowable state), matching the start interlock."""
+    The trainer re-opens dataset images during the loop, so mutating underneath it makes the run
+    nondeterministic or raises a FileNotFoundError mid-step. Fails open (a service-import failure
+    never blocks a mutation on an unknowable state), matching the start interlock."""
     if _diffusion_training_active():
         raise HTTPException(
             status_code = 409,
@@ -1271,11 +1270,9 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
         # Single component and not ".." -> joining under datasets_root() cannot escape it.
         if not p.is_absolute() and len(p.parts) == 1 and p.parts[0] != "..":
             direct = datasets_root() / value
-            # Route a bare image-dataset name through the SAME protected resolver the
-            # caption/delete/labeling CRUD routes use, so a name -> external-directory symlink is
-            # rejected here too (is_dir() follows the link, so a plain is_dir() check would train on
-            # files outside the datasets root). Include a broken symlink so it is rejected, not
-            # silently passed through to resolve_dataset_path.
+            # Route a bare name through the same protected resolver the CRUD routes use, so a
+            # name -> external-directory symlink is rejected here too (is_dir() follows the link).
+            # Include a broken symlink so it is rejected, not passed to resolve_dataset_path.
             if direct.is_dir() or direct.is_symlink():
                 return _resolve_dataset_folder(value)
     return resolve_dataset_path(raw)
@@ -1578,9 +1575,8 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
             children = sorted(
                 p
                 for p in root.iterdir()
-                # Skip symlinked dirs: the CRUD resolver (_resolve_dataset_folder) rejects a
-                # symlinked dataset, so discovery must not advertise one as selectable (an external
-                # directory the read/caption/delete routes would then refuse).
+                # Skip symlinked dirs: the CRUD resolver rejects them, so discovery must not
+                # advertise one as selectable (the read/caption/delete routes would refuse it).
                 if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
             )
         except OSError:
@@ -1760,11 +1756,9 @@ async def upload_diffusion_dataset(
                             ),
                         )
                     out.write(chunk)
-            # Reject a decompression bomb before commit: the byte-limit above passes a small, highly
-            # compressible PNG whose decoded pixels are huge, and the trainer later decodes every
-            # image in full when building its latent cache. Mirror the inference decode guard
-            # (diffusion._decode_b64_image) and bound each image's dimensions from the header, BEFORE
-            # any pixel decompression, so an oversized upload 400s here rather than OOMing the run.
+            # Reject a decompression bomb before commit: a small compressible PNG can pass the byte
+            # limit yet decode to huge pixels and OOM the trainer's latent cache, so bound each
+            # image's dimensions from the header (mirrors diffusion._decode_b64_image).
             if Path(filename).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
                 _validate_uploaded_training_image(tmp, filename)
             uploaded += 1
@@ -1858,27 +1852,24 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     return folder
 
 
-# Bound each uploaded training image's dimensions (matches the inference decode guard's 4096px
-# per-side limit in diffusion._decode_b64_image). A small, highly compressible PNG can smuggle huge
-# pixel dimensions past the byte limit and OOM the trainer when it decodes the image for its latent
-# cache, so reject an over-limit image from the header before any pixel decompression.
+# Per-side dimension bound for uploaded training images, matching diffusion._decode_b64_image's
+# 4096px inference guard, so a compressible PNG can't smuggle huge pixels past the byte limit.
 _MAX_TRAINING_IMAGE_SIDE = 4096
 
 
 def _validate_uploaded_training_image(path: Path, original_name: str) -> None:
     """Reject an uploaded training image whose decoded dimensions exceed the per-side limit.
 
-    Reads only the image header (never img.load()), so a crafted small-payload / huge-dimension file
-    is caught before it can spike memory. Scoped to the decompression-bomb vector only: bytes PIL
-    cannot identify are left as-is (the upload contract accepts arbitrary bytes under an image
-    extension), so this changes behaviour solely for oversized real images."""
+    Reads only the header (never img.load()), so a small-payload / huge-dimension file is caught
+    before it spikes memory. Bytes PIL cannot identify are left as-is (the upload contract accepts
+    arbitrary bytes under an image extension), so only oversized real images change behaviour."""
     from PIL import Image, UnidentifiedImageError
 
     try:
         with Image.open(path) as image:
             width, height = image.size
     except (OSError, UnidentifiedImageError, ValueError):
-        return  # not a decodable image -> not a decompression bomb; leave the existing contract
+        return  # not a decodable image -> not a bomb; leave the existing contract
     if width > _MAX_TRAINING_IMAGE_SIDE or height > _MAX_TRAINING_IMAGE_SIDE:
         raise HTTPException(
             status_code = 400,
@@ -1917,9 +1908,8 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
         meta_path = folder / meta_name
         if not meta_path.is_file():
             continue
-        # Tolerate a bad upload: invalid UTF-8 (UnicodeError, not an OSError), or a line that is
-        # valid JSON but not an object (``[]`` / ``null`` / a string / a number). Neither should
-        # 500 the info / labeling / caption / summary endpoints; the record is simply skipped.
+        # Tolerate a bad upload (invalid UTF-8, or a line of non-object JSON): skip the record so
+        # the info / labeling / caption / summary endpoints don't 500.
         try:
             lines = meta_path.read_text(encoding = "utf-8").splitlines()
         except (OSError, UnicodeError):

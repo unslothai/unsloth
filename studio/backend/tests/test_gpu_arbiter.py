@@ -126,9 +126,8 @@ def test_release_if_by_non_owner_is_noop(calls):
 
 
 def test_release_if_predicate_sees_a_reregistered_same_owner_load(calls):
-    # The race release_if closes: a slow unload's predicate must observe a concurrent same-owner
-    # load that re-registered ownership, and NOT drop the newer claim. Simulate the re-register by
-    # having the predicate report a load now in flight; ownership must stay with DIFFUSION.
+    # The race release_if closes: a slow unload's predicate reports a load now in flight (a
+    # re-registered same-owner load), so ownership must stay with DIFFUSION.
     arb.acquire_for(arb.DIFFUSION)
     loading = {"in_flight": True}
     assert arb.release_if(arb.DIFFUSION, lambda: not loading["in_flight"]) is False
@@ -165,9 +164,8 @@ def test_register_failure_leaves_ownership_in_place(calls):
 
 
 def test_competing_acquire_blocks_until_register_completes(monkeypatch):
-    # The window this closes: while DIFFUSION registers its load, a competing VIDEO acquire
-    # must not evict DIFFUSION until the load is marked in-flight. Holding the lock across
-    # register makes the competitor wait, so eviction never races an unregistered load.
+    # While DIFFUSION registers its load, a competing VIDEO acquire must block (not evict) until
+    # the load is in-flight; holding the lock across register makes eviction never race it.
     import threading
     import time
 

@@ -688,9 +688,8 @@ def discover_image_caption_pairs(
         meta_path = root / meta_name
         if not meta_path.is_file():
             continue
-        # Tolerate a bad upload: invalid UTF-8 in the file, or a line that is valid JSON but not an
-        # object (``[]`` / ``null`` / a string / a number). Neither should crash the trainer -- the
-        # record is simply skipped so the instance_prompt fallback still applies.
+        # Tolerate a bad upload (invalid UTF-8, or a line of non-object JSON): skip the record so
+        # the instance_prompt fallback still applies rather than crashing the trainer.
         try:
             meta_lines = meta_path.read_text(encoding = "utf-8").splitlines()
         except (OSError, UnicodeError):

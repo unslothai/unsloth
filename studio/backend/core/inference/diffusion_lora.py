@@ -213,10 +213,9 @@ def resolve_one(
     Downloads hub weights via the xet-fallback helper. Raises FileNotFoundError/ValueError on an
     unresolvable/unsupported id, which the caller maps to a 400.
 
-    ``family`` (the loaded model family) enforces catalog family tags HERE, not only in the picker
-    (``list_loras``): a LoRA is architecture-specific, so a direct API client sending an id tagged
-    for another family would otherwise load it through the wrong pipeline. Mirrors the ControlNet
-    resolver's family gate. An untagged catalog entry (empty ``families``) stays unrestricted.
+    ``family`` (the loaded model family) enforces catalog family tags HERE, not only in the picker,
+    so a direct API client cannot load a LoRA tagged for another family through the wrong pipeline.
+    An untagged catalog entry (empty ``families``) stays unrestricted.
     """
     # An empty/whitespace token triggers an auth error instead of anonymous access; normalise to None.
     hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
@@ -307,10 +306,9 @@ def resolve_specs(
 ) -> list[ResolvedLora]:
     """Resolve request (id, weight) pairs, dropping zero-weight entries.
 
-    ``family`` is the loaded model family; it enforces catalog family tags in :func:`resolve_one`
-    for direct API callers, not only the UI picker. Maps the named not-found/gated Hub errors to a
-    400 (URL scrubbed); does NOT catch the base HfHubHTTPError, so a Hub 5xx stays a 500. A
-    mid-download cancel maps to a 409."""
+    ``family`` (the loaded model family) enforces catalog family tags in :func:`resolve_one` for
+    direct API callers. Maps the named not-found/gated Hub errors to a 400 (URL scrubbed); does NOT
+    catch the base HfHubHTTPError, so a Hub 5xx stays a 500. A mid-download cancel maps to a 409."""
     from huggingface_hub.errors import (
         EntryNotFoundError,
         GatedRepoError,

@@ -100,11 +100,9 @@ def test_loaded_repo_ids_includes_native_companions():
 
 
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
-    # FLUX.2-klein-9B pairs with Qwen3-8B, and a local *klein-9B*.gguf carries that keyword only in
-    # the basename (not the repo id). loaded_repo_ids() must reproduce the committed load identity
-    # (repo id + GGUF filename), else it falls back to the 4B default encoder and the cache-deletion
-    # guard protects the wrong repo -- leaving the 8B encoder this load actually downloaded deletable
-    # while one-shot sd-cli still re-reads it every generation.
+    # A local *klein-9B*.gguf carries the variant keyword only in the basename, so loaded_repo_ids()
+    # must include the GGUF filename in the load identity; otherwise it falls back to the 4B default
+    # encoder and the cache-deletion guard protects the wrong repo.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     fam = detect_family("flux.2-klein")
     b._state = bk._SdState(
@@ -325,10 +323,9 @@ def test_generate_progress_tracks_parsed_steps():
 
 
 def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
-    # Native LoRA resolution (listing/downloading a not-yet-cached adapter) happens during the
-    # pre-generate setup while _generate_lock is already held. A reload/progress probe in that
-    # window must read ACTIVE, not idle, or the UI queues a second generate behind the first.
-    # So _gen is published before LoRA resolution, mirroring the diffusers path.
+    # LoRA resolution runs during pre-generate setup while _generate_lock is held, so a progress
+    # probe in that window must read ACTIVE; _gen is published before it, mirroring the diffusers
+    # path.
     from core.inference import diffusion_lora
 
     eng = _FakeEngine()

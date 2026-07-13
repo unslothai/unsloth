@@ -448,8 +448,7 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         [
             _file("model_index.json", 1_000),
             _file("text_encoder/model.safetensors", 9_000),
-            # A complete pipeline carries its denoiser weights; without them the row is a
-            # companion-only prefetch and would be marked partial (see the dedicated test).
+            # A complete pipeline carries its denoiser weights; without them it would be partial.
             _file("transformer/diffusion_pytorch_model.safetensors", 9_000),
         ],
         tmp_path / "models--Tongyi-MAI--Z-Image-Turbo",
@@ -475,11 +474,9 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
 
 
 def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, tmp_path):
-    """A GGUF image load prefetches its companion base repo's VAE / text-encoder / model_index.json
-    but deliberately skips the multi-GB transformer (the GGUF supplies it). That snapshot carries a
-    root model_index.json yet is not a loadable BF16 pipeline, so it must be marked partial (the
-    picker drops partial rows) rather than advertised as fully on-device. A sibling repo that DOES
-    ship its transformer shards stays complete."""
+    """A companion-only prefetch (VAE / text-encoder / model_index.json but no transformer) carries
+    a root model_index.json yet is not a loadable pipeline, so it must be marked partial. A sibling
+    repo that DOES ship its transformer shards stays complete."""
     companion_only = _repo(
         "black-forest-labs/FLUX.1-dev",
         [

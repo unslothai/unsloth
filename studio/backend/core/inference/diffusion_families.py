@@ -470,10 +470,8 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
     return bool(fam.sd_cpp_vae and fam.sd_cpp_text_encoders)
 
 
-# FLUX.2-klein ships two variants that use DIFFERENT text encoders: the 4B transformer pairs with
-# Qwen3-4B and the 9B transformer pairs with Qwen3-8B (Black Forest Labs model cards; a mismatched
-# encoder fails with tensor-shape / dtype errors deep in sd-cli). The family table carries only one
-# default, so the native (sd.cpp) encoder is selected per variant from the load identity below.
+# FLUX.2-klein's 9B transformer pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B
+# (a mismatched encoder fails deep in sd-cli), so the encoder is picked per variant below.
 _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
     (
         "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
@@ -490,10 +488,8 @@ def sd_cpp_text_encoders_for(
 ) -> tuple[tuple[str, str, str], ...]:
     """The sd.cpp text encoders for a specific load.
 
-    FLUX.2-klein selects its encoder by variant (the 9B transformer needs Qwen3-8B, the 4B needs the
-    family default Qwen3-4B); every other family returns its static table. Keyed on the load identity
-    (repo id + GGUF filename) so ``unsloth/FLUX.2-klein-9B-GGUF`` and a local ``*klein-9B*.gguf`` both
-    resolve to the 8B encoder."""
+    FLUX.2-klein picks by variant (9B needs Qwen3-8B, 4B the family default) keyed on the load
+    identity (repo id + GGUF filename); every other family returns its static table."""
     if fam.name == "flux.2-klein":
         identity = f"{repo_id or ''}/{gguf_filename or ''}".lower()
         if "klein-9b" in identity or "klein_9b" in identity:

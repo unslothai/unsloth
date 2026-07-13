@@ -172,12 +172,10 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# The sidecar keys a genuine Studio record always carries (save() always writes them). delete() and
-# clear() treat a pair as owned only when its sidecar has all of these, so a hand-dropped MP4 with a
-# parseable-but-empty ("{}") or partial JSON sidecar -- which list_videos already hides via the
-# GalleryVideo schema filter -- is neither counted as ours nor destroyed. Mirrors
-# image_gallery._REQUIRED_META: a key-presence check (the route still owns full schema/value-type
-# validation), aligned with GalleryVideo's required stored fields.
+# Sidecar keys every genuine Studio record carries (save() always writes them). delete()/clear()
+# own a pair only when its sidecar has all of these, so a hand-dropped MP4 with an empty ("{}") or
+# partial sidecar -- which list_videos already hides -- is neither counted as ours nor destroyed.
+# Key-presence only (the route owns full schema validation); mirrors image_gallery._REQUIRED_META.
 _REQUIRED_META = (
     "prompt",
     "width",
@@ -201,9 +199,8 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    # A parseable dict is not enough to claim ownership: a foreign sidecar (e.g. "{}") or one from a
-    # different schema lacks these keys. Require them so delete()/clear() never destroy a clip the
-    # gallery never surfaced (mirrors image_gallery._read_meta).
+    # A parseable dict is not enough: a foreign ("{}") or different-schema sidecar lacks these keys.
+    # Require them so delete()/clear() never destroy a clip the gallery never surfaced.
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
         return None
     return meta
@@ -258,9 +255,8 @@ def delete(video_id: str) -> bool:
     path = video_path(video_id)
     if path is None:
         return False
-    # Only delete a pair we actually own (a readable sidecar). A foreign / orphan MP4 is invisible
-    # to list_videos, so deleting it here on a guessed id would silently destroy a file the gallery
-    # never claimed.
+    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to
+    # list_videos, so a guessed id must not destroy it.
     if _read_meta(_sidecar_path(video_id)) is None:
         return False
     # Delete the MP4 FIRST: if the sidecar were dropped first and the mp4 unlink then failed (lock /
@@ -280,10 +276,9 @@ def delete(video_id: str) -> bool:
 
 
 def clear() -> int:
-    """Delete every Studio-owned gallery pair; return how many videos were removed.
+    """Delete every Studio-owned gallery pair (readable sidecar); return how many were removed.
 
-    Preserves foreign / orphan MP4s (no readable sidecar): list_videos already hides them, so clear
-    must not silently destroy files the gallery never surfaced."""
+    Foreign/orphan MP4s are preserved: list_videos already hides them, so clear must not destroy them."""
     removed = 0
     try:
         paths = list(gallery_dir().glob("*.mp4"))

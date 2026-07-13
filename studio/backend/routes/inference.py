@@ -14340,8 +14340,8 @@ async def load_diffusion_model(
         needs_gpu = device != "cpu"
 
         def _begin_load():
-            # Kicks the (slow) load onto a background thread and returns at once (the client
-            # polls images/load-progress); begin_load itself validates network-free.
+            # Kicks the (slow) load onto a background thread and returns at once (client polls
+            # images/load-progress); begin_load itself validates network-free.
             return engine.begin_load(
                 request.model_path,
                 gguf_filename = request.gguf_filename,
@@ -14362,11 +14362,9 @@ async def load_diffusion_model(
             )
 
         if needs_gpu:
-            # Register the in-flight load UNDER the arbiter lock (not after acquire_for
-            # returns): a competing Video/chat acquire in that gap would otherwise evict
-            # DIFFUSION before begin_load marks a load in-flight, so eviction finds nothing
-            # to cancel and both loaders allocate VRAM at once. begin_load returns at once,
-            # so the lock is held only briefly.
+            # Register the in-flight load UNDER the arbiter lock (not after acquire_for returns):
+            # otherwise a competing Video/chat acquire in that gap evicts DIFFUSION before the load
+            # is marked in-flight, finds nothing to cancel, and both loaders allocate VRAM at once.
             status_dict = await asyncio.to_thread(acquire_for, DIFFUSION, _begin_load)
         else:
             # A CPU-only native load never touches the GPU, so it neither acquires nor is
@@ -14474,11 +14472,9 @@ async def generate_diffusion_image(
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,
-                        # The base seed the batch launched with. The native engine derives per-image
+                        # Base seed the batch launched with. The native engine derives per-image
                         # seeds as base + index, so ``seed`` above is already advanced for index>0;
-                        # restore must replay from this base (with batch_size) or it would advance a
-                        # second time and reproduce a different image. Diffusers shares one seed, so
-                        # base == seed there.
+                        # restore replays from this base (diffusers shares one seed, so base == seed).
                         "batch_seed": result["seed"],
                         # Position within the batch (shared timestamp), so the export filename
                         # stays unique.
@@ -14589,12 +14585,10 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
     # Drop DIFFUSION ownership only if nothing is resident AND no new load is in flight: a
     # concurrent /images/load that re-acquired DIFFUSION while this (slow) unload ran must keep
-    # ownership, or a later chat load would see no owner, skip eviction, and OOM the newly
-    # resident pipeline. An in-flight load has is_loaded False for its whole download/finalize
-    # window, so gate on loading_repo_ids() too, not just committed state. The idle check and the
-    # release must be ATOMIC (release_if): the load's acquire_for register runs under the same
-    # arbiter lock, so a plain check-then-release could pass the stale check and then clear the
-    # newer claim.
+    # ownership, or a later chat load sees no owner, skips eviction, and OOMs the newly resident
+    # pipeline. An in-flight load has is_loaded False for its whole window, so gate on
+    # loading_repo_ids() too. The idle check and release must be ATOMIC (release_if): the load's
+    # register runs under the same lock, so a plain check-then-release could clear the newer claim.
     engine = get_active_diffusion_engine()
     await asyncio.to_thread(
         release_if,

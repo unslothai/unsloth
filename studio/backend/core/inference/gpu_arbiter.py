@@ -67,13 +67,11 @@ _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video
 def acquire_for(owner: str, register: Optional[Callable[[], Any]] = None) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
-    ``register``, if given, runs under the arbiter lock right after ownership transfers,
-    and its return value is returned. Registering the in-flight load HERE -- not after
-    ``acquire_for`` returns -- closes the window where a competing acquire could evict this
-    owner before its load is marked in-flight: eviction would then find nothing to cancel
-    and both loaders would allocate VRAM at once. ``register`` must be quick (it holds the
-    lock) and must not re-enter the arbiter. If it raises, ownership stays with ``owner`` --
-    matching the pre-register behaviour where a failed load left the handoff in place.
+    ``register``, if given, runs under the arbiter lock right after ownership transfers and its
+    return value is returned. Marking the in-flight load HERE (not after ``acquire_for`` returns)
+    closes the window where a competing acquire could evict this owner before its load is in-flight,
+    letting both loaders allocate VRAM at once. It must be quick and not re-enter the arbiter; if it
+    raises, ownership stays with ``owner``.
     """
     global _owner
     if owner not in _EVICTORS:
@@ -97,13 +95,10 @@ def release(owner: str) -> None:
 def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
     """Drop ``owner``'s claim only if it still holds it AND ``predicate()`` is true, atomically.
 
-    A slow unload's "nothing resident / no load in flight" check and the ``release`` must not
-    straddle a concurrent same-owner load: that load's ``acquire_for(register=...)`` re-registers
-    ownership UNDER this lock, so a plain check-then-``release`` could pass the stale check and then
-    clear the newer claim (``release`` is owner-guarded but identity-less). Evaluating the predicate
-    under the lock closes that window -- the load's register runs either fully before or fully after.
-    ``predicate`` must be quick (it holds the lock) and must not re-enter the arbiter. Returns True
-    iff ownership was dropped."""
+    A slow unload's idle check and its ``release`` must not straddle a concurrent same-owner load
+    whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
+    predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
+    ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
     global _owner
     with _lock:
         if _owner != owner or not predicate():

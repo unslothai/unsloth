@@ -1908,9 +1908,8 @@ class DiffusionBackend:
             # resolve_controlnet accepts a bare owner/name without the base trust gate, and
             # from_pretrained deserializes it (a malicious pickle would execute), so run the same
             # Hub malware preflight the chat/export loaders use. A local dir is exempt (fail-open).
-            # The preflight fails OPEN when the Hub scan is unavailable (offline / missing metadata),
-            # so for a remote repo also force safetensors below: that closes the pickle RCE vector
-            # even when the scan could not run.
+            # The preflight fails OPEN when the Hub scan is unavailable, so a remote repo also forces
+            # safetensors below, closing the pickle RCE vector even when the scan could not run.
             remote_cn = not getattr(resolved_cn, "is_local", False)
             if remote_cn:
                 from utils.security import evaluate_file_security
@@ -1928,10 +1927,8 @@ class DiffusionBackend:
             # state.dtype is the display string ("bfloat16"), not a torch.dtype; pass the real
             # dtype so diffusers loads at the base compute dtype, not float32 (extra VRAM).
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
-            # Force safetensors for an untrusted remote repo: a bare owner/name reaches here without
-            # the base trust gate, and if the Hub scan failed open above, an embedded pickle would
-            # still deserialize on load. Requiring safetensors refuses that vector (curated
-            # ControlNets are all safetensors). A local dir the user chose is exempt.
+            # Force safetensors for an untrusted remote repo: if the Hub scan failed open above, an
+            # embedded pickle would still deserialize on load. A local dir the user chose is exempt.
             cn_from_pretrained_kwargs: dict[str, Any] = {}
             if remote_cn:
                 cn_from_pretrained_kwargs["use_safetensors"] = True

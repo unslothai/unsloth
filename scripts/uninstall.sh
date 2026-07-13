@@ -35,12 +35,9 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
-# Owned sd.cpp roots (default + custom siblings), each gated on the install-time
-# owner marker. Native diffusion builds beside a custom/env root at
-# <parent>/stable-diffusion.cpp (find_sd_cpp_binary resolves from
-# UNSLOTH_STUDIO_HOME.parent) and at $HOME/.unsloth/stable-diffusion.cpp by default.
-# The marker is mandatory so we never stop a user-managed sd-server from an
-# unrelated checkout that happens to sit at one of these paths.
+# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp + each custom root's
+# <parent>/stable-diffusion.cpp sibling), each gated on the install-time owner marker so we never
+# stop a user-managed sd-server from an unrelated checkout at one of these paths.
 _owned_sd_cpp_roots() {
     _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
     [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
@@ -51,10 +48,8 @@ _owned_sd_cpp_roots() {
     done
 }
 
-# pkill resident sd-server / sd-cli whose executable lives under an owned sd.cpp
-# root, BEFORE that tree is removed below: a live native server keeps running
-# after its binary is unlinked. Anchored on the owned root so an unrelated
-# checkout's sd-server is never matched.
+# pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
+# native server keeps running after its binary is unlinked). Anchored on the owned root.
 _stop_owned_sd_cpp_processes() {
     _signal="$1"
     command -v pkill >/dev/null 2>&1 || return 0

@@ -118,11 +118,9 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
 
 
 def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
-    # A standard diffusers PIPELINE folder keeps its weights/configs in component subdirs
-    # (transformer/, vae/, ...) and carries only model_index.json at the root. The Images/Video
-    # load path accepts such a local pipeline dir, so the scan must surface it -- otherwise the
-    # weights-in-subdirs layout is missed and it never reaches task tagging / the On Device
-    # picker. It is not a GGUF, so model_format stays None (task tagging classifies it later).
+    # A diffusers PIPELINE folder (weights in component subdirs, only model_index.json at the root)
+    # is loadable, so the scan must surface it or it never reaches the On Device picker. Not a GGUF,
+    # so model_format stays None (task tagging classifies it later).
     root = tmp_path / "models"
     pipe = root / "my-pipeline"
     _touch(pipe / "model_index.json")
@@ -137,10 +135,9 @@ def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
 
 
 def test_scan_models_dir_surfaces_root_diffusers_pipeline(tmp_path):
-    # A custom scan folder can point DIRECTLY at a diffusers pipeline (not a parent of repos).
-    # Its weights live in component subdirs under a root model_index.json, so _is_model_directory
-    # rejects the root; without admitting it the scan would surface the component subdirs
-    # (transformer/, vae/) as bogus models and hide the real pipeline. Treat the root as one model.
+    # A scan folder can point DIRECTLY at a diffusers pipeline, which _is_model_directory rejects;
+    # without admitting it the scan surfaces the component subdirs as bogus models and hides the
+    # real pipeline. Treat the root as one model.
     root = tmp_path / "my-local-pipeline"
     _touch(root / "model_index.json")
     _touch(root / "transformer" / "config.json")
@@ -188,10 +185,9 @@ def test_local_task_tags_family_named_pipeline_dir(tmp_path):
 
 
 def test_local_task_none_for_familyless_pipeline_dir(tmp_path):
-    # A generically named on-device pipeline (top-level model_index.json, no family token in its
-    # id / name / filename) is UNLOADABLE: the Images load path resolves no family via
-    # detect_family_for_pick and 400s after evicting the GPU owner. It must stay untagged so the
-    # picker never advertises a row that always fails; model_index.json alone is not enough.
+    # A generically named on-device pipeline (model_index.json, no family token) is UNLOADABLE: the
+    # Images load path resolves no family and 400s after evicting the GPU owner, so it must stay
+    # untagged and never be advertised.
     d = tmp_path / "my-local-pipeline"
     _touch(d / "model_index.json")
     _touch(d / "unet" / "diffusion_pytorch_model.safetensors")
@@ -244,9 +240,8 @@ def test_local_task_tags_video_single_file_checkpoint(tmp_path):
 
 
 def test_local_task_tags_single_file_by_checkpoint_filename(tmp_path):
-    # A generically named folder holding one loadable checkpoint whose FILENAME identifies the
-    # family (the parent dir does not) is loadable -- the route resolves the sole file via
-    # resolve_local_single_file -- so tag it from the filename or the task-scoped picker hides it.
+    # A folder holding one checkpoint whose FILENAME identifies the family (not the parent dir) is
+    # loadable via resolve_local_single_file, so tag it from the filename or the picker hides it.
     d = tmp_path / "downloads"
     _touch(d / "qwen-image-2509.safetensors")  # family only in the filename, no model_index.json
     m = _local(d, id = str(d), display_name = "downloads")
