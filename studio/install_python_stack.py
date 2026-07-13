@@ -1517,9 +1517,10 @@ def _ensure_verbatim_torch_index() -> None:
     pull torch from PyPI, and marker equality alone would mask that clobber (the
     wheel of an unknown-family index carries no flavor tag to probe, so the trio
     snapshot is the only signal). A user who did NOT set the override gets
-    pin=None and is never touched, so an out-of-band torch install is safe. macOS/
-    no-torch: skipped (no torch to repair). The install uses the pinned URL
-    exclusively (--index-url), so it "wins verbatim" -- an incomplete mirror that
+    pin=None and is never touched, so an out-of-band torch install is safe. Intel
+    mac / no-torch: skipped (no torch to repair); macOS ARM has real CPU/MPS torch
+    and, like a fresh install.sh, honours a custom pin. The install uses the pinned
+    URL exclusively (--index-url), so it "wins verbatim" -- an incomplete mirror that
     cannot serve the trio fails loudly here, same as the marker-present path (that
     is the cost of honouring an explicit pin). The trio keeps the supported bounds
     (_CUDA_TORCH_PKG_SPEC): a FRESH install.sh / install.ps1 install from the same
@@ -1527,7 +1528,7 @@ def _ensure_verbatim_torch_index() -> None:
     supported range when the mirror publishes a newer torch.
     """
     global _VERBATIM_TRIO_SNAPSHOT
-    if NO_TORCH or IS_MACOS:
+    if NO_TORCH or IS_MAC_INTEL:
         return
     pin = _explicit_unknown_family_torch_index_url()
     if pin is None:
@@ -1611,6 +1612,31 @@ def _probe_torch_flavor() -> "tuple[str, str] | None":
     return marker, cutag
 
 
+def _torch_flavor_matches_pin(leaf: str, flavor: "tuple[str, str]") -> "bool | None":
+    """Whether the installed torch flavor matches a KNOWN-family pin leaf.
+
+    True  = matches the pinned family; False = a DIFFERENT known family is installed
+    (the pin was clobbered -- e.g. a cpu wheel under a cuXXX pin, or cu126 under a
+    cu128 pin); None = cannot tell -- an unknown-family leaf (the verbatim path owns
+    it) or an untagged CUDA build under a cuXXX pin (ambiguous; do not force a
+    reinstall on that alone). flavor is (marker, cutag) from _probe_torch_flavor.
+    Shared by the pin baseline (records only on True) and the update probe (forces
+    the repair pass only on False), so the two never drift. Pure function.
+    """
+    marker, cutag = flavor
+    if re.match(r"^cu[0-9]", leaf):
+        if marker != "cuda":
+            return False
+        if not cutag:
+            return None
+        return cutag == leaf
+    if leaf == "cpu":
+        return marker == "cpu"
+    if re.match(r"^rocm\d", leaf) or leaf.startswith("gfx"):
+        return marker == "hip"
+    return None
+
+
 def _record_torch_index_pin_baseline() -> None:
     """Record an explicit torch-index pin as the marker baseline on a pre-marker venv
     whose torch is already the pinned family.
@@ -1635,33 +1661,24 @@ def _record_torch_index_pin_baseline() -> None:
     --torch-pin-needs-apply report the pin as applied forever, freezing the broken
     venv out of the very pass that could repair it. Unknown-family pins are owned
     by _ensure_verbatim_torch_index (which reinstalls and writes the marker itself)
-    and get no baseline here. macOS/no-torch: nothing to record.
+    and get no baseline here. Intel mac / no-torch: nothing to record; macOS ARM has
+    real torch and records like Linux.
     """
-    if NO_TORCH or IS_MACOS:
+    if NO_TORCH or IS_MAC_INTEL:
         return
     pin = _explicit_torch_index_url()
     if pin is None:
         return
     if _read_torch_index_marker() is not None:
         return
-    leaf = _torch_index_leaf(pin)
     flavor = _probe_torch_flavor()
     if flavor is None:
         return  # torch missing/broken: keep the pass running on future updates
-    _marker, _cutag = flavor
-    if re.match(r"^cu[0-9]", leaf):
-        # A tagged wheel must match the pinned cuXXX exactly; an untagged CUDA
-        # build cannot be confirmed either way, so do not freeze it as applied.
-        if _marker != "cuda" or _cutag != leaf:
-            return
-    elif leaf == "cpu":
-        if _marker != "cpu":
-            return
-    elif re.match(r"^rocm\d", leaf) or leaf.startswith("gfx"):
-        if _marker != "hip":
-            return
-    else:
-        return  # unknown family: the verbatim path owns the marker
+    # Record only when the installed flavor DEFINITELY matches the pinned family:
+    # a mismatch (clobbered), an ambiguous untagged CUDA build, or an unknown family
+    # (owned by the verbatim path) must all keep the pass running on future updates.
+    if _torch_flavor_matches_pin(_torch_index_leaf(pin), flavor) is not True:
+        return
     _write_torch_index_marker(pin)
 
 
@@ -3371,17 +3388,30 @@ def install_python_stack() -> int:
         [sys.executable, str(SINGLE_ENV / "patch_metadata.py")],
     )
 
-    # 13. AMD ROCm: final torch repair. Several steps above can pull in CUDA
-    #     torch from PyPI (base packages, extras, overrides, studio deps, etc.).
-    #     Running the repair last ensures ROCm torch is in place at runtime,
-    #     whichever intermediate step clobbered it.
-    if not IS_WINDOWS and not IS_MACOS and not NO_TORCH:
-        _progress(_torch_step_label("final"))
-        _ensure_cuda_torch()
-        _ensure_rocm_torch()
-        _ensure_cpu_torch()
-        _ensure_verbatim_torch_index()
-        _record_torch_index_pin_baseline()
+    # 13. Final torch repair. Several steps above can pull in CUDA torch from PyPI
+    #     (base packages, extras, overrides, studio deps, etc.), so run the repair
+    #     last, after whichever intermediate step clobbered it.
+    if not NO_TORCH:
+        if not IS_WINDOWS and not IS_MACOS:
+            # Linux: full family repair (ROCm/CUDA/CPU flavor enforcement + verbatim
+            # custom-pin repair).
+            _progress(_torch_step_label("final"))
+            _ensure_cuda_torch()
+            _ensure_rocm_torch()
+            _ensure_cpu_torch()
+            _ensure_verbatim_torch_index()
+            _record_torch_index_pin_baseline()
+        elif IS_WINDOWS or IS_MAC_ARM:
+            # Windows / macOS ARM: the cuda/rocm/cpu family repair is owned by
+            # setup.ps1 (Windows) or not applicable (macOS), but an explicit custom
+            # (unknown-family) pin still needs its final pass here. On Windows the
+            # early ensure block (step 2b) applied it and a later dependency step can
+            # clobber torch while the matching marker masks it; on macOS ARM step 2b
+            # is skipped, so this is where the pin is first applied. Run only the
+            # verbatim pin owner (marker/snapshot-driven) + baseline.
+            _progress(_torch_step_label("final"))
+            _ensure_verbatim_torch_index()
+            _record_torch_index_pin_baseline()
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
@@ -3395,17 +3425,35 @@ def install_python_stack() -> int:
     return 0
 
 
+def _torch_pin_needs_apply() -> bool:
+    """Whether `studio update`'s fast "unsloth up to date" path must still run the
+    dependency pass to (re)apply an explicit torch-index pin.
+
+    True when a pin is set AND either the recorded marker does not match it
+    (absent/different -- reuses the exact marker normalization so the shell side
+    never duplicates it), OR a KNOWN-family pin's installed torch flavor has drifted
+    from the pinned family. The marker records the last install SOURCE, not proof
+    the current torch still matches: a later pip install or failed update can replace
+    a cu128 wheel with a cpu one while the marker still matches, so the flavor check
+    forces the pass to let _ensure_{cuda,rocm,cpu}_torch repair it. An unknown-family
+    pin has no flavor tag to validate (the marker is the only signal) and a failed
+    probe cannot prove a drift, so both keep the fast path. Pure query (no writes)."""
+    pin = _explicit_torch_index_url()
+    if pin is None:
+        return False
+    if _marker_pin_mismatch(pin) is not False:
+        return True
+    flavor = _probe_torch_flavor()
+    if flavor is None:
+        return False
+    return _torch_flavor_matches_pin(_torch_index_leaf(pin), flavor) is False
+
+
 if __name__ == "__main__":
     if "--torch-pin-needs-apply" in sys.argv:
-        # Lightweight query for setup.sh's fast "unsloth up to date" path: exit 0 when
-        # an explicit torch-index pin is set AND the recorded marker does not already
-        # match it (absent or different), so the dependency pass must run to apply it;
-        # exit 1 to keep the fast path. Reuses the exact marker normalization here so
-        # the shell side does not duplicate (and drift from) it. Returns before any
-        # heavy dependency work. setup.sh treats a non-1 exit (0 or any error) as
-        # "run the pass", so a probe failure fails safe toward applying the pin.
-        _pin_query = _explicit_torch_index_url()
-        sys.exit(
-            0 if (_pin_query is not None and _marker_pin_mismatch(_pin_query) is not False) else 1
-        )
+        # Query for setup.sh / setup.ps1's fast path: exit 0 -> run the pass to apply
+        # (or repair) the pin; exit 1 -> keep the fast path. Returns before any heavy
+        # dependency work. setup.sh treats a non-1 exit (0 or any error) as "run the
+        # pass", so a probe failure fails safe toward applying the pin.
+        sys.exit(0 if _torch_pin_needs_apply() else 1)
     sys.exit(install_python_stack())

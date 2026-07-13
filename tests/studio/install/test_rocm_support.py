@@ -1556,6 +1556,127 @@ class TestEnsureRocmTorchMarker:
                         stack_mod._ensure_verbatim_torch_index()
         mock_pip.assert_not_called()
 
+    # --- _torch_flavor_matches_pin (shared by baseline + probe) ---------------
+    def test_flavor_matches_pin_tristate(self):
+        f = stack_mod._torch_flavor_matches_pin
+        # cuXXX pin: exact tag matches; different family/tag is a definite mismatch;
+        # an untagged CUDA build is ambiguous (None -- never force on that alone).
+        assert f("cu128", ("cuda", "cu128")) is True
+        assert f("cu128", ("cuda", "cu126")) is False
+        assert f("cu128", ("cpu", "")) is False
+        assert f("cu128", ("hip", "")) is False
+        assert f("cu128", ("cuda", "")) is None
+        # cpu / rocm / gfx pins.
+        assert f("cpu", ("cpu", "")) is True
+        assert f("cpu", ("cuda", "cu128")) is False
+        assert f("rocm7.2", ("hip", "")) is True
+        assert f("rocm7.2", ("cpu", "")) is False
+        assert f("gfx1151", ("hip", "")) is True
+        # Unknown family: no flavor tag to judge -> None (verbatim path owns it).
+        assert f("simple", ("cuda", "cu128")) is None
+
+    # --- _torch_pin_needs_apply (the fast-path probe decision) ----------------
+    def _needs_apply(self, url, flavor, marker = None):
+        if marker is not None:
+            self._seed(marker)
+        env = {"UNSLOTH_TORCH_INDEX_URL": url} if url else {}
+        with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
+            with patch.dict(stack_mod.os.environ, env, clear = False):
+                if not url:
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
+                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                return stack_mod._torch_pin_needs_apply()
+
+    def test_probe_no_pin_keeps_fast_path(self):
+        assert self._needs_apply("", None) is False
+
+    def test_probe_absent_marker_forces_pass(self):
+        # No marker seeded -> mismatch is None -> apply (the round-2 behavior).
+        assert self._needs_apply("https://mirror.local/cu128", ("cuda", "cu128")) is True
+
+    def test_probe_matching_marker_and_flavor_keeps_fast_path(self):
+        assert (
+            self._needs_apply(
+                "https://mirror.local/cu128", ("cuda", "cu128"), marker = "https://mirror.local/cu128"
+            )
+            is False
+        )
+
+    def test_probe_matching_marker_but_clobbered_flavor_forces_pass(self):
+        # Marker still records the cu128 source, but torch was replaced by a cpu
+        # wheel: the probe must force the repair pass the marker alone would skip.
+        assert (
+            self._needs_apply(
+                "https://mirror.local/cu128", ("cpu", ""), marker = "https://mirror.local/cu128"
+            )
+            is True
+        )
+
+    def test_probe_unknown_family_matching_marker_keeps_fast_path(self):
+        # An unknown-family pin has no flavor to validate; a matching marker is the
+        # only signal, so a healthy pinned venv is not force-reinstalled every update.
+        assert (
+            self._needs_apply(
+                "https://mirror.local/simple", ("cuda", "cu128"), marker = "https://mirror.local/simple"
+            )
+            is False
+        )
+
+    def test_probe_failed_flavor_trusts_matching_marker(self):
+        # A failed torch probe cannot prove a drift -> keep the fast path (no loop).
+        assert (
+            self._needs_apply(
+                "https://mirror.local/cu128", None, marker = "https://mirror.local/cu128"
+            )
+            is False
+        )
+
+    # --- macOS ARM honours a custom pin on update (Intel mac still skips) ------
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_verbatim_runs_on_macos_arm(self, mock_pip):
+        """macOS ARM has real CPU/MPS torch, so a studio update must apply an explicit
+        unknown-family custom pin the same way a fresh install.sh does (Intel mac is
+        NO_TORCH and still skips)."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", True):
+                with patch.object(stack_mod, "IS_MAC_INTEL", False):
+                    with patch.object(stack_mod, "IS_MAC_ARM", True):
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._ensure_verbatim_torch_index()
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/simple" in self._marker_path.read_text()
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_verbatim_skips_intel_mac(self, mock_pip):
+        """Intel mac (IS_MAC_INTEL) has no usable torch story; the verbatim path stays
+        skipped there even if NO_TORCH were somehow forced off."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", True):
+                with patch.object(stack_mod, "IS_MAC_INTEL", True):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._ensure_verbatim_torch_index()
+        mock_pip.assert_not_called()
+
+    def test_baseline_records_on_macos_arm(self):
+        """The baseline records a matching known-family pin on macOS ARM too (Intel
+        mac is guarded by IS_MAC_INTEL, not the broad IS_MACOS)."""
+        assert not self._marker_path.exists()
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cpu"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MAC_INTEL", False):
+                with patch.object(stack_mod, "IS_MAC_ARM", True):
+                    with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "")):
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._record_torch_index_pin_baseline()
+        assert "https://mirror.local/cpu" in self._marker_path.read_text()
+
 
 # TEST: install_python_stack.py -- _has_rocm_gpu KFD sysfs vendor_id guard
 

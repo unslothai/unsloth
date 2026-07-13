@@ -679,15 +679,23 @@ class TestFirstCustomPinAppliedWithoutMarker:
 
     def test_stack_py_exposes_torch_pin_needs_apply_probe(self):
         """install_python_stack.py must answer the setup.sh/setup.ps1 probe: exit 0 when a
-        pin is set and the marker does not already match it, exit 1 otherwise. Reusing the
-        Python normalization keeps the shell side from duplicating (and drifting from) it."""
+        pin is set and either the marker does not match it OR the installed torch flavor
+        drifted from the pinned family; exit 1 otherwise. Reusing the Python normalization
+        and flavor probe keeps the shell side from duplicating (and drifting from) it."""
         text = STACK_PY.read_text(encoding = "utf-8")
         assert (
             '"--torch-pin-needs-apply" in sys.argv' in text
         ), "install_python_stack.py must handle the --torch-pin-needs-apply query"
-        assert "_marker_pin_mismatch(_pin_query) is not False" in text, (
+        assert "def _torch_pin_needs_apply()" in text, (
+            "the probe decision must live in a testable _torch_pin_needs_apply() helper"
+        )
+        assert "_marker_pin_mismatch(pin) is not False" in text, (
             "the probe must report 'needs apply' when the marker differs (True) or is absent "
-            "(None), and only skip when it already matches (False)"
+            "(None), and only reach the flavor check when it already matches (False)"
+        )
+        assert "_torch_flavor_matches_pin(_torch_index_leaf(pin), flavor) is False" in text, (
+            "the probe must also force the pass when a known-family pin's installed flavor "
+            "drifted (clobbered), which the marker (last install source) cannot detect"
         )
 
     def test_setup_ps1_probes_pin_needs_apply_in_fast_path(self):
@@ -709,13 +717,32 @@ class TestFirstCustomPinAppliedWithoutMarker:
         assert (
             "def _record_torch_index_pin_baseline" in text
         ), "install_python_stack.py must define _record_torch_index_pin_baseline"
-        # It must run after _ensure_verbatim_torch_index in the ensure sequence(s).
+        # It must run right after _ensure_verbatim_torch_index in every ensure block
+        # (step 2b + the step-13 final blocks), whatever the indent level.
         assert (
-            text.count("_ensure_verbatim_torch_index()\n        _record_torch_index_pin_baseline()")
+            len(
+                re.findall(
+                    r"_ensure_verbatim_torch_index\(\)\n\s+_record_torch_index_pin_baseline\(\)",
+                    text,
+                )
+            )
             >= 2
         ), (
-            "_record_torch_index_pin_baseline must be called after the _ensure_* helpers in "
-            "both update torch-ensure sequences"
+            "_record_torch_index_pin_baseline must be called after the verbatim helper in "
+            "every update torch-ensure block"
+        )
+
+    def test_stack_py_final_repair_covers_windows_and_macos_arm(self):
+        """The step-13 final torch repair runs the full cuda/rocm/cpu family sequence on
+        Linux only, but a custom (unknown-family) pin also needs its verbatim drift
+        repair on Windows (a dependency step can clobber the pin step 2b applied) and
+        macOS ARM (step 2b is skipped there, so this is where the pin is first applied).
+        The Windows/macOS-ARM branch must run the verbatim helper without the Linux-only
+        family repair."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "elif IS_WINDOWS or IS_MAC_ARM:" in text, (
+            "the step-13 final repair must have a Windows/macOS-ARM branch so a custom "
+            "pin is repaired/applied there, not only on Linux"
         )
 
     def test_setup_ps1_forces_reinstall_when_marker_absent(self):
