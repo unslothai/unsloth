@@ -94,5 +94,23 @@ def release(owner: str) -> None:
             _owner = None
 
 
+def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
+    """Drop ``owner``'s claim only if it still holds it AND ``predicate()`` is true, atomically.
+
+    A slow unload's "nothing resident / no load in flight" check and the ``release`` must not
+    straddle a concurrent same-owner load: that load's ``acquire_for(register=...)`` re-registers
+    ownership UNDER this lock, so a plain check-then-``release`` could pass the stale check and then
+    clear the newer claim (``release`` is owner-guarded but identity-less). Evaluating the predicate
+    under the lock closes that window -- the load's register runs either fully before or fully after.
+    ``predicate`` must be quick (it holds the lock) and must not re-enter the arbiter. Returns True
+    iff ownership was dropped."""
+    global _owner
+    with _lock:
+        if _owner != owner or not predicate():
+            return False
+        _owner = None
+        return True
+
+
 def current_owner() -> Optional[str]:
     return _owner

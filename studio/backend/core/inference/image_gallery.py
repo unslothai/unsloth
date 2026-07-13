@@ -188,6 +188,11 @@ def delete(image_id: str) -> bool:
     path = image_path(image_id)
     if path is None:
         return False
+    # Only delete files we actually own (a readable recipe chunk). A foreign PNG that a caller
+    # dropped in by hand is invisible to list_images, so deleting it here on a guessed id would
+    # silently destroy a file the gallery never claimed.
+    if _read_meta(path) is None:
+        return False
     try:
         path.unlink()
         return True
@@ -197,13 +202,18 @@ def delete(image_id: str) -> bool:
 
 
 def clear() -> int:
-    """Delete every gallery PNG; return how many were removed."""
+    """Delete every Studio-owned gallery PNG; return how many were removed.
+
+    Preserves foreign PNGs (no readable recipe chunk): list_images already hides them, so clear
+    must not silently destroy files the gallery never surfaced."""
     removed = 0
     try:
         paths = list(gallery_dir().glob("*.png"))
     except OSError:
         return 0
     for path in paths:
+        if _read_meta(path) is None:  # foreign / not ours
+            continue
         try:
             path.unlink()
             removed += 1

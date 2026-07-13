@@ -174,6 +174,24 @@ def test_resolve_one_local_and_unknown(tmp_path, monkeypatch):
         dl.resolve_one("does-not-exist", 1.0)
 
 
+def test_resolve_one_rejects_cross_family_catalog_entry(tmp_path, monkeypatch):
+    # A family-tagged adapter must be rejected in the resolver (not just the UI picker) when the
+    # loaded model is a different family, so a direct API client cannot apply a mismatched LoRA.
+    d = tmp_path / "loras"
+    d.mkdir()
+    (d / "krea-style.safetensors").write_bytes(b"x")
+    (d / "krea-style.json").write_text('{"families": ["krea-2"]}', encoding = "utf-8")
+    monkeypatch.setattr(dl, "loras_dir", lambda: d)
+    # Same family: resolves.
+    r = dl.resolve_one("krea-style", 0.7, family = "krea-2")
+    assert r.path.endswith("krea-style.safetensors")
+    # Wrong family: rejected before any download / apply.
+    with pytest.raises(ValueError):
+        dl.resolve_one("krea-style", 0.7, family = "flux.1")
+    # No family context (e.g. legacy caller): unrestricted.
+    assert dl.resolve_one("krea-style", 0.7).path.endswith("krea-style.safetensors")
+
+
 def test_resolve_specs_drops_zero_weight(tmp_path, monkeypatch):
     d = tmp_path / "loras"
     d.mkdir()

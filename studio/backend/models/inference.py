@@ -2094,7 +2094,15 @@ class GalleryImage(BaseModel):
     height: int = Field(..., description = "Image height")
     steps: int = Field(..., description = "Denoising steps")
     guidance: float = Field(..., description = "Guidance scale")
-    seed: int = Field(..., description = "Seed used")
+    seed: int = Field(..., description = "Seed used for THIS image")
+    batch_seed: Optional[int] = Field(
+        None,
+        description = (
+            "Base seed the batch was launched with. The native engine derives per-image seeds as "
+            "base + index, so restore must replay from this base, not from the derived per-image "
+            "seed; older records without it fall back to seed."
+        ),
+    )
     batch_index: int = Field(0, description = "Position within its batch (0-based)")
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"

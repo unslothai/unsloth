@@ -229,9 +229,14 @@ def list_videos(
 
 
 def delete(video_id: str) -> bool:
-    """Remove both files of a pair; True if the MP4 existed."""
+    """Remove both files of an owned pair; True if the MP4 existed and was ours."""
     path = video_path(video_id)
     if path is None:
+        return False
+    # Only delete a pair we actually own (a readable sidecar). A foreign / orphan MP4 is invisible
+    # to list_videos, so deleting it here on a guessed id would silently destroy a file the gallery
+    # never claimed.
+    if _read_meta(_sidecar_path(video_id)) is None:
         return False
     # Delete the MP4 FIRST: if the sidecar were dropped first and the mp4 unlink then failed (lock /
     # permission), the still-present mp4 would vanish from the gallery with no retry. mp4-first means
@@ -250,13 +255,18 @@ def delete(video_id: str) -> bool:
 
 
 def clear() -> int:
-    """Delete every gallery pair; return how many videos were removed."""
+    """Delete every Studio-owned gallery pair; return how many videos were removed.
+
+    Preserves foreign / orphan MP4s (no readable sidecar): list_videos already hides them, so clear
+    must not silently destroy files the gallery never surfaced."""
     removed = 0
     try:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return 0
     for path in paths:
+        if _read_meta(_sidecar_path(path.stem)) is None:  # orphan / not ours
+            continue
         # mp4 first; if it can't be unlinked, leave the sidecar so the video stays listable.
         try:
             path.unlink()

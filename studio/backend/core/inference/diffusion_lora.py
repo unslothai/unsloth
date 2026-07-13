@@ -203,6 +203,7 @@ def resolve_one(
     spec_id: str,
     weight: float,
     *,
+    family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> ResolvedLora:
@@ -211,11 +212,22 @@ def resolve_one(
     Accepts a catalog/local id or a bare HF repo id (``owner/name[:weight_file.safetensors]``).
     Downloads hub weights via the xet-fallback helper. Raises FileNotFoundError/ValueError on an
     unresolvable/unsupported id, which the caller maps to a 400.
+
+    ``family`` (the loaded model family) enforces catalog family tags HERE, not only in the picker
+    (``list_loras``): a LoRA is architecture-specific, so a direct API client sending an id tagged
+    for another family would otherwise load it through the wrong pipeline. Mirrors the ControlNet
+    resolver's family gate. An untagged catalog entry (empty ``families``) stays unrestricted.
     """
     # An empty/whitespace token triggers an auth error instead of anonymous access; normalise to None.
     hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
     entry = _catalog_by_id().get(spec_id)
     if entry is not None:
+        req_fam = (family or "").strip().lower()
+        if entry.families and req_fam and req_fam not in {f.lower() for f in entry.families}:
+            raise ValueError(
+                f"LoRA '{spec_id}' is for {', '.join(entry.families)}, not the loaded "
+                f"'{family}' model family; pick a LoRA built for this family."
+            )
         if entry.source == "local":
             path = entry.local_path or ""
             if not path or not os.path.exists(path):
@@ -289,13 +301,16 @@ def _scrub_hub_url(msg: str) -> str:
 def resolve_specs(
     specs: list[tuple[str, float]],
     *,
+    family: Optional[str] = None,
     hf_token: Optional[str] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> list[ResolvedLora]:
     """Resolve request (id, weight) pairs, dropping zero-weight entries.
 
-    Maps the named not-found/gated Hub errors to a 400 (URL scrubbed); does NOT catch the base
-    HfHubHTTPError, so a Hub 5xx stays a 500. A mid-download cancel maps to a 409."""
+    ``family`` is the loaded model family; it enforces catalog family tags in :func:`resolve_one`
+    for direct API callers, not only the UI picker. Maps the named not-found/gated Hub errors to a
+    400 (URL scrubbed); does NOT catch the base HfHubHTTPError, so a Hub 5xx stays a 500. A
+    mid-download cancel maps to a 409."""
     from huggingface_hub.errors import (
         EntryNotFoundError,
         GatedRepoError,
@@ -308,7 +323,11 @@ def resolve_specs(
         for spec_id, weight in specs:
             if weight == 0:
                 continue
-            out.append(resolve_one(spec_id, weight, hf_token = hf_token, cancel_event = cancel_event))
+            out.append(
+                resolve_one(
+                    spec_id, weight, family = family, hf_token = hf_token, cancel_event = cancel_event
+                )
+            )
     except (
         FileNotFoundError,
         RepositoryNotFoundError,

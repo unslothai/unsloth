@@ -1137,6 +1137,23 @@ def _diffusion_training_active() -> bool:
         return False
 
 
+def _require_diffusion_dataset_mutable() -> None:
+    """Reject a dataset mutation while a diffusion run is active.
+
+    The trainer enumerates and (when the latent cache is off / over budget) re-opens dataset images
+    during the loop, so uploading, importing, captioning, or deleting underneath it makes the run
+    nondeterministic or raises a FileNotFoundError mid-step. Best-effort: a service-import failure
+    fails open (never blocks a mutation on an unknowable state), matching the start interlock."""
+    if _diffusion_training_active():
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "Training images cannot be changed while diffusion training is active. "
+                "Stop the run before uploading, importing, editing captions, or deleting images."
+            ),
+        )
+
+
 def _free_gpu_for_diffusion_training() -> None:
     """Free GPU residents before the diffusion trainer spawns its own SDXL pipeline.
 
@@ -1254,8 +1271,13 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
         # Single component and not ".." -> joining under datasets_root() cannot escape it.
         if not p.is_absolute() and len(p.parts) == 1 and p.parts[0] != "..":
             direct = datasets_root() / value
-            if direct.is_dir():
-                return direct
+            # Route a bare image-dataset name through the SAME protected resolver the
+            # caption/delete/labeling CRUD routes use, so a name -> external-directory symlink is
+            # rejected here too (is_dir() follows the link, so a plain is_dir() check would train on
+            # files outside the datasets root). Include a broken symlink so it is rejected, not
+            # silently passed through to resolve_dataset_path.
+            if direct.is_dir() or direct.is_symlink():
+                return _resolve_dataset_folder(value)
     return resolve_dataset_path(raw)
 
 
@@ -1554,7 +1576,12 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
             # Skip hidden dirs: never user datasets, and an in-progress example import stages
             # into a dot-prefixed sibling that must not surface as a dataset.
             children = sorted(
-                p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
+                p
+                for p in root.iterdir()
+                # Skip symlinked dirs: the CRUD resolver (_resolve_dataset_folder) rejects a
+                # symlinked dataset, so discovery must not advertise one as selectable (an external
+                # directory the read/caption/delete routes would then refuse).
+                if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
             )
         except OSError:
             children = []
@@ -1615,6 +1642,7 @@ async def upload_diffusion_dataset(
 
     from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 
+    _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
     # Run the same symlink + root-containment check as the read/caption/delete endpoints before any
     # write, so a name -> external-directory symlink can't make the staged upload write outside root.
@@ -1732,6 +1760,13 @@ async def upload_diffusion_dataset(
                             ),
                         )
                     out.write(chunk)
+            # Reject a decompression bomb before commit: the byte-limit above passes a small, highly
+            # compressible PNG whose decoded pixels are huge, and the trainer later decodes every
+            # image in full when building its latent cache. Mirror the inference decode guard
+            # (diffusion._decode_b64_image) and bound each image's dimensions from the header, BEFORE
+            # any pixel decompression, so an oversized upload 400s here rather than OOMing the run.
+            if Path(filename).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
+                _validate_uploaded_training_image(tmp, filename)
             uploaded += 1
         # Commit every staged file as one transaction. A plain replace loop is not atomic across
         # files: a mid-loop tmp.replace(dest) failure leaves earlier destinations already overwritten
@@ -1823,6 +1858,37 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     return folder
 
 
+# Bound each uploaded training image's dimensions (matches the inference decode guard's 4096px
+# per-side limit in diffusion._decode_b64_image). A small, highly compressible PNG can smuggle huge
+# pixel dimensions past the byte limit and OOM the trainer when it decodes the image for its latent
+# cache, so reject an over-limit image from the header before any pixel decompression.
+_MAX_TRAINING_IMAGE_SIDE = 4096
+
+
+def _validate_uploaded_training_image(path: Path, original_name: str) -> None:
+    """Reject an uploaded training image whose decoded dimensions exceed the per-side limit.
+
+    Reads only the image header (never img.load()), so a crafted small-payload / huge-dimension file
+    is caught before it can spike memory. Scoped to the decompression-bomb vector only: bytes PIL
+    cannot identify are left as-is (the upload contract accepts arbitrary bytes under an image
+    extension), so this changes behaviour solely for oversized real images."""
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except (OSError, UnidentifiedImageError, ValueError):
+        return  # not a decodable image -> not a decompression bomb; leave the existing contract
+    if width > _MAX_TRAINING_IMAGE_SIDE or height > _MAX_TRAINING_IMAGE_SIDE:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Image '{original_name}' is too large ({width}x{height}); maximum is "
+                f"{_MAX_TRAINING_IMAGE_SIDE}px per side."
+            ),
+        )
+
+
 def _safe_dataset_image_path(folder: Path, filename: str) -> Path:
     """Resolve ``filename`` to an image path strictly inside ``folder``. Rejects any path
     separators / traversal / null bytes and non-image extensions."""
@@ -1851,9 +1917,12 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
         meta_path = folder / meta_name
         if not meta_path.is_file():
             continue
+        # Tolerate a bad upload: invalid UTF-8 (UnicodeError, not an OSError), or a line that is
+        # valid JSON but not an object (``[]`` / ``null`` / a string / a number). Neither should
+        # 500 the info / labeling / caption / summary endpoints; the record is simply skipped.
         try:
             lines = meta_path.read_text(encoding = "utf-8").splitlines()
-        except OSError:
+        except (OSError, UnicodeError):
             continue
         for line in lines:
             line = line.strip()
@@ -1861,7 +1930,9 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
                 continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(row, dict):
                 continue
             key = row.get("file_name") or row.get("image") or row.get("file")
             if key and "text" in row:
@@ -1997,6 +2068,7 @@ async def set_diffusion_dataset_caption(
 ):
     """Write (or, when blank, clear) an image's ``.txt`` caption sidecar. Returns the
     updated image record."""
+    _require_diffusion_dataset_mutable()
     folder = _resolve_dataset_folder(name)
     image_path = _safe_dataset_image_path(folder, filename)
     if not image_path.is_file():
@@ -2040,6 +2112,7 @@ async def delete_diffusion_dataset_image(
     current_subject: str = Depends(get_current_subject),
 ):
     """Remove an image, its caption sidecars, and any cached thumbnails."""
+    _require_diffusion_dataset_mutable()
     folder = _resolve_dataset_folder(name)
     image_path = _safe_dataset_image_path(folder, filename)
     if not image_path.is_file():
@@ -2304,6 +2377,7 @@ async def import_diffusion_dataset_example(
     """Materialize a curated example dataset into a Studio dataset folder (images + .txt
     captions), ready to train. Idempotent: a folder that already holds images is returned
     as-is rather than re-downloaded."""
+    _require_diffusion_dataset_mutable()
     entry = _example_by_id(body.id)
     folder = _resolve_dataset_folder(body.name or entry["id"], must_exist = False)
 

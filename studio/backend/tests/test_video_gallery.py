@@ -158,6 +158,25 @@ def test_clear_returns_count():
     assert list(gallery.gallery_dir().glob("*.json")) == []
 
 
+def test_clear_preserves_orphan_mp4():
+    # An orphan / foreign MP4 (no readable sidecar) is invisible to list_videos; clear must not
+    # destroy it while removing the owned pair.
+    foreign = gallery.gallery_dir() / "recording.mp4"
+    foreign.write_bytes(_mp4())
+    gallery.save(_mp4(), _meta(prompt = "ours"))
+    assert gallery.clear() == 1
+    assert foreign.exists()
+    assert gallery.list_videos() == []
+
+
+def test_delete_ignores_orphan_mp4():
+    # A per-id delete must refuse an MP4 we do not own (no readable sidecar).
+    foreign = gallery.gallery_dir() / "recording.mp4"
+    foreign.write_bytes(_mp4())
+    assert gallery.delete("recording") is False
+    assert foreign.exists()
+
+
 def test_list_skips_orphan_mp4_without_sidecar():
     # An MP4 with no readable json sidecar (a hand-dropped file) is not a record.
     orphan = gallery.gallery_dir() / "orphan.mp4"

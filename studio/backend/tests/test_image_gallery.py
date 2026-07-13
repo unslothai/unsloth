@@ -103,6 +103,24 @@ def test_delete_and_clear():
     assert gallery.list_images() == []
 
 
+def test_clear_preserves_foreign_png():
+    # A hand-dropped PNG with no recipe chunk is invisible to list_images; clear must not destroy it.
+    foreign = gallery.gallery_dir() / "family-photo.png"
+    _img().save(foreign, format = "PNG")
+    gallery.save(_img(), _meta(prompt = "ours"))
+    assert gallery.clear() == 1
+    assert foreign.exists()
+    assert gallery.list_images() == []
+
+
+def test_delete_ignores_foreign_png():
+    # A per-id delete must refuse a file we do not own (no readable recipe chunk).
+    foreign = gallery.gallery_dir() / "family-photo.png"
+    _img().save(foreign, format = "PNG")
+    assert gallery.delete("family-photo") is False
+    assert foreign.exists()
+
+
 def test_image_path_rejects_unsafe_ids():
     # Traversal / bad chars never resolve to a path.
     assert gallery.image_path("../../etc/passwd") is None

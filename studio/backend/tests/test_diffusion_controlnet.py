@@ -235,9 +235,11 @@ class _FakeCNModel:
         path,
         torch_dtype = None,
         token = None,
+        use_safetensors = None,
     ):
         m = cls()
         m.path = path
+        m.use_safetensors = use_safetensors
         return m
 
     def to(self, device):
@@ -303,6 +305,9 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     p1 = b._controlnet_pipe(st, resolved, threading.Event())
     assert isinstance(p1, _FakeCNPipe) and isinstance(p1.controlnet, _FakeCNModel)
     assert p1.controlnet.path == "repo/id" and p1.controlnet.device == "cpu"
+    # A remote (non-local) ControlNet must force safetensors so a pickle can't deserialize even if
+    # the Hub scan failed open.
+    assert p1.controlnet.use_safetensors is True
     # cached: same id -> same model + same pipe, no reload.
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1
@@ -327,9 +332,12 @@ def test_controlnet_pipe_blocks_flagged_remote_repo(monkeypatch):
             path,
             torch_dtype = None,
             token = None,
+            use_safetensors = None,
         ):
             loaded["called"] = True
-            return super().from_pretrained(path, torch_dtype = torch_dtype, token = token)
+            return super().from_pretrained(
+                path, torch_dtype = torch_dtype, token = token, use_safetensors = use_safetensors
+            )
 
     mod = _fake_diffusers()
     mod.FluxControlNetModel = _TrapModel
@@ -370,6 +378,8 @@ def test_controlnet_pipe_skips_scan_for_local_dir(monkeypatch, tmp_path):
     resolved = dc.ResolvedControlNet("my-cn", str(tmp_path), is_local = True)
     p = b._controlnet_pipe(st, resolved, threading.Event())
     assert isinstance(p, _FakeCNPipe)
+    # A local dir the user chose is exempt from the forced-safetensors gate (may be .bin).
+    assert p.controlnet.use_safetensors is None
 
 
 def test_controlnet_pipe_rejects_family_without_classes():

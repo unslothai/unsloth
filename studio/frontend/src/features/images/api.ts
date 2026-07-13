@@ -164,6 +164,7 @@ export interface GalleryImage {
   steps: number;
   guidance: number;
   seed: number;
+  batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
   model: string | null;

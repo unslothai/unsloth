@@ -1000,6 +1000,116 @@ def test_diffusion_info_empty_sidecar_shadows_metadata_caption(client, dataset_r
     assert summary["caption_count"] == 2
 
 
+def _png_bytes(width: int, height: int) -> bytes:
+    import io
+
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (1, 2, 3)).save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+def test_diffusion_dataset_upload_rejects_oversized_image(client, dataset_roots):
+    # A decompression bomb: a small compressible PNG with huge dimensions passes the byte limit but
+    # would OOM the trainer on decode. It must 400 at upload (dimension check reads only the header).
+    pytest.importorskip("PIL")
+    big = _png_bytes(5000, 64)  # > 4096 per side
+    r = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "bomb"},
+        files = [("files", ("huge.png", big, "image/png"))],
+    )
+    assert r.status_code == 400, r.text
+    assert "too large" in r.json()["detail"]
+    # An in-bounds real image still uploads fine.
+    ok = _png_bytes(64, 64)
+    r2 = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "bomb"},
+        files = [("files", ("ok.png", ok, "image/png"))],
+    )
+    assert r2.status_code == 200, r2.text
+
+
+def test_diffusion_info_tolerates_non_object_jsonl(client, dataset_roots):
+    # A metadata.jsonl line that is valid JSON but not an object ([]/null/string/number) or malformed
+    # must be skipped per-line, not 500 the info endpoint; a valid row in the same file still counts.
+    ds_root, _ = dataset_roots
+    folder = ds_root / "weird-meta"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "metadata.jsonl").write_bytes(
+        b"[]\n"
+        b"null\n"
+        b'"just a string"\n'
+        b"123\n"
+        b"{not json\n"
+        + json.dumps({"file_name": "a.png", "text": "cap a"}).encode("utf-8")
+        + b"\n"
+    )
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "weird-meta")
+    assert summary["caption_count"] == 1
+
+
+def test_diffusion_info_tolerates_invalid_utf8_jsonl(client, dataset_roots):
+    # Invalid UTF-8 in a metadata file must not 500 the info endpoint; the file is skipped, not decoded.
+    ds_root, _ = dataset_roots
+    folder = ds_root / "bad-utf8-meta"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "metadata.jsonl").write_bytes(b"\xff\xfe not valid utf-8\n")
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    summary = next(d for d in r.json()["datasets"] if d["name"] == "bad-utf8-meta")
+    assert summary["caption_count"] == 0
+
+
+def test_diffusion_dataset_mutations_blocked_while_training_active(client, dataset_roots):
+    ds_root, _ = dataset_roots
+    folder = ds_root / "locked"
+    folder.mkdir()
+    folder.joinpath("a.png").write_bytes(b"x")
+    # Flip the fake diffusion service to active.
+    client._fake._running = True
+    # Upload, caption, delete, and example-import must all 409 while a run is active.
+    up = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "locked"},
+        files = [("files", ("b.png", b"x", "image/png"))],
+    )
+    assert up.status_code == 409, up.text
+    cap = client.put(
+        "/api/train/diffusion/dataset/locked/caption/a.png", json = {"caption": "hi"}
+    )
+    assert cap.status_code == 409, cap.text
+    dele = client.delete("/api/train/diffusion/dataset/locked/image/a.png")
+    assert dele.status_code == 409, dele.text
+    imp = client.post("/api/train/diffusion/dataset/import-example", json = {"id": "anything"})
+    assert imp.status_code == 409, imp.text
+
+
+def test_diffusion_info_skips_symlinked_dataset_dir(client, dataset_roots):
+    # A directory symlink under the datasets root must not be advertised as a dataset (the CRUD
+    # resolver rejects symlinked datasets, so discovery must agree).
+    import os
+
+    ds_root, _ = dataset_roots
+    outside = ds_root.parent / "outside-images"
+    outside.mkdir()
+    (outside / "a.png").write_bytes(b"x")
+    try:
+        os.symlink(outside, ds_root / "linked")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    assert "linked" not in [d["name"] for d in r.json()["datasets"]]
+
+
 def test_diffusion_dataset_upload_rejects_traversal_names(client, dataset_roots):
     for bad in ("../evil", "a/b", ".hidden", " "):
         r = client.post(

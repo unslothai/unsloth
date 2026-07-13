@@ -688,13 +688,22 @@ def discover_image_caption_pairs(
         meta_path = root / meta_name
         if not meta_path.is_file():
             continue
-        for line in meta_path.read_text(encoding = "utf-8").splitlines():
+        # Tolerate a bad upload: invalid UTF-8 in the file, or a line that is valid JSON but not an
+        # object (``[]`` / ``null`` / a string / a number). Neither should crash the trainer -- the
+        # record is simply skipped so the instance_prompt fallback still applies.
+        try:
+            meta_lines = meta_path.read_text(encoding = "utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in meta_lines:
             line = line.strip()
             if not line:
                 continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(row, dict):
                 continue
             key = row.get("file_name") or row.get("image") or row.get("file")
             if key and caption_column in row:

@@ -183,6 +183,26 @@ def test_asset_specs_cover_required_files(fam_name, expect_kinds):
     assert tr[0] == "unsloth/x-GGUF" and tr[1] == "x-Q4_K_M.gguf"
 
 
+def test_asset_specs_flux2_klein_selects_encoder_by_variant():
+    # FLUX.2-klein 4B pairs with Qwen3-4B, 9B with Qwen3-8B; the encoder must be chosen from the
+    # load identity, not the family's single default (a mismatched encoder fails deep in sd-cli).
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    fam = detect_family("flux.2-klein")
+
+    specs_4b = b._asset_specs("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2-klein-4B-Q4_K_M.gguf", fam)
+    te_4b = [(r, f) for r, f, k in specs_4b if k == "llm"]
+    assert te_4b == [("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors")]
+
+    specs_9b = b._asset_specs("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2-klein-9B-Q4_K_M.gguf", fam)
+    te_9b = [(r, f) for r, f, k in specs_9b if k == "llm"]
+    assert te_9b == [
+        (
+            "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+            "split_files/text_encoders/qwen_3_8b.safetensors",
+        )
+    ]
+
+
 # ── guidance mapping ──────────────────────────────────────────────────────────
 
 
@@ -295,6 +315,7 @@ def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
     def _resolve(
         active,
         *,
+        family = None,
         hf_token = None,
         cancel_event = None,
     ):

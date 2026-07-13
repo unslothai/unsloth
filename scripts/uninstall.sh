@@ -35,6 +35,37 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
+# Owned sd.cpp roots (default + custom siblings), each gated on the install-time
+# owner marker. Native diffusion builds beside a custom/env root at
+# <parent>/stable-diffusion.cpp (find_sd_cpp_binary resolves from
+# UNSLOTH_STUDIO_HOME.parent) and at $HOME/.unsloth/stable-diffusion.cpp by default.
+# The marker is mandatory so we never stop a user-managed sd-server from an
+# unrelated checkout that happens to sit at one of these paths.
+_owned_sd_cpp_roots() {
+    _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
+    [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
+    _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
+        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+    done
+}
+
+# pkill resident sd-server / sd-cli whose executable lives under an owned sd.cpp
+# root, BEFORE that tree is removed below: a live native server keeps running
+# after its binary is unlinked. Anchored on the owned root so an unrelated
+# checkout's sd-server is never matched.
+_stop_owned_sd_cpp_processes() {
+    _signal="$1"
+    command -v pkill >/dev/null 2>&1 || return 0
+    _owned_sd_cpp_roots | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        [ -d "$_root" ] || continue
+        _re=$(_pkill_escape "$_root")
+        pkill "-$_signal" -f "^${_re}/([^ ]*/)?sd-(server|cli)( |\$)" 2>/dev/null || true
+    done
+}
+
 _pkill_studio() {
     # Prefer PID files written by _spawn_terminal so we only touch our own installs.
     for _data_dir in "$HOME/.local/share/unsloth" $(_custom_studio_data_dirs); do
@@ -80,6 +111,12 @@ $_roots_from_conf"
             pkill -KILL -f "$_pat" 2>/dev/null || true
         done
     done
+
+    # Native diffusion servers (sd-server / sd-cli) survive unlinking their binary,
+    # so stop the ones under an owned sd.cpp root before those trees are removed.
+    _stop_owned_sd_cpp_processes TERM
+    sleep 0.5
+    _stop_owned_sd_cpp_processes KILL
 }
 
 _remove_path() {

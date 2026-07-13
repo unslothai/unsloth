@@ -219,16 +219,22 @@ async def video_status(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/video/unload", response_model = VideoStatusResponse)
 async def unload_video_model(current_subject: str = Depends(get_current_subject)):
-    from core.inference.gpu_arbiter import VIDEO, release
+    from core.inference.gpu_arbiter import VIDEO, release_if
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
     status_dict = await asyncio.to_thread(backend.unload)
     # Drop VIDEO ownership only if nothing is resident AND no new load is in flight: a concurrent
-    # /video/load that re-acquired VIDEO must keep ownership (release() is owner-guarded but
-    # identity-less, so an unconditional release would clear the newer claim). Mirrors the images route.
-    if not backend.loading_repo_ids() and not backend.status()["loaded"]:
-        release(VIDEO)
+    # /video/load that re-acquired VIDEO must keep ownership (release is owner-guarded but
+    # identity-less, so an unconditional release would clear the newer claim). The idle check and
+    # the release must be ATOMIC (release_if): the load's acquire_for register runs under the same
+    # arbiter lock, so a plain check-then-release could pass the stale check and then clear the
+    # newer claim. Mirrors the images route.
+    await asyncio.to_thread(
+        release_if,
+        VIDEO,
+        lambda: not backend.loading_repo_ids() and not backend.status()["loaded"],
+    )
     return VideoStatusResponse(**status_dict)
 
 

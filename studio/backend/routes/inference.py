@@ -14474,6 +14474,12 @@ async def generate_diffusion_image(
                         "steps": request.steps,
                         "guidance": request.guidance,
                         "seed": seed,
+                        # The base seed the batch launched with. The native engine derives per-image
+                        # seeds as base + index, so ``seed`` above is already advanced for index>0;
+                        # restore must replay from this base (with batch_size) or it would advance a
+                        # second time and reproduce a different image. Diffusers shares one seed, so
+                        # base == seed there.
+                        "batch_seed": result["seed"],
                         # Position within the batch (shared timestamp), so the export filename
                         # stays unique.
                         "batch_index": index,
@@ -14578,18 +14584,23 @@ async def clear_gallery_images(current_subject: str = Depends(get_current_subjec
 @studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
 async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
     from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
-    from core.inference.gpu_arbiter import release, DIFFUSION
+    from core.inference.gpu_arbiter import release_if, DIFFUSION
 
     status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
     # Drop DIFFUSION ownership only if nothing is resident AND no new load is in flight: a
     # concurrent /images/load that re-acquired DIFFUSION while this (slow) unload ran must keep
     # ownership, or a later chat load would see no owner, skip eviction, and OOM the newly
     # resident pipeline. An in-flight load has is_loaded False for its whole download/finalize
-    # window, so gate on loading_repo_ids() too, not just committed state. release() is
-    # owner-guarded and identity-less, so an unconditional release would clear the newer claim.
+    # window, so gate on loading_repo_ids() too, not just committed state. The idle check and the
+    # release must be ATOMIC (release_if): the load's acquire_for register runs under the same
+    # arbiter lock, so a plain check-then-release could pass the stale check and then clear the
+    # newer claim.
     engine = get_active_diffusion_engine()
-    if not engine.loading_repo_ids() and not engine.is_loaded:
-        release(DIFFUSION)
+    await asyncio.to_thread(
+        release_if,
+        DIFFUSION,
+        lambda: not engine.loading_repo_ids() and not engine.is_loaded,
+    )
     return DiffusionStatusResponse(**annotate_status(status_dict))
 
 
@@ -14775,7 +14786,12 @@ async def openai_image_generations(
                 if per_image_seeds and index < len(per_image_seeds)
                 else result["seed"]
             )
-            record = image_gallery.save(image, {**recipe, "batch_index": index, "seed": seed})
+            # batch_seed is the base the native engine derives per-image seeds from (base + index),
+            # so restore replays from it rather than double-advancing the derived seed above.
+            record = image_gallery.save(
+                image,
+                {**recipe, "batch_index": index, "seed": seed, "batch_seed": result["seed"]},
+            )
             if want_b64:
                 encoded = image_gallery.image_b64(record["id"])
                 if encoded is None:  # vanished between write and read — fail the call

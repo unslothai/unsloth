@@ -106,6 +106,35 @@ def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
     assert unloaded == [True]  # still-loading chat backend was unloaded, not skipped
 
 
+def test_release_if_drops_only_when_predicate_true(calls):
+    arb.acquire_for(arb.DIFFUSION)
+    # Predicate false -> ownership kept.
+    assert arb.release_if(arb.DIFFUSION, lambda: False) is False
+    assert arb.current_owner() == arb.DIFFUSION
+    # Predicate true -> ownership dropped.
+    assert arb.release_if(arb.DIFFUSION, lambda: True) is True
+    assert arb.current_owner() is None
+
+
+def test_release_if_by_non_owner_is_noop(calls):
+    arb.acquire_for(arb.CHAT)
+    # Predicate is never even consulted for a non-owner; ownership is untouched.
+    consulted: list[bool] = []
+    assert arb.release_if(arb.DIFFUSION, lambda: consulted.append(True) or True) is False
+    assert consulted == []
+    assert arb.current_owner() == arb.CHAT
+
+
+def test_release_if_predicate_sees_a_reregistered_same_owner_load(calls):
+    # The race release_if closes: a slow unload's predicate must observe a concurrent same-owner
+    # load that re-registered ownership, and NOT drop the newer claim. Simulate the re-register by
+    # having the predicate report a load now in flight; ownership must stay with DIFFUSION.
+    arb.acquire_for(arb.DIFFUSION)
+    loading = {"in_flight": True}
+    assert arb.release_if(arb.DIFFUSION, lambda: not loading["in_flight"]) is False
+    assert arb.current_owner() == arb.DIFFUSION
+
+
 def test_register_runs_under_ownership_and_returns_result(calls):
     # A register callback runs after ownership transfers (owner already set) and its
     # return value is forwarded -- the route uses this to register the in-flight load.

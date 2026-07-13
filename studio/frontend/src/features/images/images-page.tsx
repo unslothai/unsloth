@@ -1287,10 +1287,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setNegativePrompt(image.guidance > 0 ? (image.negative_prompt ?? "") : "");
     setSteps(image.steps);
     setGuidance(image.guidance);
-    setSeed(String(image.seed));
+    // Restore from the BASE batch seed, not this image's own seed. The native engine derives
+    // per-image seeds as base + index, so replaying with the derived seed AND the original
+    // batch_size would advance a second time and reproduce a different image. Diffusers shares one
+    // seed, so batch_seed == seed there; older records without batch_seed fall back to seed.
+    setSeed(String(image.batch_seed ?? image.seed));
     setWidth(image.width);
     setHeight(image.height);
-    // The batch shared one seed, so image batch_index>0 only reproduces by replaying the
+    // The batch shared one base seed, so image batch_index>0 only reproduces by replaying the
     // whole batch: restore the batch size too (older recipes without it default to 1).
     setBatchSize(image.batch_size ?? 1);
     // Restore the LoRA selection. The recipe stores each adapter as an "id:weight" string;

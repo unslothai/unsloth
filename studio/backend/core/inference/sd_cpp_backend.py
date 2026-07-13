@@ -42,6 +42,7 @@ from core.inference.diffusion_families import (
     family_sd_cpp_supported,
     resolve_base_repo,
     resolve_local_gguf_child,
+    sd_cpp_text_encoders_for,
     supported_family_names,
 )
 from core.inference.diffusion_memory import (
@@ -599,7 +600,9 @@ class SdCppDiffusionBackend:
         specs: list[tuple[str, str, str]] = [(repo_id, gguf_filename, "diffusion_model")]
         if fam.sd_cpp_vae:
             specs.append((fam.sd_cpp_vae[0], fam.sd_cpp_vae[1], "vae"))
-        for terepo, tefile, kind in fam.sd_cpp_text_encoders:
+        # Select the text encoder per variant (FLUX.2-klein 4B->Qwen3-4B, 9B->Qwen3-8B) from the
+        # load identity, not the family's single default, so a 9B GGUF fetches the right encoder.
+        for terepo, tefile, kind in sd_cpp_text_encoders_for(fam, repo_id, gguf_filename):
             specs.append((terepo, tefile, kind))
         return specs
 
@@ -694,7 +697,12 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
-            repos.extend(terepo for terepo, _f, _k in fam.sd_cpp_text_encoders)
+            # Same per-variant encoder selection as _asset_specs, keyed on the loaded repo id, so the
+            # cache-deletion guard protects the encoder repo this load actually downloaded (the 9B
+            # variant's Qwen3-8B, not the 4B default).
+            repos.extend(
+                terepo for terepo, _f, _k in sd_cpp_text_encoders_for(fam, state.repo_id)
+            )
             return tuple(dict.fromkeys(r for r in repos if r))
 
     # ── Generate ───────────────────────────────────────────────────────────
@@ -793,7 +801,10 @@ class SdCppDiffusionBackend:
                             "sd.cpp engine."
                         )
                     lora_resolved = diffusion_lora.resolve_specs(
-                        active_loras, hf_token = state.hf_token, cancel_event = cancel
+                        active_loras,
+                        family = state.family.name,
+                        hf_token = state.hf_token,
+                        cancel_event = cancel,
                     )
                 if state.mode == "server" and state.server is not None:
                     images, seeds = self._generate_server(
