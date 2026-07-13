@@ -3030,8 +3030,8 @@ def test_unload_waits_for_in_flight_denoise_before_teardown():
         with backend._generate_lock:
             denoise_active["v"] = True
             started.set()
-            cancel.wait(2.0)   # unload signals this
-            finish.wait(2.0)   # the test lets us finish
+            cancel.wait(2.0)  # unload signals this
+            finish.wait(2.0)  # the test lets us finish
             denoise_active["v"] = False  # about to release _generate_lock
 
     def _fake_unload_locked():

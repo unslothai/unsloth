@@ -258,9 +258,7 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
         unload_started.set()
         release_unload.wait(2.0)
 
-    engine = SimpleNamespace(
-        status = lambda: {"loaded": False, "repo_id": None}, unload = _slow_unload
-    )
+    engine = SimpleNamespace(status = lambda: {"loaded": False, "repo_id": None}, unload = _slow_unload)
     monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: engine)
 
     switch_done = threading.Event()
