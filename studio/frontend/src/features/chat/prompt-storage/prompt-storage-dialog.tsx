@@ -54,6 +54,7 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
+import { isMcpImageToolResult } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 
@@ -299,7 +300,15 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
         const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
         if (p.result !== undefined && p.result !== null) {
-          const resultStr = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
+          // Keep base64 image payloads out of exports: MCP image results carry
+          // their model-visible text alongside the data, so serialize the text
+          // (matching chat replay) instead of the full object.
+          const resultStr =
+            typeof p.result === "string"
+              ? p.result
+              : isMcpImageToolResult(p.result)
+                ? p.result.text
+                : JSON.stringify(p.result);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
         }
       }

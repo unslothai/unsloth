@@ -3262,8 +3262,14 @@ export function createOpenAIStreamAdapter(
                       try {
                         const images = JSON.parse(
                           rawResult.slice(mcpImgIdx + mcpImgMarker.length),
-                        ) as McpImageToolResult["images"];
-                        parsedResult = { text, images };
+                        );
+                        // Only treat the suffix as an image envelope when it
+                        // validates; legit tool text that merely contains the
+                        // marker must round-trip unchanged.
+                        const candidate = { text, images };
+                        parsedResult = isMcpImageToolResult(candidate)
+                          ? candidate
+                          : rawResult;
                       } catch {
                         parsedResult = rawResult;
                       }
