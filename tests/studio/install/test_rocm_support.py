@@ -893,12 +893,15 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
-    def test_gfx_pin_over_installed_perarch_no_reinstall(
+    def test_gfx_pin_over_installed_perarch_markerless_reinstalls_once(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
     ):
         """A gfx1151 pin over an already-installed AMD per-arch (+rocm7.13.0) wheel
-        must NOT reinstall torch -- once the correct per-arch wheel is present the
-        pin is satisfied, so `studio update` does not reinstall-loop."""
+        with NO marker reinstalls ONCE: the three-part tag is byte-identical across
+        the gfx arches, so a markerless venv cannot prove the installed wheel came
+        from gfx1151 rather than another gfx index. The reinstall records the marker,
+        so the no-loop guarantee for a correctly-pinned venv then comes from the exact
+        marker compare (test_marker_matches_pin_no_reinstall), not the ambiguous tag."""
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"7.13.0|2.11.0+rocm7.13.0\n"
@@ -911,9 +914,9 @@ class TestEnsureRocmTorch:
                         stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
                     ):
                         _ensure_rocm_torch()
-        assert not any(
-            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
-        )
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx1151" in torch_call
+        assert "torch>=2.11.0,<2.12.0" in torch_call
 
     def test_rocm_pin_family_mismatch_helper(self):
         """_rocm_pin_family_mismatch: exact rocm compare, else the 2.11 line."""
@@ -1334,6 +1337,81 @@ class TestEnsureRocmTorchMarker:
         )
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_no_marker_gfx211_pin_forces_one_time_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """NO marker + a 2.11 gfx per-arch pin over an installed +rocm7.13.0 wheel: the
+        three-part tag is byte-identical across gfx120X-all/gfx1151/gfx1150, so the
+        version-tag heuristic (_rocm_pin_family_mismatch) sees no difference and would
+        trust a possibly-wrong arch. Force a ONE-TIME reinstall from the pinned gfx
+        index and record the marker, so the NEXT run compares exactly and does not
+        loop (a markerless venv predates the marker and cannot prove its arch)."""
+        # No marker seeded (autouse fixture leaves the file absent).
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.13.0|2.11.0+rocm7.13.0\n"
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://repo.amd.com/rocm/whl/gfx120X-all"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
+                        _ensure_rocm_torch()
+        # (a) reinstalled from the pinned gfx index; (b) marker now records it.
+        torch_call = str(mock_pip.call_args_list[0])
+        assert "gfx120X-all" in torch_call or "gfx120x-all" in torch_call
+        assert "gfx120X-all" in self._marker_path.read_text()
+
+        # (c) loop-safety: a SECOND run now sees the recorded marker == pin, so the
+        # exact compare (not the ambiguous tag) drives the decision and NO reinstall
+        # happens.
+        mock_pip.reset_mock()
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    with patch.object(
+                        stack_mod, "_detect_amd_gfx_codes", side_effect = AssertionError
+                    ):
+                        _ensure_rocm_torch()
+        assert not any(
+            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+        )
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 2))
+    def test_no_marker_rocm72_pin_does_not_force_reinstall(
+        self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        """NO marker + a rocm7.2 (non-gfx) pin over a matching +rocm7.2 wheel: rocmX.Y
+        leaves are distinguishable by their version tag, so the heuristic still decides
+        and a correct wheel is NOT force-reinstalled. Only the ambiguous gfx per-arch
+        case gets the one-time markerless reinstall."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.2.0|2.11.0+rocm7.2\n"
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.2"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        assert not any(
+            any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
+        )
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     def test_verbatim_custom_url_reinstall_on_marker_mismatch(self, mock_pip):
         """Marker records .../simple; user pins a custom .../current index (leaf is
@@ -1381,11 +1459,11 @@ class TestEnsureRocmTorchMarker:
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     def test_verbatim_reinstall_keeps_supported_bounds(self, mock_pip):
-        """The verbatim update must install the bounded _CUDA_TORCH_PKG_SPEC trio,
-        not a bare torch/torchvision/torchaudio: a fresh install.sh/install.ps1
-        install from the same unknown-leaf pin constrains torch, so a custom mirror
-        publishing a newer torch must not push the UPDATE path above the supported
-        range (fresh-vs-update asymmetry)."""
+        """The verbatim update must install the bounded _CUSTOM_INDEX_TORCH_PKG_SPEC
+        trio (torch<2.11.0), not a bare torch/torchvision/torchaudio and not the wider
+        cu* ceiling: a fresh install.sh/install.ps1 install from the same unknown-leaf
+        pin caps torch at <2.11.0, so a custom mirror publishing torch 2.11 must not
+        push the UPDATE path above that ceiling (fresh-vs-update asymmetry)."""
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
@@ -1393,8 +1471,9 @@ class TestEnsureRocmTorchMarker:
                     stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                     stack_mod._ensure_verbatim_torch_index()
         args = [str(a) for a in mock_pip.call_args_list[0].args]
-        for spec in stack_mod._CUDA_TORCH_PKG_SPEC:
+        for spec in stack_mod._CUSTOM_INDEX_TORCH_PKG_SPEC:
             assert spec in args
+        assert "torch>=2.4,<2.11.0" in args, "verbatim path must cap torch below 2.11"
         assert "torch" not in args, "bare torch spec must not be used on the verbatim path"
 
     @patch.object(stack_mod, "IS_WINDOWS", False)

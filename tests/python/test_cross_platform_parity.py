@@ -245,17 +245,27 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_verbatim_update_pins_supported_torch_range(self):
-        # The unknown-family verbatim UPDATE must keep the supported bounds: a
+        # The unknown-family verbatim UPDATE must keep the SAME torch ceiling a
         # FRESH install.sh / install.ps1 install from the same unknown-leaf pin
-        # applies TORCH_CONSTRAINT, so a bare trio on the update path could pull
-        # a newer, unsupported torch from a custom mirror (fresh-vs-update
-        # asymmetry).
+        # applies (default TORCH_CONSTRAINT, torch<2.11.0), not the wider cu*
+        # ceiling (<2.12.0). Otherwise a custom mirror publishing torch 2.11 would
+        # upgrade a `studio update` to a state the fresh installer never produces.
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_verbatim_torch_index\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_verbatim_torch_index"
-        assert "_CUDA_TORCH_PKG_SPEC" in m.group(0), (
+        assert "_CUSTOM_INDEX_TORCH_PKG_SPEC" in m.group(0), (
             "_ensure_verbatim_torch_index should install the bounded "
-            "_CUDA_TORCH_PKG_SPEC trio, not bare torch/torchvision/torchaudio"
+            "_CUSTOM_INDEX_TORCH_PKG_SPEC trio (torch<2.11.0, matching the fresh "
+            "unknown-leaf bound), not _CUDA_TORCH_PKG_SPEC (<2.12.0) or a bare trio"
+        )
+        # The custom-index spec must cap torch below 2.11 to mirror install.sh's
+        # default TORCH_CONSTRAINT for an unknown leaf.
+        spec = re.search(
+            r"_CUSTOM_INDEX_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", text, re.DOTALL
+        )
+        assert spec and '"torch>=2.4,<2.11.0"' in spec.group(1), (
+            "_CUSTOM_INDEX_TORCH_PKG_SPEC must pin torch>=2.4,<2.11.0 (the fresh "
+            "unknown-leaf ceiling)"
         )
 
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):

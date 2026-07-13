@@ -328,6 +328,20 @@ _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
 # range (and can pick a torchvision built against a different torch major).
 _CPU_TORCH_PKG_SPEC: tuple[str, str, str] = _CUDA_TORCH_PKG_SPEC
 
+# Custom (unknown-family) index verbatim-repair specs (see
+# _ensure_verbatim_torch_index). A FRESH install of the same unknown-leaf pin
+# caps torch at <2.11.0 (install.sh's default TORCH_CONSTRAINT, and setup.ps1's
+# custom-pin branch), so the update path must use the SAME ceiling -- otherwise a
+# private /simple mirror that publishes torch 2.11 would upgrade a `studio update`
+# to a state the fresh installer never produces. Bounds are pinned (not bare) for
+# the same exclusive-index ABI reason as the CUDA spec, matched to the <2.11 torch
+# (torchvision 0.26 / torchaudio 2.11 pair with torch 2.11, so cap just below).
+_CUSTOM_INDEX_TORCH_PKG_SPEC: tuple[str, str, str] = (
+    "torch>=2.4,<2.11.0",
+    "torchvision>=0.19,<0.26.0",
+    "torchaudio>=2.4,<2.11.0",
+)
+
 # torchao's cpp extensions are pinned to ONE torch release AND CUDA major. A torch
 # mismatch just skips the cpp kernels (slow Python fallback); a CUDA mismatch fails
 # to import ("libcudart.so.12: cannot open shared object file"). The torch pin is a
@@ -1525,9 +1539,9 @@ def _ensure_verbatim_torch_index() -> None:
     URL exclusively (--index-url), so it "wins verbatim" -- an incomplete mirror that
     cannot serve the trio fails loudly here, same as the marker-present path (that
     is the cost of honouring an explicit pin). The trio keeps the supported bounds
-    (_CUDA_TORCH_PKG_SPEC): a FRESH install.sh / install.ps1 install from the same
-    unknown-leaf pin constrains torch, so the update path must not drift above the
-    supported range when the mirror publishes a newer torch.
+    (_CUSTOM_INDEX_TORCH_PKG_SPEC): a FRESH install.sh / install.ps1 install from the
+    same unknown-leaf pin caps torch at <2.11.0, so the update path uses that same
+    ceiling and does not drift above it when the mirror publishes a newer torch.
     """
     global _VERBATIM_TRIO_SNAPSHOT
     if NO_TORCH or IS_MAC_INTEL:
@@ -1557,7 +1571,7 @@ def _ensure_verbatim_torch_index() -> None:
     print(
         f"   explicit torch index pin ({_pin_display}) {_why} -- reinstalling torch verbatim from it"
     )
-    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+    _torch_pkg, _vision_pkg, _audio_pkg = _CUSTOM_INDEX_TORCH_PKG_SPEC
     pip_install(
         "torch (pinned custom index)",
         "--force-reinstall",
@@ -2197,7 +2211,9 @@ def _ensure_rocm_torch() -> None:
     # heuristic below sees no difference and would leave the old arch in place. A
     # matching marker also guarantees a correctly-pinned venv does NOT reinstall
     # (no loop). When there is NO marker (old venv, or torch installed out-of-band)
-    # fall back to the +rocm/version-tag heuristic -- backward compatibility.
+    # fall back to the +rocm/version-tag heuristic -- backward compatibility -- EXCEPT
+    # for a 2.11 gfx per-arch pin, whose arches share one +rocm tag the heuristic
+    # cannot tell apart, so a markerless gfx pin gets one forced reinstall (below).
     _rocm_pin_mismatch = False
     if has_hip_torch and _rocm_pin is not None:
         _marker_verdict = _marker_pin_mismatch(_rocm_pin)
@@ -2206,9 +2222,19 @@ def _ensure_rocm_torch() -> None:
             # only signal that catches a per-arch gfx switch (gfx1151 -> gfx120X-all,
             # both +rocm7.13.0) the version-tag heuristic below cannot see.
             _rocm_pin_mismatch = True
+        elif _marker_verdict is None and _torch_index_leaf(_rocm_pin) in _ROCM_GFX_TORCH211_LEAVES:
+            # No marker AND a 2.11 gfx per-arch pin: the three-part +rocmA.B.C tag is
+            # byte-identical across gfx120X-all/gfx1151/gfx1150, so the version-tag
+            # heuristic below cannot tell which gfx index produced the installed wheel.
+            # A pre-marker venv holding one gfx wheel that is now pinned to a DIFFERENT
+            # gfx index would otherwise be trusted and never switched. Force a one-time
+            # reinstall; the reinstall path writes the marker, so the next update
+            # compares exactly and does not loop.
+            _rocm_pin_mismatch = True
         else:
-            # Marker matches OR is absent: the marker is an ADDITIONAL rebuild signal,
-            # not a substitute for validating the installed wheel. Still run the
+            # Marker matches (False), or is absent for a tag-distinguishable pin
+            # (rocmX.Y, or a non-2.11 gfx leaf): the marker is an ADDITIONAL rebuild
+            # signal, not a substitute for validating the installed wheel. Still run the
             # family/version check so a stale wheel (torch swapped after the marker was
             # written -- e.g. marker records gfx1151 but the venv now carries generic
             # +rocm7.2 or an older +rocm6.4) is caught. Mirrors setup.ps1, which keeps
