@@ -9,7 +9,8 @@ from the chat model that runs in the inference subprocess. This lets a user
 dictate into any chat model, including text-only ones, without evicting it.
 
 faster-whisper is torch-free, so this works on GGUF-only installs too. Model
-weights download lazily on first use and memory is released after dictation.
+weights are downloaded explicitly through Studio's Model Hub, and memory is
+released after dictation.
 """
 
 from __future__ import annotations
@@ -24,14 +25,14 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 # Curated, fast, accurate models. Keys are the ids the API/UI use; values are
-# the faster-whisper model names (auto-downloaded from the HF hub, then cached).
+# the CTranslate2 repositories downloaded through Studio's Model Hub.
 STT_MODELS: dict[str, str] = {
-    "tiny": "tiny",
-    "base": "base",
-    "small": "small",
-    "distil-large-v3": "distil-large-v3",
-    "large-v3-turbo": "large-v3-turbo",
-    "large-v3": "large-v3",
+    "tiny": "Systran/faster-whisper-tiny",
+    "base": "Systran/faster-whisper-base",
+    "small": "Systran/faster-whisper-small",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "large-v3": "Systran/faster-whisper-large-v3",
 }
 DEFAULT_STT_MODEL = "base"
 ENGLISH_ONLY_STT_MODELS = frozenset({"distil-large-v3"})
@@ -44,6 +45,10 @@ _TARGET_SAMPLE_RATE = 16000
 
 class SttUnavailableError(RuntimeError):
     """faster-whisper is not installed in this environment."""
+
+
+class SttModelNotDownloadedError(RuntimeError):
+    """The selected model is not complete in the shared Hub cache."""
 
 
 class SttAudioDecodeError(ValueError):
@@ -106,6 +111,22 @@ def resolve_model_id(model: Optional[str]) -> str:
     if model and model in STT_MODELS:
         return model
     return DEFAULT_STT_MODEL
+
+
+def _is_missing_local_model_error(exc: BaseException) -> bool:
+    """Recognize Hugging Face's cache-only miss without importing its internals.
+
+    faster-whisper intentionally owns the local cache lookup. Keeping this check
+    name-based tolerates huggingface_hub moving the exception between modules.
+    """
+    current: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ == "LocalEntryNotFoundError":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _pick_device() -> tuple[str, str]:
@@ -245,15 +266,40 @@ class WhisperSttSidecar:
             self._model_id = None
             self._device = None
             logger.info("Loading STT model %s (%s/%s)", model_id, device, compute_type)
-            whisper_name = STT_MODELS[model_id]
+            whisper_repo = STT_MODELS[model_id]
+
+            def create_model(target_device: str, target_compute_type: str):
+                # The Model Hub download manager is the only network download
+                # path. faster-whisper may resolve the shared cache, but must
+                # never fetch weights implicitly while loading or transcribing.
+                return WhisperModel(
+                    whisper_repo,
+                    device = target_device,
+                    compute_type = target_compute_type,
+                    local_files_only = True,
+                )
+
             try:
-                self._model = WhisperModel(whisper_name, device = device, compute_type = compute_type)
+                self._model = create_model(device, compute_type)
             except Exception as exc:
+                if _is_missing_local_model_error(exc):
+                    raise SttModelNotDownloadedError(
+                        f"STT model '{model_id}' is not downloaded. "
+                        "Download it in Settings → Voice before loading it."
+                    ) from exc
                 # CUDA libraries can be missing even when a GPU is present; the
                 # CPU path always works, so retry there before giving up.
                 if device != "cpu":
                     logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
-                    self._model = WhisperModel(whisper_name, device = "cpu", compute_type = "int8")
+                    try:
+                        self._model = create_model("cpu", "int8")
+                    except Exception as cpu_exc:
+                        if _is_missing_local_model_error(cpu_exc):
+                            raise SttModelNotDownloadedError(
+                                f"STT model '{model_id}' is not downloaded. "
+                                "Download it in Settings → Voice before loading it."
+                            ) from cpu_exc
+                        raise
                     device, compute_type = "cpu", "int8"
                 else:
                     raise

@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import io
+import sys
 import wave
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ import core.inference.stt_sidecar as stt_sidecar_module
 from core.inference.stt_sidecar import (
     SttAudioTooLongError,
     SttLanguageError,
+    SttModelNotDownloadedError,
     WhisperSttSidecar,
     normalize_whisper_language,
 )
@@ -239,3 +241,51 @@ def test_unload_releases_model_and_device():
 
     assert sidecar.loaded_model is None
     assert sidecar.device is None
+
+
+def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
+    calls = []
+
+    class FakeWhisperModel:
+        def __init__(self, repo_id, **kwargs):
+            calls.append((repo_id, kwargs))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel = FakeWhisperModel),
+    )
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "int8"))
+
+    sidecar = WhisperSttSidecar()
+    sidecar.load("base")
+
+    assert calls == [
+        (
+            "Systran/faster-whisper-base",
+            {
+                "device": "cpu",
+                "compute_type": "int8",
+                "local_files_only": True,
+            },
+        )
+    ]
+
+
+def test_load_reports_model_hub_cache_miss(monkeypatch):
+    class LocalEntryNotFoundError(RuntimeError):
+        pass
+
+    class MissingWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel = MissingWhisperModel),
+    )
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "int8"))
+
+    with pytest.raises(SttModelNotDownloadedError, match = "Settings → Voice"):
+        WhisperSttSidecar().load("large-v3")

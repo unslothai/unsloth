@@ -27,6 +27,15 @@ export const STT_MODELS = [
   "large-v3",
 ] as const;
 export type SttModel = (typeof STT_MODELS)[number];
+/** CTranslate2 repos downloaded through Studio's existing Model Hub manager. */
+export const STT_MODEL_REPOS: Record<SttModel, string> = {
+  tiny: "Systran/faster-whisper-tiny",
+  base: "Systran/faster-whisper-base",
+  small: "Systran/faster-whisper-small",
+  "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+  "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+  "large-v3": "Systran/faster-whisper-large-v3",
+};
 export const DEFAULT_STT_MODEL: SttModel = "base";
 export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set([
   "distil-large-v3",

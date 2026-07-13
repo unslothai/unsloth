@@ -11,11 +11,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
 import {
   StudioModelDictationAdapter,
   fetchSttStatus,
+  loadSttModel,
   unloadSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
@@ -25,6 +27,12 @@ import {
   generateStudioTtsAudio,
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  DownloadProgressBar,
+  TransportConflictDialog,
+  getDownloadProgress,
+  useRepoDownload,
+} from "@/features/hub";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
@@ -42,6 +50,7 @@ import { SettingsSection } from "../components/settings-section";
 import {
   DEFAULT_STT_MODEL,
   STT_MODELS,
+  STT_MODEL_REPOS,
   type SttModel,
   isSttModelLanguageCompatible,
   useVoiceSettingsStore,
@@ -317,9 +326,76 @@ export function VoiceTab() {
     | "loading"
     | "ready"
     | "error";
+  type SttDownloadAvailability =
+    | "checking"
+    | "missing"
+    | "downloaded"
+    | "error";
   const [sttPhase, setSttPhase] = useState<SttPhase>("idle");
   const [sttDevice, setSttDevice] = useState<string | null>(null);
   const [statusNonce, setStatusNonce] = useState(0);
+  const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
+  const [sttUnloading, setSttUnloading] = useState(false);
+  const sttRepoId = STT_MODEL_REPOS[sttModel];
+  const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
+    repoId: string;
+    state: SttDownloadAvailability;
+  }>({ repoId: "", state: "checking" });
+  const effectiveSttDownloadAvailability =
+    sttDownloadAvailability.repoId === sttRepoId
+      ? sttDownloadAvailability.state
+      : "checking";
+  const sttDownload = useRepoDownload({
+    kind: "model",
+    repoId: sttRepoId,
+    activeVariant: null,
+    autoAdopt: dictationEngine === "model" && modelSttSupported,
+    onComplete: () => {
+      setSttDownloadAvailability({
+        repoId: sttRepoId,
+        state: "downloaded",
+      });
+      toast.success(t("settings.voice.dictation.sttDownloadComplete"));
+    },
+    onCancelled: () => {
+      setSttDownloadAvailability({ repoId: sttRepoId, state: "missing" });
+    },
+    onError: () => {
+      setSttDownloadAvailability({ repoId: sttRepoId, state: "error" });
+      toast.error(t("settings.voice.dictation.sttDownloadFailed"));
+    },
+  });
+
+  const checkSttDownloadAvailability = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const progress = await getDownloadProgress(sttRepoId, { signal });
+        if (signal?.aborted) {
+          return;
+        }
+        setSttDownloadAvailability({
+          repoId: sttRepoId,
+          state: progress.complete_on_disk ? "downloaded" : "missing",
+        });
+      } catch {
+        if (!signal?.aborted) {
+          setSttDownloadAvailability({ repoId: sttRepoId, state: "error" });
+        }
+      }
+    },
+    [sttRepoId],
+  );
+
+  useEffect(() => {
+    if (dictationEngine !== "model" || !modelSttSupported) {
+      return;
+    }
+    const controller = new AbortController();
+    checkSttDownloadAvailability(controller.signal).catch(() => {
+      // The checker records a user-visible error state itself.
+    });
+    return () => controller.abort();
+  }, [checkSttDownloadAvailability, dictationEngine, modelSttSupported]);
 
   useEffect(() => {
     if (dictationEngine !== "model" || !modelSttSupported) {
@@ -349,8 +425,8 @@ export function VoiceTab() {
           setSttPhase("ready");
           return;
         }
-        // Merely opening settings or selecting local STT never downloads a
-        // model. Loading begins only when the user starts recording.
+        // Merely opening settings or selecting local STT never downloads or
+        // loads a model. Loading begins from Load or when recording starts.
         setSttDevice(null);
         setSttPhase("on-demand");
       } catch {
@@ -382,6 +458,65 @@ export function VoiceTab() {
         return "";
     }
   })();
+
+  const sttModelStatusText = (() => {
+    if (sttDownload.progress) {
+      return t("settings.voice.dictation.sttDownloading", {
+        progress: Math.round(sttDownload.progress.fraction * 100),
+      });
+    }
+    if (sttPhase === "unavailable") {
+      return sttStatusText;
+    }
+    switch (effectiveSttDownloadAvailability) {
+      case "checking":
+        return t("settings.voice.dictation.sttDownloadChecking");
+      case "missing":
+        return t("settings.voice.dictation.sttNotDownloaded");
+      case "error":
+        return t("settings.voice.dictation.sttDownloadStatusFailed");
+      case "downloaded":
+        return sttStatusText;
+      default:
+        return "";
+    }
+  })();
+
+  const startSttDownload = async () => {
+    setSttDownloadStarting(true);
+    try {
+      await sttDownload.requestStartDownload(null, 0);
+    } finally {
+      setSttDownloadStarting(false);
+    }
+  };
+
+  const warmSttModel = async () => {
+    setSttPhase("loading");
+    try {
+      await loadSttModel(sttModel);
+      setStatusNonce((nonce) => nonce + 1);
+    } catch (error) {
+      setSttPhase("error");
+      toast.error(t("settings.voice.dictation.sttModelFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+
+  const releaseSttModel = async () => {
+    setSttUnloading(true);
+    try {
+      await unloadSttModel();
+      setStatusNonce((nonce) => nonce + 1);
+    } catch (error) {
+      toast.error(t("settings.voice.dictation.sttModelFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSttUnloading(false);
+    }
+  };
 
   // Keep an item for an unplugged saved mic so the value stays visible.
   const knownMic = devices.some((d) => d.deviceId === micDeviceId);
@@ -546,7 +681,7 @@ export function VoiceTab() {
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
             >
-              <div className="flex flex-col items-end gap-1.5">
+              <div className="flex w-64 flex-col items-stretch gap-2 sm:w-80">
                 <Select
                   value={sttModel}
                   onValueChange={(value) => {
@@ -563,7 +698,7 @@ export function VoiceTab() {
                 >
                   <SelectTrigger
                     aria-label="Speech recognition model"
-                    className="w-64 sm:w-80"
+                    className="w-full"
                     size="sm"
                   >
                     <SelectValue />
@@ -578,26 +713,128 @@ export function VoiceTab() {
                     ))}
                   </SelectContent>
                 </Select>
-                {sttStatusText ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {sttPhase === "loading" || sttPhase === "checking" ? (
-                      <span className="size-1.5 animate-pulse rounded-full bg-current" />
-                    ) : sttPhase === "ready" ? (
-                      <span className="size-1.5 rounded-full bg-emerald-500" />
-                    ) : null}
-                    <span>{sttStatusText}</span>
-                    {sttPhase === "error" || sttPhase === "unavailable" ? (
+                {sttDownload.progress ? (
+                  <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 pt-2">
+                    <div className="mb-1.5 flex items-center justify-between gap-3">
+                      <span className="text-xs text-muted-foreground">
+                        {sttModelStatusText}
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        disabled={sttDownload.cancelling}
+                        onClick={() => sttDownload.cancelDownload(null)}
+                      >
+                        {sttDownload.cancelling
+                          ? t("settings.voice.dictation.sttCancellingDownload")
+                          : t("settings.voice.dictation.sttCancelDownload")}
+                      </Button>
+                    </div>
+                    <DownloadProgressBar
+                      progress={sttDownload.progress}
+                      bytesPerSec={sttDownload.bytesPerSec}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex min-h-7 items-center justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                      {effectiveSttDownloadAvailability === "checking" ||
+                      sttPhase === "loading" ||
+                      sttPhase === "checking" ? (
+                        <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />
+                      ) : sttPhase === "ready" ||
+                        (effectiveSttDownloadAvailability === "downloaded" &&
+                          sttPhase === "on-demand") ? (
+                        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
+                      ) : effectiveSttDownloadAvailability === "error" ||
+                        sttPhase === "error" ? (
+                        <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
+                      ) : null}
+                      <span>{sttModelStatusText}</span>
+                    </span>
+                    {sttPhase === "unavailable" ? (
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-5 px-1.5 text-xs"
-                        onClick={() => setStatusNonce((n) => n + 1)}
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setStatusNonce((nonce) => nonce + 1)}
                       >
                         {t("settings.voice.dictation.sttRetry")}
                       </Button>
+                    ) : effectiveSttDownloadAvailability === "error" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={async () => {
+                          setSttDownloadAvailability({
+                            repoId: sttRepoId,
+                            state: "checking",
+                          });
+                          await checkSttDownloadAvailability();
+                        }}
+                      >
+                        {t("settings.voice.dictation.sttRetry")}
+                      </Button>
+                    ) : effectiveSttDownloadAvailability === "missing" ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        disabled={sttDownloadStarting}
+                        onClick={startSttDownload}
+                      >
+                        {sttDownloadStarting ? (
+                          <Spinner className="mr-1.5" />
+                        ) : null}
+                        {t("settings.voice.dictation.sttDownload")}
+                      </Button>
+                    ) : effectiveSttDownloadAvailability === "downloaded" ? (
+                      sttPhase === "ready" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 text-xs"
+                          disabled={sttUnloading}
+                          onClick={releaseSttModel}
+                        >
+                          {sttUnloading ? <Spinner className="mr-1.5" /> : null}
+                          {sttUnloading
+                            ? t("settings.voice.dictation.sttUnloading")
+                            : t("settings.voice.dictation.sttUnload")}
+                        </Button>
+                      ) : sttPhase === "loading" || sttPhase === "checking" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 text-xs"
+                          disabled={true}
+                        >
+                          <Spinner className="mr-1.5" />
+                          {t("settings.voice.dictation.sttLoadingModel")}
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2.5 text-xs"
+                          onClick={warmSttModel}
+                        >
+                          {sttPhase === "error"
+                            ? t("settings.voice.dictation.sttRetry")
+                            : t("settings.voice.dictation.sttLoad")}
+                        </Button>
+                      )
                     ) : null}
                   </div>
-                ) : null}
+                )}
+                <TransportConflictDialog
+                  conflict={sttDownload.transportConflict}
+                  onCancel={sttDownload.cancelConflict}
+                  onKeepTransport={sttDownload.resumeConflict}
+                  onSwitchTransport={sttDownload.restartConflict}
+                />
               </div>
             </SettingsRow>
           ) : (

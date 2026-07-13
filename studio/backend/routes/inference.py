@@ -5313,6 +5313,7 @@ async def stt_status(current_subject: str = Depends(get_current_subject)):
 async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
+        SttModelNotDownloadedError,
         SttUnavailableError,
         get_stt_sidecar,
     )
@@ -5320,6 +5321,8 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     sidecar = get_stt_sidecar()
     try:
         await asyncio.to_thread(sidecar.load, payload.model)
+    except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
     except Exception as e:
@@ -5346,6 +5349,7 @@ async def _transcribe_audio_bytes(
         SttAudioDecodeError,
         SttAudioTooLongError,
         SttLanguageError,
+        SttModelNotDownloadedError,
         SttUnavailableError,
         get_stt_sidecar,
     )
@@ -5366,6 +5370,8 @@ async def _transcribe_audio_bytes(
         )
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
+    except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
     except SttLanguageError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttAudioTooLongError as e:

@@ -111,7 +111,7 @@ export async function fetchSttStatus(refreshKey?: number): Promise<SttStatus> {
   return (await response.json()) as SttStatus;
 }
 
-/** Load the selected model after local dictation has explicitly started. */
+/** Load a selected model already downloaded through Studio's Model Hub. */
 export function loadSttModel(model: string): Promise<void> {
   return queueSttLifecycle(async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
@@ -503,8 +503,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
-        // Starting a local model is explicitly user-triggered, but wait for
-        // microphone access before beginning a potentially large download.
+        // Wait for microphone access before warming the selected on-device
+        // model. The backend uses cache-only loading and never downloads here.
         void loadSttModel(useVoiceSettingsStore.getState().sttModel).catch(
           reportTranscriptionError,
         );
