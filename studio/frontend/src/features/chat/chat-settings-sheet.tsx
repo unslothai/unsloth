@@ -1171,6 +1171,7 @@ export function ChatSettingsPanel({
                         }}
                         ariaLabel="Context Length"
                         size={8}
+                        disabled={modelControlsDisabled}
                       />
                     </div>
                     <Slider
@@ -1194,6 +1195,7 @@ export function ChatSettingsPanel({
                         }
                       }}
                       className="panel-slider"
+                      disabled={modelControlsDisabled}
                     />
                     {fitResolvedCtx != null && (
                       <p className="text-[11px] text-nav-fg/40">
@@ -1615,6 +1617,9 @@ export function ChatSettingsPanel({
                       className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
                       checked={remember}
                       onCheckedChange={(v) => setRemember(v === true)}
+                      // The save/clear already ran in the Load click handler, so
+                      // a mid-load toggle could not apply -- lock it like the knobs.
+                      disabled={modelControlsDisabled}
                     />
                     Remember settings next time
                   </label>
@@ -1707,7 +1712,11 @@ export function ChatSettingsPanel({
                 </Button>
               </div>
             ) : null}
-            <ChatTemplateFields />
+            {/* The template override is a load-time knob too (applied on the next
+                reload) and the in-flight load already snapshotted it, so lock its
+                editors like the sibling controls -- a mid-load save would be
+                silently clobbered by the load response despite its toast. */}
+            <ChatTemplateFields disabled={modelControlsDisabled} />
           </div>
         </CollapsibleSection>
         )}
@@ -2511,7 +2520,7 @@ function BypassPermissionsToggle() {
   );
 }
 
-function ChatTemplateFields() {
+function ChatTemplateFields({ disabled = false }: { disabled?: boolean }) {
   const defaultTemplate = useChatRuntimeStore((s) => s.defaultChatTemplate);
   const override = useChatRuntimeStore((s) => s.chatTemplateOverride);
   const setOverride = useChatRuntimeStore((s) => s.setChatTemplateOverride);
@@ -2545,7 +2554,8 @@ function ChatTemplateFields() {
         <button
           type="button"
           onClick={openEditor}
-          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg"
+          disabled={disabled}
+          className="cursor-pointer text-left text-[13px] font-medium tracking-nav text-nav-fg disabled:pointer-events-none disabled:opacity-50"
         >
           Chat Template
         </button>
@@ -2556,7 +2566,8 @@ function ChatTemplateFields() {
                 <button
                   type="button"
                   onClick={() => setOverride(null)}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                  disabled={disabled}
+                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white disabled:pointer-events-none disabled:opacity-50"
                   aria-label="Revert chat template"
                 >
                   <HugeiconsIcon
@@ -2580,7 +2591,8 @@ function ChatTemplateFields() {
               <button
                 type="button"
                 onClick={openEditor}
-                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                disabled={disabled}
+                className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white disabled:pointer-events-none disabled:opacity-50"
                 aria-label="Edit chat template"
               >
                 <HugeiconsIcon
@@ -2643,7 +2655,13 @@ function ChatTemplateFields() {
               >
                 Cancel
               </Button>
-              <Button type="button" onClick={saveEditor} disabled={!draftDirty}>
+              {/* Also locked mid-load: an autoLoad can start with this dialog
+                  already open, and a save then would be silently clobbered. */}
+              <Button
+                type="button"
+                onClick={saveEditor}
+                disabled={!draftDirty || disabled}
+              >
                 Save
               </Button>
             </div>
