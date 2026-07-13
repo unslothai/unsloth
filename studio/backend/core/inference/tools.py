@@ -309,11 +309,9 @@ def _find_blocked_commands(command: str) -> set[str]:
 
 
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
-# Auto mode only pauses tool calls detected as potentially unsafe; everything
-# below classifies a call. The sandbox stays ON in auto mode, so this gate
-# only decides prompting; hard blocks (blocklist, rlimits) still apply at
-# execution time. Classification fails closed: anything unparseable or not
-# provably read-only counts as unsafe and asks.
+# Auto mode pauses only calls classified here as potentially unsafe. The sandbox
+# and hard blocks (blocklist, rlimits) still apply at run time; this gate only
+# decides prompting, and fails closed: anything not provably read-only asks.
 
 # Read-only commands allowed to run without confirmation in auto mode.
 _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
@@ -321,15 +319,13 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "ls",
         "dir",
         "pwd",
-        # cd is intentionally absent: `cd /; cat etc/passwd` moves the shell
-        # out of the session workdir so a later relative read escapes it, which
-        # the literal path scan cannot see, so cd always asks.
+        # cd absent: `cd /; cat etc/passwd` escapes the workdir for a later
+        # relative read the path scan cannot see, so cd always asks.
         "cat",
         "head",
         "tail",
-        # less/more are intentionally absent: their pager escapes (+cmd, !shell,
-        # -o/--log-file, LESSOPEN) can run a command or write a file, which the
-        # command-name allowlist cannot see, so they always ask.
+        # less/more absent: their pager escapes (+cmd, !shell, -o, LESSOPEN) can
+        # run a command or write a file, so they always ask.
         "grep",
         "egrep",
         "fgrep",
@@ -347,9 +343,8 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
         "stat",
         "du",
         "df",
-        # ps is intentionally absent: BSD environment flags (ps auxe, ps eww)
-        # dump a parent process's unscrubbed env and can't be flag-parsed
-        # reliably, so ps always asks in auto mode.
+        # ps absent: BSD env flags (ps auxe, ps eww) dump a parent's unscrubbed
+        # env and can't be flag-parsed reliably, so ps always asks.
         "date",
         "cal",
         "whoami",
@@ -407,17 +402,15 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     "sort": frozenset({"-o", "--output", "--compress-program"}),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
-    # GNU time -o/--output FILE (and -a/--append) truncate or append to FILE
-    # with timing output; time is also a wrapper, so the flag is checked before
-    # the wrapped command like env -C.
+    # GNU time -o/--output/-a/--append FILE writes timing output; time is a
+    # wrapper, so the flag is checked before the wrapped command like env -C.
     "time": frozenset({"-o", "--output", "-a", "--append"}),
     # rg runs an arbitrary program per file with --pre/--hostname-bin.
     "rg": frozenset({"--pre", "--hostname-bin"}),
-    # env -C/--chdir escapes the session workdir; -S/--split-string can build
-    # a fresh command line. (env is a wrapper, so its flags precede the target.)
+    # env -C/--chdir escapes the workdir; -S/--split-string builds a command.
     "env": frozenset({"-C", "--chdir", "-S", "--split-string"}),
-    # printf -v NAME assigns its output to a shell variable (help printf), so
-    # `printf -v PATH %s .; ls` rewrites PATH and runs ./ls from the workdir.
+    # printf -v NAME assigns to a shell var, so `printf -v PATH %s .; ls` runs
+    # ./ls from the workdir.
     "printf": frozenset({"-v"}),
     "find": frozenset(
         {
@@ -432,41 +425,34 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
             "-fls",
         }
     ),
-    # fd runs a command per result with -x/--exec and -X/--exec-batch, and
-    # --base-directory/--search-path move the search root outside the workdir
-    # without any positional "/" token (fdfind --help).
+    # fd -x/--exec/-X/--exec-batch run a command per result;
+    # --base-directory/--search-path move the search root outside the workdir.
     "fd": frozenset({"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}),
-    # date -s/--set STRING writes the system clock (date --help); the display
-    # forms (+FORMAT, -d/-u/-R/-r) stay read-only.
+    # date -s/--set writes the clock; display forms (+FORMAT, -d/-u/-R/-r) read.
     "date": frozenset({"-s", "--set"}),
-    # file -C/--compile writes a compiled .mgc magic database (file --help); the
-    # default identification forms only read.
+    # file -C/--compile writes a compiled .mgc magic database; ident forms read.
     "file": frozenset({"-C", "--compile"}),
-    # hostname -F/--file FILE and -b/--boot set the hostname from a file/config;
-    # the display flags (-f/-d/-i/-I/-s/-A) only read (hostname --help).
+    # hostname -F/--file, -b/--boot set the hostname; display flags only read.
     "hostname": frozenset({"-F", "--file", "-b", "--boot"}),
 }
-# Commands whose read-only allowlisting only holds without a mutating positional
-# argument: `hostname NAME` sets the hostname and `date MMDDhhmm...` sets the
-# clock. Any positional (for date, one that is not a `+FORMAT` display token or
-# the value of a display flag below) means a state change, so it asks.
+# Commands safe only without a mutating positional: `hostname NAME` sets the
+# hostname, `date MMDDhhmm...` sets the clock (a +FORMAT token or a display
+# flag's value stays read-only), so any other positional asks.
 _AUTO_ARG_SENSITIVE_COMMANDS = frozenset({"hostname", "date"})
-# date display flags that take a following value token (-d STRING, -r FILE, -f
-# FILE); their value is not a clock-setting positional, so it is skipped.
+# date display flags taking a value token (-d STRING, -r FILE, -f FILE); the
+# value is not a clock-setting positional, so it is skipped.
 _DATE_DISPLAY_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f", "--file"})
-# Commands that write their second positional argument (uniq [INPUT [OUTPUT]]):
-# a lone `uniq file` (or `... | uniq`) reads to stdout and stays safe, but a
-# second file positional creates/overwrites it, so it asks like `sort -o`.
+# Commands that write their 2nd positional (uniq [INPUT [OUTPUT]]): `uniq file`
+# reads to stdout, but a second file positional overwrites it, like `sort -o`.
 _AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq"})
-# find/fd expressions group with (...) which resets command context, so scan
-# every token for these once find/fd is seen anywhere in the command.
+# find/fd group with (...) which resets command context, so scan every token for
+# these once find/fd appears anywhere.
 _AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
-# Recursive readers: an absolute-path target escapes the session workdir and can
-# read host files (grep -R TOKEN /home, rg TOKEN /), so those ask.
+# Recursive readers with an absolute-path target escape the workdir onto host
+# files (grep -R TOKEN /home, rg TOKEN /), so they ask.
 _AUTO_RECURSIVE_SEARCH = frozenset({"grep", "egrep", "fgrep", "rg", "ug", "find", "fd"})
-# Benign wrappers: they count as safe AND forward command position to their
-# target (which is then checked itself). sudo/su/chroot/etc. are deliberately
-# absent, so they classify as unsafe.
+# Benign wrappers: safe AND forward command position to their target (checked in
+# turn). sudo/su/chroot/etc. are absent, so they classify as unsafe.
 _AUTO_SAFE_WRAPPERS = frozenset(
     {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup", "xargs"}
 )
@@ -509,19 +495,15 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "http",
         "httpx",
         "aiohttp",
-        # websockets.connect / websockets.serve open a bidirectional network
-        # connection the sandbox does not namespace off, like aiohttp/httpx.
+        # websockets opens a network connection; socketserver binds a listener.
         "websockets",
-        # socketserver.TCPServer/UDPServer/UnixStreamServer bind a listening
-        # socket, like socket.bind; the stdlib server framework, not just clients.
         "socketserver",
         "ftplib",
         "smtplib",
         "telnetlib",
         "paramiko",
-        # mail / news / rpc / browser stdlib clients open outbound connections
-        # (imaplib.IMAP4, poplib.POP3, xmlrpc.client.ServerProxy, webbrowser.open)
-        # that the sandbox does not namespace off.
+        # mail/news/rpc/browser stdlib clients open outbound connections
+        # (imaplib, poplib, xmlrpc.client, webbrowser.open).
         "imaplib",
         "poplib",
         "nntplib",
@@ -570,8 +552,7 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "execvp",
         "spawnl",
         "spawnv",
-        # os.startfile launches a file with its associated Windows application,
-        # running an arbitrary program like os.system/os.popen.
+        # os.startfile launches a program via its Windows association.
         "startfile",
         "fork",
         "kill",
@@ -596,31 +577,24 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "mkfifo",
         "mknod",
         "utime",
-        # os.setxattr / os.removexattr mutate a file's extended attributes, a
-        # filesystem write like chmod/chown.
+        # os.setxattr / os.removexattr mutate extended attributes, like chmod.
         "setxattr",
         "removexattr",
         "import_module",
         "FileIO",
-        # asyncio process spawners run an arbitrary program without the terminal
-        # blocklist (asyncio.create_subprocess_exec/shell, loop.subprocess_exec/
-        # shell), like os.system/subprocess.
+        # asyncio subprocess spawners run a program past the terminal blocklist.
         "create_subprocess_exec",
         "create_subprocess_shell",
         "subprocess_exec",
         "subprocess_shell",
-        # asyncio networking opens outbound connections / listeners the sandbox
-        # does not namespace off (asyncio.open_connection, loop.create_connection/
-        # create_server and their unix variants), like socket.connect.
+        # asyncio outbound connections / listeners (open_connection,
+        # create_connection/server and unix variants), like socket.connect.
         "open_connection",
         "create_connection",
         "create_server",
         "create_unix_connection",
         "create_unix_server",
-        # asyncio.start_server / start_unix_server / open_unix_connection listen
-        # or connect, and the loop.create_datagram_endpoint / sock_connect helpers
-        # open a UDP or raw socket, all outbound network the sandbox does not
-        # namespace off.
+        # more asyncio listen/connect + UDP/raw socket helpers.
         "start_server",
         "start_unix_server",
         "open_unix_connection",
@@ -674,10 +648,8 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "save_weights",
         "save_lora",
         "save_checkpoint",
-        # logging file handlers open a log file for writing (default mode "a"
-        # still creates/appends), so constructing one writes to disk like
-        # open(..., "w"); matched as an attribute call (logging.FileHandler) and
-        # as a bare import (from logging.handlers import RotatingFileHandler).
+        # logging file handlers open a log file for write on construction (even
+        # default mode "a" creates); matched as attribute call and bare import.
         "FileHandler",
         "WatchedFileHandler",
         "RotatingFileHandler",
@@ -690,14 +662,11 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "HDFStore",
     }
 )
-# Archive / compressed-file constructors that take the mode as their 2nd arg
-# like builtin open: ZipFile(name, "w") / gzip.GzipFile(name, "w") write, while
-# the same call without a write mode reads, so they are gated only in write
-# mode. gzip/bz2/lzma single-stream writers sit alongside the zip/tar archives
-# (their modules are not blanket-unsafe: reading a .gz is fine).
+# Archive / compressed-file constructors taking the mode as their 2nd arg like
+# open: ZipFile(name, "w") / gzip.GzipFile(name, "w") write, so gated only in
+# write mode (reading a .gz is fine, so the modules are not blanket-unsafe).
 _ARCHIVE_CTOR_NAMES = frozenset({"ZipFile", "TarFile", "GzipFile", "BZ2File", "LZMAFile"})
-# The stdlib module each archive constructor is imported from, so
-# `from gzip import GzipFile` is tracked like `from zipfile import ZipFile`.
+# The stdlib module each archive constructor is imported from.
 _ARCHIVE_CTOR_MODULES = {
     "zipfile": "ZipFile",
     "tarfile": "TarFile",
@@ -705,9 +674,8 @@ _ARCHIVE_CTOR_MODULES = {
     "bz2": "BZ2File",
     "lzma": "LZMAFile",
 }
-# Modules whose top-level open() takes the mode as its 2nd arg like builtin open
-# (gzip.open("o.gz", "w") writes), so `from gzip import open as gopen` binds an
-# open alias and gopen("o.gz", "w") is gated like open(..., "w").
+# Modules whose top-level open() takes the mode as its 2nd arg like builtin open,
+# so `from gzip import open as gopen` binds an open alias gated on write mode.
 _OPEN_ALIAS_MODULES = frozenset({"gzip", "bz2", "lzma"})
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
@@ -1246,11 +1214,9 @@ def _folded_is_sensitive(folded) -> bool:
         "\x02" in folded
         or _references_sensitive_path(folded)
         or ("\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded)))
-        # A dynamic segment (NUL) can be the "/" that turns a relative-looking
-        # suffix into a sensitive absolute root: open(chr(47) + "etc/passwd") /
-        # open(os.sep + "etc/passwd") fold to "\x00etc/passwd". Re-run the
-        # credential-path scan with NUL treated as "/" so those read like
-        # /etc/passwd (a benign "\x00data/file" stays "/data/file", safe).
+        # A dynamic segment (NUL) can be the "/" forming a sensitive root:
+        # open(os.sep + "etc/passwd") folds to "\x00etc/passwd", so re-scan with
+        # NUL as "/" (a benign "\x00data/file" -> "/data/file" stays safe).
         or ("\x00" in folded and _references_sensitive_path(folded.replace("\x00", "/")))
         or _glob_token_sensitive(folded)
     )
@@ -1269,19 +1235,16 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
     # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
     stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    # Bash applies brace, parameter, and ANSI-C ($'\x77') expansion after this
-    # classifier, so a path split across a brace group (/etc/pass{w,}d), a
-    # default/substring parameter (${x:-wd}, ${p:0:6}), or an escape ($'...') is
-    # invisible to the raw scan; expand them before scanning. ANSI-C is decoded
-    # from the raw command, before backslash stripping removes its escapes.
+    # Bash applies brace/parameter/ANSI-C expansion after this classifier, so a
+    # path split across a brace group (/etc/pass{w,}d), a default/substring param
+    # (${x:-wd}, ${p:0:6}), or an escape ($'...') is invisible to the raw scan;
+    # expand first (ANSI-C decoded from the raw command, before backslash strip).
     candidates = []
     for c in (command, stripped, _decode_ansi_c(command)):
         c_param = _expand_param_defaults(c)
         candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
-    # Run BOTH the literal sensitive-path scan and the glob-sensitive scan over
-    # every candidate, so a brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d)
-    # is caught: the brace expansion alone yields no literal /etc/passwd, and the
-    # glob resolves it only once the brace group is expanded.
+    # Run both the literal and glob-sensitive scans over every candidate, so a
+    # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
     if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
@@ -1306,10 +1269,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
             return True
     else:
         scan_tokens = tokens
-    # find/fd expressions group with (...) which resets command context, so a
-    # trailing -delete/-exec could slip past. When find/fd is used anywhere,
-    # scan every token for its mutating actions (find -exec/-delete/..., fd
-    # -x/--exec-batch).
+    # find/fd group with (...) which resets command context, so a trailing
+    # -delete/-exec could slip past; scan every token when find/fd appears.
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
             return True
@@ -1469,15 +1430,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Archive constructors imported bare (from zipfile import ZipFile), so
     # ZipFile(name, "w") is gated like the zipfile.ZipFile attribute call.
     archive_ctor_aliases: "set[str]" = set()
-    # operator.methodcaller builds a callable that invokes a named method, a
-    # dynamic-dispatch vector like getattr/partial (methodcaller("write_text")).
+    # operator.methodcaller("write_text") is dynamic dispatch, like getattr.
     operator_aliases = {"operator"}
     methodcaller_aliases: "set[str]" = set()
-    # logging.basicConfig(filename=...) opens a log file for writing; tracked as
-    # an attribute call and as a bare import (from logging import basicConfig).
+    # logging.basicConfig(filename=...) opens a log file for write.
     basicconfig_aliases: "set[str]" = set()
-    # fileinput module aliases: fileinput.input(..., inplace=True) rewrites a
-    # file in place, unlike the default (read-only) fileinput.input(...).
+    # fileinput.input(..., inplace=True) rewrites a file in place.
     fileinput_aliases = {"fileinput"}
 
     def _methodcaller_writes(call) -> bool:
@@ -1906,22 +1864,19 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
     return walk(arguments)
 
 
-# The DDL object types CREATE / DROP / ALTER can target; a statement against any
-# of them mutates the database, so all three verbs share the set (DROP FUNCTION
-# and ALTER INDEX mutate just like CREATE INDEX).
+# DDL object types CREATE / DROP / ALTER share (DROP FUNCTION and ALTER INDEX
+# mutate just like CREATE INDEX).
 _SQL_DDL_OBJECTS = (
     r"table|database|schema|index|view|function|procedure|trigger|"
     r"sequence|role|user|extension|type|domain|aggregate"
 )
-# Modifiers that can sit between the DDL verb and the object (CREATE OR REPLACE
-# VIEW, DROP MATERIALIZED VIEW, CREATE UNIQUE INDEX).
+# Modifiers between the DDL verb and object (CREATE OR REPLACE VIEW, DROP
+# MATERIALIZED VIEW, CREATE UNIQUE INDEX).
 _SQL_DDL_MODIFIERS = (
     r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
 )
-# A SQL identifier: bare, "double-quoted", `backtick-quoted`, or [bracketed],
-# optionally schema-qualified (public.users), so UPDATE "users" / UPDATE
-# public.users / UPDATE ONLY public.users / UPDATE [users] SET all reach the
-# guard instead of only bare UPDATE <word> SET.
+# A SQL identifier (bare, "quoted", `quoted`, [bracketed]), optionally
+# schema-qualified, so UPDATE "users"/public.users/ONLY .../[users] SET all hit.
 _SQL_IDENT = r'(?:\w+|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]+\])'
 _SQL_UPDATE_TARGET = r"(?:only\s+)?" + _SQL_IDENT + r"(?:\s*\.\s*" + _SQL_IDENT + r")*"
 # A read-named MCP tool (query_database, run_query) can still carry a mutating
@@ -1933,34 +1888,24 @@ _MCP_ARG_MUTATION_RE = re.compile(
     r"truncate\s+(?:table\s+)?\w|"
     r"update\s+" + _SQL_UPDATE_TARGET + r"\s+set\b|"
     r"insert\s+into|replace\s+into|"
-    # SELECT ... INTO OUTFILE/DUMPFILE writes a server-side file (MySQL); the
-    # bare SELECT ... INTO <table> form is left out because PL/pgSQL uses it to
-    # assign into a variable (a read).
+    # SELECT ... INTO OUTFILE/DUMPFILE writes a file (MySQL); bare SELECT INTO
+    # <table> is left out (PL/pgSQL uses it to read into a variable).
     r"select\s+[^;]*?\binto\s+(?:outfile|dumpfile)\b|"
     r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
-    # CREATE DDL, allowing the shared modifiers and object set, so CREATE OR
-    # REPLACE VIEW and CREATE UNIQUE INDEX are caught too.
     r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"grant\s+\w|revoke\s+\w|merge\s+into|"
-    # Stored-procedure invocation (CALL proc(...), EXEC/EXECUTE name) and VACUUM
-    # (rewrites the database file) also mutate external state. CALL requires the
-    # name to be followed by "(", ";", or end so a natural-language "call me back"
-    # stays safe.
+    # CALL proc(...) / EXEC[UTE] name / VACUUM mutate; CALL needs a following
+    # "(", ";", or end so natural-language "call me back" stays safe.
     r"call\s+\w+(?=\s*[(;]|\s*$)|exec(?:ute)?\s+\w+|vacuum|"
-    # COPY ... FROM bulk-loads a table and COPY ... TO writes a server-side file
-    # ([^;] keeps the match inside one statement, spanning the table/column list).
+    # COPY ... FROM bulk-loads and COPY ... TO writes a file ([^;] stays in one
+    # statement).
     r"copy\s+[^;]*?\b(?:from|to)\b)\b",
     re.IGNORECASE,
 )
-# SQLite-flavored statements the base DML/DDL regex misses: ATTACH/DETACH a
-# database file (the DATABASE keyword is optional, so ATTACH '/x.db' AS y counts
-# via the quoted-expr form), a write-form PRAGMA (PRAGMA journal_mode=WAL /
-# user_version=42 / main.user_version=1 / foreign_keys(0), unlike the read-form
-# PRAGMA journal_mode which only takes a value with `=` or `(`), and
-# load_extension() which loads and runs an arbitrary shared library.
-# "pragma"/"load_extension"/"attach database" are not natural language, and the
-# no-keyword ATTACH form requires a quoted path, so a benign search string does
-# not trip these.
+# SQLite statements the base regex misses: ATTACH/DETACH a database (DATABASE
+# optional via the quoted-path form), a write-form PRAGMA (name=value / name(...),
+# unlike the read-form PRAGMA name), and load_extension() which runs a shared
+# library. These tokens are not natural language, so benign text does not trip.
 _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
     r"\b(?:attach|detach)\s+database\b"
     r"|\battach\s+(?:database\s+)?['\"]"
@@ -1968,10 +1913,9 @@ _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
     r"|\bload_extension\s*\(",
     re.IGNORECASE,
 )
-# State-changing SQL functions that mutate server state or write files even when
-# wrapped in a read-shaped SELECT (SELECT pg_terminate_backend(pid),
-# SELECT setval('s', 1), SELECT pg_write_file('/tmp/x', ...), lo_export(...)).
-# The trailing "(" is required, so a column named setval_count stays safe.
+# State-changing SQL functions that mutate or write files inside a read-shaped
+# SELECT (pg_terminate_backend, setval, pg_write_file, lo_export, ...). The
+# trailing "(" is required, so a column named setval_count stays safe.
 _MCP_ARG_SQL_FUNCTION_RE = re.compile(
     r"\b(?:pg_terminate_backend|pg_cancel_backend|pg_write_file|lo_export|"
     r"lo_import|setval|dblink_exec|pg_reload_conf|pg_rotate_logfile)\s*\(",
@@ -1981,10 +1925,8 @@ _MCP_ARG_SQL_FUNCTION_RE = re.compile(
 # UPDATE/**/users evade the \s+ in the mutation regex; collapse comments to a
 # space before matching.
 _SQL_COMMENT_RE = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
-# A GraphQL mutation operation (mutation { ... } / mutation Name(...) { ... })
-# changes external state on a read-named graphql tool. Directives are valid
-# between the operation name and the selection set (mutation M @audit { ... }),
-# so allow zero or more @directive[(args)] before the "(" variables or "{" body.
+# A GraphQL mutation on a read-named tool. Directives are valid between the name
+# and body (mutation M @audit { ... }), so allow @directive[(args)] before ( or {.
 _GRAPHQL_MUTATION_RE = re.compile(
     r"\bmutation\b\s*\w*\s*(?:@\w+(?:\s*\([^)]*\))?\s*)*[({]", re.IGNORECASE
 )
