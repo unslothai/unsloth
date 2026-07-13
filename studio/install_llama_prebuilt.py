@@ -6882,6 +6882,7 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    instruction_cleanup_root: Path | None = None,
 ) -> None:
     host = detect_host()
     host = _apply_host_overrides(
@@ -6894,10 +6895,11 @@ def install_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
     choice: AssetChoice | None = None
+    cleanup_root = install_dir if instruction_cleanup_root is None else instruction_cleanup_root
     try:
         with install_lock(install_lock_path(install_dir)):
             if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
-                removed = remove_agent_instruction_files(install_dir)
+                removed = remove_agent_instruction_files(cleanup_root)
                 if removed:
                     log(
                         f"removed {removed} contributor-only agent instruction file(s) from install"
@@ -7232,15 +7234,16 @@ def main() -> int:
     # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
+    install_arg = Path(args.install_dir).expanduser()
     install_prebuilt(
-        # Preserve link identity for cleanup ownership checks.
-        install_dir = Path(args.install_dir).expanduser().absolute(),
+        install_dir = install_arg.resolve(),
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,
+        instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS
 

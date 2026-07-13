@@ -310,7 +310,7 @@ def test_remove_agent_instruction_files_continues_after_unlink_error(
     assert "could not remove contributor-only instruction" in captured.out + captured.err
 
 
-def test_main_preserves_linked_install_path_for_ownership_checks(
+def test_main_resolves_linked_install_path_and_preserves_cleanup_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     target = tmp_path / "target"
@@ -335,8 +335,46 @@ def test_main_preserves_linked_install_path_for_ownership_checks(
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_LOG_TO_STDOUT", False)
 
     assert INSTALL_LLAMA_PREBUILT.main() == 0
-    assert received["install_dir"] == linked_root.absolute()
-    assert received["install_dir"].is_symlink()
+    assert received["install_dir"] == target.resolve()
+    assert received["instruction_cleanup_root"] == linked_root.absolute()
+    assert received["instruction_cleanup_root"].is_symlink()
+
+
+def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "target"
+    linked_root = tmp_path / "linked-root"
+    install_dir.mkdir()
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{}", encoding = "utf-8")
+    try:
+        linked_root.symlink_to(install_dir, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    cleanup_roots = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "remove_agent_instruction_files",
+        lambda root: cleanup_roots.append(root) or 0,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after cleanup")),
+    )
+
+    with pytest.raises(RuntimeError, match = "stop after cleanup"):
+        install_prebuilt(
+            install_dir.resolve(),
+            "latest",
+            "unslothai/llama.cpp",
+            "",
+            instruction_cleanup_root = linked_root.absolute(),
+        )
+
+    assert cleanup_roots == [linked_root.absolute()]
 
 
 def test_hydrate_source_tree_extracts_upstream_archive_contents(
@@ -800,6 +838,29 @@ def test_activate_install_tree_restores_existing_install_after_activation_failur
     output = captured.out + captured.err
     assert "moving existing install to rollback path" in output
     assert "restored previous install from rollback path" in output
+
+
+def test_activate_install_tree_preserves_symlink_to_resolved_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "target"
+    linked_root = tmp_path / "linked-root"
+    staging_dir = tmp_path / "staging"
+    install_dir.mkdir()
+    staging_dir.mkdir()
+    (install_dir / "old.txt").write_text("old", encoding = "utf-8")
+    (staging_dir / "new.txt").write_text("new", encoding = "utf-8")
+    try:
+        linked_root.symlink_to(install_dir, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    activate_install_tree(staging_dir, linked_root.resolve(), linux_host())
+
+    assert linked_root.is_symlink()
+    assert (linked_root / "new.txt").read_text(encoding = "utf-8") == "new"
+    assert not (linked_root / "old.txt").exists()
 
 
 def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
@@ -2203,12 +2264,18 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' in setup_sh
     assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh
     assert "-name 'CLAUDE.md'" in setup_sh
-    assert 'if [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ]; then' in setup_sh
+    assert 'if [ ! -L "$LLAMA_CPP_DIR" ] && {' in setup_sh
+    assert '${_LOCAL_LLAMA_CPP_LINKED:-false}" != true' not in setup_sh
+    assert "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" in setup_sh
+    assert '_studio_owned_adoptable "$LLAMA_CPP_DIR"' in setup_sh
     assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" in setup_ps1
     assert '"CLAUDE.md"' in setup_ps1
     assert '-Include "AGENTS.md", "CLAUDE.md"' not in setup_ps1
     assert '$child.Name -in @("AGENTS.md", "CLAUDE.md")' in setup_ps1
-    assert "if (-not $LocalLlamaCppLinked)" in setup_ps1
+    assert "$llamaCppIsLink" in setup_ps1
+    assert "if (-not $LocalLlamaCppLinked)" not in setup_ps1
+    assert "Join-Path $LlamaCppDir $StudioOwnedMarker" in setup_ps1
+    assert "Test-StudioOwnedAdoptable $LlamaCppDir" in setup_ps1
     assert (
         "Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir\n"
         "            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)"

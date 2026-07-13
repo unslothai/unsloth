@@ -4052,7 +4052,13 @@ if ($LocalLlamaCppLinked) {
     }
 }
 
-if (-not $LocalLlamaCppLinked) {
+$llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+$llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+if (-not $llamaCppIsLink -and (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $LlamaCppDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-StudioOwnedAdoptable $LlamaCppDir)
+    )) {
     Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
 }
 

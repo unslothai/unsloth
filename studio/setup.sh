@@ -1931,7 +1931,11 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     fi
 fi
 
-if [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ]; then
+if [ ! -L "$LLAMA_CPP_DIR" ] && {
+    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+        [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
+        _studio_owned_adoptable "$LLAMA_CPP_DIR"
+}; then
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
 fi
 
