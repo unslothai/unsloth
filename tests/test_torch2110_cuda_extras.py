@@ -62,7 +62,9 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
     windows = [r for r in xformers if r.url and r.url.endswith("win_amd64.whl")]
     assert len(linux) == 1 and len(windows) == 1, f"unexpected xformers wheels: {xformers}"
     for r in linux + windows:
-        assert f"/whl/{cuda}/xformers-0.0.35-" in r.url, f"xformers not on the {cuda} index: {r.url}"
+        assert (
+            f"/whl/{cuda}/xformers-0.0.35-" in r.url
+        ), f"xformers not on the {cuda} index: {r.url}"
         # The wheels are x86-64 only, so the markers must exclude other machines
         # (e.g. Linux aarch64 such as GB200/DGX Spark, Windows ARM64) where the
         # torch trio resolves fine but these wheels would abort the install.
