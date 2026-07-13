@@ -23,7 +23,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
-import { isMissingDeviceError } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  describeMediaError,
+  describeSpeechError,
+  isMissingDeviceError,
+} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import {
   applyDictationDictionary,
   recordRecentDictation,
@@ -257,12 +261,13 @@ function useDictation(
         }
         streamRef.current = stream;
         audioTrack = stream.getAudioTracks()[0];
-      } catch {
-        // Permission/security failure: stop instead of silently recording
-        // from a different default device, matching the main chat adapter.
+      } catch (error) {
+        // Permission/security failure: report it and stop instead of silently
+        // recording from a different default device, matching the main adapter.
         startingRef.current = false;
         releaseStream();
         setIsDictating(false);
+        toast.error(describeMediaError(error));
         return;
       }
     }
@@ -294,7 +299,13 @@ function useDictation(
         setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
       }
     };
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
+      // Report speech-service failures like the main adapter; aborted is a
+      // normal stop, not an error.
+      const errorEvent = event as SpeechRecognitionErrorEvent;
+      if (errorEvent.error !== "aborted") {
+        toast.error(describeSpeechError(errorEvent.error, errorEvent.message));
+      }
       setIsDictating(false);
     };
     recognition.onend = () => {

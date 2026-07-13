@@ -30,7 +30,7 @@ export const isMissingDeviceError = (error: unknown): boolean => {
   return name === "OverconstrainedError" || name === "NotFoundError";
 };
 
-const describeMediaError = (error: unknown): string => {
+export const describeMediaError = (error: unknown): string => {
   if (!(error instanceof DOMException)) {
     return "Dictation could not access the microphone.";
   }
@@ -46,7 +46,7 @@ const describeMediaError = (error: unknown): string => {
   return error.message || "Dictation could not access the microphone.";
 };
 
-const describeSpeechError = (error: string, message?: string): string => {
+export const describeSpeechError = (error: string, message?: string): string => {
   if (error === "not-allowed") {
     return "Speech recognition was blocked by the browser. Check microphone permissions for this Unsloth page.";
   }

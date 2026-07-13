@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
 
 /** Voice for a stored voiceURI; undefined lets the browser pick. */
@@ -264,6 +265,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       error?: unknown,
     ) => {
       if (res.status.type === "ended") return;
+      // Surface genuine read-aloud failures; a cancelled/interrupted utterance
+      // is a normal stop, not an error, and must not toast.
+      if (reason === "error" && error !== "interrupted" && error !== "canceled") {
+        toast.error(error instanceof Error ? error.message : "Read aloud failed.");
+      }
       res.status = { type: "ended", reason, error };
       for (const handler of subscribers) handler();
     };
