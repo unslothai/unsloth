@@ -280,6 +280,26 @@ def test_studio_default_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp
     assert _auth_state(studio_mod)["must_change_password"] == 1
 
 
+def test_studio_default_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):
+    # Fresh STUDIO_HOME (no pre-seed): the gate's own _ensure_cli_default_admin
+    # does the INSERT. It must COMMIT that seed before re-exec, or conn.close()
+    # rolls it back and an OLD child would find no admin, regenerate a fresh
+    # bootstrap password + file, and inject THAT -- defeating the file deletion.
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    # Deliberately NO _seed_auth(): exercise the gate seeding a fresh DB itself.
+
+    _invoke_studio_default(monkeypatch, events, ["--secure"])
+
+    # The seeded admin persists (committed) so an old child sees it and does not
+    # regenerate; the bootstrap file stays deleted; the launch still re-execs.
+    state = _auth_state(studio_mod)
+    assert state["must_change_password"] == 1
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["exec"], events
+
+
 def test_studio_default_loopback_cloudflare_never_prompts(monkeypatch, tmp_path):
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
@@ -379,6 +399,22 @@ def test_run_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
     kinds = [kind for kind, _ in events]
     assert kinds == ["exec"], events
     assert _auth_state(studio_mod)["must_change_password"] == 1
+
+
+def test_run_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):
+    # Fresh STUDIO_HOME on the `run` re-exec path: the seeded admin must be
+    # committed before re-exec so an old console-script child does not regenerate
+    # and inject a fresh bootstrap credential.
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+
+    _invoke_run(monkeypatch, events, _BASE + ["--secure"])
+
+    state = _auth_state(studio_mod)
+    assert state["must_change_password"] == 1
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+    kinds = [kind for kind, _ in events]
+    assert kinds == ["exec"], events
 
 
 def test_run_non_tty_api_only_fails_closed(monkeypatch, tmp_path):

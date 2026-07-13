@@ -746,6 +746,13 @@ def _enforce_password_change_before_exposure(
     try:
         try:
             _ensure_cli_default_admin(conn)
+            # Persist a freshly seeded admin before we might re-exec. The INSERT
+            # in _ensure_cli_default_admin is otherwise uncommitted and rolls
+            # back on conn.close(): a re-exec'd child (especially an OLD
+            # studio-venv one) would then find no admin, regenerate a fresh
+            # bootstrap password + file, and inject THAT into the public page,
+            # defeating the deletion below.
+            conn.commit()
             row = conn.execute(
                 "SELECT password_salt, password_hash, must_change_password "
                 "FROM auth_user WHERE username = ?",
