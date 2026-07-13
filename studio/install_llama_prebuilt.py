@@ -6861,7 +6861,9 @@ def install_prebuilt(
             if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
                 removed = remove_agent_instruction_files(install_dir)
                 if removed:
-                    log(f"removed {removed} contributor-only agent instruction file(s) from install")
+                    log(
+                        f"removed {removed} contributor-only agent instruction file(s) from install"
+                    )
             if install_dir.exists():
                 log(
                     f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"
