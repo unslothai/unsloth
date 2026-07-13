@@ -240,10 +240,10 @@ class ExllamaV3Linear(torch.nn.Linear):
         # Reconstruct then F.linear; the fused trellis kernel gave wrong logits.
         dtype = x.dtype
         qs = self.weight.quant_state
-        W = qs.dequantize(dtype = dtype)  # [out, in]
-        out = torch.nn.functional.linear(
-            x, W, self.bias.to(dtype) if self.bias is not None else None
-        )
+        # Move weight/bias to x's device (multi-GPU device_map).
+        W = qs.dequantize(dtype = dtype).to(x.device)  # [out, in]
+        bias = self.bias.to(device = x.device, dtype = dtype) if self.bias is not None else None
+        out = torch.nn.functional.linear(x, W, bias)
         return out
 
     def extra_repr(self) -> str:

@@ -191,9 +191,7 @@ def reload_exl3_experts(
     """
     if not is_exllama_available():
         return 0
-            num_experts = int(getattr(module, "num_experts", 0)) or _infer_num_experts(module)
-            if num_experts == 0:
-                continue
+    if not os.path.isdir(checkpoint_dir):
         return 0
 
     require_exllama()
@@ -208,6 +206,8 @@ def reload_exl3_experts(
     try:
         for module, module_path in experts_modules:
             num_experts = int(getattr(module, "num_experts", 0)) or _infer_num_experts(module)
+            if num_experts == 0:
+                continue
             prefixes = _candidate_checkpoint_prefixes(module_path)
 
             for attr, subkeys in _FUSED_EXPERT_LAYOUTS.items():
@@ -319,6 +319,17 @@ def _model_device(model) -> torch.device:
         if p.device.type != "meta":
             return p.device
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _experts_have_bias(module) -> bool:
+    """True if a fused-experts module carries per-expert bias (e.g. gpt_oss)."""
+    for attr in (
+        "gate_up_proj_bias", "down_proj_bias", "gate_proj_bias",
+        "up_proj_bias", "w1_bias", "w2_bias", "w3_bias",
+    ):
+        if getattr(module, attr, None) is not None:
+            return True
+    return False
 
 
 # Keeps each expert quantized and reconstructs only the routed top-k on the fly,
@@ -456,6 +467,9 @@ def reload_exl3_experts_quantized(
             inter = int(getattr(module, "intermediate_dim", 0)) or _infer_inter(module)
             act_fn = getattr(module, "act_fn", None)
             prefixes = _candidate_checkpoint_prefixes(module_path)
+            # Skip bias-bearing experts (the quantized path can't represent bias).
+            if _experts_have_bias(module):
+                continue
 
             new = Exl3QuantizedExperts(num_experts, hidden, inter, act_fn)
             ok_all = True
@@ -574,6 +588,9 @@ def install_quantized_experts_before_load(model, checkpoint_dir) -> int:
             inter = int(getattr(module, "intermediate_dim", 0)) or _infer_inter(module)
             act_fn = getattr(module, "act_fn", None)
             prefixes = _candidate_checkpoint_prefixes(module_path)
+            # Skip bias-bearing experts (the quantized path can't represent bias).
+            if _experts_have_bias(module):
+                continue
             new = Exl3QuantizedExperts(num_experts, hidden, inter, act_fn)
             ok_all = True
             for e in range(num_experts):

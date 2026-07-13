@@ -1118,6 +1118,9 @@ def _dequantize_for_lora(
     if _is_exl3_quant_state(quant_state):
         dtype = getattr(quant_state, "dtype", None)
         result = _exl3_fast_dequantize(quant_state, transpose = transpose, dtype = dtype)
+        # Keep the weight on the placeholder's device (multi-GPU device_map).
+        if W is not None and getattr(W, "device", None) is not None and result.device != W.device:
+            result = result.to(W.device)
         if out is not None:
             out.copy_(result)
             return out
