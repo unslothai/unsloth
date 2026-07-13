@@ -984,8 +984,12 @@ fi
 # path; any other code (probe error) -> fail safe and run the pass. Mirrors setup.ps1's
 # stale-venv pre-check. Same shape as the anyio-repair override above.
 if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
-    "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" --torch-pin-needs-apply 2>/dev/null
-    _PIN_NEEDS_APPLY=$?
+    # `|| _PIN_NEEDS_APPLY=$?` keeps the probe's nonzero exit (1 = already applied,
+    # the COMMON steady-state answer) from killing the script under `set -e`; a bare
+    # command followed by `$?` capture would abort before the capture ever ran.
+    _PIN_NEEDS_APPLY=0
+    "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" --torch-pin-needs-apply 2>/dev/null \
+        || _PIN_NEEDS_APPLY=$?
     if [ "$_PIN_NEEDS_APPLY" != 1 ]; then
         substep "torch-index pin not yet applied -- running dependency pass to apply it..."
         _SKIP_PYTHON_DEPS=false

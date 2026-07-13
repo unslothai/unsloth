@@ -597,6 +597,13 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "setup.sh must keep the fast path only on an explicit exit 1 (already applied) "
             "and fail safe (run the pass) on exit 0 or a probe error"
         )
+        # setup.sh runs under `set -euo pipefail`: the probe's exit 1 (the common
+        # already-applied answer) must be absorbed with `|| _PIN_NEEDS_APPLY=$?` --
+        # a bare command would abort the whole update before the capture ran.
+        assert "|| _PIN_NEEDS_APPLY=$?" in text, (
+            "setup.sh must capture the probe exit with `|| _PIN_NEEDS_APPLY=$?` so a "
+            "nonzero probe result does not kill the script under set -e"
+        )
 
     def test_stack_py_exposes_torch_pin_needs_apply_probe(self):
         """install_python_stack.py must answer the setup.sh/setup.ps1 probe: exit 0 when a
