@@ -79,7 +79,7 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 const STT_MODEL_LABELS: Record<SttModel, string> = {
   tiny: "Whisper Tiny · fastest/basic · ~75 MB",
   base: "Whisper Base · fast/balanced · ~150 MB",
-  small: "Whisper Small — better accuracy · ~500 MB",
+  small: "Whisper Small · better accuracy · ~500 MB",
   "distil-large-v3": "Distil-Whisper Large v3 · English/fast · ~1.5 GB",
   "large-v3-turbo": "Whisper Large v3 Turbo · accurate/fast · ~1.6 GB",
   "large-v3": "Whisper Large v3 · best accuracy/slowest · ~3 GB",
