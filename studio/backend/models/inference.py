@@ -125,6 +125,9 @@ class TranscribeRequest(BaseModel):
     language: Optional[str] = Field(
         None, description = "BCP-47 language, or 'auto'/None to detect"
     )
+    interim: bool = Field(
+        False, description = "Fast, lower-accuracy pass for live streaming previews"
+    )
 
 
 class SttLoadRequest(BaseModel):

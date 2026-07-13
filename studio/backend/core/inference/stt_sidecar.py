@@ -154,11 +154,13 @@ class WhisperSttSidecar:
         audio: bytes,
         model: Optional[str] = None,
         language: Optional[str] = None,
+        interim: bool = False,
     ) -> dict:
         """Transcribe encoded audio bytes to text.
 
         Accepts any container faster-whisper (PyAV) can decode: wav, mp3,
         opus/webm, ogg, m4a/aac. Returns {text, language, duration, model}.
+        ``interim`` uses a faster, lower-accuracy pass for live previews.
         """
         whisper_model = self.load(model)
         # A specific language is faster and more accurate than auto-detect;
@@ -168,8 +170,8 @@ class WhisperSttSidecar:
             segments, info = whisper_model.transcribe(
                 io.BytesIO(audio),
                 language=lang,
-                beam_size=5,
-                vad_filter=True,
+                beam_size=1 if interim else 5,
+                vad_filter=not interim,
                 condition_on_previous_text=False,
             )
         except (ValueError, RuntimeError) as exc:

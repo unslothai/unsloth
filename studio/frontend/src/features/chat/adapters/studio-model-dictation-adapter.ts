@@ -14,6 +14,12 @@ import {
   isMissingDeviceError,
 } from "./studio-web-speech-dictation-adapter";
 
+// MediaRecorder emits a chunk this often; the growing buffer is re-transcribed
+// for a live preview so text appears while the user is still speaking.
+const STREAM_TIMESLICE_MS = 1000;
+// Do not start a new interim pass more often than this, and only one at a time.
+const MIN_INTERIM_INTERVAL_MS = 900;
+
 // Prefer Opus (small, widely supported); fall back to whatever the browser
 // records. The backend decodes any of these with PyAV.
 const PREFERRED_MIME_TYPES = [
@@ -50,6 +56,7 @@ async function blobToBase64(blob: Blob): Promise<string> {
 export async function transcribeAudioBlob(
   blob: Blob,
   signal?: AbortSignal,
+  interim = false,
 ): Promise<string> {
   const { sttModel, dictationLanguage } = useVoiceSettingsStore.getState();
   const audio = await blobToBase64(blob);
@@ -60,6 +67,7 @@ export async function transcribeAudioBlob(
       audio,
       model: sttModel,
       language: dictationLanguage,
+      interim,
     }),
     signal,
   });
@@ -144,7 +152,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const chunks: Blob[] = [];
     let ended = false;
     let cancelled = false;
+    // Final transcription: aborted only when the whole session is cancelled.
     const abortController = new AbortController();
+    // Live-preview transcriptions: also aborted when recording stops.
+    const interimAbort = new AbortController();
+    let interimBusy = false;
+    let lastInterimAt = 0;
     let resolveEnded: (() => void) | null = null;
     const endedPromise = new Promise<void>((resolve) => {
       resolveEnded = resolve;
@@ -162,7 +175,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       },
       cancel: () => {
         cancelled = true;
-        // Abort an in-flight transcription so a late response is discarded.
+        // Abort any in-flight transcription so a late response is discarded.
+        interimAbort.abort();
         abortController.abort();
         if (!ended && recorder && recorder.state !== "inactive") {
           recorder.stop();
@@ -218,7 +232,40 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       recordRecentDictation(corrected);
     };
 
+    // Re-transcribe the audio so far (fast pass) and emit it as a live preview.
+    // Partial recordings decode fine; Whisper refines earlier words as more
+    // audio arrives, and the final pass replaces the preview on stop.
+    const runInterim = () => {
+      if (ended || cancelled || interimBusy || chunks.length === 0) return;
+      const now = Date.now();
+      if (now - lastInterimAt < MIN_INTERIM_INTERVAL_MS) return;
+      interimBusy = true;
+      lastInterimAt = now;
+      const type = recorder?.mimeType || "audio/webm";
+      const blob = new Blob(chunks, { type });
+      void (async () => {
+        try {
+          const transcript = await transcribeAudioBlob(
+            blob,
+            interimAbort.signal,
+            true,
+          );
+          if (ended || cancelled || !transcript) return;
+          const corrected = applyDictationDictionary(transcript);
+          for (const callback of speechCallbacks) {
+            callback({ transcript: corrected, isFinal: false });
+          }
+        } catch {
+          // Interim failures (aborts, blips) are ignored; the final pass runs.
+        } finally {
+          interimBusy = false;
+        }
+      })();
+    };
+
     const handleRecorderStop = () => {
+      // Stop live previews; the accurate final pass follows.
+      interimAbort.abort();
       if (cancelled) {
         finish("cancelled");
         return;
@@ -286,9 +333,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         );
         recorder.addEventListener("dataavailable", (event) => {
           if (event.data.size > 0) chunks.push(event.data);
+          runInterim();
         });
         recorder.addEventListener("stop", handleRecorderStop);
-        recorder.start();
+        // Timeslice so chunks arrive during recording, enabling live previews.
+        recorder.start(STREAM_TIMESLICE_MS);
         session.status = { type: "running" };
         for (const callback of speechStartCallbacks) callback();
       } catch (error) {
