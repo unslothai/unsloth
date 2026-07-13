@@ -47,6 +47,12 @@ _QUIET_POLL_PATHS = {
     "/api/models/checkpoints",
     "/api/models/local",
     "/api/rag/knowledge-bases",
+    # Legacy training-tab download polls. Unlike the /api/hub/* routes these do not
+    # emit hub_download_progress events, so heartbeat them (keep a signal) rather
+    # than suppress outright.
+    "/api/models/download-progress",
+    "/api/models/gguf-download-progress",
+    "/api/datasets/download-progress",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -56,7 +62,6 @@ _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
     "/api/train/hardware",
-    "/api/export/status",
     "/api/system",
 }
 _EXCLUDED_SUFFIXES = (
@@ -69,18 +74,16 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
-# Paths whose 2xx access line carries no signal, so suppress it entirely; non-2xx
-# (errors) still log. These download, load, update, and log-tail polls fire ~1-2x/s
-# for the whole operation; the real signal is in their own progress or phase events
-# and the UI, not the per-poll line. Chat thread/project CRUD is covered by the
-# generation, tool-call, and stats events.
+# GET polls whose 2xx access line carries no signal, so suppress it entirely; non-2xx
+# (errors) still log. These load, update, log-tail, export-status, and event-emitting
+# /api/hub download polls fire ~1-2x/s; the real signal is in their own progress or
+# phase events and the UI, not the per-poll line. (Legacy /api/models and /api/datasets
+# download polls emit no events, so they heartbeat via _QUIET_POLL_PATHS instead.)
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
     "/api/llama/update-status",
     "/api/export/logs",
-    "/api/models/download-progress",
-    "/api/models/gguf-download-progress",
-    "/api/datasets/download-progress",
+    "/api/export/status",
     "/api/hub/download-status",
     "/api/hub/download-progress",
     "/api/hub/gguf-download-progress",
@@ -91,17 +94,22 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
 }
-# Chat thread/project CRUD prefixes. Their 2xx line is covered by the generation,
-# tool-call, and stats events. On first load these also fire before the initial
-# token refresh and 401 until /api/auth/refresh runs, so drop that transient
-# pre-auth 401 too; real auth failures still surface via /api/auth/*.
+# Chat thread/project list-GET prefixes. Their 2xx line is covered by the
+# generation, tool-call, and stats events. On first load these also 401 until
+# /api/auth/refresh runs, so drop that transient pre-auth 401 too. Mutations
+# (POST/PUT/DELETE) and real auth failures still surface: the predicate is
+# GET-only, and /api/auth/* is never suppressed.
 _QUIET_SUCCESS_PREFIXES = (
     "/api/chat/threads",
     "/api/chat/projects",
 )
 
 
-def _is_quiet_success(path: str, status_code: int) -> bool:
+def _is_quiet_success(method: str, path: str, status_code: int) -> bool:
+    """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat
+    list poll's transient pre-auth 401. Mutations and other errors always log."""
+    if method != "GET":
+        return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
     return status_code == 401 and path.startswith(_QUIET_SUCCESS_PREFIXES)
@@ -174,7 +182,7 @@ class LoggingMiddleware:
             end_time = time.perf_counter()
             if (
                 not excluded
-                and not _is_quiet_success(path, status_code)
+                and not _is_quiet_success(scope["method"], path, status_code)
                 and not self._is_redundant_repeat(
                     scope["method"], path, scope.get("query_string", b""), status_code, end_time
                 )
