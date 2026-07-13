@@ -3591,9 +3591,6 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
     return body
 
 
-# Preview requests share the single model slot but must never evict the Studio
-# model. They may load only into an empty slot or reuse their already-loaded
-# checkpoint.
 _preview_slot_lock = threading.Lock()
 _preview_request_count = 0
 
@@ -3632,17 +3629,12 @@ async def load_model_for_preview(
             async with inference_lifecycle_gate():
                 loaded = _loaded_slot_ident()
                 same_target = loaded is not None and loaded.lower() == request.model_path.lower()
-                # A preview never borrows Studio's model slot. This includes an
-                # idle model: otherwise merely opening a preview link makes the
-                # Studio chat silently swap models between messages.
                 if loaded is not None and not same_target:
                     raise HTTPException(
                         status_code = 503,
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
-                # A second preview visitor queued on the preview lock is not
-                # generating yet, so exclude those waiters from the busy count.
                 if (
                     not same_target
                     and other_inference_request_count(
@@ -3661,8 +3653,6 @@ async def load_model_for_preview(
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
-    """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
-    16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
     load_in_4bit = requested
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
@@ -4862,9 +4852,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
-            # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
-            # a slow SSE stream paused between tokens still holds, so a sync call would block
-            # the loop that drives the stream's next token and the lock release.
             backend = get_inference_backend()
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
