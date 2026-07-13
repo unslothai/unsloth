@@ -43,10 +43,7 @@ def test_sys_executable_braces_spaced_rewritten():
 
 
 def test_absolute_interpreter_path_rewritten():
-    assert (
-        _rewrite("!/opt/unsloth-venv/bin/python -m pip install peft\n")
-        == "!pip install peft\n"
-    )
+    assert _rewrite("!/opt/unsloth-venv/bin/python -m pip install peft\n") == "!pip install peft\n"
 
 
 def test_absolute_interpreter_versioned_path_rewritten():
@@ -54,10 +51,7 @@ def test_absolute_interpreter_versioned_path_rewritten():
 
 
 def test_quoted_interpreter_path_rewritten():
-    assert (
-        _rewrite('!"/opt/unsloth venv/bin/python" -m pip install peft')
-        == "!pip install peft"
-    )
+    assert _rewrite('!"/opt/unsloth venv/bin/python" -m pip install peft') == "!pip install peft"
 
 
 def test_indent_preserved():

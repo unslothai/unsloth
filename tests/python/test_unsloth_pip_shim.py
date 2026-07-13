@@ -663,9 +663,7 @@ def test_uv_exact_flag_stripped(shim):
 def _make_local_project(tmp_path, dirname, project_name):
     proj = tmp_path / dirname
     proj.mkdir()
-    (proj / "pyproject.toml").write_text(
-        f'[project]\nname = "{project_name}"\nversion = "1.0"\n'
-    )
+    (proj / "pyproject.toml").write_text(f'[project]\nname = "{project_name}"\nversion = "1.0"\n')
     return str(proj)
 
 

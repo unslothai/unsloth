@@ -279,7 +279,6 @@ def _local_project_name(token):
     if os.path.isfile(_pyproject):
         try:
             import tomllib
-
             with open(_pyproject, "rb") as f:
                 _name = (tomllib.load(f).get("project") or {}).get("name")
             if _name:
