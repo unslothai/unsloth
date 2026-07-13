@@ -531,9 +531,7 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Finite timeout is large (30s); without the cancel poll the drain would
     # keep reading the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(
-        proc, 30, lambda _t: None, cancel_event, pgid = pgid
-    )
+    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
