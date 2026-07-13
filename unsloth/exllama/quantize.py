@@ -67,10 +67,11 @@ def ensure_calibration_data() -> bool:
     data_dir = _calibration_data_dir()
     if data_dir is None:
         return False
-    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok = True)
 
     missing = [
-        f for f in _CAL_DATA_FILES
+        f
+        for f in _CAL_DATA_FILES
         if not os.path.isfile(os.path.join(data_dir, f))
         or os.path.getsize(os.path.join(data_dir, f)) == 0
     ]
@@ -160,8 +161,8 @@ def ensure_vlm_preprocessor(model_dir: str) -> bool:
         "image_processor_type": "Qwen2VLImageProcessorFast",
     }
     try:
-        with open(dest, "w", encoding="utf-8") as f:
-            json.dump(prep, f, indent=2)
+        with open(dest, "w", encoding = "utf-8") as f:
+            json.dump(prep, f, indent = 2)
         print(
             f"Unsloth: synthesized a missing preprocessor_config.json for the VLM "
             f"at {model_dir} (from its vision_config) so EXL3 can quantize it."
@@ -197,7 +198,7 @@ def make_text_only_config(model_dir: str) -> bool:
 
     cfg_path = os.path.join(model_dir, "config.json")
     try:
-        raw = json.load(open(cfg_path, encoding="utf-8"))
+        raw = json.load(open(cfg_path, encoding = "utf-8"))
     except Exception:
         return False
     archs = list(raw.get("architectures") or [])
@@ -214,13 +215,19 @@ def make_text_only_config(model_dir: str) -> bool:
         new = merged
     new["architectures"] = [causal]
     new["model_type"] = str(new.get("model_type", "")).replace("_text", "") or "qwen3_5_moe"
-    for k in ("vision_config", "text_config", "vision_start_token_id",
-              "vision_end_token_id", "image_token_id", "video_token_id"):
+    for k in (
+        "vision_config",
+        "text_config",
+        "vision_start_token_id",
+        "vision_end_token_id",
+        "image_token_id",
+        "video_token_id",
+    ):
         new.pop(k, None)
 
     if not os.path.exists(cfg_path + ".vlm_backup"):
         shutil.copy(cfg_path, cfg_path + ".vlm_backup")
-    json.dump(new, open(cfg_path, "w", encoding="utf-8"), indent=2)
+    json.dump(new, open(cfg_path, "w", encoding = "utf-8"), indent = 2)
     print(
         f"Unsloth: converted VLM config to text-only '{causal}' at {model_dir} "
         f"(vision tower skipped; language decoder + MTP quantized)."
@@ -295,7 +302,7 @@ def _read_model_config(model_dir: str) -> dict:
 
     path = os.path.join(model_dir, "config.json")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding = "utf-8") as f:
             cfg = json.load(f)
     except Exception:
         return {}
@@ -332,11 +339,7 @@ def _preflight_check(model_dir: str, cfg: Exl3Config) -> None:
         "hidden_size": model_config.get("hidden_size"),
         "intermediate_size": model_config.get("intermediate_size"),
     }
-    bad = {
-        name: val
-        for name, val in checks.items()
-        if isinstance(val, int) and val % 128 != 0
-    }
+    bad = {name: val for name, val in checks.items() if isinstance(val, int) and val % 128 != 0}
     if bad:
         details = ", ".join(f"{k}={v}" for k, v in bad.items())
         raise ValueError(
@@ -353,15 +356,17 @@ def _conversion_complete(out_dir: str) -> bool:
     """Heuristic: a finished EXL3 conversion has a config + safetensors + index."""
     if not is_exl3_model_dir(out_dir):
         return False
-    has_weights = any(
-        f.endswith(".safetensors") for f in os.listdir(out_dir)
-    ) if os.path.isdir(out_dir) else False
+    has_weights = (
+        any(f.endswith(".safetensors") for f in os.listdir(out_dir))
+        if os.path.isdir(out_dir)
+        else False
+    )
     return has_weights
 
 
 def quantize_to_exl3(
     model_name: str,
-    config=None,
+    config = None,
     *,
     out_dir: Optional[str] = None,
     work_dir: Optional[str] = None,
@@ -395,6 +400,7 @@ def quantize_to_exl3(
     # quantize_to_exl3 is called directly (not via the loader). This installs
     # the Qwen3.5 mtp KeyError guard and the grouped-mm fallback.
     from .patcher import patch_transformers_exl3
+
     patch_transformers_exl3()
     cfg = normalize_exl3_config(config)
 
@@ -426,11 +432,11 @@ def quantize_to_exl3(
         return resolved_out
 
     if overwrite and os.path.isdir(resolved_out):
-        shutil.rmtree(resolved_out, ignore_errors=True)
-        shutil.rmtree(resolved_work, ignore_errors=True)
+        shutil.rmtree(resolved_out, ignore_errors = True)
+        shutil.rmtree(resolved_work, ignore_errors = True)
 
-    os.makedirs(resolved_out, exist_ok=True)
-    os.makedirs(resolved_work, exist_ok=True)
+    os.makedirs(resolved_out, exist_ok = True)
+    os.makedirs(resolved_work, exist_ok = True)
 
     resume = os.path.isdir(resolved_work) and bool(os.listdir(resolved_work))
 
@@ -449,13 +455,13 @@ def quantize_to_exl3(
     _restore_uncal = _maybe_enable_uncalibrated(cfg)
 
     args = _build_conversion_args(
-        in_dir=model_name,
-        out_dir=resolved_out,
-        work_dir=resolved_work,
-        cfg=cfg,
-        devices=devices,
-        resume=resume,
-        verbose=verbose,
+        in_dir = model_name,
+        out_dir = resolved_out,
+        work_dir = resolved_work,
+        cfg = cfg,
+        devices = devices,
+        resume = resume,
+        verbose = verbose,
     )
 
     try:
@@ -502,25 +508,25 @@ def _build_conversion_args(
 ) -> _ConversionArgs:
     """Assemble the converter argument namespace from an :class:`Exl3Config`."""
     return _ConversionArgs(
-        in_dir=in_dir,
-        out_dir=out_dir,
-        work_dir=work_dir,
-        shard_size=8192,
-        bits=float(cfg.bits),
-        head_bits=int(cfg.head_bits),
-        mtp_bits=int(cfg.mtp_bits),
-        hq=bool(cfg.hq),
-        resume=bool(resume),
-        cal_rows=cfg.cal_rows,
-        cal_cols=cfg.cal_cols,
-        checkpoint_interval=120,
-        last_checkpoint_index=None,
-        verbose=bool(verbose),
-        devices=str(devices),
-        device_ratios="",
-        image_dump=False,
-        codebook=cfg.codebook,
-        parallel_mode=bool(cfg.parallel_mode),
-        override_anyway=False,
-        out_scales="always",
+        in_dir = in_dir,
+        out_dir = out_dir,
+        work_dir = work_dir,
+        shard_size = 8192,
+        bits = float(cfg.bits),
+        head_bits = int(cfg.head_bits),
+        mtp_bits = int(cfg.mtp_bits),
+        hq = bool(cfg.hq),
+        resume = bool(resume),
+        cal_rows = cfg.cal_rows,
+        cal_cols = cfg.cal_cols,
+        checkpoint_interval = 120,
+        last_checkpoint_index = None,
+        verbose = bool(verbose),
+        devices = str(devices),
+        device_ratios = "",
+        image_dump = False,
+        codebook = cfg.codebook,
+        parallel_mode = bool(cfg.parallel_mode),
+        override_anyway = False,
+        out_scales = "always",
     )

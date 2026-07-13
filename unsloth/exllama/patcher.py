@@ -65,10 +65,12 @@ def _patch_moe_expert_replacement(quantizer_cls) -> None:
         original(self, model, *args, **kwargs)
         try:
             import os
+
             path = getattr(model, "name_or_path", None)
             if not path or not os.path.isdir(path):
                 return
             from .moe import install_quantized_experts_before_load
+
             install_quantized_experts_before_load(model, path)
         except Exception as e:
             # Non-fatal: fall back to the post-load reconstruction path.
@@ -115,12 +117,14 @@ def _patch_get_modules_to_replace(quantizer_cls) -> None:
                 # exllamav3 language_model<->model swaps in both directions.
                 candidates = [name]
                 if name.startswith("model.language_model."):
-                    candidates.append("language_model.model." + name[len("model.language_model."):])
+                    candidates.append(
+                        "language_model.model." + name[len("model.language_model.") :]
+                    )
                 if name.startswith("language_model.model."):
-                    candidates.append("model.language_model." + name[len("language_model.model."):])
-                matched = next(
-                    (c for c in candidates if stc.has_tensor_group(c, group)), None
-                )
+                    candidates.append(
+                        "model.language_model." + name[len("language_model.model.") :]
+                    )
+                matched = next((c for c in candidates if stc.has_tensor_group(c, group)), None)
                 if matched is not None:
                     modules_to_replace[name] = Exl3HfLinear(
                         module.in_features,
@@ -157,10 +161,10 @@ def _patch_hf_linear_weight(hf_linear_cls) -> None:
         original_init(self, in_features, out_features, exl3_tensors, *args, **kwargs)
         placeholder = torch.zeros(
             (int(out_features), int(in_features)),
-            dtype=torch.float16,
-            device="meta",
+            dtype = torch.float16,
+            device = "meta",
         )
-        self.weight = torch.nn.Parameter(placeholder, requires_grad=False)
+        self.weight = torch.nn.Parameter(placeholder, requires_grad = False)
         # Register the codebook side tensors (mcg/mul1) the stock wrapper omits,
         # else the default mcg codebook reconstructs garbage weights.
         key = getattr(self, "key", None)
@@ -174,9 +178,7 @@ def _patch_hf_linear_weight(hf_linear_cls) -> None:
                     except Exception:
                         pass
                 if meta is not None:
-                    t = torch.empty(
-                        meta["shape"], dtype=meta["torch_dtype"], device="meta"
-                    )
+                    t = torch.empty(meta["shape"], dtype = meta["torch_dtype"], device = "meta")
                     self.register_buffer(subkey, t)
                 else:
                     self.register_buffer(subkey, None)
@@ -188,21 +190,20 @@ def _patch_hf_linear_weight(hf_linear_cls) -> None:
         mul1 = getattr(self, "mul1", None)
         if (mcg is not None or mul1 is not None) and self.inner is not None:
             from exllamav3.modules.quant.exl3 import LinearEXL3
-
             self.inner = LinearEXL3(
-                config=None,
-                in_features=self.in_features,
-                out_features=self.out_features,
-                trellis=self.trellis,
-                suh=self.suh,
-                svh=self.svh,
-                su=self.su,
-                sv=self.sv,
-                mcg=mcg,
-                mul1=mul1,
-                bias=self.bias,
-                out_dtype=torch.float16,
-                transformers_fix=True,
+                config = None,
+                in_features = self.in_features,
+                out_features = self.out_features,
+                trellis = self.trellis,
+                suh = self.suh,
+                svh = self.svh,
+                su = self.su,
+                sv = self.sv,
+                mcg = mcg,
+                mul1 = mul1,
+                bias = self.bias,
+                out_dtype = torch.float16,
+                transformers_fix = True,
             )
 
     hf_linear_cls.__init__ = patched_init
@@ -236,13 +237,14 @@ def _patch_qwen35_mtp_keyerror() -> None:
     # ``model_classes`` dict it stores becomes missing-key tolerant.
     try:
         from exllamav3.model.config import Config as _Config
-
         if not getattr(_Config, "_unsloth_mtp_patched", False):
             _orig_setattr = _Config.__setattr__
 
             def _patched_setattr(self, key, value):
-                if key == "model_classes" and isinstance(value, dict) and not isinstance(
-                    value, _MissingKeyTolerantDict
+                if (
+                    key == "model_classes"
+                    and isinstance(value, dict)
+                    and not isinstance(value, _MissingKeyTolerantDict)
                 ):
                     value = _MissingKeyTolerantDict(value)
                 _orig_setattr(self, key, value)
@@ -274,17 +276,23 @@ def _patch_grouped_mm_fallback() -> None:
     if _orig_grouped_mm is None:
         return
 
-    def _portable_grouped_mm(input, weight, offs=None, **kwargs):
+    def _portable_grouped_mm(
+        input,
+        weight,
+        offs = None,
+        **kwargs,
+    ):
         # weight: [num_groups, K, N]; input: [total_tokens, K]; offs: cumulative
         # row counts per group. Compute each group's matmul with a plain mm.
         try:
-            return _orig_grouped_mm(input, weight, offs=offs, **kwargs)
+            return _orig_grouped_mm(input, weight, offs = offs, **kwargs)
         except RuntimeError as e:
             if "compute capability" not in str(e) and "_grouped_mm" not in str(e):
                 raise
         out = torch.empty(
             (input.shape[0], weight.shape[-1]),
-            dtype=input.dtype, device=input.device,
+            dtype = input.dtype,
+            device = input.device,
         )
         start = 0
         offs_list = offs.tolist() if offs is not None else [input.shape[0]]
@@ -315,9 +323,16 @@ def _patch_torch_grouped_mm() -> None:
     if _orig is None:
         return
 
-    def _fallback(input, weight, offs=None, bias=None, out_dtype=None, **kwargs):
+    def _fallback(
+        input,
+        weight,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+        **kwargs,
+    ):
         try:
-            return _orig(input, weight, offs=offs, bias=bias, out_dtype=out_dtype, **kwargs)
+            return _orig(input, weight, offs = offs, bias = bias, out_dtype = out_dtype, **kwargs)
         except RuntimeError as e:
             if "compute capability" not in str(e):
                 raise
@@ -325,14 +340,12 @@ def _patch_torch_grouped_mm() -> None:
         # per-group row counts. Emulate with per-group matmuls.
         dtype = out_dtype or input.dtype
         n = weight.shape[-1]
-        out = torch.empty((input.shape[0], n), dtype=dtype, device=input.device)
+        out = torch.empty((input.shape[0], n), dtype = dtype, device = input.device)
         offs_list = offs.tolist() if offs is not None else [input.shape[0]]
         start = 0
         for g, end in enumerate(offs_list):
             if end > start:
-                out[start:end] = torch.matmul(
-                    input[start:end].to(dtype), weight[g].to(dtype)
-                )
+                out[start:end] = torch.matmul(input[start:end].to(dtype), weight[g].to(dtype))
             start = end
         if bias is not None:
             out = out + bias
@@ -355,7 +368,6 @@ def exllama_supported_architectures() -> set:
         return set()
     try:
         from exllamav3.architecture.architectures import get_architectures
-
         return set(get_architectures().keys())
     except Exception:
         return set()
@@ -440,7 +452,6 @@ def patch_transformers_exl3(force: bool = False) -> bool:
         # tied-weight finalization does not reject it, and wire the codebook.
         try:
             from exllamav3.integration.transformers import Exl3HfLinear
-
             _patch_hf_linear_weight(Exl3HfLinear)
         except Exception:
             pass
@@ -459,7 +470,7 @@ def patch_transformers_exl3(force: bool = False) -> bool:
 
 def _read_json(path: str) -> Optional[dict]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding = "utf-8") as f:
             return json.load(f)
     except Exception:
         return None

@@ -375,6 +375,7 @@ class FastLanguageModel(FastLlamaModel):
         # checkpoint) through FastModel. Full finetuning is never EXL3 (its base
         # weights train in full precision).
         from ..exllama import should_use_exl3
+
         if (not full_finetuning) and should_use_exl3(
             model_name,
             load_in_exl3 = load_in_exl3,
@@ -1117,6 +1118,7 @@ class FastModel(FastBaseModel):
         # transformers auto path (bnb disabled). See unsloth/exllama/.
         # ------------------------------------------------------------------
         from ..exllama import should_use_exl3 as _should_use_exl3
+
         _exl3_plan = None
         # Full finetuning is incompatible with EXL3's frozen quantized weights;
         # never route it through EXL3.
@@ -1131,6 +1133,7 @@ class FastModel(FastBaseModel):
                 require_exllama as _require_exllama,
                 prepare_exl3_checkpoint as _prepare_exl3_checkpoint,
             )
+
             _require_exllama()
             token = hf_login(token)
             _exl3_compute_dtype = dtype if isinstance(dtype, torch.dtype) else None
@@ -1884,6 +1887,7 @@ class FastModel(FastBaseModel):
         # trellis kernel. No-op for non-EXL3 loads.
         if _exl3_plan is not None:
             from ..exllama import finalize_exl3_model, finalize_exl3_experts
+
             # Rebuild fused MoE experts (no-op for dense models). Must run BEFORE
             # attaching quant states so the fused expert params are materialized.
             _n_experts = finalize_exl3_experts(
@@ -1895,10 +1899,7 @@ class FastModel(FastBaseModel):
                 model,
                 compute_dtype = _get_dtype(dtype),
             )
-            _moe_note = (
-                f", rebuilt {_n_experts} MoE expert matrix(es)"
-                if _n_experts else ""
-            )
+            _moe_note = f", rebuilt {_n_experts} MoE expert matrix(es)" if _n_experts else ""
             print(
                 f"Unsloth: Loaded EXL3 model ({_exl3_plan.config.label()}) - "
                 f"stamped {_n_exl3} quantized layer(s){_moe_note}."

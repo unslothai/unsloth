@@ -44,7 +44,7 @@ def _reconstruct_exl3_weight(stc, key: str, device: torch.device) -> Optional[to
     if not stc.has_tensor_group(key, [["sv", "svh"], ["su", "suh"], "trellis"]):
         return None
 
-    tensors = stc.get_tensors(key, device=device)
+    tensors = stc.get_tensors(key, device = device)
     trellis = tensors.get(f"{key}.trellis")
     suh = tensors.get(f"{key}.suh")
     svh = tensors.get(f"{key}.svh")
@@ -62,19 +62,19 @@ def _reconstruct_exl3_weight(stc, key: str, device: torch.device) -> Optional[to
     out_features = svh.shape[0] if svh is not None else None
 
     linear = LinearEXL3(
-        config=None,
-        in_features=in_features,
-        out_features=out_features,
-        trellis=trellis,
-        suh=suh,
-        svh=svh,
-        su=su,
-        sv=sv,
-        mcg=mcg,
-        mul1=mul1,
-        bias=None,
-        out_dtype=torch.float16,
-        transformers_fix=True,
+        config = None,
+        in_features = in_features,
+        out_features = out_features,
+        trellis = trellis,
+        suh = suh,
+        svh = svh,
+        su = su,
+        sv = sv,
+        mcg = mcg,
+        mul1 = mul1,
+        bias = None,
+        out_dtype = torch.float16,
+        transformers_fix = True,
     )
     # get_weight_tensor() returns [in, out]; transpose to the [out, in]
     # convention used by fused expert parameters and nn.functional.linear.
@@ -94,7 +94,7 @@ def _build_exl3_linear(stc, key: str, device: torch.device):
 
     if not stc.has_tensor_group(key, [["sv", "svh"], ["su", "suh"], "trellis"]):
         return None
-    tensors = stc.get_tensors(key, device=device)
+    tensors = stc.get_tensors(key, device = device)
     trellis = tensors.get(f"{key}.trellis")
     suh = tensors.get(f"{key}.suh")
     svh = tensors.get(f"{key}.svh")
@@ -109,9 +109,19 @@ def _build_exl3_linear(stc, key: str, device: torch.device):
     in_features = suh.shape[0] if suh is not None else None
     out_features = svh.shape[0] if svh is not None else None
     linear = LinearEXL3(
-        config=None, in_features=in_features, out_features=out_features,
-        trellis=trellis, suh=suh, svh=svh, su=su, sv=sv, mcg=mcg, mul1=mul1,
-        bias=None, out_dtype=torch.float16, transformers_fix=True,
+        config = None,
+        in_features = in_features,
+        out_features = out_features,
+        trellis = trellis,
+        suh = suh,
+        svh = svh,
+        su = su,
+        sv = sv,
+        mcg = mcg,
+        mul1 = mul1,
+        bias = None,
+        out_dtype = torch.float16,
+        transformers_fix = True,
     )
     return linear, out_features, in_features
 
@@ -152,10 +162,10 @@ def _candidate_checkpoint_prefixes(module_path: str):
     extra = []
     for p in list(prefixes):
         if p.startswith("model.") and not p.startswith("model.language_model."):
-            extra.append("model.language_model." + p[len("model."):])
+            extra.append("model.language_model." + p[len("model.") :])
         if p.startswith("model.language_model."):
-            extra.append("model." + p[len("model.language_model."):])
-            extra.append("language_model.model." + p[len("model.language_model."):])
+            extra.append("model." + p[len("model.language_model.") :])
+            extra.append("language_model.model." + p[len("model.language_model.") :])
     prefixes.extend(extra)
     # De-duplicate while preserving order.
     seen = set()
@@ -168,7 +178,11 @@ def _candidate_checkpoint_prefixes(module_path: str):
 
 
 @torch.no_grad()
-def reload_exl3_experts(model, checkpoint_dir: str, compute_dtype: torch.dtype = torch.float16) -> int:
+def reload_exl3_experts(
+    model,
+    checkpoint_dir: str,
+    compute_dtype: torch.dtype = torch.float16,
+) -> int:
     """Reconstruct fused MoE expert weights from a checkpoint's EXL3 tensors.
 
     Returns the number of expert *matrices* reconstructed (across all experts
@@ -216,16 +230,16 @@ def reload_exl3_experts(model, checkpoint_dir: str, compute_dtype: torch.dtype =
                     if len(per_subkey) == 1:
                         w_e = per_subkey[0]
                     else:
-                        w_e = torch.cat(per_subkey, dim=0)
+                        w_e = torch.cat(per_subkey, dim = 0)
                     stacked_experts.append(w_e)
 
                 if not ok or len(stacked_experts) != num_experts:
                     continue
 
-                fused = torch.stack(stacked_experts, dim=0).to(device=device, dtype=compute_dtype)
+                fused = torch.stack(stacked_experts, dim = 0).to(device = device, dtype = compute_dtype)
                 # The fused parameter is frozen (expert base weights are not
                 # trained; LoRA runs on attention / router / other layers).
-                new_param = torch.nn.Parameter(fused, requires_grad=False)
+                new_param = torch.nn.Parameter(fused, requires_grad = False)
                 setattr(module, attr, new_param)
                 count += num_experts
     finally:
@@ -324,11 +338,12 @@ class Exl3QuantizedExperts(torch.nn.Module):
         # LRU cache of reconstructed dense experts (frozen base, so always
         # valid); bounds VRAM while skipping re-reconstruction of hot experts.
         import os as _os
+
         cap = int(_os.environ.get("UNSLOTH_EXL3_EXPERT_CACHE", "64"))
         object.__setattr__(self, "_cache_cap", max(0, cap))
-        object.__setattr__(self, "_gu_cache", {})   # expert idx -> dense gate_up
-        object.__setattr__(self, "_dn_cache", {})    # expert idx -> dense down
-        object.__setattr__(self, "_lru", [])         # recency order of idxs
+        object.__setattr__(self, "_gu_cache", {})  # expert idx -> dense gate_up
+        object.__setattr__(self, "_dn_cache", {})  # expert idx -> dense down
+        object.__setattr__(self, "_lru", [])  # recency order of idxs
 
     def set_expert(self, idx, gate_up_linear, down_linear):
         self._gate_up[idx] = gate_up_linear
@@ -336,7 +351,11 @@ class Exl3QuantizedExperts(torch.nn.Module):
 
     @staticmethod
     @torch.no_grad()
-    def _dense(linear, dtype, device=None):
+    def _dense(
+        linear,
+        dtype,
+        device = None,
+    ):
         # get_weight_tensor() -> [in, out]; transpose to [out, in] for F.linear.
         # Cast to the activation's dtype and device (multi-GPU device_map).
         w = linear.get_weight_tensor().t().contiguous().to(dtype)
@@ -344,11 +363,18 @@ class Exl3QuantizedExperts(torch.nn.Module):
             w = w.to(device)
         return w
 
-    def _get_dense(self, e, dtype, device=None):
+    def _get_dense(
+        self,
+        e,
+        dtype,
+        device = None,
+    ):
         """Return (gate_up_dense, down_dense) for expert e, using the LRU cache."""
         if self._cache_cap <= 0:
-            return (self._dense(self._gate_up[e], dtype, device),
-                    self._dense(self._down[e], dtype, device))
+            return (
+                self._dense(self._gate_up[e], dtype, device),
+                self._dense(self._down[e], dtype, device),
+            )
         if e in self._gu_cache:
             # Refresh recency.
             try:
@@ -372,9 +398,9 @@ class Exl3QuantizedExperts(torch.nn.Module):
     def forward(self, hidden_states, top_k_index, top_k_weights):
         final = torch.zeros_like(hidden_states)
         with torch.no_grad():
-            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts)
+            expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes = self.num_experts)
             expert_mask = expert_mask.permute(2, 1, 0)
-            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+            expert_hit = torch.greater(expert_mask.sum(dim = (-1, -2)), 0).nonzero()
         dtype = hidden_states.dtype
         for expert_idx in expert_hit:
             e = int(expert_idx[0])
@@ -383,7 +409,7 @@ class Exl3QuantizedExperts(torch.nn.Module):
             top_k_pos, token_idx = torch.where(expert_mask[e])
             current = hidden_states[token_idx]
             gu_w, down_w = self._get_dense(e, dtype, current.device)  # cached dense weights
-            gate, up = torch.nn.functional.linear(current, gu_w).chunk(2, dim=-1)
+            gate, up = torch.nn.functional.linear(current, gu_w).chunk(2, dim = -1)
             h = (self.act_fn(gate) if self.act_fn is not None else gate) * up
             out = torch.nn.functional.linear(h, down_w)
             out = out * top_k_weights[token_idx, top_k_pos, None]
@@ -392,7 +418,11 @@ class Exl3QuantizedExperts(torch.nn.Module):
 
 
 @torch.no_grad()
-def reload_exl3_experts_quantized(model, checkpoint_dir, compute_dtype=torch.bfloat16) -> int:
+def reload_exl3_experts_quantized(
+    model,
+    checkpoint_dir,
+    compute_dtype = torch.bfloat16,
+) -> int:
     """Replace fused MoE experts with :class:`Exl3QuantizedExperts` (quantized).
 
     Memory-efficient alternative to :func:`reload_exl3_experts`: keeps experts at
@@ -460,7 +490,7 @@ class _FusedGateUp:
 
     def get_weight_tensor(self):
         # each get_weight_tensor() -> [in, out]; cat along out (dim=1).
-        return torch.cat([self.gate.get_weight_tensor(), self.up.get_weight_tensor()], dim=1)
+        return torch.cat([self.gate.get_weight_tensor(), self.up.get_weight_tensor()], dim = 1)
 
 
 def _resolve_quant_linear(stc, prefixes, expert_idx, alts, device):
@@ -560,7 +590,10 @@ def install_quantized_experts_before_load(model, checkpoint_dir) -> int:
         stc.close()
     if count:
         _force_eager_experts(model)
-        print(f"Unsloth: installed {count} EXL3-quantized MoE expert matrices "
-              f"pre-load (reconstruct-on-forward) - dense expert params never "
-              f"allocated, so the large MoE fits in VRAM.", flush=True)
+        print(
+            f"Unsloth: installed {count} EXL3-quantized MoE expert matrices "
+            f"pre-load (reconstruct-on-forward) - dense expert params never "
+            f"allocated, so the large MoE fits in VRAM.",
+            flush = True,
+        )
     return count

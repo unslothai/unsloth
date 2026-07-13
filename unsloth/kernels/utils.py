@@ -149,10 +149,10 @@ except Exception:
     def get_ptr(x):
         # Stub: only reached on the bnb path (guarded by HAS_BITSANDBYTES).
         import ctypes as _ctypes
-
         if x is None:
             return _ctypes.c_void_p(0)
         return _ctypes.c_void_p(x.data_ptr())
+
 
 if DEVICE_TYPE == "xpu":
     HAS_XPU_STREAM = True
@@ -1084,7 +1084,12 @@ _bnb_fast_gemv = fast_gemv
 
 
 @torch.inference_mode
-def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False):
+def fast_dequantize(
+    W,
+    quant_state = None,
+    out = None,
+    use_global_buffer = False,
+):
     # EXL3: reconstruct from the trellis quant_state (W is a [out, 1]
     # placeholder). W.shape[0] == 1 is the bnb transpose signal (caller passed
     # W.t()), so honour it to return [in, out] vs [out, in].
@@ -1105,7 +1110,12 @@ def fast_dequantize(W, quant_state = None, out = None, use_global_buffer = False
 
 
 @torch.inference_mode
-def fast_gemv(X, W, quant_state, out = None):
+def fast_gemv(
+    X,
+    W,
+    quant_state,
+    out = None,
+):
     # EXL3: reconstruct the weight and do a plain matmul (LoRA path needs a
     # materialized weight to fuse the adapter).
     if _is_exl3_quant_state(quant_state):

@@ -66,9 +66,7 @@ def _coerce_bits(value: Any, *, name: str) -> Optional[float]:
                 f"Use a number between 1 and 8 (fractional allowed) or one of "
                 f"{sorted(_PRESETS)}."
             ) from exc
-    raise ValueError(
-        f"Unsloth: unsupported EXL3 {name} value {value!r} of type {type(value)}."
-    )
+    raise ValueError(f"Unsloth: unsupported EXL3 {name} value {value!r} of type {type(value)}.")
 
 
 @dataclass
@@ -121,27 +119,25 @@ class Exl3Config:
     parallel_mode: bool = False
     cal_rows: Optional[int] = None
     cal_cols: Optional[int] = None
-    skip_modules: list = field(default_factory=list)
+    skip_modules: list = field(default_factory = list)
     compute_dtype: Any = None
     calibrate: bool = True
     quant_method: str = QUANT_METHOD_EXL3
 
     def __post_init__(self):
-        bits = _coerce_bits(self.bits, name="bits")
+        bits = _coerce_bits(self.bits, name = "bits")
         self.bits = DEFAULT_EXL3_BITS if bits is None else bits
         if not (1.0 <= self.bits <= 8.0):
-            raise ValueError(
-                f"Unsloth: EXL3 bits must be in [1, 8], got {self.bits}."
-            )
+            raise ValueError(f"Unsloth: EXL3 bits must be in [1, 8], got {self.bits}.")
 
-        head = _coerce_bits(self.head_bits, name="head_bits")
+        head = _coerce_bits(self.head_bits, name = "head_bits")
         self.head_bits = DEFAULT_EXL3_HEAD_BITS if head is None else int(round(head))
         if self.head_bits != 16 and not (1 <= self.head_bits <= 8):
             raise ValueError(
                 f"Unsloth: EXL3 head_bits must be in [1, 8] or 16, got {self.head_bits}."
             )
 
-        mtp = _coerce_bits(self.mtp_bits, name="mtp_bits")
+        mtp = _coerce_bits(self.mtp_bits, name = "mtp_bits")
         self.mtp_bits = DEFAULT_EXL3_MTP_BITS if mtp is None else int(round(mtp))
 
         if self.codebook not in ("mcg", "mul1", "3inst"):
@@ -181,8 +177,7 @@ class Exl3Config:
 
     def to_json_string(self) -> str:
         import json
-
-        return json.dumps(self.to_dict(), indent=2)
+        return json.dumps(self.to_dict(), indent = 2)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Exl3Config":
@@ -202,11 +197,7 @@ class Exl3Config:
         return "_".join(parts)
 
 
-def normalize_exl3_config(
-    config: Any,
-    *,
-    default_bits: float = DEFAULT_EXL3_BITS,
-) -> Exl3Config:
+def normalize_exl3_config(config: Any, *, default_bits: float = DEFAULT_EXL3_BITS) -> Exl3Config:
     """Turn any user input into a concrete :class:`Exl3Config`.
 
     Accepts:
@@ -219,12 +210,11 @@ def normalize_exl3_config(
     if isinstance(config, Exl3Config):
         return config
     if config is None or config is True:
-        return Exl3Config(bits=default_bits)
+        return Exl3Config(bits = default_bits)
     if isinstance(config, dict):
         return Exl3Config.from_dict(config)
     if isinstance(config, (int, float, str)):
-        return Exl3Config(bits=config)
+        return Exl3Config(bits = config)
     raise ValueError(
-        f"Unsloth: cannot build an Exl3Config from {config!r} "
-        f"of type {type(config)}."
+        f"Unsloth: cannot build an Exl3Config from {config!r} " f"of type {type(config)}."
     )

@@ -91,9 +91,9 @@ def _bnb_explicitly_requested(quantization_config) -> bool:
 
 def exl3_is_default_backend(
     *,
-    load_in_4bit=False,
-    load_in_8bit=False,
-    quantization_config=None,
+    load_in_4bit = False,
+    load_in_8bit = False,
+    quantization_config = None,
 ) -> bool:
     """Decide whether a *plain* quantized load should default to EXL3.
 
@@ -125,7 +125,6 @@ def exl3_is_default_backend(
 def _cuda_available() -> bool:
     try:
         import torch
-
         return bool(torch.cuda.is_available())
     except Exception:
         return False
@@ -134,10 +133,10 @@ def _cuda_available() -> bool:
 def should_use_exl3(
     model_name: str,
     *,
-    load_in_exl3=False,
-    quantization_config=None,
-    load_in_4bit=False,
-    load_in_8bit=False,
+    load_in_exl3 = False,
+    quantization_config = None,
+    load_in_4bit = False,
+    load_in_8bit = False,
 ) -> bool:
     """Decide whether this load should go through the EXL3 backend.
 
@@ -159,15 +158,14 @@ def should_use_exl3(
             return True
     # Default-backend routing: a plain quantized load prefers EXL3 over bnb.
     if exl3_is_default_backend(
-        load_in_4bit=load_in_4bit,
-        load_in_8bit=load_in_8bit,
-        quantization_config=quantization_config,
+        load_in_4bit = load_in_4bit,
+        load_in_8bit = load_in_8bit,
+        quantization_config = quantization_config,
     ):
         # Auto-route to EXL3 only for supported archs; else fall back to bnb.
         # Local paths are checked now; Hub ids are validated at prepare time.
         if isinstance(model_name, str) and os.path.isdir(os.path.expanduser(model_name)):
             from .patcher import exllama_supports_arch
-
             if not exllama_supports_arch(os.path.expanduser(model_name)):
                 return False
         return True
@@ -178,14 +176,16 @@ def resolve_exl3_config(
     load_in_exl3,
     quantization_config,
     *,
-    compute_dtype=None,
-    calibrate=None,
+    compute_dtype = None,
+    calibrate = None,
 ) -> Exl3Config:
     """Build the concrete :class:`Exl3Config` for this request."""
     if isinstance(quantization_config, Exl3Config):
         cfg = quantization_config
-    elif isinstance(quantization_config, dict) and \
-            str(quantization_config.get("quant_method", "")).lower() == "exl3":
+    elif (
+        isinstance(quantization_config, dict)
+        and str(quantization_config.get("quant_method", "")).lower() == "exl3"
+    ):
         cfg = Exl3Config.from_dict(quantization_config)
     elif load_in_exl3 not in (True, False, None):
         # e.g. load_in_exl3 = 3 or "2.5bit"
@@ -204,10 +204,10 @@ def resolve_exl3_config(
 def _resolve_local_dir(
     model_name: str,
     *,
-    token=None,
-    revision=None,
-    trust_remote_code=False,
-    local_files_only=False,
+    token = None,
+    revision = None,
+    trust_remote_code = False,
+    local_files_only = False,
 ) -> str:
     """Return a local directory for ``model_name`` (downloading if a Hub id).
 
@@ -222,26 +222,26 @@ def _resolve_local_dir(
 
     return snapshot_download(
         model_name,
-        revision=revision,
-        token=token,
-        local_files_only=local_files_only,
+        revision = revision,
+        token = token,
+        local_files_only = local_files_only,
         # We need the full weights to quantize; ignore only obvious non-weights.
-        ignore_patterns=["*.gguf", "*.pth", "original/*"],
+        ignore_patterns = ["*.gguf", "*.pth", "original/*"],
     )
 
 
 def prepare_exl3_checkpoint(
     model_name: str,
     *,
-    load_in_exl3=True,
-    quantization_config=None,
-    compute_dtype=None,
-    token=None,
-    revision=None,
-    trust_remote_code=False,
-    local_files_only=False,
+    load_in_exl3 = True,
+    quantization_config = None,
+    compute_dtype = None,
+    token = None,
+    revision = None,
+    trust_remote_code = False,
+    local_files_only = False,
     devices: str = "0",
-    calibrate=None,
+    calibrate = None,
 ) -> Exl3LoadPlan:
     """Prepare a local EXL3 checkpoint for ``model_name``.
 
@@ -251,15 +251,15 @@ def prepare_exl3_checkpoint(
     """
     require_exllama()
     cfg = resolve_exl3_config(
-        load_in_exl3, quantization_config, compute_dtype=compute_dtype, calibrate=calibrate
+        load_in_exl3, quantization_config, compute_dtype = compute_dtype, calibrate = calibrate
     )
 
     local_dir = _resolve_local_dir(
         model_name,
-        token=token,
-        revision=revision,
-        trust_remote_code=trust_remote_code,
-        local_files_only=local_files_only,
+        token = token,
+        revision = revision,
+        trust_remote_code = trust_remote_code,
+        local_files_only = local_files_only,
     )
 
     # Register the EXL3 quantizer with transformers up front.
@@ -275,10 +275,10 @@ def prepare_exl3_checkpoint(
         if stored is not None:
             cfg.bits = stored
         return Exl3LoadPlan(
-            checkpoint_dir=local_dir,
-            config=cfg,
-            was_quantized=False,
-            source_model=model_name,
+            checkpoint_dir = local_dir,
+            config = cfg,
+            was_quantized = False,
+            source_model = model_name,
         )
 
     # An explicit EXL3 request for an architecture ExLlamaV3 does not implement
@@ -288,9 +288,10 @@ def prepare_exl3_checkpoint(
 
     if not exllama_supports_arch(local_dir):
         import json as _json
+
         _arch = "?"
         try:
-            _cfg = _json.load(open(os.path.join(local_dir, "config.json"), encoding="utf-8"))
+            _cfg = _json.load(open(os.path.join(local_dir, "config.json"), encoding = "utf-8"))
             _archs = list(_cfg.get("architectures") or [])
             tc = _cfg.get("text_config")
             if isinstance(tc, dict):
@@ -313,17 +314,17 @@ def prepare_exl3_checkpoint(
     checkpoint_dir = quantize_to_exl3(
         local_dir,
         cfg,
-        devices=devices,
+        devices = devices,
     )
     return Exl3LoadPlan(
-        checkpoint_dir=checkpoint_dir,
-        config=cfg,
-        was_quantized=True,
-        source_model=model_name,
+        checkpoint_dir = checkpoint_dir,
+        config = cfg,
+        was_quantized = True,
+        source_model = model_name,
     )
 
 
-def finalize_exl3_model(model, compute_dtype=None) -> int:
+def finalize_exl3_model(model, compute_dtype = None) -> int:
     """Stamp EXL3 quant states onto a freshly loaded model. Returns layer count."""
     if not is_exllama_available():
         return 0
@@ -334,8 +335,8 @@ def finalize_exl3_model(model, compute_dtype=None) -> int:
     dtype = compute_dtype or torch.float16
     # Attach quant states first (densify relies on them), then materialize the
     # head to a dense nn.Linear (the fused loss reads lm_head.weight directly).
-    n = attach_exl3_quant_states(model, compute_dtype=dtype)
-    densify_exl3_head(model, compute_dtype=dtype)
+    n = attach_exl3_quant_states(model, compute_dtype = dtype)
+    densify_exl3_head(model, compute_dtype = dtype)
     # Align dense layers (defaulted to fp16 by the quantizer) with the model's
     # dtype so bf16-requiring archs don't hit fp16-vs-bf16 mismatches.
     from .quant_linear import harmonize_nonquant_dtype
@@ -345,7 +346,11 @@ def finalize_exl3_model(model, compute_dtype=None) -> int:
     return n
 
 
-def finalize_exl3_experts(model, checkpoint_dir, compute_dtype=None) -> int:
+def finalize_exl3_experts(
+    model,
+    checkpoint_dir,
+    compute_dtype = None,
+) -> int:
     """Reconstruct fused MoE expert weights from the EXL3 checkpoint.
 
     transformers 5 stores MoE experts as fused 3-D tensors that ExLlamaV3's
@@ -381,14 +386,18 @@ def finalize_exl3_experts(model, checkpoint_dir, compute_dtype=None) -> int:
     else:  # auto: quantized for many-expert MoEs (dense would not fit VRAM)
         max_experts = 0
         for module, _ in _find_experts_modules(model):
-            max_experts = max(max_experts, int(getattr(module, "num_experts", 0)) or _infer_num_experts(module))
+            max_experts = max(
+                max_experts, int(getattr(module, "num_experts", 0)) or _infer_num_experts(module)
+            )
         use_quantized = max_experts > 32
 
     if use_quantized:
-        n = reload_exl3_experts_quantized(model, checkpoint_dir, compute_dtype=dtype)
+        n = reload_exl3_experts_quantized(model, checkpoint_dir, compute_dtype = dtype)
         if n:
-            print(f"Unsloth: kept {n} MoE expert matrices EXL3-quantized "
-                  f"(reconstruct-on-forward) to fit VRAM.")
+            print(
+                f"Unsloth: kept {n} MoE expert matrices EXL3-quantized "
+                f"(reconstruct-on-forward) to fit VRAM."
+            )
             return n
         # Fall back to dense if the quantized path found nothing.
-    return reload_exl3_experts(model, checkpoint_dir, compute_dtype=dtype)
+    return reload_exl3_experts(model, checkpoint_dir, compute_dtype = dtype)

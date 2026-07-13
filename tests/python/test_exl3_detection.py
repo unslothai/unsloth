@@ -12,9 +12,9 @@ from unsloth.exllama.config import Exl3Config
 
 class TestCheckpointDetection(unittest.TestCase):
     def _mkdir_with(self, files: dict) -> str:
-        d = tempfile.mkdtemp(prefix="exl3_detect_")
+        d = tempfile.mkdtemp(prefix = "exl3_detect_")
         for name, content in files.items():
-            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            with open(os.path.join(d, name), "w", encoding = "utf-8") as f:
                 if isinstance(content, (dict, list)):
                     json.dump(content, f)
                 else:
@@ -37,13 +37,21 @@ class TestCheckpointDetection(unittest.TestCase):
 
     def test_detects_via_trellis_in_index(self):
         d = self._mkdir_with(
-            {"model.safetensors.index.json": {"weight_map": {"model.layers.0.self_attn.q_proj.trellis": "model.safetensors"}}}
+            {
+                "model.safetensors.index.json": {
+                    "weight_map": {"model.layers.0.self_attn.q_proj.trellis": "model.safetensors"}
+                }
+            }
         )
         self.assertTrue(is_exl3_model_dir(d))
 
     def test_not_exl3_for_bnb_config(self):
         d = self._mkdir_with(
-            {"config.json": {"quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True}}}
+            {
+                "config.json": {
+                    "quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True}
+                }
+            }
         )
         self.assertFalse(is_exl3_model_dir(d))
 
@@ -58,28 +66,28 @@ class TestCheckpointDetection(unittest.TestCase):
 
 class TestCacheDir(unittest.TestCase):
     def test_deterministic_and_labelled(self):
-        cfg = Exl3Config(bits=3, head_bits=6)
-        p1 = resolve_exl3_cache_dir("org/Model-Name", cfg, cache_root="/tmp/xcache")
-        p2 = resolve_exl3_cache_dir("org/Model-Name", cfg, cache_root="/tmp/xcache")
+        cfg = Exl3Config(bits = 3, head_bits = 6)
+        p1 = resolve_exl3_cache_dir("org/Model-Name", cfg, cache_root = "/tmp/xcache")
+        p2 = resolve_exl3_cache_dir("org/Model-Name", cfg, cache_root = "/tmp/xcache")
         self.assertEqual(p1, p2)
         self.assertTrue(p1.endswith(os.path.join("3bpw_H6")))
         self.assertIn("/tmp/xcache", p1)
 
     def test_different_bits_differ(self):
-        a = resolve_exl3_cache_dir("m", Exl3Config(bits=3), cache_root="/tmp/x")
-        b = resolve_exl3_cache_dir("m", Exl3Config(bits=4), cache_root="/tmp/x")
+        a = resolve_exl3_cache_dir("m", Exl3Config(bits = 3), cache_root = "/tmp/x")
+        b = resolve_exl3_cache_dir("m", Exl3Config(bits = 4), cache_root = "/tmp/x")
         self.assertNotEqual(a, b)
 
     def test_different_models_differ(self):
-        a = resolve_exl3_cache_dir("org/A", Exl3Config(bits=3), cache_root="/tmp/x")
-        b = resolve_exl3_cache_dir("org/B", Exl3Config(bits=3), cache_root="/tmp/x")
+        a = resolve_exl3_cache_dir("org/A", Exl3Config(bits = 3), cache_root = "/tmp/x")
+        b = resolve_exl3_cache_dir("org/B", Exl3Config(bits = 3), cache_root = "/tmp/x")
         self.assertNotEqual(a, b)
 
 
 class TestMoEDetection(unittest.TestCase):
     def _write_cfg(self, cfg: dict) -> str:
-        d = tempfile.mkdtemp(prefix="exl3_moe_")
-        with open(os.path.join(d, "config.json"), "w", encoding="utf-8") as f:
+        d = tempfile.mkdtemp(prefix = "exl3_moe_")
+        with open(os.path.join(d, "config.json"), "w", encoding = "utf-8") as f:
             json.dump(cfg, f)
         return d
 
