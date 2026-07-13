@@ -1576,7 +1576,12 @@ class TestEnsureRocmTorchMarker:
         assert f("simple", ("cuda", "cu128")) is None
 
     # --- _torch_pin_needs_apply (the fast-path probe decision) ----------------
-    def _needs_apply(self, url, flavor, marker = None):
+    def _needs_apply(
+        self,
+        url,
+        flavor,
+        marker = None,
+    ):
         if marker is not None:
             self._seed(marker)
         env = {"UNSLOTH_TORCH_INDEX_URL": url} if url else {}
@@ -1617,7 +1622,9 @@ class TestEnsureRocmTorchMarker:
         # only signal, so a healthy pinned venv is not force-reinstalled every update.
         assert (
             self._needs_apply(
-                "https://mirror.local/simple", ("cuda", "cu128"), marker = "https://mirror.local/simple"
+                "https://mirror.local/simple",
+                ("cuda", "cu128"),
+                marker = "https://mirror.local/simple",
             )
             is False
         )

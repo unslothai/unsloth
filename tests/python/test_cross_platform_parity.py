@@ -686,9 +686,9 @@ class TestFirstCustomPinAppliedWithoutMarker:
         assert (
             '"--torch-pin-needs-apply" in sys.argv' in text
         ), "install_python_stack.py must handle the --torch-pin-needs-apply query"
-        assert "def _torch_pin_needs_apply()" in text, (
-            "the probe decision must live in a testable _torch_pin_needs_apply() helper"
-        )
+        assert (
+            "def _torch_pin_needs_apply()" in text
+        ), "the probe decision must live in a testable _torch_pin_needs_apply() helper"
         assert "_marker_pin_mismatch(pin) is not False" in text, (
             "the probe must report 'needs apply' when the marker differs (True) or is absent "
             "(None), and only reach the flavor check when it already matches (False)"
