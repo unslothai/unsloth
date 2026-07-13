@@ -1621,7 +1621,8 @@ class TestEnsureRocmTorchMarker:
     def test_probe_absent_marker_forces_pass(self):
         # No marker seeded -> mismatch is None -> apply (the round-2 behavior).
         assert (
-            self._needs_apply("https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128")) is True
+            self._needs_apply("https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128"))
+            is True
         )
 
     def test_probe_matching_marker_and_flavor_keeps_fast_path(self):
@@ -1639,7 +1640,9 @@ class TestEnsureRocmTorchMarker:
         # wheel: the probe must force the repair pass the marker alone would skip.
         assert (
             self._needs_apply(
-                "https://mirror.local/cu128", ("cpu", "", "2.10.0"), marker = "https://mirror.local/cu128"
+                "https://mirror.local/cu128",
+                ("cpu", "", "2.10.0"),
+                marker = "https://mirror.local/cu128",
             )
             is True
         )
@@ -1650,7 +1653,9 @@ class TestEnsureRocmTorchMarker:
         # must force the pass (round-3 returned None here and skipped it -- item 2).
         assert (
             self._needs_apply(
-                "https://mirror.local/cu128", ("cuda", "", "2.10.0"), marker = "https://mirror.local/cu128"
+                "https://mirror.local/cu128",
+                ("cuda", "", "2.10.0"),
+                marker = "https://mirror.local/cu128",
             )
             is True
         )
@@ -1774,9 +1779,7 @@ class TestEnsureRocmTorchMarker:
 
     def test_pinned_known_family_cpu_pin_repairs(self):
         """A cpu pin whose torch drifted to a CUDA build is reinstalled from the pin."""
-        mock_pip = self._ensure_known(
-            "https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128")
-        )
+        mock_pip = self._ensure_known("https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128"))
         assert mock_pip.call_count == 1
 
     def test_pinned_known_family_skips_rocm_and_gfx(self):
