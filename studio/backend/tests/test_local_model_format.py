@@ -180,13 +180,18 @@ def test_local_task_tags_video_pipeline_dir(tmp_path):
     )
 
 
-def test_local_task_video_name_without_pipeline_not_surfaced(tmp_path):
-    # A dir whose name matches a video family but which is NOT a diffusers pipeline (no
-    # model_index.json) is not a loadable pipeline, so it must stay untagged -- never surfaced
-    # to the Video picker, so it can never trigger a pipeline load that evicts then fails.
+def test_local_task_tags_video_single_file_checkpoint(tmp_path):
+    # A dir whose name matches a video family holding a bare single-file .safetensors (no
+    # model_index.json) IS loadable: the video load route reinterprets a sole single-file local
+    # pick as a single_file load (routes/video.py), validating BEFORE it touches the GPU. So it
+    # must be tagged text-to-video and surfaced in the Video On-Device picker -- not left task=null
+    # and hidden, which would make the advertised-and-loadable checkpoint unusable.
     d = tmp_path / "ltx-loose"
     _touch(d / "ltx-2.safetensors")  # loose weights, no model_index.json
-    assert models_route._local_model_task(_local(d, model_id = "Lightricks/LTX-2")) is None
+    assert (
+        models_route._local_model_task(_local(d, model_id = "Lightricks/LTX-2"))
+        == models_route._VIDEO_GEN_TASK
+    )
 
 
 def test_local_task_ignores_family_token_in_parent_path(tmp_path):

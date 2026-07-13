@@ -1613,11 +1613,15 @@ async def upload_diffusion_dataset(
     import os
     import tempfile
 
-    from utils.paths import datasets_root
     from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 
     cleaned = _clean_diffusion_dataset_name(name)
-    folder = datasets_root() / cleaned
+    # Reject a symlinked dataset directory BEFORE any write. A bare mkdir(exist_ok=True) succeeds
+    # through an existing name -> external-directory symlink, and the staged upload would then
+    # write/replace files outside the Studio datasets root through that link. The read/caption/
+    # delete endpoints already enforce this containment via _resolve_dataset_folder; the upload
+    # path must run the same symlink + root-containment check first so writes can never escape.
+    folder = _resolve_dataset_folder(name, must_exist = False)
     folder.mkdir(parents = True, exist_ok = True)
 
     limit_bytes = get_upload_limit_bytes()

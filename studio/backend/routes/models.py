@@ -3320,6 +3320,20 @@ def _local_is_diffusers(model: "LocalModelInfo") -> bool:
                 return True
     except Exception:
         pass
+    # A single-file VIDEO checkpoint (LTX / Wan / Hunyuan .safetensors, no model_index.json)
+    # ships no pipeline index and resolves to no IMAGE family either, so the checks above miss
+    # it. The video load route reinterprets a bare single-file local dir as a single_file load
+    # (routes/video.py), so it IS loadable and must be surfaced; without tagging it here
+    # _local_model_task returns task=null and the Video On-Device picker hides it. Match the same
+    # clean id / name needles (not the raw path) so a parent-dir family token can't spuriously
+    # match; _local_model_task then routes the video family to the text-to-video task.
+    try:
+        from core.inference.video_families import detect_video_family
+        for needle in (model.model_id, model.display_name, Path(model.id).name):
+            if needle and detect_video_family(needle) is not None:
+                return True
+    except Exception:
+        pass
     return False
 
 

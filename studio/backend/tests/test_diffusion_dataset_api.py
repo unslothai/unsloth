@@ -563,6 +563,22 @@ def test_resolve_dataset_folder_rejects_symlink(ds_root, tmp_path):
     assert exc.value.status_code == 400
 
 
+def test_upload_through_symlinked_dataset_cannot_escape_root(client, ds_root, tmp_path):
+    # End to end: an upload targeting a dataset name that already exists as a symlink to an
+    # external directory must be refused (400) BEFORE any bytes are written, so the upload can
+    # never create/replace files outside the datasets root through the link.
+    external = tmp_path / "external"
+    external.mkdir()
+    (ds_root / "linked").symlink_to(external, target_is_directory = True)
+
+    r = _upload(client, "linked", [("intruder.png", _png_bytes())])
+    assert r.status_code == 400
+    assert "symbolic link" in r.json()["detail"]
+    # Nothing was written through the link into the external directory.
+    assert not (external / "intruder.png").exists()
+    assert not any(external.iterdir())
+
+
 def test_delete_through_symlinked_dataset_cannot_escape_root(client, ds_root, tmp_path):
     # End to end: a DELETE against an image inside a symlinked dataset dir is refused (400) and the
     # external file it points at is NOT removed.
