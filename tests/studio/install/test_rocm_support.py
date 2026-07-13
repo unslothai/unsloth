@@ -1510,7 +1510,9 @@ class TestEnsureRocmTorchMarker:
             with patch.object(stack_mod, "IS_MACOS", False):
                 # torch imports (a healthy flavor) so the health probe passes and the
                 # matching marker keeps the fast path; family is irrelevant here.
-                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                with patch.object(
+                    stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
+                ):
                     with patch.dict(stack_mod.os.environ, env, clear = False):
                         stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                         stack_mod._ensure_verbatim_torch_index()
@@ -1655,7 +1657,9 @@ class TestEnsureRocmTorchMarker:
                 # torch imports throughout (healthy probe), so the DRIFT signal is the
                 # snapshot, not the import health check -- this test exercises the
                 # clobber-via-version-drift path, not the broken-torch path.
-                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                with patch.object(
+                    stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
+                ):
                     with patch.object(stack_mod, "_installed_trio_snapshot", side_effect = snapshots):
                         with patch.dict(stack_mod.os.environ, env, clear = False):
                             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1678,7 +1682,9 @@ class TestEnsureRocmTorchMarker:
             with patch.object(stack_mod, "IS_MACOS", False):
                 # torch imports (healthy probe): a NEW run with matching marker snapshots
                 # the trio and stops -- the health check never forces a reinstall.
-                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                with patch.object(
+                    stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
+                ):
                     with patch.object(
                         stack_mod, "_installed_trio_snapshot", return_value = ("torch==2.10.0",)
                     ):
@@ -1893,7 +1899,12 @@ class TestEnsureRocmTorchMarker:
         assert "https://mirror.local/cpu" in self._marker_path.read_text()
 
     # --- _ensure_pinned_known_family_torch (Windows/macOS-ARM known-family repair) --
-    def _ensure_known(self, url, flavor, is_windows = False):
+    def _ensure_known(
+        self,
+        url,
+        flavor,
+        is_windows = False,
+    ):
         """Run _ensure_pinned_known_family_torch with a pin + mocked flavor probe,
         returning the pip_install mock so callers can assert on the reinstall. is_windows
         pins stack_mod.IS_WINDOWS so the ROCm-on-Windows branch is exercised
@@ -1977,9 +1988,9 @@ class TestEnsureRocmTorchMarker:
             "https://mirror.local/rocm7.2", ("cpu", "", "2.10.0"), is_windows = True
         )
         rocm_args = [str(a) for a in rocm.call_args.args]
-        assert {"torch", "torchvision", "torchaudio"}.issubset(rocm_args), (
-            "a rocm<d> mirror pin stays bare (no published floor)"
-        )
+        assert {"torch", "torchvision", "torchaudio"}.issubset(
+            rocm_args
+        ), "a rocm<d> mirror pin stays bare (no published floor)"
 
     def test_pinned_known_family_windows_rocm_matching_no_reinstall(self):
         """A Windows gfx pin whose torch already matches (an AMD per-arch +rocm7.13.0
