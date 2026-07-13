@@ -789,9 +789,15 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "SELECT pg_write_file('/tmp/p', 'x')"}, True),  # server-side file write
         ({"query": "SELECT lo_export(123, '/tmp/p')"}, True),  # large-object export to a file
         ({"query": "SELECT setval_col FROM t"}, False),  # 'setval' column prefix stays safe
-        ({"query": "SELECT secret INTO OUTFILE '/tmp/leak' FROM users"}, True),  # INTO OUTFILE write
+        (
+            {"query": "SELECT secret INTO OUTFILE '/tmp/leak' FROM users"},
+            True,
+        ),  # INTO OUTFILE write
         ({"query": "SELECT x INTO DUMPFILE '/tmp/d' FROM t"}, True),  # INTO DUMPFILE write
-        ({"query": "SELECT count(*) INTO cnt FROM t"}, False),  # PL/pgSQL SELECT INTO var stays safe
+        (
+            {"query": "SELECT count(*) INTO cnt FROM t"},
+            False,
+        ),  # PL/pgSQL SELECT INTO var stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):
