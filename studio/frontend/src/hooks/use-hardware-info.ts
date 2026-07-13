@@ -31,6 +31,9 @@ export interface HardwareInfo {
     exportSupported: boolean | null;
     exportUnsupportedReason: string | null;
     exportUnsupportedMessage: string | null;
+    // Backend truth for the torchao gate (mirrors is_win32_rocm(): torch.version.hip OR a "rocm"
+    // build tag). Single source; the UI must not re-derive Windows ROCm from `rocm` alone.
+    win32Rocm: boolean;
     loaded: boolean;
 }
 
@@ -48,6 +51,7 @@ const DEFAULT: HardwareInfo = {
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
+    win32Rocm: false,
     loaded: false,
 };
 
@@ -101,6 +105,7 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,
+                win32Rocm: data?.win32_rocm ?? false,
                 loaded: true,
             };
             if (generation === cacheGeneration) {

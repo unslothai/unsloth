@@ -226,8 +226,9 @@ export function ExportPage() {
   const deviceType = usePlatformStore((s) => s.deviceType);
   // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
   const isMacHost = deviceType === "mac";
-  // Windows ROCm has no torch.distributed, so portable torchao (FP8/INT8) is unavailable there.
-  const isWindowsRocm = deviceType === "windows" && hardware.rocm != null;
+  // Backend truth for the torchao gate (single source). Not re-derived from `rocm`: AMD SDK
+  // wheels leave torch.version.hip unset, so `rocm` alone would miss Windows ROCm.
+  const isWindowsRocm = hardware.win32Rocm;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; while unloaded the backend route guard
@@ -242,10 +243,8 @@ export function ExportPage() {
       MERGED_FORMATS.filter((f) => {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
-        // Portable torchao is the fallback for hosts without the NVIDIA compressed path, i.e. a
-        // CPU / non-NVIDIA box. Hidden on NVIDIA (use compressed-tensors), on macOS/MLX (the
-        // backend rejects quantized export there), and on Windows ROCm (torchao is unavailable:
-        // no torch.distributed, so its config classes are import-stubbed to None).
+        // Portable torchao: shown on non-NVIDIA hosts. Hidden on NVIDIA (use compressed-tensors),
+        // macOS/MLX (rejected), and Windows ROCm (torchao unavailable: no torch.distributed).
         if (f.backend === "torchao") return !hasNvidia && !isMacHost && !isWindowsRocm;
         // Plain 16-bit is available everywhere.
         return true;
@@ -259,7 +258,15 @@ export function ExportPage() {
         : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop any already-selected format that the gate just removed (e.g. torchao once win32Rocm
+  // resolves after /api/system/hardware lands), so a stale pick isn't summarized or exported.
+  useEffect(() => {
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,

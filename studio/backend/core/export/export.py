@@ -104,9 +104,8 @@ def _compressed_export_supported():
 def _torchao_export_supported():
     """True if the installed unsloth build has the portable torchao FP8/INT8 export path.
 
-    Forced False on Windows ROCm: torch.distributed (and therefore torchao) is unavailable
-    there, so torchao is import-stubbed and its config classes return None. Windows CUDA,
-    Linux, and macOS are unaffected (torchao is real)."""
+    Forced False on Windows ROCm, where torchao is import-stubbed (no torch.distributed) and its
+    config classes return None. Unchanged on Windows CUDA / Linux / macOS (torchao is real)."""
     try:
         from core._torchao_stub import is_win32_rocm
 
@@ -127,9 +126,25 @@ def _torchao_runtime_unavailable():
         from core._torchao_stub import is_win32_rocm, _STUB_SENTINEL
         if is_win32_rocm():
             return True
-        return getattr(sys.modules.get("torchao"), "_unsloth_stub", None) is _STUB_SENTINEL
+        _tao = sys.modules.get("torchao")
+        return _tao is not None and getattr(_tao, "_unsloth_stub", None) is _STUB_SENTINEL
     except Exception:
         return False
+
+
+def _is_torchao_alias(alias):
+    """True if `alias` is any torchao export form (torchao_fp8, portable_int8, hyphen/space
+    variants) per unsloth's normalizer, with a torchao_ prefix fallback. Catches a torchao request
+    before the Windows-ROCm gate misclassifies it as compressed-tensors."""
+    if not alias:
+        return False
+    try:
+        import unsloth.save as _us
+        if _us._normalize_torchao_method(alias) is not None:
+            return True
+    except Exception:
+        pass
+    return str(alias).lower().startswith("torchao")
 
 
 def _has_nvidia_gpu():
@@ -518,15 +533,10 @@ class ExportBackend:
         }
         compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
 
-        # Portable torchao (torchao_fp8/torchao_int8) needs torch.distributed + torchao, both
-        # absent on Windows ROCm where torchao is import-stubbed (its config classes return None).
-        # Fail fast with a clear message instead of the cryptic transformers "quant_type ... got
-        # NoneType" crash. 16-bit / GGUF / compressed-tensors formats are unaffected.
-        if (
-            compressed_alias
-            and str(compressed_alias).lower().startswith("torchao")
-            and _torchao_runtime_unavailable()
-        ):
+        # Portable torchao is unavailable on Windows ROCm (stubbed, no torch.distributed). Reject
+        # any torchao alias early with a clear message instead of the cryptic NoneType crash or a
+        # misleading NVIDIA error. Other formats (16-bit/GGUF/compressed-tensors) are unaffected.
+        if _is_torchao_alias(compressed_alias) and _torchao_runtime_unavailable():
             return (
                 False,
                 "Portable torchao FP8/INT8 export is not supported on Windows ROCm: "

@@ -103,10 +103,9 @@ class _StubSubpackageFinder(importlib.abc.MetaPathFinder):
 def is_win32_rocm() -> bool:
     """True on Windows ROCm, where torch.distributed (and thus torchao) is unavailable.
 
-    Gate on the active torch runtime, not env-var presence -- HIP_PATH/ROCM_PATH
-    persist after reverting to a CUDA wheel. Some ROCm wheels lack torch.version.hip
-    but still encode "rocm" in __version__, so accept either. Windows CUDA -> False.
-    Shared by the import stub and the torchao export gate so the two can't drift.
+    Gate on the runtime torch, not env vars (HIP_PATH persists after a CUDA revert). AMD SDK
+    wheels lack torch.version.hip but tag "rocm" in __version__, so accept either. Shared by the
+    import stub and the export gate so they can't drift.
     """
     if sys.platform != "win32":
         return False
@@ -128,8 +127,9 @@ def install_torchao_windows_rocm_stub() -> None:
     """
     if not is_win32_rocm():
         return
-    # Register the finder only on Windows ROCm.
-    sys.meta_path.append(_StubSubpackageFinder())
+    # Register the finder only on Windows ROCm, and only once (no duplicates on re-call).
+    if not any(isinstance(_f, _StubSubpackageFinder) for _f in sys.meta_path):
+        sys.meta_path.append(_StubSubpackageFinder())
     # Seed torchao top-level + key submodules; the finder handles the rest.
     for _tao_name in (
         "torchao",
