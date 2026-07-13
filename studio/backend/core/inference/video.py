@@ -82,6 +82,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     compile_eligible,
+    compiled_shapes_are_static,
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
@@ -2274,6 +2275,17 @@ class VideoBackend:
                 # The first compiled generation just paid the compile cost; persist the
                 # warm bundle when saving is enabled. Idempotent + best-effort.
                 try:
+                    # A STATIC compile (speed=max) makes new inductor artifacts per
+                    # (width, height, frames), so register this shape first: an uncovered
+                    # shape re-dirties the context so the save rewrites the enriched bundle,
+                    # otherwise a post-hit ctx.saved stays true and later resolutions/frame
+                    # counts silently recompile every restart (mirrors the image backend).
+                    compile_cache.register_shape(
+                        state.compile_cache_ctx,
+                        (width, height, frames),
+                        static = "compiled" in (state.speed_optims or ())
+                        and compiled_shapes_are_static(pipe, state.speed_mode),
+                    )
                     compile_cache.save(state.compile_cache_ctx, logger = logger)
                 except Exception:  # noqa: BLE001 -- cache persistence is best-effort
                     pass

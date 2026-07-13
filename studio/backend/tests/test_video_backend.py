@@ -1855,6 +1855,61 @@ def test_video_compile_cache_begin_save_restore_lifecycle(fake_runtime, monkeypa
     assert calls["restore"] == [ctx]
 
 
+def test_video_register_shape_records_static_generation_dims(fake_runtime, monkeypatch):
+    # A speed=max video load compiles dynamic=False (per-(width, height, frames) artifacts),
+    # so the save path must register the ACTUAL generation shape before saving -- otherwise a
+    # post-bundle-hit ctx.saved stays true and a later resolution/frame count never re-dirties
+    # the bundle, so warm restarts silently recompile it. Mirrors the image backend.
+    from core.inference import video as video_mod
+
+    monkeypatch.setattr(video_mod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(video_mod, "apply_speed_optims", lambda *a, **k: {"compiled": True})
+    registered: list = []
+    monkeypatch.setattr(
+        video_mod.compile_cache,
+        "register_shape",
+        lambda ctx, shape, *, static: registered.append((tuple(shape), static)),
+    )
+    monkeypatch.setattr(video_mod.compile_cache, "save", lambda c, logger = None: True)
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "max"
+    )
+    # Two distinct shapes must each register (static coverage grows per shape), tagged static.
+    r1 = backend.generate(prompt = "a sloth", width = 1000, height = 700, num_frames = 120)
+    assert registered[-1] == ((r1["width"], r1["height"], r1["num_frames"]), True)
+    r2 = backend.generate(prompt = "a sloth", width = 512, height = 512, num_frames = 41)
+    assert registered[-1] == ((r2["width"], r2["height"], r2["num_frames"]), True)
+    assert registered[-1][0] != registered[-2][0]
+    backend.unload()
+
+
+def test_video_register_shape_not_static_on_dynamic_default_tier(fake_runtime, monkeypatch):
+    # The default video tier compiles dynamic=True (one artifact across shapes), so the DiT
+    # never dirties per shape: register_shape must be called with static=False so the bundle
+    # is not needlessly rewritten on every new resolution.
+    from core.inference import video as video_mod
+
+    # Kill the background prewarm so only the explicit generation registers a shape.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_PREWARM", "0")
+    monkeypatch.setattr(video_mod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(video_mod, "apply_speed_optims", lambda *a, **k: {"compiled": True})
+    registered: list = []
+    monkeypatch.setattr(
+        video_mod.compile_cache,
+        "register_shape",
+        lambda ctx, shape, *, static: registered.append((tuple(shape), static)),
+    )
+    monkeypatch.setattr(video_mod.compile_cache, "save", lambda c, logger = None: True)
+
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    backend.generate(prompt = "a sloth")
+    assert registered and registered[-1][1] is False
+    backend.unload()
+
+
 def test_video_compile_cache_skipped_on_speed_off_and_ineligible(fake_runtime, monkeypatch):
     # Speed=off (bit-exact reference) or a compile-ineligible target must never touch
     # the compile cache: no begin, no context, no restore side effects to leak.
