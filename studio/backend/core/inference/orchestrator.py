@@ -174,18 +174,20 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
-        # Same recheck as the training/export spawns: a sidecar install or lazy
-        # repair that reserved after the route-level guards must not have this
-        # worker activate a mid-swap .venv_t5_latest. Also covers the OpenAI
+        # Same recheck as the training/export spawns, REPAIR reservations only: a
+        # repair swaps without holding the lifecycle gate this load's caller owns,
+        # while an install cannot swap until this gate is released (and then its
+        # queued-load snapshot aborts it), so tolerating installs here lets the
+        # load win instead of failing both sides. Also covers the OpenAI
         # auto-switch path, which enters _load_model_impl without route guards.
         from utils.transformers_version import (
             SidecarSwapInProgress,
-            sidecar_swap_in_progress,
+            sidecar_swap_kind,
         )
 
-        if sidecar_swap_in_progress():
+        if sidecar_swap_kind() == "repair":
             raise SidecarSwapInProgress(
-                "A transformers installation is replacing the latest sidecar; "
+                "A transformers repair is replacing the latest sidecar; "
                 "retry when it completes."
             )
         from utils.native_path_leases import (
@@ -962,19 +964,19 @@ class InferenceOrchestrator:
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
 
-            # Recheck the sidecar reservation BEFORE tearing the old worker down:
-            # an install reserving after the route's under-gate check would
-            # otherwise only be caught at spawn time, after the previous model is
-            # already gone, failing both requests. Raising here keeps the current
-            # model loaded and the install proceeds cleanly behind the gate.
+            # Recheck the sidecar reservation BEFORE tearing the old worker down,
+            # for REPAIRS only: an install holds this same lifecycle gate, so it
+            # cannot swap while this load runs, and its queued-load snapshot
+            # aborts it after this load publishes -- the load wins cleanly.
+            # Raising here (repair) keeps the current model loaded.
             from utils.transformers_version import (
                 SidecarSwapInProgress,
-                sidecar_swap_in_progress,
+                sidecar_swap_kind,
             )
 
-            if sidecar_swap_in_progress():
+            if sidecar_swap_kind() == "repair":
                 raise SidecarSwapInProgress(
-                    "A transformers installation is replacing the latest sidecar; "
+                    "A transformers repair is replacing the latest sidecar; "
                     "retry when it completes."
                 )
 
@@ -1105,8 +1107,15 @@ class InferenceOrchestrator:
                     self.models.clear()
                     raise Exception(error)
 
-        except Exception:
+        except Exception as exc:
             self.loading_models.discard(model_name)
+            from utils.transformers_version import SidecarSwapInProgress
+
+            if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
+                # Raised before the old worker was torn down: the previous model
+                # is still live, so keep the mirrors (clearing them would let the
+                # installer treat the worker as inactive and kill it unreported).
+                raise
             self.active_model_name = None
             self.models.clear()
             raise

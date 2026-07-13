@@ -2153,7 +2153,11 @@ def _workers_active_for_repair() -> bool:
         pass
     try:
         from core.export import get_export_backend
-        _alive = getattr(get_export_backend(), "is_worker_alive", None)
+
+        _export = get_export_backend()
+        if _export.is_export_active():
+            return True
+        _alive = getattr(_export, "is_worker_alive", None)
         if callable(_alive) and _alive():
             return True
     except Exception:
@@ -2163,6 +2167,9 @@ def _workers_active_for_repair() -> bool:
 
         backend = get_inference_backend()
         if getattr(backend, "active_model_name", None):
+            return True
+        # An in-flight load counts too: its worker spawns moments later.
+        if getattr(backend, "loading_models", None):
             return True
         _alive = getattr(backend, "is_worker_alive", None)
         if callable(_alive) and _alive():
@@ -2207,15 +2214,6 @@ def _ensure_venv_t5_latest_exists() -> bool:
             return False
     except Exception:
         pass
-    # The install route quiesces workers before its swap; a lazy repair has no such
-    # teardown, so refuse while any parent-visible worker is active rather than
-    # replace a directory a live process may lazy-import from.
-    if _workers_active_for_repair():
-        logger.warning(
-            "Cannot repair .venv_t5_latest: active chat/training/export workers "
-            "may be importing from it. Retry when they are idle."
-        )
-        return False
     # Same stage-and-swap as the install, under the same reservation so training/export starts
     # (which check sidecar_swap_in_progress) wait out a lazy repair; a failed repair keeps the pin.
     if not try_begin_sidecar_swap(kind = "repair"):
@@ -2224,6 +2222,17 @@ def _ensure_venv_t5_latest_exists() -> bool:
         )
         return False
     try:
+        # Worker check UNDER the reservation (the install route quiesces workers;
+        # a repair has none): worker starts set their active markers BEFORE
+        # rechecking the reservation, so either this check sees them and aborts,
+        # or their recheck sees this reservation and aborts -- no interleaving
+        # lets a worker spawn against a mid-swap sidecar.
+        if _workers_active_for_repair():
+            logger.warning(
+                "Cannot repair .venv_t5_latest: active chat/training/export workers "
+                "may be importing from it. Retry when they are idle."
+            )
+            return False
         return _stage_and_swap_latest_venv(version, packages)
     finally:
         end_sidecar_swap()

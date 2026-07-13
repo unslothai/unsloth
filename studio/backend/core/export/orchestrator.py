@@ -450,7 +450,16 @@ class ExportOrchestrator:
                     self._shutdown_subprocess(timeout = 2)
 
                 logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
-                self._spawn_subprocess(sub_config)
+                try:
+                    self._spawn_subprocess(sub_config)
+                except Exception:
+                    # The old worker is already gone; a stale current_checkpoint
+                    # would make the Export page claim a loaded checkpoint that
+                    # the next op then fails on with "no subprocess running".
+                    self.current_checkpoint = None
+                    self.is_vision = False
+                    self.is_peft = False
+                    raise
 
                 try:
                     resp = self._wait_response("loaded")
