@@ -2339,7 +2339,10 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
-Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)
+Remove-AgentInstructionFiles -Roots @(
+    (Join-Path $FrontendDir "node_modules"),
+    (Join-Path $OxcValidatorDir "node_modules")
+)
 
 # ==========================================================================
 #  PHASE 3: Python environment + dependencies

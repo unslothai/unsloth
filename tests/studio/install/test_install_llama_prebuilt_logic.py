@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -2261,14 +2262,25 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
-    assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' in setup_sh
+    assert (
+        "_remove_agent_instruction_files \\\n"
+        '    "$SCRIPT_DIR/frontend/node_modules" \\\n'
+        '    "$_OXC_DIR/node_modules"'
+    ) in setup_sh
+    assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' not in setup_sh
     assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh
     assert "-name 'CLAUDE.md'" in setup_sh
     assert 'if [ ! -L "$LLAMA_CPP_DIR" ] && {' in setup_sh
     assert '${_LOCAL_LLAMA_CPP_LINKED:-false}" != true' not in setup_sh
     assert "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" in setup_sh
     assert '_studio_owned_adoptable "$LLAMA_CPP_DIR"' in setup_sh
-    assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" in setup_ps1
+    assert (
+        "Remove-AgentInstructionFiles -Roots @(\n"
+        '    (Join-Path $FrontendDir "node_modules"),\n'
+        '    (Join-Path $OxcValidatorDir "node_modules")\n'
+        ")"
+    ) in setup_ps1
+    assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" not in setup_ps1
     assert '"CLAUDE.md"' in setup_ps1
     assert '-Include "AGENTS.md", "CLAUDE.md"' not in setup_ps1
     assert '$child.Name -in @("AGENTS.md", "CLAUDE.md")' in setup_ps1
@@ -2282,6 +2294,33 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     ) in setup_ps1
     assert not (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "AGENTS.md").exists()
     assert (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "README.md").is_file()
+
+
+def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not available")
+
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    start = setup_sh.index("_remove_agent_instruction_files() {")
+    end = setup_sh.index("\n}\n", start) + 2
+    function = setup_sh[start:end]
+    managed = tmp_path / "managed"
+    external = tmp_path / "external.md"
+    managed.mkdir()
+    external.write_text("external", encoding = "utf-8")
+    instruction = managed / "AGENTS.md"
+    try:
+        instruction.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    subprocess.run(
+        ["bash", "-c", function + '\n_remove_agent_instruction_files "$1"', "bash", str(managed)],
+        check = True,
+    )
+
+    assert not os.path.lexists(instruction)
+    assert external.read_text(encoding = "utf-8") == "external"
 
 
 def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
