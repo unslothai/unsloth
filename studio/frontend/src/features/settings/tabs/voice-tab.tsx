@@ -28,6 +28,7 @@ import type { StudioDictationSession } from "@/features/chat/adapters/studio-web
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { MicIcon } from "@/lib/mic-icon";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
   Copy01Icon,
   Delete02Icon,
@@ -392,33 +393,46 @@ export function VoiceTab() {
   // the current speechSynthesis utterance; read-aloud shares the global
   // synthesizer and must not be cancelled by merely closing settings.
   const previewingRef = useRef(false);
+  // Only a system-voice preview owns the shared speechSynthesis channel; a
+  // studio (Audio) preview must not cancel an unrelated chat read-aloud.
+  const ownsSystemPreviewRef = useRef(false);
   const markPreviewing = useCallback((value: boolean) => {
     previewingRef.current = value;
     setPreviewing(value);
   }, []);
 
-  const stopPreview = useCallback(() => {
-    if (!previewingRef.current) return;
-    window.speechSynthesis?.cancel();
-    previewAbortRef.current?.abort();
-    previewAbortRef.current = null;
+  const releasePreviewAudio = useCallback(() => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current.src = "";
       previewAudioRef.current = null;
     }
+  }, []);
+
+  const stopPreview = useCallback(() => {
+    if (!previewingRef.current) return;
+    if (ownsSystemPreviewRef.current) {
+      window.speechSynthesis?.cancel();
+      ownsSystemPreviewRef.current = false;
+    }
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    releasePreviewAudio();
     markPreviewing(false);
-  }, [markPreviewing]);
+  }, [markPreviewing, releasePreviewAudio]);
 
   const previewTts = async () => {
     if (!ttsSupported) return;
-    if (previewing) {
+    // Ref, not state: a double-click before rerender still reads previewing
+    // as false and would start a second request that orphans the first.
+    if (previewingRef.current) {
       stopPreview();
       return;
     }
     if (ttsEngine === "studio") {
       const controller = new AbortController();
       previewAbortRef.current = controller;
+      ownsSystemPreviewRef.current = false;
       markPreviewing(true);
       try {
         const url = await generateStudioTtsAudio(
@@ -429,8 +443,14 @@ export function VoiceTab() {
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
         audio.volume = ttsVolume;
-        audio.addEventListener("ended", () => markPreviewing(false));
-        audio.addEventListener("error", () => markPreviewing(false));
+        audio.addEventListener("ended", () => {
+          releasePreviewAudio();
+          markPreviewing(false);
+        });
+        audio.addEventListener("error", () => {
+          releasePreviewAudio();
+          markPreviewing(false);
+        });
         previewAudioRef.current = audio;
         await audio.play();
       } catch (error) {
@@ -439,6 +459,7 @@ export function VoiceTab() {
             error instanceof Error ? error.message : "TTS preview failed",
           );
         }
+        releasePreviewAudio();
         markPreviewing(false);
       }
       return;
@@ -448,8 +469,15 @@ export function VoiceTab() {
       return;
     }
     const utterance = createConfiguredUtterance(TTS_PREVIEW_TEXT);
-    utterance.addEventListener("end", () => markPreviewing(false));
-    utterance.addEventListener("error", () => markPreviewing(false));
+    utterance.addEventListener("end", () => {
+      ownsSystemPreviewRef.current = false;
+      markPreviewing(false);
+    });
+    utterance.addEventListener("error", () => {
+      ownsSystemPreviewRef.current = false;
+      markPreviewing(false);
+    });
+    ownsSystemPreviewRef.current = true;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
     markPreviewing(true);
@@ -663,6 +691,9 @@ export function VoiceTab() {
               variant="ghost"
               size="icon"
               className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
+              // Keep the click from blurring an empty input first, which would
+              // commit-splice this row and make onClick delete the next one.
+              onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
               aria-label={`Remove dictionary entry ${index + 1}`}
             >
@@ -726,10 +757,11 @@ export function VoiceTab() {
                   className="size-8 shrink-0 text-muted-foreground"
                   aria-label="Copy dictation"
                   onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(item.text);
+                    // Helper falls back to execCommand where navigator.clipboard
+                    // is unavailable (Safari, insecure http LAN contexts).
+                    if (await copyToClipboard(item.text)) {
                       toast.success(t("settings.voice.recents.copied"));
-                    } catch {
+                    } else {
                       toast.error(t("settings.voice.recents.copyFailed"));
                     }
                   }}

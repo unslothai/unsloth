@@ -38,7 +38,7 @@ export const isMissingDeviceError = (error: unknown): boolean => {
   return name === "OverconstrainedError" || name === "NotFoundError";
 };
 
-const describeMediaError = (error: unknown): string => {
+export const describeMediaError = (error: unknown): string => {
   if (!(error instanceof DOMException)) {
     return "Dictation could not access the microphone.";
   }
@@ -54,7 +54,7 @@ const describeMediaError = (error: unknown): string => {
   return error.message || "Dictation could not access the microphone.";
 };
 
-const describeSpeechError = (error: string, message?: string): string => {
+export const describeSpeechError = (error: string, message?: string): string => {
   if (error === "not-allowed") {
     return "Speech recognition was blocked by the browser. Check microphone permissions for this Unsloth page.";
   }
@@ -216,7 +216,14 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         const transcript = result[0]?.transcript ?? "";
         if (result.isFinal) {
           const corrected = applyDictationDictionary(transcript);
-          finalTranscript += corrected;
+          // Join final chunks with a single space so recorded transcripts do
+          // not merge words when a browser omits leading whitespace.
+          const trimmed = corrected.trim();
+          if (trimmed) {
+            finalTranscript = finalTranscript
+              ? `${finalTranscript} ${trimmed}`
+              : trimmed;
+          }
           for (const callback of speechCallbacks) {
             callback({ transcript: corrected, isFinal: true });
           }

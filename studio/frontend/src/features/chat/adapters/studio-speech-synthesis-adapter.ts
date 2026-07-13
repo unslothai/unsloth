@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { toast } from "@/lib/toast";
 import type { SpeechSynthesisAdapter } from "@assistant-ui/react";
 
 /** Voice for a stored voiceURI; undefined lets the browser pick. */
@@ -18,8 +19,7 @@ export function findTtsVoice(
     .find((voice) => voice.voiceURI === voiceURI);
 }
 
-// macOS novelty and legacy Eloquence voices that sound robotic and flood
-// the picker. Matched against the lowercased name before any "(".
+// macOS novelty and legacy Eloquence voices that sound robotic and flood the picker.
 const LOW_QUALITY_VOICE_NAMES = new Set([
   "albert",
   "bad news",
@@ -96,7 +96,12 @@ export function curateSystemVoices(
     wantedLangs.add(langBase(dictationLanguage));
   }
 
+  // WebKit and Linux engines report voices with empty or duplicate voiceURIs;
+  // drop them so the Radix Select never gets an empty or colliding value.
+  const seenVoiceURIs = new Set<string>();
   const kept = voices.filter((voice) => {
+    if (!voice.voiceURI || seenVoiceURIs.has(voice.voiceURI)) return false;
+    seenVoiceURIs.add(voice.voiceURI);
     if (LOW_QUALITY_VOICE_NAMES.has(voiceBaseName(voice))) return false;
     return wantedLangs.has(langBase(voice.lang));
   });
@@ -185,8 +190,7 @@ function speakWithStudioModel(
   let audio: HTMLAudioElement | null = null;
   let cancelled = false;
 
-  // Release the element and its multi-MB WAV data URL as soon as playback
-  // ends; the utterance object may stay referenced for a while.
+  // Release the element and its multi-MB WAV data URL as soon as playback ends.
   const cleanup = () => {
     if (audio) {
       audio.pause();
@@ -261,6 +265,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       error?: unknown,
     ) => {
       if (res.status.type === "ended") return;
+      // Surface genuine read-aloud failures; a cancelled/interrupted utterance
+      // is a normal stop, not an error, and must not toast.
+      if (reason === "error" && error !== "interrupted" && error !== "canceled") {
+        toast.error(error instanceof Error ? error.message : "Read aloud failed.");
+      }
       res.status = { type: "ended", reason, error };
       for (const handler of subscribers) handler();
     };

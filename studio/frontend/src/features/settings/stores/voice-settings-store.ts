@@ -110,8 +110,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           }
           return { dictionary: [...state.dictionary, trimmed] };
         }),
-      // Keeps the raw value (including spaces and empties) so the input can
-      // be edited freely; commitDictionaryEntry finalizes on blur.
+      // Keep the raw value so the input edits freely; commitDictionaryEntry finalizes on blur.
       updateDictionaryEntry: (index, value) =>
         set((state) => {
           const dictionary = [...state.dictionary];
@@ -188,10 +187,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 .slice(0, MAX_DICTIONARY_ENTRIES)
             : [],
           recentDictations: Array.isArray(saved?.recentDictations)
-            ? saved.recentDictations.filter(
-                (v): v is RecentDictation =>
-                  typeof v?.text === "string" && typeof v?.at === "number",
-              )
+            ? saved.recentDictations
+                .filter(
+                  (v): v is RecentDictation =>
+                    typeof v?.text === "string" && typeof v?.at === "number",
+                )
+                .slice(0, MAX_RECENT_DICTATIONS)
             : [],
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
