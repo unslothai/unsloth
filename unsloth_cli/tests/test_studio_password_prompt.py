@@ -294,6 +294,37 @@ def test_studio_default_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp
     assert _auth_state(studio_mod)["must_change_password"] == 1
 
 
+def test_studio_default_reexec_outer_runpy_keeps_bootstrap_for_local_recovery(
+    monkeypatch, tmp_path
+):
+    # Regression (Codex 3572165931): when the re-exec target is THIS install's own
+    # run.py, the child's pre-bind gate sets suppress_bootstrap_injection and never
+    # serves the seeded credential publicly, so the parent strip is unnecessary.
+    # Skipping it means a --secure launch whose tunnel later fails to connect does
+    # not lock the user out, and .bootstrap_password stays for local recovery.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    _install_studio_default_reexec(monkeypatch, events)
+    # Re-exec target IS this install's outer run.py -> child self-suppresses.
+    outer_run_py = studio_mod._PACKAGE_ROOT / "studio" / "backend" / "run.py"
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: outer_run_py)
+
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    result = CliRunner().invoke(app, ["--secure"], catch_exceptions = True)
+
+    # Strip skipped: file preserved, must_change still set, launch still re-execs.
+    assert bootstrap_file.exists(), result.output
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert "exec" in [k for k, _ in events], events
+
+
 def test_studio_default_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):
     # Fresh STUDIO_HOME (no pre-seed): the gate's own _ensure_cli_default_admin
     # does the INSERT. It must COMMIT that seed before re-exec, or conn.close()
@@ -697,6 +728,35 @@ def test_studio_default_wildcard_cloudflare_strips_even_if_tunnel_unavailable(
     # Still strips (raw public bind) and re-execs.
     assert not bootstrap_file.exists(), result.output
     assert "exec" in [k for k, _ in events], events
+
+
+def test_tunnel_probe_adds_backend_to_syspath(monkeypatch, tmp_path):
+    # Regression (Codex 3572165922): ensure_cloudflared -> _cache_path lazily
+    # imports utils.paths.storage_roots, which only resolves when studio/backend is
+    # on sys.path. From the outer CLI it is not, so the probe must add it or it
+    # false-reports "unavailable" and wrongly refuses --secure. Model that with a
+    # cloudflare_tunnel whose ensure_cloudflared resolves ONLY when backend is on
+    # sys.path.
+    studio_mod = _studio()
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "cloudflare_tunnel.py").write_text(
+        "import sys\n"
+        f"_BACKEND = {str(backend)!r}\n"
+        "def ensure_cloudflared():\n"
+        "    # Resolvable (cached) ONLY when the backend dir is importable.\n"
+        "    return '/fake/cloudflared' if _BACKEND in sys.path else None\n"
+    )
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: backend / "run.py")
+    assert str(backend) not in sys.path  # precondition
+
+    result = studio_mod._tunnel_binary_confirmed_unavailable()
+
+    # ensure_cloudflared resolved (backend was on sys.path) -> available -> not
+    # "confirmed unavailable"; without the fix it would false-report True.
+    assert result is False
+    # The probe cleans up the sys.path entry it added.
+    assert str(backend) not in sys.path
 
 
 def test_studio_default_query_failure_strips_bootstrap_file(monkeypatch, tmp_path):

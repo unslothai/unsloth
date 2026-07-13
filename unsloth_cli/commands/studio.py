@@ -839,10 +839,21 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
     run_py = _find_run_py()
     if run_py is None:
         return False
-    tunnel_py = run_py.parent / "cloudflare_tunnel.py"
+    backend_dir = run_py.parent
+    tunnel_py = backend_dir / "cloudflare_tunnel.py"
     if not tunnel_py.is_file():
         return False
+    # ensure_cloudflared() -> _cache_path() lazily imports utils.paths.storage_roots
+    # to resolve the Studio bin cache. From the outer CLI, run.py has not yet added
+    # studio/backend to sys.path, so that import would fail and ensure_cloudflared()
+    # would return None (cache unresolvable) even when cloudflared is cached or
+    # downloadable -- a false "unavailable" that wrongly refuses --secure. Add the
+    # backend dir for the probe so the cache path resolves like it will in the child.
+    added_backend_path = False
     try:
+        if str(backend_dir) not in sys.path:
+            sys.path.insert(0, str(backend_dir))
+            added_backend_path = True
         spec = importlib.util.spec_from_file_location("studio.backend.cloudflare_tunnel", tunnel_py)
         if spec is None or spec.loader is None:
             return False
@@ -851,10 +862,47 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
         return module.ensure_cloudflared() is None
     except Exception:
         return False
+    finally:
+        if added_backend_path:
+            try:
+                sys.path.remove(str(backend_dir))
+            except ValueError:
+                pass
+
+
+def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
+    """True when the child that will actually serve Studio is provably THIS
+    install's backend, whose pre-bind gate (run.py `_terminal_password_gate`)
+    sets app.state.suppress_bootstrap_injection and so never serves the seeded
+    credential publicly (main.py lifespan honors the flag) -- even with
+    .bootstrap_password still on disk. In that case the parent-side strip is
+    unnecessary, so it can be skipped to avoid a lockout if the tunnel never
+    comes up while keeping the file as a LOCAL recovery credential.
+
+    True iff we run in-process here (this same new gate implies a new run_server),
+    or the re-exec target is the outer install's own run.py (identity match, not a
+    content guess). False on ANY doubt -- notably a studio-venv `unsloth` console
+    script or a venv run.py that may predate the gate -- so the mixed-version
+    strip stays fully in force wherever an old child is actually possible.
+    """
+    if in_studio_venv:
+        return True
+    if child_run_py is None:
+        return False
+    try:
+        outer_run_py = (_PACKAGE_ROOT / "studio" / "backend" / "run.py").resolve()
+        return child_run_py.resolve() == outer_run_py
+    except OSError:
+        return False
 
 
 def _enforce_password_change_before_exposure(
-    *, cloudflare: Optional[bool], host: str, secure: bool, api_only: bool
+    *,
+    cloudflare: Optional[bool],
+    host: str,
+    secure: bool,
+    api_only: bool,
+    child_self_suppresses: bool = False,
 ) -> None:
     """Force a terminal password change before the first public (tunnel) exposure.
 
@@ -927,6 +975,11 @@ def _enforce_password_change_before_exposure(
                 (DEFAULT_ADMIN_USERNAME,),
             ).fetchone()
         except (OSError, sqlite3.Error) as exc:
+            if child_self_suppresses:
+                # Could not read must_change back, but the child is this install's
+                # own backend and suppresses the bootstrap injection, so nothing
+                # serves the seeded credential; proceed without stripping.
+                return
             # The admin is committed above, so an old child finds it and will NOT
             # regenerate; we just could not read must_change_password back. Strip
             # the seeded file so nothing serves it (the DB flag and shutdown timer
@@ -956,6 +1009,26 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
+            if child_self_suppresses:
+                # The child that will serve Studio is this install's own backend,
+                # whose pre-bind gate sets app.state.suppress_bootstrap_injection,
+                # so the seeded credential is never served publicly even with the
+                # file on disk. Skip the strip: it is unnecessary here, and doing
+                # it would lock the user out if the tunnel never comes up (e.g. a
+                # --secure loopback launch whose cloudflared tunnel fails to
+                # connect). Keep the file as a LOCAL recovery credential;
+                # must_change_password stays set and the shutdown deadline arms.
+                typer.echo(
+                    "Warning: Studio is being exposed publicly while the admin "
+                    "account still uses its auto-generated bootstrap password. The "
+                    "login page forces a change and the credential is never served "
+                    "on the public page. Set a new password by running `unsloth "
+                    "studio` locally with a terminal attached, or `unsloth studio "
+                    "reset-password`; Studio shuts down after ~1h if the password "
+                    "stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
+                    err = True,
+                )
+                return
             # The strip permanently removes the only plaintext recovery
             # credential. On --secure the bind is loopback, so the Cloudflare
             # tunnel is the ONLY public exposure: if cloudflared is provably
@@ -1287,9 +1360,18 @@ def studio_default(
         )
 
     # Public (tunnel) exposure with the seeded default password: force a
-    # terminal password change first, before any re-exec or server exists.
+    # terminal password change first, before any re-exec or server exists. The
+    # child is self-suppressing when we serve in-process or re-exec this install's
+    # own run.py (its pre-bind gate suppresses the injection), letting the gate
+    # skip the destructive strip.
     _enforce_password_change_before_exposure(
-        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        child_self_suppresses = _child_self_suppresses(
+            in_studio_venv = in_studio_venv, child_run_py = run_py
+        ),
     )
 
     if not in_studio_venv:
@@ -1733,9 +1815,18 @@ def run(
         )
 
     # Public (tunnel) exposure with the seeded default password: force a
-    # terminal password change first, before any re-exec or server exists.
+    # terminal password change first, before any re-exec or server exists. The
+    # re-exec here runs the studio venv's `unsloth` console script (a
+    # possibly-OLD child), so it is NOT provably self-suppressing -- only the
+    # in-process (in-venv) case is, and the strip stays in force otherwise.
     _enforce_password_change_before_exposure(
-        cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        child_self_suppresses = _child_self_suppresses(
+            in_studio_venv = in_studio_venv, child_run_py = None
+        ),
     )
 
     if not in_studio_venv:
