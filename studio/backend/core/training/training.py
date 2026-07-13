@@ -39,6 +39,22 @@ from utils.paths import outputs_root
 
 logger = get_logger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        raw = (os.environ.get(name) or "").strip()
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# Stop-watchdog escalation timeouts. After a Stop is requested, force-terminate the
+# worker if it does not exit on its own: a short grace once "complete" (save done)
+# is seen, plus an absolute cap covering a hang during save. Guards against a wedged
+# post-save GPU/driver teardown that never exits.
+_STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
+_STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 120)
+
 _pyplot = None
 _pyplot_failed = False
 
@@ -741,6 +757,11 @@ class TrainingBackend:
         self._pump_running: bool = False
         self._lock = threading.Lock()
 
+        # Stop watchdog: after a stop is requested, escalates to force_terminate()
+        # if the worker does not exit on its own within a bounded time.
+        self._stop_watchdog: Optional[threading.Thread] = None
+        self._complete_seen = threading.Event()
+
         # Progress state (updated by pump thread from subprocess events)
         self._progress = TrainingProgress()
         self._should_stop = False
@@ -896,6 +917,7 @@ class TrainingBackend:
         self.current_job_id = job_id
         self._should_stop = False
         self._cancel_requested = False
+        self._complete_seen.clear()
         self._progress = TrainingProgress(
             is_training = True, status_message = "Initializing training..."
         )
@@ -953,7 +975,72 @@ class TrainingBackend:
             self._progress.status_message = (
                 "Stopping training and saving checkpoint..." if save else "Cancelling training..."
             )
+        # Guarantee the run finalizes even if the worker wedges after saving.
+        self._start_stop_watchdog()
         return True
+
+    def _start_stop_watchdog(self) -> None:
+        """Start a daemon that force-terminates the worker if a requested stop does
+        not exit on its own. No-op if one is already running or no worker is alive.
+        """
+        with self._lock:
+            if self._stop_watchdog is not None and self._stop_watchdog.is_alive():
+                return
+            proc = self._proc
+            if proc is None or not proc.is_alive():
+                return
+            watchdog = threading.Thread(
+                target = self._stop_watchdog_loop, args = (proc,), daemon = True
+            )
+            self._stop_watchdog = watchdog
+            watchdog.start()
+
+    def _stop_watchdog_loop(self, target_proc: "mp.Process") -> None:
+        """Escalate a stuck stop to force_terminate().
+
+        A worker normally exits shortly after saving; this only fires when it does
+        not. Two triggers: a short grace after the worker's "complete" (save done),
+        and an absolute cap covering a hang during save. No-ops on a clean exit;
+        exits silently if a new run replaces the worker it was watching.
+        """
+        started = time.monotonic()
+        complete_at: Optional[float] = None
+        reason = ""
+        while True:
+            with self._lock:
+                superseded = self._proc is not target_proc
+            if superseded or not target_proc.is_alive():
+                return
+            now = time.monotonic()
+            if complete_at is None and self._complete_seen.is_set():
+                complete_at = now
+            if complete_at is not None and now - complete_at >= _STOP_GRACE_S:
+                reason = "worker still alive after save"
+                break
+            if now - started >= _STOP_TIMEOUT_S:
+                reason = "worker did not stop within timeout"
+                break
+            time.sleep(0.5)
+
+        with self._lock:
+            superseded = self._proc is not target_proc
+        if superseded or not target_proc.is_alive():
+            return
+        logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
+        self.force_terminate()
+        self._finalize_stopped_after_escalation()
+
+    def _finalize_stopped_after_escalation(self) -> None:
+        """Finalize parent state after a watchdog force-terminate so the UI leaves
+        "Stopping..." even if the worker is wedged in driver teardown and unreaped.
+        Dropping the handle is safe: the worker is a daemon bound to parent lifetime.
+        """
+        with self._lock:
+            self._progress.is_training = False
+            self._progress.status_message = "Training stopped."
+            self._proc = None
+        self._ensure_db_run_created()
+        self._finalize_run_in_db(status = "stopped")
 
     def force_terminate(self) -> None:
         """Force-kill the training subprocess so state can be reset immediately."""
@@ -1468,6 +1555,8 @@ class TrainingBackend:
                     "training cancelled",
                     "training stopped",
                 }
+                # Save is done by now; let the stop watchdog start its grace timer.
+                self._complete_seen.set()
                 self._progress.is_training = False
                 self._progress.is_completed = not stopped
                 self._output_dir = event.get("output_dir")
