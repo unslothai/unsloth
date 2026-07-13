@@ -1847,13 +1847,17 @@ const Composer: FC<{
         <>
           <ComposerAttachments />
           <PendingAudioChip />
-          <ThreadDocumentsBar
-            threadId={referenceThreadId}
-            onIndexingChange={handleIndexingChange}
-          />
-          <ToolStatusDisplay />
         </>
       ) : null}
+      {/* Keep indexing state subscribed while dictating, but hide its chips so
+          the waveform remains the composer's only status indicator. */}
+      <div className={isDictating ? "hidden" : "contents"}>
+        <ThreadDocumentsBar
+          threadId={referenceThreadId}
+          onIndexingChange={handleIndexingChange}
+        />
+      </div>
+      {!isDictating ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
         data-expanded={!isDictating && composerExpanded ? "true" : "false"}

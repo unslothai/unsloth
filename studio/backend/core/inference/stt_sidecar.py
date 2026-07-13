@@ -50,6 +50,10 @@ class SttAudioDecodeError(ValueError):
     """The uploaded bytes could not be decoded as audio."""
 
 
+class SttAudioTooLongError(ValueError):
+    """The decoded audio exceeds the bounded transcription duration."""
+
+
 class SttLanguageError(ValueError):
     """The requested language is not supported by the selected STT model."""
 
@@ -75,6 +79,17 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
         return None
     primary = normalized.split("-", 1)[0]
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
+
+
+def _known_whisper_languages() -> Optional[frozenset[str]]:
+    """Return tokenizer language codes without constructing/loading a model."""
+    try:
+        from faster_whisper.tokenizer import _LANGUAGE_CODES
+    except Exception:
+        # Preserve the normal 501 response when faster-whisper is unavailable,
+        # and tolerate a future release moving this private constant.
+        return None
+    return frozenset(_LANGUAGE_CODES)
 
 
 def is_available() -> bool:
@@ -106,6 +121,83 @@ def _pick_device() -> tuple[str, str]:
     except Exception as exc:
         logger.debug("STT device detection failed, using CPU: %s", exc)
     return "cpu", "int8"
+
+
+def _decode_audio_bounded(audio: bytes):
+    """Decode to 16 kHz mono PCM without ever buffering unbounded audio.
+
+    faster-whisper's regular decoder materializes the complete decoded file
+    before returning it. A small, highly-compressed upload can therefore expand
+    far beyond the encoded request limit. Decode frame-by-frame here, enforce
+    the sample limit as frames arrive, and pass the resulting array to Whisper
+    so it does not decode the upload a second time.
+    """
+    try:
+        import av
+        import numpy as np
+        from av.error import FFmpegError, InvalidDataError
+    except ImportError as exc:
+        raise SttUnavailableError(
+            "Speech-to-text needs the faster-whisper package. "
+            "Run `unsloth studio update` to install it."
+        ) from exc
+
+    max_samples = _MAX_AUDIO_SECONDS * _TARGET_SAMPLE_RATE
+    sample_count = 0
+    raw_buffer = io.BytesIO()
+    resampler = av.audio.resampler.AudioResampler(
+        format = "s16",
+        layout = "mono",
+        rate = _TARGET_SAMPLE_RATE,
+    )
+    # Match faster-whisper's decoder grouping so short dictation clips usually
+    # need only one resampler call instead of one call per codec frame.
+    fifo = av.audio.fifo.AudioFifo()
+
+    def write_frame(frame) -> None:
+        nonlocal sample_count
+        array = frame.to_ndarray()
+        sample_count += array.size
+        if sample_count > max_samples:
+            max_minutes = _MAX_AUDIO_SECONDS // 60
+            unit = "minute" if max_minutes == 1 else "minutes"
+            raise SttAudioTooLongError(f"Audio must be {max_minutes} {unit} or shorter.")
+        raw_buffer.write(array)
+
+    try:
+        with av.open(io.BytesIO(audio), mode = "r", metadata_errors = "ignore") as container:
+            frames = iter(container.decode(audio = 0))
+            while True:
+                try:
+                    frame = next(frames)
+                except StopIteration:
+                    break
+                except InvalidDataError:
+                    # Match faster-whisper's decoder: skip a corrupt frame when
+                    # the rest of the stream remains decodable.
+                    continue
+                frame.pts = None
+                fifo.write(frame)
+                if fifo.samples >= 500000:
+                    for resampled in resampler.resample(fifo.read()):
+                        write_frame(resampled)
+            if fifo.samples > 0:
+                for resampled in resampler.resample(fifo.read()):
+                    write_frame(resampled)
+            for resampled in resampler.resample(None):
+                write_frame(resampled)
+    except SttAudioTooLongError:
+        raise
+    except (FFmpegError, ValueError, RuntimeError) as exc:
+        raise SttAudioDecodeError("Could not decode the audio.") from exc
+    finally:
+        del fifo, resampler
+
+    if sample_count == 0:
+        raise SttAudioDecodeError("Could not decode the audio.")
+    decoded = np.frombuffer(raw_buffer.getbuffer(), dtype = np.int16).astype(np.float32)
+    decoded /= 32768.0
+    return decoded
 
 
 class WhisperSttSidecar:
@@ -182,18 +274,27 @@ class WhisperSttSidecar:
         Accepts any container faster-whisper (PyAV) can decode: wav, mp3,
         opus/webm, ogg, m4a/aac. Returns {text, language, duration, model}.
         """
-        whisper_model = self.load(model)
         # A specific language is faster and more accurate than auto-detect;
         # "auto" (or unset) lets Whisper detect it. The API accepts BCP-47
         # locales, while faster-whisper accepts short codes such as en or fr.
         lang = normalize_whisper_language(language)
-        supported_languages = getattr(whisper_model, "supported_languages", None)
-        model_id = self._model_id or resolve_model_id(model)
+        # Pin the requested id before loading. Another request may switch the
+        # resident sidecar model while this transcription still owns its local
+        # model reference, so mutable sidecar state is not request identity.
+        model_id = resolve_model_id(model)
         if lang is not None and model_id in ENGLISH_ONLY_STT_MODELS and lang != "en":
             raise SttLanguageError(
                 f"STT model '{model_id}' only supports English. "
                 "Choose a multilingual model for this dictation language."
             )
+        known_languages = _known_whisper_languages()
+        if lang is not None and known_languages is not None and lang not in known_languages:
+            raise SttLanguageError(
+                f"Language '{language}' is not supported by STT model '{model_id}'."
+            )
+        decoded_audio = _decode_audio_bounded(audio)
+        whisper_model = self.load(model_id)
+        supported_languages = getattr(whisper_model, "supported_languages", None)
         if lang is not None and supported_languages is not None and lang not in supported_languages:
             if list(supported_languages) == ["en"]:
                 raise SttLanguageError(
@@ -221,27 +322,24 @@ class WhisperSttSidecar:
                 without_timestamps = True,
                 vad_filter = False,
             )
-        try:
-            segments, info = whisper_model.transcribe(
-                io.BytesIO(audio),
-                language = lang,
-                **decode_options,
-            )
-        except (ValueError, RuntimeError) as exc:
-            # PyAV raises on undecodable input (e.g. truncated or non-audio).
-            raise SttAudioDecodeError("Could not decode the audio.") from exc
-        # Guard against pathologically long inputs slipping past the byte cap.
+        # Audio is already decoded and duration-bounded, so faster-whisper does
+        # no second full-file decode. Iteration stays inside the request path so
+        # lazy inference failures propagate as server errors instead of being
+        # silently mistaken for a successful partial transcript.
+        segments, info = whisper_model.transcribe(
+            decoded_audio,
+            language = lang,
+            **decode_options,
+        )
         text_parts: list[str] = []
         for segment in segments:
-            if segment.start > _MAX_AUDIO_SECONDS:
-                break
             text_parts.append(segment.text)
         text = "".join(text_parts).strip()
         return {
             "text": text,
             "language": getattr(info, "language", None),
             "duration": getattr(info, "duration", None),
-            "model": self._model_id,
+            "model": model_id,
         }
 
     def unload(self) -> None:

@@ -245,18 +245,19 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       stopLevelMeter();
       stopStream(stream);
       stream = null;
-      if (finalTranscript) {
-        if (reason !== "cancelled") {
-          for (const callback of speechCallbacks) {
-            callback({ transcript: finalTranscript, isFinal: true });
-          }
-          recordRecentDictation(finalTranscript);
+      const transcript = reason === "cancelled" ? "" : finalTranscript;
+      if (transcript) {
+        for (const callback of speechCallbacks) {
+          callback({ transcript, isFinal: true });
         }
-        for (const callback of speechEndCallbacks) {
-          callback({ transcript: finalTranscript });
-        }
-        finalTranscript = "";
+        recordRecentDictation(transcript);
       }
+      // assistant-ui uses this standard lifecycle callback to leave dictation
+      // mode. It is required even for silence and cancelled recordings.
+      for (const callback of speechEndCallbacks) {
+        callback({ transcript });
+      }
+      finalTranscript = "";
       interimParts.clear();
       for (const callback of endCallbacks) callback();
       resolveEnded?.();

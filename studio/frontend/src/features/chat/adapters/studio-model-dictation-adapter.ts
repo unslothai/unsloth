@@ -167,12 +167,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       throw new Error("Recording is not supported in this browser.");
     }
 
-    // Load only after this explicit recording starts, in parallel with capture,
-    // so normal Studio startup and browser dictation never fetch model weights.
-    void loadSttModel(useVoiceSettingsStore.getState().sttModel).catch(
-      () => {},
-    );
-
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
       (result: DictationAdapter.Result) => void
@@ -207,6 +201,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       chunks: Blob[];
       startedAt: number;
       voiced: boolean;
+      metered: boolean;
       recorder: MediaRecorder;
     };
     const results: string[] = [];
@@ -214,10 +209,23 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let worker = false;
     let currentSeg: Segment | null = null;
     let segCounter = 0;
+    let pendingRecorders = 0;
     let silenceMs = 0;
     let lastFrameAt = 0;
     let cutting = false;
     let finalCutDone = false;
+    let reportedTranscriptionError = false;
+
+    const reportTranscriptionError = (error: unknown) => {
+      if (reportedTranscriptionError || cancelled || ended) return;
+      reportedTranscriptionError = true;
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "A recorded segment could not be transcribed.";
+      console.error("STT transcription error:", error);
+      toast.error(message);
+    };
 
     const buildTranscript = () =>
       results
@@ -262,7 +270,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     // Finish once the final segment has been cut and the queue has drained.
     const maybeComplete = () => {
       if (ended || cancelled || !finalizing || !finalCutDone) return;
-      if (queue.length === 0 && !worker) {
+      if (pendingRecorders === 0 && queue.length === 0 && !worker) {
         finishSession("stopped", buildTranscript());
       }
     };
@@ -284,9 +292,10 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           );
           if (!cancelled) results[item.index] = text;
         } catch (error) {
-          // Drop one segment rather than failing the whole dictation.
           if (!cancelled && !abortController.signal.aborted) {
-            console.error("STT segment error:", error);
+            // Keep any successfully transcribed segments, but never hide that
+            // part of the recording was lost.
+            reportTranscriptionError(error);
           }
         } finally {
           worker = false;
@@ -313,6 +322,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         chunks: [],
         startedAt: performance.now(),
         voiced: false,
+        metered: false,
         recorder: new MediaRecorder(
           stream,
           mimeType ? { mimeType } : undefined,
@@ -324,12 +334,26 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         if (event.data.size > 0) seg.chunks.push(event.data);
       });
       seg.recorder.addEventListener("stop", () => {
+        pendingRecorders = Math.max(0, pendingRecorders - 1);
+        if (cancelled || ended) {
+          maybeComplete();
+          return;
+        }
         const blob = new Blob(seg.chunks, {
           type: seg.recorder.mimeType || "audio/webm",
         });
-        enqueueSegment(seg.index, blob, seg.voiced);
+        // If Web Audio is unavailable, no analyser frames arrive. Preserve the
+        // recording instead of treating every segment as silence.
+        enqueueSegment(seg.index, blob, seg.voiced || !seg.metered);
       });
-      seg.recorder.start(SEGMENT_TIMESLICE_MS);
+      pendingRecorders += 1;
+      try {
+        seg.recorder.start(SEGMENT_TIMESLICE_MS);
+      } catch (error) {
+        pendingRecorders = Math.max(0, pendingRecorders - 1);
+        if (currentSeg === seg) currentSeg = null;
+        throw error;
+      }
     };
 
     // Close the current segment at a pause and immediately open the next, so
@@ -366,6 +390,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         lastFrameAt = now;
         return;
       }
+      seg.metered = true;
       if (rawRms > VOICE_RMS) {
         seg.voiced = true;
         silenceMs = 0;
@@ -478,6 +503,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
+        // Starting a local model is explicitly user-triggered, but wait for
+        // microphone access before beginning a potentially large download.
+        void loadSttModel(useVoiceSettingsStore.getState().sttModel).catch(
+          reportTranscriptionError,
+        );
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });

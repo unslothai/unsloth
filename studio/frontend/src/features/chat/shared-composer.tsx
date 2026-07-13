@@ -240,9 +240,14 @@ function useDictation(
 
   const stop = useCallback(() => {
     const session = sessionRef.current;
-    sessionRef.current = null;
-    if (session) void session.stop();
-    setIsDictating(false);
+    if (!session) return;
+    // Keep the session and dictation state alive while its final audio segment
+    // is transcribed. onEnd clears both after the transcript callbacks run.
+    void session.stop().catch((error) => {
+      console.error("Could not stop dictation:", error);
+      if (sessionRef.current === session) sessionRef.current = null;
+      setIsDictating(false);
+    });
   }, []);
 
   useEffect(() => {

@@ -169,6 +169,7 @@ export const ChatDictationBar: FC = () => {
       </span>
       <div className="flex shrink-0 items-center gap-1">
         <TooltipIconButton
+          type="button"
           tooltip="Discard recording"
           aria-label="Discard recording"
           variant="ghost"
@@ -179,6 +180,7 @@ export const ChatDictationBar: FC = () => {
           <XIcon className="size-5" />
         </TooltipIconButton>
         <TooltipIconButton
+          type="button"
           tooltip={transcribing ? "Transcribing…" : "Stop and transcribe"}
           aria-label="Stop and transcribe"
           variant="default"

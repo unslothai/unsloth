@@ -5286,7 +5286,7 @@ async def generate_audio(
 # =====================================================================
 
 
-@router.get("/audio/stt/status")
+@studio_router.get("/audio/stt/status")
 async def stt_status(current_subject: str = Depends(get_current_subject)):
     """Report STT availability and which model, if any, is resident."""
     from core.inference.stt_sidecar import (
@@ -5309,7 +5309,7 @@ async def stt_status(current_subject: str = Depends(get_current_subject)):
     )
 
 
-@router.post("/audio/stt/load")
+@studio_router.post("/audio/stt/load")
 async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_current_subject)):
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
@@ -5328,7 +5328,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
 
 
-@router.post("/audio/stt/unload")
+@studio_router.post("/audio/stt/unload")
 async def stt_unload(current_subject: str = Depends(get_current_subject)):
     """Release the local STT model when dictation is idle."""
     from core.inference.stt_sidecar import get_stt_sidecar
@@ -5344,6 +5344,7 @@ async def _transcribe_audio_bytes(
     """Run STT for already-decoded request bytes."""
     from core.inference.stt_sidecar import (
         SttAudioDecodeError,
+        SttAudioTooLongError,
         SttLanguageError,
         SttUnavailableError,
         get_stt_sidecar,
@@ -5367,6 +5368,8 @@ async def _transcribe_audio_bytes(
         raise HTTPException(status_code = 501, detail = str(e))
     except SttLanguageError as e:
         raise HTTPException(status_code = 422, detail = str(e))
+    except SttAudioTooLongError as e:
+        raise HTTPException(status_code = 413, detail = str(e))
     except SttAudioDecodeError as e:
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
@@ -5375,7 +5378,7 @@ async def _transcribe_audio_bytes(
     return JSONResponse(content = result)
 
 
-@router.post("/audio/transcribe")
+@studio_router.post("/audio/transcribe")
 async def transcribe_audio(
     payload: TranscribeRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -5396,7 +5399,7 @@ async def transcribe_audio(
     return await _transcribe_audio_bytes(raw, payload.model, payload.language, payload.fast)
 
 
-@router.post("/audio/transcribe/raw")
+@studio_router.post("/audio/transcribe/raw")
 async def transcribe_audio_raw(
     request: Request,
     model: Optional[str] = None,
