@@ -39,17 +39,13 @@ _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
 # below applies to every prefix alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
-# Invented absolute write path -> the CWD target the fallback healed it to, so a
-# repeated overwrite of the same generated artifact re-serves that target
-# instead of tripping the anti-clobber guard on the file it created earlier.
+# Invented absolute write path -> healed CWD target, so overwriting the same
+# generated artifact re-serves that target instead of tripping the anti-clobber
+# guard on the file it created earlier.
 _remapped_writes: dict = {}
-# Each sandbox tool call is a FRESH subprocess, so ``_remapped_writes`` is empty
-# on entry while healed files persist in the per-session working directory. This
-# on-disk sidecar (a hidden file in the CWD) carries the invented-path -> healed
-# -> target map ACROSS runs, so a later run overwriting the same invented path
-# re-serves the artifact it created last turn instead of hitting the anti-clobber
-# guard. It only ever records sources the fallback itself healed, so an unrelated
-# same-basename workspace file is never adopted.
+# Each tool call is a fresh subprocess (in-process map empty on entry), so this
+# on-disk sidecar carries the same map across runs. It only records sources the
+# fallback itself healed, so an unrelated same-basename file is never adopted.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 
 
@@ -107,12 +103,8 @@ def _sidecar_path(cwd):
 
 
 def _load_sidecar(cwd):
-    """Return the persisted ``source -> healed target`` map, or {} on any error.
-
-    Best effort: a missing/corrupt/foreign sidecar simply yields an empty map, so
-    the fallback degrades to its in-process-only behaviour (never a crash, never
-    adopting an unrelated file).
-    """
+    """Return the persisted ``source -> healed target`` map, or {} on any error
+    (missing/corrupt/foreign sidecar degrades to in-process-only behaviour)."""
     try:
         with open(_sidecar_path(cwd)) as fh:
             data = json.load(fh)
@@ -124,10 +116,9 @@ def _load_sidecar(cwd):
 def _record_sidecar(cwd, source, target):
     """Persist ``source -> target`` in the sidecar so the next run re-serves it.
 
-    Written atomically (temp + ``os.replace``) and wrapped so a read-only or full
-    filesystem never breaks the interpreter; the mapping just stays in memory.
-    The sidecar path is inside the CWD, so the patched ``open`` leaves it untouched
-    (no remap, no recursion).
+    Written atomically (temp + ``os.replace``) and wrapped so a read-only/full
+    filesystem never breaks the interpreter. The path is inside the CWD, so the
+    patched ``open`` leaves it untouched (no remap, no recursion).
     """
     try:
         data = _load_sidecar(cwd)
@@ -190,19 +181,11 @@ def _remap_open(file, mode):
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never CLOBBER an unrelated workspace file that happens to share this
-    # basename (lexists catches dangling symlinks too): refuse and let open
-    # raise, preserving it. But a target THIS fallback already healed for the
-    # exact same invented path is the same artifact the model is re-writing, so
-    # re-serve it -- otherwise an iterative overwrite of e.g.
-    # ``/home/ubuntu/Sandbox/app.html`` would create ``./app.html`` on the first
-    # write and then FileNotFoundError on every later one (missing parent).
-    #
-    # The prior heal is recognised from the in-process map OR the on-disk sidecar
-    # (each tool call is a fresh subprocess, so the in-process map is empty on a
-    # later run while the healed file persists in the CWD). The sidecar only
-    # records sources the fallback itself healed, so an unrelated same-basename
-    # file -- never healed from this source -- is still refused and preserved.
+    # Never clobber an unrelated workspace file sharing this basename (lexists
+    # catches dangling symlinks): refuse and let open raise. But a target THIS
+    # fallback already healed for the same invented path (per the in-process map
+    # or the cross-run sidecar) is the artifact the model is re-writing, so
+    # re-serve it rather than FileNotFoundError on every overwrite after the first.
     if os.path.lexists(remapped) and remapped not in (
         _remapped_writes.get(text),
         _load_sidecar(cwd).get(text),

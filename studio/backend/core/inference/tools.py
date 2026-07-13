@@ -1628,17 +1628,9 @@ def _fetch_url_raw(
         return f"Failed to fetch URL: {e}", "", ""
 
 
-# Tags whose appearance at the very START of a response (after leading
-# whitespace) marks the body itself as HTML. Restricted to document-structure
-# and container tags a Markdown README never opens with as content: ``<div>``,
-# ``<p>``, ``<span>``, ``<a>``, ``<img>`` and ``<h1>``..``<h6>`` are excluded
-# because centered-logo READMEs legitimately begin with ``<p align=...>`` /
-# ``<div align=...>`` / ``<h1 align=...>`` and must stay Markdown. ``<table>``
-# (and its ``<thead>``/``<tbody>``/``<tr>``/``<td>``/``<th>`` children) is
-# excluded for the same reason: Markdown READMEs routinely open with a raw HTML
-# ``<table>`` for a badge row or two-column logo layout, and converting the
-# whole document through ``html_to_markdown`` would collapse the Markdown body
-# (lists, fenced code, headings) onto one line.
+# Tags that, at the very START of a body, mark it as HTML. Excludes ambiguous
+# tags (<div>/<p>/<span>/<a>/<img>/<h1>..<h6>/<table>) that legitimately open
+# centered-logo or badge-layout Markdown READMEs and must stay Markdown.
 _HTML_LEADING_TAGS = (
     "html",
     "head",
@@ -1669,18 +1661,11 @@ _HTML_LEADING_RE = re.compile(r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEAD
 def _looks_like_html(body: str) -> bool:
     """True only when the document ITSELF opens with HTML.
 
-    The sniff matches an HTML doctype or a leading document/structure tag after
-    optional whitespace, not a mere substring anywhere in the first 256 chars.
-    That tightens the old ``"<!doctype html" in probe`` check so a Markdown
-    README that begins with a fenced HTML example (```` ```html ... ````) or
-    embeds tags further down stays Markdown instead of being corrupted by
-    ``html_to_markdown``. It also broadens detection to bare HTML fragments
-    (``<body>...``, ``<article>...``, ``<section>...``) that carry no
-    ``<html>``/doctype, so a page served with a missing or wrong Content-Type is
-    still converted. Ambiguous tags (``<div>``/``<p>``/``<h1>`` and ``<table>``)
-    are deliberately excluded: they open legitimate centered-header or
-    badge/layout Markdown READMEs and cannot be told apart from a fragment by
-    content alone.
+    Matches an HTML doctype or a leading document/structure tag after optional
+    whitespace, not a mere substring in the first 256 chars, so a Markdown README
+    with a fenced HTML example or tags further down stays Markdown. Also detects
+    bare fragments (``<body>``/``<article>``/``<section>``) with no doctype, so a
+    page served with a missing/wrong Content-Type is still converted.
     """
     probe = body.lstrip()[:256].lower()
     return bool(_HTML_LEADING_RE.match(probe))
@@ -1719,13 +1704,10 @@ def _fetch_page_text(
             },
         )
         # The README API is unauthenticated and rate-limited; on any failure
-        # (404, 403 rate limit, network) fall back to the HTML page fetch.
-        # A 200 with a body is authoritative even when that body is HTML: repos
-        # whose README is a .html file (or markdown that opens with a raw
-        # <html>/<!doctype> block) return HTML here, and discarding it would
-        # fall back to the repo page's UI chrome -- the exact content this
-        # rewrite exists to avoid. Convert HTML to Markdown instead of dropping
-        # it, keeping the raw body if extraction yields nothing.
+        # fall back to the HTML page fetch. A 200 body is authoritative even when
+        # it is HTML (a .html README): convert it to Markdown rather than
+        # discarding it and falling back to the repo page's UI chrome, keeping
+        # the raw body if extraction yields nothing.
         if err is None and body.strip():
             readme_body = body
             if _looks_like_html(body):
@@ -3116,14 +3098,11 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        # Force unbuffered child stdout with the interpreter's -u flag so a bare
-        # print() (no flush=True) streams to output_callback as it is produced
-        # instead of sitting in the pipe's ~8 KB block buffer until exit. -u is
-        # applied unconditionally (both the streaming and non-streaming path), so
-        # the child invocation stays byte-identical with and without streaming
-        # and the final result is unchanged. Unlike PYTHONUNBUFFERED=1 (removed
-        # earlier), -u does not pollute the child's os.environ, so it is not
-        # visible via os.getenv; buffering/timing changes never alter the bytes.
+        # -u forces unbuffered child stdout so a bare print() streams live
+        # instead of sitting in the pipe's block buffer until exit. Applied
+        # unconditionally, so the invocation stays byte-identical with and
+        # without streaming; unlike PYTHONUNBUFFERED=1 it never pollutes the
+        # child's os.environ, so buffering changes never alter the bytes.
         proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see

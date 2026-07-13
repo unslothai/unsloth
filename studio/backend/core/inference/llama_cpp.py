@@ -10015,13 +10015,10 @@ class LlamaCppBackend:
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
 
-                # The TEXT-path provisional card is opened under the first-call
-                # id the parser normally assigns ("call_0"). When the model emits
-                # a textual call carrying an explicit id (Mistral-style
-                # ``{"name": ..., "id": ...}``), the parser keeps THAT id, so the
-                # first executed call would no longer match the card and the UI
-                # would show a duplicate. Reconcile the first such call onto the
-                # still-open provisional card (same tool name) by reusing its id.
+                # The text-path provisional card uses the parser's default id
+                # ("call_0"), but a Mistral-style textual call carries its own id
+                # and would open a duplicate. Reconcile the first matching call
+                # (same tool name) onto the still-open card by reusing its id.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
                 for tc in tool_calls or []:

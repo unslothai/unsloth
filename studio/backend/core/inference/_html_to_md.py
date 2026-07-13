@@ -152,14 +152,9 @@ _IMPLICIT_CLOSERS: dict = {
 }
 
 
-# Optional-end-tag recovery must not cross a container that starts a NEW nesting
-# scope for the tag being opened. A nested ``<ul>``/``<ol>`` makes an inner
-# ``<li>`` a DESCENDANT (not an optional-close sibling) of an outer ``<li>``, a
-# nested ``<table>`` re-scopes ``<tr>``/``<td>``/``<th>``, and a nested ``<dl>``
-# re-scopes ``<dt>``/``<dd>``. Searching past such a barrier would wrongly close
-# (and un-hide) the outer item, leaking nested hidden content into the output.
-# Keys mirror the item tags in ``_IMPLICIT_CLOSERS``; values are the container
-# tags whose presence between the stack top and a candidate closer blocks it.
+# Item tag -> container tags that re-scope it: a nested container makes an inner
+# item a descendant, not an optional-close sibling, so recovery must stop there
+# rather than close (and un-hide) the outer item and leak its nested content.
 _CLOSE_BARRIERS: dict = {
     "li": frozenset({"ul", "ol", "menu"}),
     "dt": frozenset({"dl"}),
@@ -318,19 +313,12 @@ class _MarkdownRenderer(HTMLParser):
     def _close_implicit(self, tag: str) -> None:
         """Apply HTML5 optional-end-tag recovery for a start tag about to open.
 
-        Pops each implicitly-closed ancestor (and hidden marks ending with it).
-        Searches down the stack, not just the top, so an open ``<p>``/``<li>``
-        still closes when it has an unclosed inline descendant like ``<span>`` on
-        top; inline tags aren't ``_IMPLICIT_CLOSERS`` keys, so they never trigger
-        a spurious close. The search STOPS at a ``_CLOSE_BARRIERS`` container
-        (a nested ``<ul>``/``<ol>``/``<table>``/``<dl>``): an inner ``<li>`` /
-        ``<td>`` / ``<dt>`` is a descendant of that nested container, not an
-        optional-close sibling of the outer item, so recovery must not reach
-        past it -- otherwise a hidden outer item's mark would be popped and its
-        nested content would leak. Runs even for skipped tags
-        (``<nav>``/``<footer>``): those are optional-end-tag closers of ``<p>``
-        too, so a hidden ``<p>`` without an explicit ``</p>`` must end before the
-        skip begins, or its hidden mark would suppress every following sibling.
+        Pops each implicitly-closed ancestor (and hidden marks ending with it),
+        searching down the whole stack so an open ``<p>``/``<li>`` still closes
+        under an unclosed inline descendant like ``<span>``. Stops at a
+        ``_CLOSE_BARRIERS`` container so recovery never crosses a nested list /
+        table / dl and leaks the outer item's hidden content. Runs even for
+        skipped ``<nav>``/``<footer>`` tags, which also implicitly close ``<p>``.
         """
         barriers = _CLOSE_BARRIERS.get(tag, ())
         while True:
@@ -340,8 +328,7 @@ class _MarkdownRenderer(HTMLParser):
                 if tag in _IMPLICIT_CLOSERS.get(name, ()):
                     close_at = i
                     break
-                # A nested list/table/dl container re-scopes the item: the closer
-                # beyond it is an ANCESTOR, not a sibling, so stop the search.
+                # A barrier container re-scopes the item; stop before it.
                 if name in barriers:
                     break
             if close_at is None:
@@ -352,11 +339,8 @@ class _MarkdownRenderer(HTMLParser):
 
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """Track open/hidden/scope state; return True when the tag's content
-        should be rendered (False = suppressed).
-
-        The caller runs ``_close_implicit`` first so optional-end-tag recovery
-        also fires for skipped tags.
-        """
+        should be rendered (False = suppressed). Caller runs ``_close_implicit``
+        first so recovery also fires for skipped tags."""
         if tag not in _VOID_TAGS:
             self._open_tags.append(tag)
             if _is_hidden_element(attr_dict):
@@ -399,16 +383,14 @@ class _MarkdownRenderer(HTMLParser):
         tag = tag.lower()
 
         if self._skip_depth:
-            # Already inside a skipped subtree: only track nested skip depth. The
-            # open-element stack is frozen here, so no implicit close applies.
+            # Inside a skipped subtree: only track nested skip depth.
             if tag in _SKIP_TAGS:
                 self._skip_depth += 1
             return
 
-        # Optional-end-tag recovery must run before the skip decision: a skipped
-        # <nav>/<footer> still implicitly closes an open <p>, so its hidden mark
-        # is released and the following siblings render instead of being
-        # swallowed by the never-closed hidden element.
+        # Recover optional end tags before the skip decision: a skipped
+        # <nav>/<footer> still implicitly closes an open <p>, releasing its
+        # hidden mark so following siblings render.
         self._close_implicit(tag)
 
         if tag in _SKIP_TAGS:
@@ -751,13 +733,9 @@ def _render(source_html: str, scope_tags: frozenset[str] | None) -> str:
 
 def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
-    subtree.
-
-    Sizing candidates one at a time stops many tiny sibling cards from clearing
-    the main-content threshold together and displacing the real subtree. The
-    same chosen subtree is returned as the render, so unrelated sibling
-    ``<tag>`` elements (related-post cards, comment threads, teasers) never leak
-    into the output even when the largest one passes the size gate."""
+    subtree. Sizing candidates one at a time stops many tiny sibling cards from
+    clearing the threshold together, and returning that one subtree keeps
+    unrelated siblings (related cards, comment threads) out of the output."""
     renderer = _MarkdownRenderer(scope_tags = frozenset({tag}))
     renderer.feed(source_html)
     renderer.close()
@@ -793,9 +771,8 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     if main_content:
         for scope_tag in ("article", "main"):
-            # Size candidates individually and render ONLY the chosen subtree, so
-            # sibling <article>/<main> elements (related cards, comment threads,
-            # teasers) do not leak in once the largest one passes the size gate.
+            # Render only the chosen subtree so sibling <article>/<main>
+            # elements do not leak in once the largest passes the size gate.
             length, rendered = _select_main_scope_render(source_html, scope_tag)
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 return rendered
