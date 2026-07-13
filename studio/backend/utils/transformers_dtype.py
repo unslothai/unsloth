@@ -32,6 +32,7 @@ def _has_torch_dtype_kwarg() -> bool:
     try:
         import transformers
         from packaging.version import Version
+
         # Compare on the release tuple so a pre-release of the rename version
         # (``4.56.0.dev0``/``rc1``, which sort *below* ``4.56.0``) still counts as
         # new and picks ``dtype`` -- those builds already accept it, and picking
