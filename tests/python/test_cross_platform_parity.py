@@ -986,9 +986,9 @@ class TestPinnedIndexClearsUvEnvParity:
             '$cudaAudioSpec = "torchaudio>=2.4,<2.11.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the custom-leaf trio: {spec}"
-        assert "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text, (
-            "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
-        )
+        assert (
+            "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text
+        ), "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
         assert (
             "Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec" in text
         ), "setup.ps1's CUDA branch must install via the bounded spec variables"
