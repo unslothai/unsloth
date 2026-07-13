@@ -30,9 +30,9 @@ class TestBuildUvCmdTorchBackend:
         env.pop("UV_TORCH_BACKEND", None)
         with mock.patch.dict(os.environ, env, clear = True):
             cmd = self._call(("somepackage",))
-        assert not any(a.startswith("--torch-backend") for a in cmd), (
-            f"--torch-backend should not appear by default, got: {cmd}"
-        )
+        assert not any(
+            a.startswith("--torch-backend") for a in cmd
+        ), f"--torch-backend should not appear by default, got: {cmd}"
 
     def test_uv_torch_backend_auto(self):
         """UV_TORCH_BACKEND=auto adds --torch-backend=auto."""
@@ -50,9 +50,9 @@ class TestBuildUvCmdTorchBackend:
         """UV_TORCH_BACKEND="" (empty string) should NOT add --torch-backend."""
         with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": ""}):
             cmd = self._call(("somepackage",))
-        assert not any(a.startswith("--torch-backend") for a in cmd), (
-            f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
-        )
+        assert not any(
+            a.startswith("--torch-backend") for a in cmd
+        ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
 
     def test_uv_torch_backend_skipped_for_pinned_index(self):
         """A pinned-index command must NOT get --torch-backend: uv's torch backend
@@ -62,9 +62,9 @@ class TestBuildUvCmdTorchBackend:
         for pin_flag in ("--index-url", "--default-index"):
             with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
                 cmd = self._call(("torch", pin_flag, "https://download.pytorch.org/whl/cu128"))
-            assert not any(a.startswith("--torch-backend") for a in cmd), (
-                f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
-            )
+            assert not any(
+                a.startswith("--torch-backend") for a in cmd
+            ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
 
     def test_uv_torch_backend_kept_for_unpinned(self):
         """Non-pinned commands still honour UV_TORCH_BACKEND."""

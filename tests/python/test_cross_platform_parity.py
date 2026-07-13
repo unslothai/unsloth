@@ -47,9 +47,9 @@ class TestNoTorchBackendAutoInInstallSh:
     def test_fallback_uses_torch_backend_auto(self):
         """The fallback branch should use --torch-backend=auto as recovery."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert "GPU detection failed" in text, (
-            "install.sh should have a fallback branch for when GPU detection fails"
-        )
+        assert (
+            "GPU detection failed" in text
+        ), "install.sh should have a fallback branch for when GPU detection fails"
 
 
 class TestInstallShHasGpuDetection:
@@ -57,15 +57,15 @@ class TestInstallShHasGpuDetection:
 
     def test_function_exists(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert "get_torch_index_url()" in text, (
-            "install.sh is missing the get_torch_index_url() function"
-        )
+        assert (
+            "get_torch_index_url()" in text
+        ), "install.sh is missing the get_torch_index_url() function"
 
     def test_torch_index_url_assigned(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert "TORCH_INDEX_URL=$(get_torch_index_url)" in text, (
-            "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
-        )
+        assert (
+            "TORCH_INDEX_URL=$(get_torch_index_url)" in text
+        ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
 
 
 class TestCudaMappingParity:
@@ -133,15 +133,15 @@ class TestPyTorchMirrorEnvVar:
 
     def test_install_sh_has_mirror_var(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert "UNSLOTH_PYTORCH_MIRROR" in text, (
-            "install.sh should reference UNSLOTH_PYTORCH_MIRROR"
-        )
+        assert (
+            "UNSLOTH_PYTORCH_MIRROR" in text
+        ), "install.sh should reference UNSLOTH_PYTORCH_MIRROR"
 
     def test_install_ps1_has_mirror_var(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "UNSLOTH_PYTORCH_MIRROR" in text, (
-            "install.ps1 should reference UNSLOTH_PYTORCH_MIRROR"
-        )
+        assert (
+            "UNSLOTH_PYTORCH_MIRROR" in text
+        ), "install.ps1 should reference UNSLOTH_PYTORCH_MIRROR"
 
 
 class TestUvBytecodeCompileTimeout:
@@ -167,21 +167,21 @@ class TestUvBytecodeCompileTimeout:
 
     def test_install_sh_preserves_timeout_override(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert ': "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"' in text, (
-            "install.sh should default UV_COMPILE_BYTECODE_TIMEOUT without overwriting callers"
-        )
-        assert "export UV_COMPILE_BYTECODE_TIMEOUT" in text, (
-            "install.sh should export UV_COMPILE_BYTECODE_TIMEOUT for uv subprocesses"
-        )
+        assert (
+            ': "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"' in text
+        ), "install.sh should default UV_COMPILE_BYTECODE_TIMEOUT without overwriting callers"
+        assert (
+            "export UV_COMPILE_BYTECODE_TIMEOUT" in text
+        ), "install.sh should export UV_COMPILE_BYTECODE_TIMEOUT for uv subprocesses"
 
     def test_install_ps1_preserves_timeout_override(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT)" in text, (
-            "install.ps1 should preserve caller UV_COMPILE_BYTECODE_TIMEOUT overrides"
-        )
-        assert '$env:UV_COMPILE_BYTECODE_TIMEOUT = "180"' in text, (
-            "install.ps1 should default UV_COMPILE_BYTECODE_TIMEOUT"
-        )
+        assert (
+            "if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT)" in text
+        ), "install.ps1 should preserve caller UV_COMPILE_BYTECODE_TIMEOUT overrides"
+        assert (
+            '$env:UV_COMPILE_BYTECODE_TIMEOUT = "180"' in text
+        ), "install.ps1 should default UV_COMPILE_BYTECODE_TIMEOUT"
 
 
 class TestTorchIndexOverrideParity:
@@ -207,9 +207,9 @@ class TestTorchIndexOverrideParity:
         # The AMD ROCm reroute must be skipped when the index is explicitly pinned,
         # so an explicit cpu / cu* / rocm pin on an AMD host is not overwritten.
         text = path.read_text(encoding = "utf-8")
-        assert "TorchIndexPinned" in text, (
-            f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
-        )
+        assert (
+            "TorchIndexPinned" in text
+        ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
 
     def test_cuda_pin_overrides_cvd_hide_gate(self):
         # A pinned cu* index skips ALL host-GPU probing (parity with install.sh's
@@ -226,9 +226,9 @@ class TestTorchIndexOverrideParity:
             "_ensure_cuda_torch should compute a CUDA-pin flag so the pin can "
             "override the CVD hide gate"
         )
-        assert re.search(r"if not _cuda_pinned and _cvd is not None", body), (
-            "the CVD hide gate must be bypassed when a CUDA index is pinned"
-        )
+        assert re.search(
+            r"if not _cuda_pinned and _cvd is not None", body
+        ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
 
     def test_cpu_repair_pins_supported_torch_range(self):
         # The explicit-CPU repair must not install a bare torch trio: the /cpu
@@ -295,12 +295,12 @@ class TestGfx211AllowlistParity:
         # install-spec path must reuse it, so the stale check and install spec can
         # never disagree again.
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "function Test-RocmGfx211Leaf" in text, (
-            "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        )
-        assert re.search(r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()), (
-            "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
-        )
+        assert (
+            "function Test-RocmGfx211Leaf" in text
+        ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
+        assert re.search(
+            r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()
+        ), "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
         assert "$_pinGfx211 = Test-RocmGfx211Leaf" in text, (
             "setup.ps1 install-spec path should reuse Test-RocmGfx211Leaf, not "
             "re-hardcode the allowlist (they must not diverge)"
@@ -308,9 +308,9 @@ class TestGfx211AllowlistParity:
 
     def test_stack_py_allowlist(self):
         text = STACK_PY.read_text(encoding = "utf-8").lower()
-        assert '"gfx120x-all", "gfx1151", "gfx1150"' in text, (
-            "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
-        )
+        assert (
+            '"gfx120x-all", "gfx1151", "gfx1150"' in text
+        ), "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
 
 
 class TestCudaLeafDigitParity:
@@ -321,32 +321,32 @@ class TestCudaLeafDigitParity:
 
     def test_stack_py_requires_cu_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert re.search(r'r"\^cu\[0-9\]"', text), (
-            "install_python_stack.py _is_cuda_family_leaf must match ^cu[0-9]"
-        )
+        assert re.search(
+            r'r"\^cu\[0-9\]"', text
+        ), "install_python_stack.py _is_cuda_family_leaf must match ^cu[0-9]"
 
     def test_setup_ps1_requires_cu_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert re.search(r"'\^cu\[0-9\]'", text), (
-            "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9], not a bare cu* glob"
-        )
+        assert re.search(
+            r"'\^cu\[0-9\]'", text
+        ), "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9], not a bare cu* glob"
         # The stale-venv branch must go through the digit-guarded helper.
-        assert "Test-CudaFamilyLeaf $_pinLeaf" in text, (
-            "setup.ps1 stale check should classify CUDA via Test-CudaFamilyLeaf"
-        )
+        assert (
+            "Test-CudaFamilyLeaf $_pinLeaf" in text
+        ), "setup.ps1 stale check should classify CUDA via Test-CudaFamilyLeaf"
 
     def test_install_ps1_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert re.search(r"'\^cu\[0-9\]'", text), (
-            "install.ps1 Get-TauriGpuBranch must require a digit after cu"
-        )
+        assert re.search(
+            r"'\^cu\[0-9\]'", text
+        ), "install.ps1 Get-TauriGpuBranch must require a digit after cu"
 
     def test_install_sh_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # The _tauri_gpu_branch cuda case must be cu[0-9]*, not a bare cu*.
-        assert re.search(r"cu\[0-9\]\*\)\s*echo \"cuda\"", text), (
-            "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"
-        )
+        assert re.search(
+            r"cu\[0-9\]\*\)\s*echo \"cuda\"", text
+        ), "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"
 
     def test_install_sh_backend_export_requires_cu_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
@@ -354,13 +354,13 @@ class TestCudaLeafDigitParity:
         # bare catch-all *) -> cuda would mis-brand /current, /custom mirror pins
         # as CUDA and make the stack skip ROCm repair on AMD hosts (comment #2's
         # bug via install.sh instead of standalone studio update).
-        assert re.search(r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text), (
-            "install.sh backend export must brand cuda only on cu[0-9]*"
-        )
+        assert re.search(
+            r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
+        ), "install.sh backend export must brand cuda only on cu[0-9]*"
         # An unknown leaf must NOT commit a cuda backend (it unsets instead).
-        assert re.search(r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text), (
-            "install.sh backend export must unset (not force cuda) on an unknown leaf"
-        )
+        assert re.search(
+            r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text
+        ), "install.sh backend export must unset (not force cuda) on an unknown leaf"
 
     def test_install_sh_lowercases_backend_leaf(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
@@ -430,30 +430,30 @@ class TestTorchIndexMarkerParity:
         equal to the same pin (backward compatibility, no reinstall loop)."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert "_strip_index_url_credentials()" in sh
-        assert '_wm_url=$(_strip_index_url_credentials "$_wm_url")' in sh, (
-            "install.sh _write_torch_index_marker must strip credentials"
-        )
-        assert '_n_url=$(_strip_index_url_credentials "$_n_url")' in sh, (
-            "install.sh _normalize_index_url must strip credentials"
-        )
+        assert (
+            '_wm_url=$(_strip_index_url_credentials "$_wm_url")' in sh
+        ), "install.sh _write_torch_index_marker must strip credentials"
+        assert (
+            '_n_url=$(_strip_index_url_credentials "$_n_url")' in sh
+        ), "install.sh _normalize_index_url must strip credentials"
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
             assert "function Remove-IndexUrlCredentials" in text, path.name
-            assert "Remove-IndexUrlCredentials $IndexUrl.Trim()" in text, (
-                f"{path.name} Write-TorchIndexMarker must strip credentials"
-            )
+            assert (
+                "Remove-IndexUrlCredentials $IndexUrl.Trim()" in text
+            ), f"{path.name} Write-TorchIndexMarker must strip credentials"
         setup = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "(Remove-IndexUrlCredentials $Url.Trim()).TrimEnd('/')" in setup, (
-            "setup.ps1 Get-NormalizedIndexUrl must strip credentials"
-        )
+        assert (
+            "(Remove-IndexUrlCredentials $Url.Trim()).TrimEnd('/')" in setup
+        ), "setup.ps1 Get-NormalizedIndexUrl must strip credentials"
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert "def _strip_index_url_credentials" in stack
-        assert 'payload = _strip_index_url_credentials(index_url.strip()) + "\\n"' in stack, (
-            "install_python_stack.py _write_torch_index_marker must strip credentials"
-        )
-        assert "url = _strip_index_url_credentials(url)" in stack, (
-            "install_python_stack.py _normalize_index_url must strip credentials"
-        )
+        assert (
+            'payload = _strip_index_url_credentials(index_url.strip()) + "\\n"' in stack
+        ), "install_python_stack.py _write_torch_index_marker must strip credentials"
+        assert (
+            "url = _strip_index_url_credentials(url)" in stack
+        ), "install_python_stack.py _normalize_index_url must strip credentials"
 
     def test_all_installers_drop_query_before_leaf_classification(self):
         """A token-authenticated index URL (.../cu128?token=x) must classify as the
@@ -463,22 +463,22 @@ class TestTorchIndexMarkerParity:
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert "_torch_index_url_leaf()" in sh
         # The top-level backend-branding leaf strips query + fragment first.
-        assert '_torch_index_leaf="${TORCH_INDEX_URL%%\\?*}"' in sh, (
-            "install.sh backend-branding leaf must drop the query string first"
-        )
+        assert (
+            '_torch_index_leaf="${TORCH_INDEX_URL%%\\?*}"' in sh
+        ), "install.sh backend-branding leaf must drop the query string first"
         setup = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "($Url -split '[?#]', 2)[0]" in setup, (
-            "setup.ps1 Get-TorchIndexLeaf must drop query/fragment first"
-        )
+        assert (
+            "($Url -split '[?#]', 2)[0]" in setup
+        ), "setup.ps1 Get-TorchIndexLeaf must drop query/fragment first"
         ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert "-split '[?#]', 2" in ps1, (
-            "install.ps1 leaf classification must drop query/fragment first"
-        )
+        assert (
+            "-split '[?#]', 2" in ps1
+        ), "install.ps1 leaf classification must drop query/fragment first"
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert "def _torch_index_leaf" in stack
-        assert 'url.split("?", 1)[0].split("#", 1)[0]' in stack, (
-            "install_python_stack.py _torch_index_leaf must drop query/fragment first"
-        )
+        assert (
+            'url.split("?", 1)[0].split("#", 1)[0]' in stack
+        ), "install_python_stack.py _torch_index_leaf must drop query/fragment first"
 
 
 class TestKnown211SetParity:
@@ -489,9 +489,9 @@ class TestKnown211SetParity:
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # The 2.11 floor case matches exactly rocm7.2 + the three gfx leaves.
-        assert re.search(r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text), (
-            "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
-        )
+        assert re.search(
+            r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text
+        ), "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
         # No speculative rocm7.3 anywhere.
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
@@ -553,9 +553,9 @@ class TestPinnedRocmLeafDigitParity:
             "install instead of the ROCm --default-index path"
         )
         # The broad glob must be gone from that reroute.
-        assert "-like 'rocm*'" not in text, (
-            "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
-        )
+        assert (
+            "-like 'rocm*'" not in text
+        ), "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
 
     def test_setup_ps1_pinned_reroute_requires_rocm_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
@@ -564,21 +564,21 @@ class TestPinnedRocmLeafDigitParity:
             "-like 'rocm*' glob) so custom find-links leaves stay on the verbatim path"
         )
         pinned_block = text[text.find("$_pinGfx211 = Test-RocmGfx211Leaf") :][:2000]
-        assert "-like 'rocm*'" not in pinned_block, (
-            "setup.ps1 pinned reroute must not route on a bare -like 'rocm*' glob"
-        )
+        assert (
+            "-like 'rocm*'" not in pinned_block
+        ), "setup.ps1 pinned reroute must not route on a bare -like 'rocm*' glob"
 
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert re.search(r"cu\[0-9\]\*\|rocm\[0-9\]\*\|gfx\*", text), (
-            "install.sh _torch_index_repairable must require rocm[0-9]* (a digit after rocm)"
-        )
+        assert re.search(
+            r"cu\[0-9\]\*\|rocm\[0-9\]\*\|gfx\*", text
+        ), "install.sh _torch_index_repairable must require rocm[0-9]* (a digit after rocm)"
 
     def test_stack_py_pip_rocm_family_requires_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert re.search(r'r"\^rocm\\d"', text), (
-            "install_python_stack.py _is_pip_rocm_family_leaf must match ^rocm\\d"
-        )
+        assert re.search(
+            r'r"\^rocm\\d"', text
+        ), "install_python_stack.py _is_pip_rocm_family_leaf must match ^rocm\\d"
 
     def test_normalize_family_leaf_digit_gates_rocm(self):
         """_normalize_family_leaf lowercases only true family leaves. rocm7.2 is a
@@ -586,17 +586,17 @@ class TestPinnedRocmLeafDigitParity:
         case-only custom-index change is not falsely matched equal (URL paths can be
         case-sensitive). All three installers must digit-gate the rocm prefix."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
-        assert re.search(r"rocm\[0-9\]\*\|gfx\*\|cpu\|cu\[0-9\]\*", sh), (
-            "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
-        )
+        assert re.search(
+            r"rocm\[0-9\]\*\|gfx\*\|cpu\|cu\[0-9\]\*", sh
+        ), "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
         setup = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "-match '^(rocm[0-9]|gfx)'" in setup, (
-            "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
-        )
+        assert (
+            "-match '^(rocm[0-9]|gfx)'" in setup
+        ), "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert re.search(r'r"\^\(rocm\|cu\)\[0-9\]"', stack), (
-            "install_python_stack.py _normalize_family_leaf must digit-gate rocm (^(rocm|cu)[0-9])"
-        )
+        assert re.search(
+            r'r"\^\(rocm\|cu\)\[0-9\]"', stack
+        ), "install_python_stack.py _normalize_family_leaf must digit-gate rocm (^(rocm|cu)[0-9])"
 
     def test_setup_ps1_marker_compare_is_case_sensitive(self):
         """Test-MarkerPinMismatch must use -cne, not -ne: normalization preserves
@@ -614,15 +614,15 @@ class TestPinnedRocmLeafDigitParity:
         catches a custom CPU/CUDA index like /rocm-current and force-repairs it from
         the wrong --default-index."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert re.search(r"rocm\[0-9\]\*\|gfx\*\) _torch_index_is_rocm_family=true", text), (
-            "install.sh must set _torch_index_is_rocm_family from a digit-gated leaf"
-        )
-        assert '[ "$_torch_index_is_rocm_family" = true ]' in text, (
-            "install.sh ROCm bnb/repair hooks must gate on _torch_index_is_rocm_family"
-        )
-        assert "*/rocm*|*/gfx*)\n                _install_bnb_rocm" not in text, (
-            "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
-        )
+        assert re.search(
+            r"rocm\[0-9\]\*\|gfx\*\) _torch_index_is_rocm_family=true", text
+        ), "install.sh must set _torch_index_is_rocm_family from a digit-gated leaf"
+        assert (
+            '[ "$_torch_index_is_rocm_family" = true ]' in text
+        ), "install.sh ROCm bnb/repair hooks must gate on _torch_index_is_rocm_family"
+        assert (
+            "*/rocm*|*/gfx*)\n                _install_bnb_rocm" not in text
+        ), "install.sh must not gate _install_bnb_rocm on a bare */rocm* whole-URL glob"
 
 
 class TestFirstCustomPinAppliedWithoutMarker:
@@ -657,9 +657,9 @@ class TestFirstCustomPinAppliedWithoutMarker:
         so a persistent already-applied pin keeps the fast path (no every-update regress)."""
         setup_sh = REPO_ROOT / "studio" / "setup.sh"
         text = setup_sh.read_text(encoding = "utf-8")
-        assert '[ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]' in text, (
-            "setup.sh must gate the pin-apply pass on the pin env vars"
-        )
+        assert (
+            '[ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]' in text
+        ), "setup.sh must gate the pin-apply pass on the pin env vars"
         assert "--torch-pin-needs-apply" in text, (
             "setup.sh must probe install_python_stack.py --torch-pin-needs-apply so the "
             "expensive pass runs only when the marker does not already record the pin"
@@ -681,9 +681,9 @@ class TestFirstCustomPinAppliedWithoutMarker:
         pin is set and the marker does not already match it, exit 1 otherwise. Reusing the
         Python normalization keeps the shell side from duplicating (and drifting from) it."""
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert '"--torch-pin-needs-apply" in sys.argv' in text, (
-            "install_python_stack.py must handle the --torch-pin-needs-apply query"
-        )
+        assert (
+            '"--torch-pin-needs-apply" in sys.argv' in text
+        ), "install_python_stack.py must handle the --torch-pin-needs-apply query"
         assert "_marker_pin_mismatch(_pin_query) is not False" in text, (
             "the probe must report 'needs apply' when the marker differs (True) or is absent "
             "(None), and only skip when it already matches (False)"
@@ -693,21 +693,21 @@ class TestFirstCustomPinAppliedWithoutMarker:
         """setup.ps1 must apply the same probe in its fast 'up to date' path for parity, so
         a known-family pin on a marker-less venv records its baseline (breaking the loop)."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "--torch-pin-needs-apply" in text, (
-            "setup.ps1 fast path must probe install_python_stack.py --torch-pin-needs-apply"
-        )
-        assert "$env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY" in text, (
-            "setup.ps1 must gate the probe on the pin env vars"
-        )
+        assert (
+            "--torch-pin-needs-apply" in text
+        ), "setup.ps1 fast path must probe install_python_stack.py --torch-pin-needs-apply"
+        assert (
+            "$env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY" in text
+        ), "setup.ps1 must gate the probe on the pin env vars"
 
     def test_stack_py_records_pin_baseline_after_ensures(self):
         """The update torch-ensure sequence must record a pin baseline so a known-family
         pin on a marker-less venv (no reinstall needed) still writes the marker once --
         otherwise setup.sh/setup.ps1 would re-run the pass on every update forever."""
         text = STACK_PY.read_text(encoding = "utf-8")
-        assert "def _record_torch_index_pin_baseline" in text, (
-            "install_python_stack.py must define _record_torch_index_pin_baseline"
-        )
+        assert (
+            "def _record_torch_index_pin_baseline" in text
+        ), "install_python_stack.py must define _record_torch_index_pin_baseline"
         # It must run after _ensure_verbatim_torch_index in the ensure sequence(s).
         assert (
             text.count("_ensure_verbatim_torch_index()\n        _record_torch_index_pin_baseline()")
@@ -777,21 +777,21 @@ class TestPinnedIndexClearsUvEnvParity:
         assert "-u UV_TORCH_BACKEND" in sh, "install.sh pinned scrub must clear UV_TORCH_BACKEND"
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
-            assert "'UV_TORCH_BACKEND'" in text, (
-                f"{path.name} pinned scrub must clear UV_TORCH_BACKEND"
-            )
+            assert (
+                "'UV_TORCH_BACKEND'" in text
+            ), f"{path.name} pinned scrub must clear UV_TORCH_BACKEND"
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert '"UV_TORCH_BACKEND",' in stack, (
-            "install_python_stack.py strip tuple must include UV_TORCH_BACKEND"
-        )
+        assert (
+            '"UV_TORCH_BACKEND",' in stack
+        ), "install_python_stack.py strip tuple must include UV_TORCH_BACKEND"
 
     def test_stack_py_strips_pip_extra_index_for_pip_fallback(self):
         """The pip fallback honours PIP_EXTRA_INDEX_URL (pip adds it IN ADDITION
         to --index-url), so the pinned-command scrub must strip it."""
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert '"PIP_EXTRA_INDEX_URL",' in stack, (
-            "install_python_stack.py strip tuple must include PIP_EXTRA_INDEX_URL"
-        )
+        assert (
+            '"PIP_EXTRA_INDEX_URL",' in stack
+        ), "install_python_stack.py strip tuple must include PIP_EXTRA_INDEX_URL"
 
     def test_all_installers_scrub_find_links(self):
         """uv's --find-links (env UV_FIND_LINKS) adds candidate locations that can
@@ -811,9 +811,9 @@ class TestPinnedIndexClearsUvEnvParity:
         fi = text[text.find("function Fast-Install") :][:2500]
         assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
         # the pip fallback must sit INSIDE the try whose finally restores the vars
-        assert fi.find("python -m pip install") < fi.find("finally"), (
-            "pip fallback must run before the scrub is restored"
-        )
+        assert fi.find("python -m pip install") < fi.find(
+            "finally"
+        ), "pip fallback must run before the scrub is restored"
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
@@ -829,16 +829,16 @@ class TestPinnedIndexClearsUvEnvParity:
         for path in (INSTALL_PS1, SETUP_PS1):
             text = path.read_text(encoding = "utf-8")
             assert "'UV_CONFIG_FILE'" in text, f"{path.name} must drop UV_CONFIG_FILE"
-            assert "$env:UV_NO_CONFIG = '1'" in text, (
-                f"{path.name} must set UV_NO_CONFIG=1 for pinned installs"
-            )
+            assert (
+                "$env:UV_NO_CONFIG = '1'" in text
+            ), f"{path.name} must set UV_NO_CONFIG=1 for pinned installs"
         stack = STACK_PY.read_text(encoding = "utf-8")
-        assert '"UV_CONFIG_FILE",' in stack, (
-            "install_python_stack.py strip tuple must include UV_CONFIG_FILE"
-        )
-        assert 'env["UV_NO_CONFIG"] = "1"' in stack, (
-            "_install_env_for_cmd must set UV_NO_CONFIG=1 for pinned installs"
-        )
+        assert (
+            '"UV_CONFIG_FILE",' in stack
+        ), "install_python_stack.py strip tuple must include UV_CONFIG_FILE"
+        assert (
+            'env["UV_NO_CONFIG"] = "1"' in stack
+        ), "_install_env_for_cmd must set UV_NO_CONFIG=1 for pinned installs"
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the
@@ -846,9 +846,9 @@ class TestPinnedIndexClearsUvEnvParity:
         studio update."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         stale = text[text.find("Get-RocmPinStaleTags -PinLeaf") - 2500 :][:2500]
-        assert "-match '^rocm\\d'" in stale.replace("\\", "\\"), (
-            "setup.ps1 stale check must digit-gate rocm leaves"
-        )
-        assert stale.count("-like 'rocm*'") == 0, (
-            "setup.ps1 stale check must not use a bare -like 'rocm*' glob"
-        )
+        assert "-match '^rocm\\d'" in stale.replace(
+            "\\", "\\"
+        ), "setup.ps1 stale check must digit-gate rocm leaves"
+        assert (
+            stale.count("-like 'rocm*'") == 0
+        ), "setup.ps1 stale check must not use a bare -like 'rocm*' glob"
