@@ -857,7 +857,9 @@ elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
 
-_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"
+_remove_agent_instruction_files \
+    "$SCRIPT_DIR/frontend/node_modules" \
+    "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
