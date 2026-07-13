@@ -246,6 +246,54 @@ def test_resolve_browse_target_symlink_escape_blocked(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# _is_path_inside_allowlist -- bare POSIX root parity (legacy == hub)
+# --------------------------------------------------------------------------- #
+def _extract_is_inside(rel_parts):
+    """Extract a standalone _is_path_inside_allowlist (depends only on os/Path)
+    from the given backend module, so both browsers' copies can be compared
+    without importing their heavy modules."""
+    src = _BACKEND_ROOT.joinpath(*rel_parts).read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    funcs = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_is_path_inside_allowlist"
+    ]
+    module = ast.Module(body = funcs, type_ignores = [])
+    ast.fix_missing_locations(module)
+    ns = {"os": os, "Path": Path}
+    exec(compile(module, f"<extracted {'/'.join(rel_parts)}>", "exec"), ns)
+    return ns["_is_path_inside_allowlist"]
+
+
+def test_legacy_and_hub_allowlist_agree_on_posix_root():
+    # A bare "/" allowlist entry (e.g. a legacy-registered scan folder) must
+    # authorize only "/" itself in BOTH browsers, never descend into /var,
+    # /root, /home -- which the system-directory denylist does not cover. Guards
+    # against the hub browser regressing to authorize every absolute path.
+    legacy = _extract_is_inside(["routes", "models.py"])
+    hub = _extract_is_inside(["hub", "services", "models", "folder_browser.py"])
+    roots = [Path("/")]
+    for tgt in ["/var", "/root", "/home", "/usr", "/opt", "/etc"]:
+        assert legacy(Path(tgt), roots) is False
+        assert hub(Path(tgt), roots) is False
+    # "/" itself stays browseable; only its descendants are withheld.
+    assert legacy(Path("/"), roots) is True
+    assert hub(Path("/"), roots) is True
+
+
+def test_hub_allowlist_authorizes_normal_nested_dir(tmp_path):
+    # The bare-root special case must not over-block a normal (non
+    # filesystem-root) allowlist root's descendants.
+    hub = _extract_is_inside(["hub", "services", "models", "folder_browser.py"])
+    base = tmp_path / "allowed"
+    sub = base / "models" / "gguf"
+    sub.mkdir(parents = True)
+    assert hub(sub, [base]) is True
+    assert hub(base, [base]) is True
+
+
+# --------------------------------------------------------------------------- #
 # add_scan_folder -- filesystem-root rejection parity (legacy == hub)
 # --------------------------------------------------------------------------- #
 def test_legacy_add_scan_folder_rejects_filesystem_root(monkeypatch):

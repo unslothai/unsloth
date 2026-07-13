@@ -1552,8 +1552,14 @@ async def browse_folders(
             if contains_sensitive_path_component(name):
                 continue
             # Hide denied system dirs (C:\Windows, /etc, ...) so they never
-            # render as clickable rows that then 403 on descent.
-            if is_denied_system_path(str(child)):
+            # render as clickable rows that then 403 on descent. Resolve first
+            # (like the suggestion chips) so a symlink/junction pointing into a
+            # denied dir is hidden too, not just a literal denied name.
+            try:
+                resolved_child = os.path.realpath(str(child))
+            except (OSError, ValueError):
+                resolved_child = str(child)
+            if is_denied_system_path(resolved_child):
                 continue
             entries.append(
                 BrowseEntry(

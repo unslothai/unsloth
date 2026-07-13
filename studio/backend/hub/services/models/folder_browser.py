@@ -224,7 +224,15 @@ def _build_browse_allowlist() -> list[Path]:
 
 
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
-    """True if *target* equals or descends from any allowed root; uses ``os.path.realpath`` so symlinks cannot escape the sandbox."""
+    """True if *target* equals or descends from any allowed root; uses ``os.path.realpath`` so symlinks cannot escape the sandbox.
+
+    A Windows drive root (``D:\\``) legitimately authorizes its descendants, but
+    a bare POSIX filesystem root (``/``) must NOT -- otherwise a single ``/``
+    allowlist entry (e.g. a legacy-registered scan folder) would authorize every
+    absolute path, letting the browser descend into ``/var``, ``/root``, etc.
+    that the system-directory denylist does not cover. This mirrors the legacy
+    browser's containment check so both browsers treat ``/`` identically.
+    """
     try:
         target_real = os.path.normcase(os.path.realpath(str(target)))
     except OSError:
@@ -234,13 +242,18 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
             root_real = os.path.normcase(os.path.realpath(str(root)))
         except OSError:
             continue
+        if target_real == root_real:
+            return True
+        drive, _ = os.path.splitdrive(root_real)
+        if os.path.dirname(root_real) == root_real and not drive:
+            # Bare POSIX filesystem root ("/"): equality above is the only
+            # match; do not let it authorize arbitrary descendants.
+            continue
         try:
             if os.path.commonpath([target_real, root_real]) == root_real:
                 return True
         except ValueError:
             continue
-        if target_real == root_real:
-            return True
     return False
 
 
@@ -460,7 +473,13 @@ def browse_folders_response(
                 continue
             # Same for denied system dirs (C:\Windows, /etc, ...): descent is
             # refused, so don't render them as clickable rows that then 403.
-            if is_denied_system_path(str(child)):
+            # Resolve first (like the suggestion chips) so a symlink/junction
+            # into a denied dir is hidden too, not just a literal denied name.
+            try:
+                resolved_child = os.path.realpath(str(child))
+            except (OSError, ValueError):
+                resolved_child = str(child)
+            if is_denied_system_path(resolved_child):
                 continue
             entries.append(
                 BrowseEntry(
