@@ -1667,11 +1667,25 @@ def _fetch_page_text(
         )
         # The README API is unauthenticated and rate-limited; on any failure
         # (404, 403 rate limit, network) fall back to the HTML page fetch.
-        if err is None and body.strip() and not _looks_like_html(body):
-            return _truncate_page_text(
-                f"README of {url} (fetched via the GitHub README API):\n\n" + body,
-                max_chars,
-            )
+        # A 200 with a body is authoritative even when that body is HTML: repos
+        # whose README is a .html file (or markdown that opens with a raw
+        # <html>/<!doctype> block) return HTML here, and discarding it would
+        # fall back to the repo page's UI chrome -- the exact content this
+        # rewrite exists to avoid. Convert HTML to Markdown instead of dropping
+        # it, keeping the raw body if extraction yields nothing.
+        if err is None and body.strip():
+            readme_body = body
+            if _looks_like_html(body):
+                from ._html_to_md import html_to_markdown
+
+                converted = html_to_markdown(body, main_content = True)
+                readme_body = converted if converted.strip() else body
+            if readme_body.strip():
+                return _truncate_page_text(
+                    f"README of {url} (fetched via the GitHub README API):\n\n"
+                    + readme_body,
+                    max_chars,
+                )
 
     err, body, content_type = _fetch_url_raw(url, timeout = timeout)
     if err is not None:

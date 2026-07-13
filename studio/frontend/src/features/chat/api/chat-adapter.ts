@@ -3935,8 +3935,20 @@ export function createOpenAIStreamAdapter(
         runtime.setToolStatus(null);
         // Live tool output is transient; the persisted result is the record.
         // Clear only this run's keys: a concurrent pane owns its own entries.
+        // A key still here streamed stdout but never reached tool_end -- the SSE
+        // connection dropped mid-tool (StreamInterruptedError) or the run was
+        // cancelled -- since tool_end deletes settled keys. Those tools have no
+        // result to fall back to and the live pane stops rendering once the card
+        // leaves the running state, so promote the captured stream to full
+        // output (mirroring the tool_end preserve path) before clearing it, else
+        // the partial diagnostics the user was watching vanish from the card.
         for (const liveKey of runToolLiveOutputKeys) {
-          useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
+          const store = useChatRuntimeStore.getState();
+          const liveOutput = store.toolLiveOutput[liveKey] ?? "";
+          if (liveOutput) {
+            store.setToolFullOutput(liveKey, liveOutput);
+          }
+          store.clearToolLiveOutput(liveKey);
         }
         runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only

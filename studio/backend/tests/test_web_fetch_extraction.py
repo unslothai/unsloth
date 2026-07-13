@@ -446,6 +446,38 @@ def test_fetch_page_text_prefers_github_readme(monkeypatch):
     assert calls[0][1]["Accept"] == "application/vnd.github.raw+json"
 
 
+def test_fetch_page_text_keeps_html_readme_from_api(monkeypatch):
+    # A repo whose README is an HTML file (or markdown opening with a raw
+    # <html> block) returns HTML from the README API with a 200. That success
+    # is authoritative: it must be converted to Markdown and kept, never
+    # discarded in favour of the repo root page's UI chrome.
+    html_readme = (
+        "<!doctype html><html><body>"
+        "<h1>Project Title</h1>"
+        "<p>Install with the one-line script and read the docs.</p>"
+        "</body></html>"
+    )
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+    ):
+        calls.append(url)
+        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
+        return None, html_readme, "text/html"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    # The successful README is converted and returned; no fallback fetch fires.
+    assert "README of https://github.com/unslothai/unsloth" in out
+    assert "Project Title" in out
+    assert "Install with the one-line script" in out
+    assert "<html" not in out
+    assert len(calls) == 1
+
+
 def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
     def fake_fetch(
         url,
