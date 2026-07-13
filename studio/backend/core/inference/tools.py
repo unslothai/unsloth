@@ -1829,9 +1829,7 @@ _MCP_ARG_MUTATION_RE = re.compile(
 # shared library. "pragma"/"load_extension"/"attach database" are not natural
 # language, so a benign search string does not trip these.
 _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
-    r"\b(?:attach|detach)\s+database\b"
-    r"|\bpragma\s+\w+\s*(?:=|\()"
-    r"|\bload_extension\s*\(",
+    r"\b(?:attach|detach)\s+database\b|\bpragma\s+\w+\s*(?:=|\()|\bload_extension\s*\(",
     re.IGNORECASE,
 )
 # SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
