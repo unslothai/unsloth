@@ -152,6 +152,26 @@ _IMPLICIT_CLOSERS: dict = {
 }
 
 
+# Optional-end-tag recovery must not cross a container that starts a NEW nesting
+# scope for the tag being opened. A nested ``<ul>``/``<ol>`` makes an inner
+# ``<li>`` a DESCENDANT (not an optional-close sibling) of an outer ``<li>``, a
+# nested ``<table>`` re-scopes ``<tr>``/``<td>``/``<th>``, and a nested ``<dl>``
+# re-scopes ``<dt>``/``<dd>``. Searching past such a barrier would wrongly close
+# (and un-hide) the outer item, leaking nested hidden content into the output.
+# Keys mirror the item tags in ``_IMPLICIT_CLOSERS``; values are the container
+# tags whose presence between the stack top and a candidate closer blocks it.
+_CLOSE_BARRIERS: dict = {
+    "li": frozenset({"ul", "ol", "menu"}),
+    "dt": frozenset({"dl"}),
+    "dd": frozenset({"dl"}),
+    "tr": frozenset({"table"}),
+    "td": frozenset({"table"}),
+    "th": frozenset({"table"}),
+    "option": frozenset({"select", "datalist"}),
+    "optgroup": frozenset({"select", "datalist"}),
+}
+
+
 _BLOCK_TAGS = frozenset(
     {
         "p",
@@ -299,23 +319,31 @@ class _MarkdownRenderer(HTMLParser):
         """Apply HTML5 optional-end-tag recovery for a start tag about to open.
 
         Pops each implicitly-closed ancestor (and hidden marks ending with it).
-        Searches the whole stack, not just the top, so an open ``<p>``/``<li>``
+        Searches down the stack, not just the top, so an open ``<p>``/``<li>``
         still closes when it has an unclosed inline descendant like ``<span>`` on
         top; inline tags aren't ``_IMPLICIT_CLOSERS`` keys, so they never trigger
-        a spurious close. Runs even for skipped tags (``<nav>``/``<footer>``):
-        those are optional-end-tag closers of ``<p>`` too, so a hidden ``<p>``
-        without an explicit ``</p>`` must end before the skip begins, or its
-        hidden mark would suppress every following sibling.
+        a spurious close. The search STOPS at a ``_CLOSE_BARRIERS`` container
+        (a nested ``<ul>``/``<ol>``/``<table>``/``<dl>``): an inner ``<li>`` /
+        ``<td>`` / ``<dt>`` is a descendant of that nested container, not an
+        optional-close sibling of the outer item, so recovery must not reach
+        past it -- otherwise a hidden outer item's mark would be popped and its
+        nested content would leak. Runs even for skipped tags
+        (``<nav>``/``<footer>``): those are optional-end-tag closers of ``<p>``
+        too, so a hidden ``<p>`` without an explicit ``</p>`` must end before the
+        skip begins, or its hidden mark would suppress every following sibling.
         """
+        barriers = _CLOSE_BARRIERS.get(tag, ())
         while True:
-            close_at = next(
-                (
-                    i
-                    for i in range(len(self._open_tags) - 1, -1, -1)
-                    if tag in _IMPLICIT_CLOSERS.get(self._open_tags[i], ())
-                ),
-                None,
-            )
+            close_at = None
+            for i in range(len(self._open_tags) - 1, -1, -1):
+                name = self._open_tags[i]
+                if tag in _IMPLICIT_CLOSERS.get(name, ()):
+                    close_at = i
+                    break
+                # A nested list/table/dl container re-scopes the item: the closer
+                # beyond it is an ANCESTOR, not a sibling, so stop the search.
+                if name in barriers:
+                    break
             if close_at is None:
                 break
             del self._open_tags[close_at:]

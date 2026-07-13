@@ -27,6 +27,7 @@ Identical with and without output streaming because the child env is.
 
 import builtins
 import io
+import json
 import os
 import sys
 
@@ -42,6 +43,14 @@ _notified = False
 # repeated overwrite of the same generated artifact re-serves that target
 # instead of tripping the anti-clobber guard on the file it created earlier.
 _remapped_writes: dict = {}
+# Each sandbox tool call is a FRESH subprocess, so ``_remapped_writes`` is empty
+# on entry while healed files persist in the per-session working directory. This
+# on-disk sidecar (a hidden file in the CWD) carries the invented-path -> healed
+# -> target map ACROSS runs, so a later run overwriting the same invented path
+# re-serves the artifact it created last turn instead of hitting the anti-clobber
+# guard. It only ever records sources the fallback itself healed, so an unrelated
+# same-basename workspace file is never adopted.
+_REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 
 
 def _note(subject, original, mapped):
@@ -91,6 +100,46 @@ def _map_onto_cwd(prefix, text):
     mapped = _contained_join(os.getcwd(), rel)
     _note(prefix, text, mapped)
     return mapped
+
+
+def _sidecar_path(cwd):
+    return os.path.join(cwd, _REMAP_SIDECAR)
+
+
+def _load_sidecar(cwd):
+    """Return the persisted ``source -> healed target`` map, or {} on any error.
+
+    Best effort: a missing/corrupt/foreign sidecar simply yields an empty map, so
+    the fallback degrades to its in-process-only behaviour (never a crash, never
+    adopting an unrelated file).
+    """
+    try:
+        with open(_sidecar_path(cwd)) as fh:
+            data = json.load(fh)
+    except Exception:  # noqa: BLE001 - a bad sidecar must never break user code
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _record_sidecar(cwd, source, target):
+    """Persist ``source -> target`` in the sidecar so the next run re-serves it.
+
+    Written atomically (temp + ``os.replace``) and wrapped so a read-only or full
+    filesystem never breaks the interpreter; the mapping just stays in memory.
+    The sidecar path is inside the CWD, so the patched ``open`` leaves it untouched
+    (no remap, no recursion).
+    """
+    try:
+        data = _load_sidecar(cwd)
+        if data.get(source) == target:
+            return
+        data[source] = target
+        tmp = _sidecar_path(cwd) + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(data, fh)
+        os.replace(tmp, _sidecar_path(cwd))
+    except Exception:  # noqa: BLE001 - persistence is best effort only
+        pass
 
 
 def _is_creating_mode(mode):
@@ -148,9 +197,19 @@ def _remap_open(file, mode):
     # re-serve it -- otherwise an iterative overwrite of e.g.
     # ``/home/ubuntu/Sandbox/app.html`` would create ``./app.html`` on the first
     # write and then FileNotFoundError on every later one (missing parent).
-    if os.path.lexists(remapped) and _remapped_writes.get(text) != remapped:
+    #
+    # The prior heal is recognised from the in-process map OR the on-disk sidecar
+    # (each tool call is a fresh subprocess, so the in-process map is empty on a
+    # later run while the healed file persists in the CWD). The sidecar only
+    # records sources the fallback itself healed, so an unrelated same-basename
+    # file -- never healed from this source -- is still refused and preserved.
+    if os.path.lexists(remapped) and remapped not in (
+        _remapped_writes.get(text),
+        _load_sidecar(cwd).get(text),
+    ):
         return file
     _remapped_writes[text] = remapped
+    _record_sidecar(cwd, text, remapped)
     _note(text, text, remapped)
     return remapped
 

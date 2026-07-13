@@ -782,6 +782,58 @@ def test_hidden_list_item_with_inline_child_closed_by_next_item():
     assert "after" in out
 
 
+# ── nested hidden list/table contents must stay suppressed ──
+
+
+def test_nested_hidden_list_does_not_leak_child_items():
+    # A <li hidden> containing a nested <ul> keeps the inner <li> suppressed: the
+    # nested list re-scopes the item, so the inner <li> is a DESCENDANT of the
+    # hidden outer <li>, not an optional-close sibling of it. Optional-end-tag
+    # recovery must not cross the intervening <ul>, or the outer li's hidden mark
+    # is popped and the nested text leaks.
+    html = (
+        "<body><ul>"
+        "<li hidden>parent<ul><li>secret child</li></ul></li>"
+        "<li>visible sibling</li>"
+        "</ul></body>"
+    )
+    out = html_to_markdown(html)
+    assert "parent" not in out
+    assert "secret child" not in out
+    assert "visible sibling" in out
+
+
+def test_nested_hidden_list_with_omitted_closes_stays_suppressed():
+    # Same leak in the common real-world form with omitted </li>/</ul>, doubly
+    # nested. Every hidden descendant stays gone; the following visible sibling
+    # (which implicitly closes the hidden outer <li>) still renders.
+    html = (
+        "<body><ul>"
+        "<li hidden>parent<ul><li>secret child<ul><li>deeper secret</ul></li></ul>"
+        "<li>visible sibling"
+        "</ul></body>"
+    )
+    out = html_to_markdown(html)
+    assert "parent" not in out
+    assert "secret child" not in out
+    assert "deeper secret" not in out
+    assert "visible sibling" in out
+
+
+def test_nested_hidden_table_does_not_leak_inner_cells():
+    # A nested <table> re-scopes <tr>/<td>: an inner <td> must not be treated as
+    # an optional-close sibling of a hidden outer <td> across the nested table.
+    html = (
+        "<body><table><tr>"
+        "<td hidden>outer<table><tr><td>secret cell</td></tr></table></td>"
+        "<td>visible cell</td>"
+        "</tr></table></body>"
+    )
+    out = html_to_markdown(html)
+    assert "secret cell" not in out
+    assert "visible cell" in out
+
+
 # ── aggregate tiny <article> cards must not displace <main> (finding 15) ──
 
 

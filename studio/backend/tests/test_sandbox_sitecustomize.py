@@ -226,6 +226,54 @@ def test_write_fallback_reserves_same_target_on_repeated_writes(monkeypatch, tmp
     assert mod._remap_open(other, "w") == other
 
 
+def test_write_fallback_reserves_healed_target_across_separate_runs(monkeypatch, tmp_path):
+    # Each sandbox tool call is a FRESH subprocess, so the in-process remap map is
+    # empty on the next run while the healed file persists in the per-session
+    # working directory. A second run overwriting the SAME invented absolute path
+    # (whose healed basename now exists in the CWD) must still re-serve that
+    # target -- otherwise the model could never overwrite the artifact it created
+    # last turn. The on-disk sidecar carries the mapping across runs. Each
+    # _load_shim() call loads a fresh module with an empty _remapped_writes,
+    # simulating a brand-new interpreter.
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+    invented = "/home/ubuntu/Sandbox/app.html"
+    target = os.path.join(cwd, "app.html")
+
+    # Run 1: a fresh interpreter heals the invented path and creates the file,
+    # persisting the source->target mapping to the sidecar.
+    run1 = _load_shim()
+    assert run1._remap_open(invented, "w") == target
+    with open(run1._remap_open(invented, "w"), "w") as fh:
+        fh.write("v1")
+
+    # Run 2: a brand-new interpreter -- nothing carried over in memory -- still
+    # recognises its own prior heal from the on-disk sidecar and re-serves it,
+    # even though ./app.html now exists (which without the sidecar would trip the
+    # anti-clobber guard and raise FileNotFoundError on the missing parent).
+    run2 = _load_shim()
+    assert run2._remapped_writes == {}
+    assert run2._remap_open(invented, "w") == target
+    with open(run2._remap_open(invented, "w"), "w") as fh:
+        fh.write("v2")
+    assert Path(target).read_text() == "v2"
+
+    # A DIFFERENT invented source that only collides on basename is still refused
+    # across runs: the sidecar records solely the source it actually healed, so an
+    # unrelated path can never adopt/clobber the artifact.
+    other = "/opt/other/app.html"
+    assert run2._remap_open(other, "w") == other
+
+    # And a genuinely foreign CWD file (created directly, never healed) stays
+    # protected in a later run from an invented path sharing its basename.
+    (tmp_path / "notes.txt").write_text("KEEP-ME")
+    run3 = _load_shim()
+    assert run3._remap_open("/some/missing/notes.txt", "w") == "/some/missing/notes.txt"
+    with pytest.raises(FileNotFoundError):
+        open(run3._remap_open("/some/missing/notes.txt", "w"), "w")
+    assert (tmp_path / "notes.txt").read_text() == "KEEP-ME"
+
+
 @pytest.mark.parametrize("mode", ["r+", "rb+"])
 def test_read_update_modes_never_redirected_even_with_missing_parent(monkeypatch, tmp_path, mode):
     # r+ / rb+ REQUIRE the target to already exist; they never create. A "+" in
