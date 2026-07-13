@@ -13,6 +13,7 @@ never gating under bypass.
 Run with: ``PYTHONPATH=studio/backend python -m pytest studio/backend/tests/test_bypass_permissions.py -q``
 """
 
+import io
 import os
 import sys
 
@@ -94,10 +95,25 @@ def test_safe_env_excludes_host_and_secret(monkeypatch, tmp_path):
 
 
 class _FakeProc:
-    returncode = 0
+    """A subprocess.Popen double faithful to the interface the unified
+    non-streaming/streaming drain path (``tools._drain_process_output``) uses:
+    a readable ``stdout`` pipe yielding the fake output then EOF, plus
+    ``wait()`` / ``poll()`` / ``pid``. The pid is a non-existent process id so
+    ``_capture_process_group``'s ``os.getpgid`` lookup fails and returns None
+    (no real process group is targeted); the drain never kills on this path
+    since ``wait`` returns immediately.
+    """
 
-    def communicate(self, timeout = None):
-        return ("FAKEOUT", None)
+    returncode = 0
+    # Unlikely-to-exist pid: os.getpgid raises ProcessLookupError (caught) -> None.
+    pid = 2 ** 22
+
+    def __init__(self):
+        # Readable stdout: iter(readline, "") yields "FAKEOUT" then hits EOF.
+        self.stdout = io.StringIO("FAKEOUT")
+
+    def wait(self, timeout = None):
+        return 0
 
     def poll(self):
         return 0
