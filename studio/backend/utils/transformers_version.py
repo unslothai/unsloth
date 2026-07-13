@@ -1866,8 +1866,16 @@ def _is_valid_version_string(version: str) -> bool:
 # come from the on-disk pin marker; anything else (URLs, extras, options) is rebuilt.
 _PIN_SPEC_RE = re.compile(r"^[A-Za-z0-9_.-]+(==[A-Za-z0-9_.+-]+)?$")
 _PIN_ALLOWED_NAMES = frozenset(
-    {"transformers", "huggingface_hub", "huggingface-hub", "hf_xet", "hf-xet",
-     "tiktoken", "tokenizers", "safetensors"}
+    {
+        "transformers",
+        "huggingface_hub",
+        "huggingface-hub",
+        "hf_xet",
+        "hf-xet",
+        "tiktoken",
+        "tokenizers",
+        "safetensors",
+    }
 )
 
 

@@ -356,7 +356,6 @@ async def start_training(
         # checks must not underestimate against a load the worker will refuse.
         if training_kwargs["load_in_4bit"]:
             from utils.transformers_version import latest_tier_active_for
-
             if await asyncio.to_thread(
                 latest_tier_active_for,
                 training_kwargs["model_name"],

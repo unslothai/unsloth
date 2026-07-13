@@ -446,9 +446,7 @@ def compat_plan(version: str) -> tuple[tuple[str, ...], list[str]]:
     """
     reqs = _fetch_requires_dist(version)
     if reqs is None:
-        return (), [
-            "dependency metadata for this release (could not be fetched from PyPI; retry)"
-        ]
+        return (), ["dependency metadata for this release (could not be fetched from PyPI; retry)"]
     try:
         from importlib.metadata import PackageNotFoundError
         from importlib.metadata import version as _installed_version
