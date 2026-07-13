@@ -90,13 +90,19 @@ def ensure_calibration_data() -> bool:
 
     import urllib.request
 
+    if os.environ.get("UNSLOTH_EXL3_NO_NETWORK", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    timeout = float(os.environ.get("UNSLOTH_EXL3_DOWNLOAD_TIMEOUT", "30"))
     for filename in missing:
         fetched = False
         for base in base_urls:
             try:
                 url = base + filename
                 dest = os.path.join(data_dir, filename)
-                urllib.request.urlretrieve(url, dest)
+                with urllib.request.urlopen(url, timeout=timeout) as resp:
+                    data = resp.read()
+                with open(dest, "wb") as f:
+                    f.write(data)
                 if os.path.getsize(dest) > 0:
                     fetched = True
                     break
@@ -198,7 +204,8 @@ def make_text_only_config(model_dir: str) -> bool:
 
     cfg_path = os.path.join(model_dir, "config.json")
     try:
-        raw = json.load(open(cfg_path, encoding="utf-8"))
+        with open(cfg_path, encoding="utf-8") as f:
+            raw = json.load(f)
     except Exception:
         return False
     archs = list(raw.get("architectures") or [])
@@ -227,7 +234,8 @@ def make_text_only_config(model_dir: str) -> bool:
 
     if not os.path.exists(cfg_path + ".vlm_backup"):
         shutil.copy(cfg_path, cfg_path + ".vlm_backup")
-    json.dump(new, open(cfg_path, "w", encoding="utf-8"), indent=2)
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(new, f, indent=2)
     print(
         f"Unsloth: converted VLM config to text-only '{causal}' at {model_dir} "
         f"(vision tower skipped; language decoder + MTP quantized)."

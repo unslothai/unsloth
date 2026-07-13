@@ -1152,29 +1152,26 @@ class FastModel(FastBaseModel):
                 revision=revision,
                 trust_remote_code=trust_remote_code,
                 local_files_only=kwargs.get("local_files_only", False),
-                devices=os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0] or "0",
+                devices=(os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() or "0"),
                 calibrate=exl3_calibrate,
+                # True intent (before the `or True`): lets prepare fall back to
+                # bnb for an unsupported-arch Hub id on the default route.
+                is_explicit=bool(load_in_exl3)
+                or str(getattr(quantization_config, "quant_method", "")).lower() == "exl3",
             )
-            # Load the prepared EXL3 checkpoint directly, disabling every other
-            # quantization mode. `use_exact_model_name` stops the mapper from
-            # rewriting our local path to a `-bnb-4bit` hub id.
+        # A None plan means EXL3 was only the default backend but the arch is
+        # unsupported - fall back to the normal bnb / 16-bit path.
+        if _exl3_plan is not None:
+            # Load the prepared EXL3 checkpoint directly (bnb disabled).
             model_name = _exl3_plan.checkpoint_dir
             use_exact_model_name = True
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
-            # An EXL3 checkpoint carries its own quantization_config; drop any
-            # bnb/user quantization_config so transformers uses the EXL3 one.
             quantization_config = None
             kwargs.pop("quantization_config", None)
-            # EXL3 quantizes each MoE expert as its own linear layer. Unsloth's
-            # grouped-GEMM MoE optimization fuses the per-expert nn.Linear layers
-            # into a single grouped parameter, which is incompatible with the
-            # per-expert EXL3 trellis layers (the experts would never be replaced
-            # by EXL3 modules). Disable grouping for EXL3 loads so each expert
-            # stays an individual, quantized, LoRA-targetable layer.
-            # Saved and restored after the load so a later non-EXL3 load in the
-            # same process does not inherit this setting.
+            # Disable grouped-GEMM MoE fusion so each expert stays an individual
+            # quantized layer. Restored after the load (try/finally below).
             _exl3_prev_moe_grouped = os.environ.get("UNSLOTH_MOE_GROUPED")
             os.environ["UNSLOTH_MOE_GROUPED"] = "0"
 
@@ -1857,40 +1854,48 @@ class FastModel(FastBaseModel):
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
 
-        model, tokenizer = FastBaseModel.from_pretrained(
-            model_name=model_name,
-            max_seq_length=max_seq_length,
-            dtype=_get_dtype(dtype),
-            load_in_4bit=load_in_4bit_kwargs,
-            load_in_8bit=load_in_8bit_kwargs,
-            load_in_16bit=load_in_16bit,
-            full_finetuning=full_finetuning,
-            token=token,
-            device_map=device_map,
-            trust_remote_code=trust_remote_code,
-            revision=revision if not is_peft else None,
-            model_types=model_types,
-            tokenizer_name=tokenizer_name,
-            auto_model=auto_model,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-            supports_sdpa=supports_sdpa,
-            whisper_language=whisper_language,
-            whisper_task=whisper_task,
-            auto_config=model_config,
-            offload_embedding=offload_embedding,
-            float32_mixed_precision=float32_mixed_precision,
-            # Pass vLLM/inference parameters
-            fast_inference=fast_inference,
-            gpu_memory_utilization=gpu_memory_utilization,
-            float8_kv_cache=float8_kv_cache,
-            random_state=random_state,
-            max_lora_rank=max_lora_rank,
-            disable_log_stats=disable_log_stats,
-            load_in_fp8=load_in_fp8,
-            text_only=load_text_only,
-            *args,
-            **kwargs,
-        )
+        try:
+            model, tokenizer = FastBaseModel.from_pretrained(
+                model_name=model_name,
+                max_seq_length=max_seq_length,
+                dtype=_get_dtype(dtype),
+                load_in_4bit=load_in_4bit_kwargs,
+                load_in_8bit=load_in_8bit_kwargs,
+                load_in_16bit=load_in_16bit,
+                full_finetuning=full_finetuning,
+                token=token,
+                device_map=device_map,
+                trust_remote_code=trust_remote_code,
+                revision=revision if not is_peft else None,
+                model_types=model_types,
+                tokenizer_name=tokenizer_name,
+                auto_model=auto_model,
+                use_gradient_checkpointing=use_gradient_checkpointing,
+                supports_sdpa=supports_sdpa,
+                whisper_language=whisper_language,
+                whisper_task=whisper_task,
+                auto_config=model_config,
+                offload_embedding=offload_embedding,
+                float32_mixed_precision=float32_mixed_precision,
+                # Pass vLLM/inference parameters
+                fast_inference=fast_inference,
+                gpu_memory_utilization=gpu_memory_utilization,
+                float8_kv_cache=float8_kv_cache,
+                random_state=random_state,
+                max_lora_rank=max_lora_rank,
+                disable_log_stats=disable_log_stats,
+                load_in_fp8=load_in_fp8,
+                text_only=load_text_only,
+                *args,
+                **kwargs,
+            )
+        finally:
+            # Always restore UNSLOTH_MOE_GROUPED, even if the load raised.
+            if _exl3_plan is not None:
+                if _exl3_prev_moe_grouped is None:
+                    os.environ.pop("UNSLOTH_MOE_GROUPED", None)
+                else:
+                    os.environ["UNSLOTH_MOE_GROUPED"] = _exl3_prev_moe_grouped
 
         # Stamp EXL3 quant states onto the freshly loaded layers so Unsloth's
         # LoRA kernels recognize them as quantized and reconstruct via the
@@ -1898,8 +1903,7 @@ class FastModel(FastBaseModel):
         if _exl3_plan is not None:
             from ..exllama import finalize_exl3_model, finalize_exl3_experts
 
-            # Rebuild fused MoE experts (no-op for dense models). Must run BEFORE
-            # attaching quant states so the fused expert params are materialized.
+            # Rebuild fused MoE experts before stamping quant states.
             _n_experts = finalize_exl3_experts(
                 model,
                 _exl3_plan.checkpoint_dir,
@@ -1914,16 +1918,6 @@ class FastModel(FastBaseModel):
                 f"Unsloth: Loaded EXL3 model ({_exl3_plan.config.label()}) - "
                 f"stamped {_n_exl3} quantized layer(s){_moe_note}."
             )
-            # Restore the pre-load UNSLOTH_MOE_GROUPED so later loads in this
-            # process are unaffected (no global env leak). EXL3 MoE correctness
-            # does not depend on this staying "0": if Unsloth's grouped-GEMM MoE
-            # LoRA path is used, its Hopper-only ``torch._grouped_mm`` is wrapped
-            # with a portable fallback (see unsloth/exllama/patcher.py), so EXL3
-            # MoE trains/infers regardless of the grouping setting.
-            if _exl3_prev_moe_grouped is None:
-                os.environ.pop("UNSLOTH_MOE_GROUPED", None)
-            else:
-                os.environ["UNSLOTH_MOE_GROUPED"] = _exl3_prev_moe_grouped
 
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)

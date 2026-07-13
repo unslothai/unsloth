@@ -165,5 +165,24 @@ class TestExl3QuantizedExperts(unittest.TestCase):
         self.assertEqual(len(list(exp.buffers())), 0)
 
 
+class TestExpertBiasDetection(unittest.TestCase):
+    """Bias-bearing experts (e.g. gpt_oss) must be detected so the quantized
+    path skips them (it cannot represent per-expert bias)."""
+
+    def test_detects_gate_up_and_down_bias(self):
+        from unsloth.exllama.moe import _experts_have_bias
+
+        class _M:
+            pass
+
+        m = _M()
+        self.assertFalse(_experts_have_bias(m))
+        m.gate_up_proj_bias = torch.zeros(4)
+        self.assertTrue(_experts_have_bias(m))
+        m2 = _M()
+        m2.down_proj_bias = torch.zeros(4)
+        self.assertTrue(_experts_have_bias(m2))
+
+
 if __name__ == "__main__":
     unittest.main()

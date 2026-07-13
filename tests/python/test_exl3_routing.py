@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 from unsloth.exllama import loader as EL
 from unsloth.exllama.config import Exl3Config
+import json
+import tempfile
 
 
 class TestExl3DefaultBackend(unittest.TestCase):
@@ -242,6 +244,45 @@ class TestShouldUseExl3(unittest.TestCase):
     def test_on_disk_checkpoint_detected(self):
         with patch.object(EL, "is_exl3_model_dir", lambda p: True):
             self.assertTrue(EL.should_use_exl3("/some/exl3/dir"))
+
+
+class TestNonExl3QuantOptOut(unittest.TestCase):
+    """Existing non-EXL3 quant configs / checkpoints / adapter repos opt out."""
+
+    def _mkdir(self, files):
+        d = tempfile.mkdtemp(prefix="exl3_optout_")
+        for name, content in files.items():
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                json.dump(content, f)
+        return d
+
+    def _route(self, model_name, **kw):
+        with patch.object(EL, "is_exllama_available", lambda: True), patch.object(
+            EL, "_cuda_available", lambda: True
+        ), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("UNSLOTH_QUANT_BACKEND", None)
+            return EL.should_use_exl3(model_name, load_in_4bit=True, **kw)
+
+    def test_gptq_awq_hqq_configs_opt_out(self):
+        for method in ("gptq", "awq", "hqq", "bitsandbytes"):
+            self.assertFalse(self._route("m", quantization_config={"quant_method": method}))
+
+    def test_existing_bnb_checkpoint_not_hijacked(self):
+        d = self._mkdir({"config.json": {"quantization_config": {"quant_method": "bitsandbytes"}}})
+        self.assertFalse(self._route(d))
+
+    def test_existing_gptq_checkpoint_not_hijacked(self):
+        d = self._mkdir({"config.json": {"quantization_config": {"quant_method": "gptq"}}})
+        self.assertFalse(self._route(d))
+
+    def test_peft_adapter_repo_not_quantized(self):
+        d = self._mkdir({"adapter_config.json": {"base_model_name_or_path": "x"}})
+        self.assertFalse(self._route(d))
+
+    def test_plain_unquantized_dir_still_routes(self):
+        d = self._mkdir({"config.json": {"architectures": ["LlamaForCausalLM"]}})
+        with patch("unsloth.exllama.patcher.exllama_supports_arch", lambda p: True):
+            self.assertTrue(self._route(d))
 
 
 if __name__ == "__main__":

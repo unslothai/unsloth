@@ -65,19 +65,19 @@ def is_exllama_available() -> bool:
 
 def _version_at_least(have: str, want: str) -> bool:
     """Return True if version string ``have`` >= ``want`` (numeric, dotted)."""
+    try:
+        from packaging.version import Version
 
-    def _parts(v):
-        out = []
-        for chunk in str(v).split("+")[0].split("."):
-            digits = "".join(c for c in chunk if c.isdigit())
-            out.append(int(digits) if digits else 0)
-        return out
-
-    a, b = _parts(have), _parts(want)
-    n = max(len(a), len(b))
-    a += [0] * (n - len(a))
-    b += [0] * (n - len(b))
-    return a >= b
+        return Version(str(have)) >= Version(str(want))
+    except Exception:
+        def _parts(v):
+            return [int("".join(c for c in ch if c.isdigit()) or 0)
+                    for ch in str(v).split("+")[0].split(".")]
+        a, b = _parts(have), _parts(want)
+        n = max(len(a), len(b))
+        a += [0] * (n - len(a))
+        b += [0] * (n - len(b))
+        return a >= b
 
 
 @functools.lru_cache(maxsize=1)

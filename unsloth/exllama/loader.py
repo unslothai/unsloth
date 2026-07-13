@@ -60,7 +60,8 @@ def _exl3_default_disabled_by_env() -> bool:
 
 
 def _bnb_explicitly_requested(quantization_config) -> bool:
-    """True only if the caller passed a real bitsandbytes quantization_config."""
+    """True if the caller passed an explicit non-EXL3 quant config (bnb/gptq/
+    awq/hqq/...), which opts out of the default EXL3 route."""
     if quantization_config is None:
         return False
     if isinstance(quantization_config, Exl3Config):
@@ -82,10 +83,9 @@ def _bnb_explicitly_requested(quantization_config) -> bool:
     # Normalise both, and also accept the presence of bnb load flags.
     method_value = getattr(method, "value", method)
     method_str = str(method_value).lower() if method_value is not None else ""
-    if "bitsandbytes" in method_str or method_str in ("bnb", "bits_and_bytes"):
+    # Any explicit non-EXL3 quant method (bnb/gptq/awq/hqq/...) opts out.
+    if method_str and method_str != "exl3":
         return True
-    # A BitsAndBytesConfig always carries load_in_4bit/8bit flags; any config
-    # that is not an EXL3 config but sets those is an explicit bnb opt-in.
     return has_bnb_flags
 
 
@@ -157,6 +157,12 @@ def should_use_exl3(
         expanded = os.path.expanduser(model_name)
         if is_exl3_model_dir(expanded):
             return True
+        # Never hijack an existing non-EXL3 quant checkpoint or a PEFT adapter
+        # repo into the default EXL3 route.
+        from .patcher import is_nonexl3_quantized_dir, is_peft_adapter_dir
+
+        if is_nonexl3_quantized_dir(expanded) or is_peft_adapter_dir(expanded):
+            return False
     # Default-backend routing: a plain quantized load prefers EXL3 over bnb.
     if exl3_is_default_backend(
         load_in_4bit=load_in_4bit,
@@ -244,7 +250,8 @@ def prepare_exl3_checkpoint(
     local_files_only=False,
     devices: str = "0",
     calibrate=None,
-) -> Exl3LoadPlan:
+    is_explicit=None,
+) -> Optional[Exl3LoadPlan]:
     """Prepare a local EXL3 checkpoint for ``model_name``.
 
     Resolves the model to a local directory, quantizes it to EXL3 at the
@@ -289,11 +296,21 @@ def prepare_exl3_checkpoint(
     from .patcher import exllama_supports_arch, exllama_supported_architectures
 
     if not exllama_supports_arch(local_dir):
+        # Default-backend route (not an explicit request): fall back to bnb for
+        # an unsupported arch instead of erroring.
+        explicit = (
+            is_explicit
+            if is_explicit is not None
+            else _looks_like_exl3_request(load_in_exl3, quantization_config)
+        )
+        if not explicit:
+            return None
         import json as _json
 
         _arch = "?"
         try:
-            _cfg = _json.load(open(os.path.join(local_dir, "config.json"), encoding="utf-8"))
+            with open(os.path.join(local_dir, "config.json"), encoding="utf-8") as _f:
+                _cfg = _json.load(_f)
             _archs = list(_cfg.get("architectures") or [])
             tc = _cfg.get("text_config")
             if isinstance(tc, dict):

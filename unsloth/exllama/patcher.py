@@ -527,3 +527,28 @@ def read_exl3_bitrate(path: str) -> Optional[float]:
                 if isinstance(val, (int, float)):
                     return float(val)
     return None
+
+
+def is_nonexl3_quantized_dir(path: str) -> bool:
+    """True if ``path`` is already quantized by a non-EXL3 method (bnb/gptq/awq/
+    hqq/...); such a model must load with its own backend, not be re-quantized."""
+    if not isinstance(path, str) or not os.path.isdir(path):
+        return False
+    cfg = _read_json(os.path.join(path, "config.json"))
+    if not isinstance(cfg, dict):
+        return False
+    qc = cfg.get("quantization_config")
+    if not isinstance(qc, dict):
+        return False
+    method = str(qc.get("quant_method", "")).lower()
+    return method not in ("", "exl3")
+
+
+def is_peft_adapter_dir(path: str) -> bool:
+    """True if ``path`` is a PEFT adapter repo (adapter_config.json, no base
+    config.json); it must load its base model, not be quantized as a base."""
+    if not isinstance(path, str) or not os.path.isdir(path):
+        return False
+    has_adapter = os.path.isfile(os.path.join(path, "adapter_config.json"))
+    has_base = os.path.isfile(os.path.join(path, "config.json"))
+    return has_adapter and not has_base

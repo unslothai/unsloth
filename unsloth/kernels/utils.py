@@ -1102,6 +1102,9 @@ def fast_dequantize(
             and W.shape[0] == 1
         )
         result = _exl3_fast_dequantize(quant_state, transpose = transpose, dtype = dtype)
+        # Keep the weight on the placeholder's device (multi-GPU device_map).
+        if W is not None and getattr(W, "device", None) is not None and result.device != W.device:
+            result = result.to(W.device)
         if out is not None:
             out.copy_(result)
             return out
@@ -1120,7 +1123,7 @@ def fast_gemv(
     # materialized weight to fuse the adapter).
     if _is_exl3_quant_state(quant_state):
         dtype = X.dtype
-        W_full = _exl3_fast_dequantize(quant_state, transpose = True, dtype = dtype)
+        W_full = _exl3_fast_dequantize(quant_state, transpose = True, dtype = dtype).to(X.device)
         result = torch_matmul(X, W_full, out = out)
         return result
     return _bnb_fast_gemv(X, W, quant_state, out = out)
