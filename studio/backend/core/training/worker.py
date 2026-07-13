@@ -2192,7 +2192,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """
     # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
     # platforms map() is in-process, so keep tokenizer threads on for faster prep.
-    os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
+    os.environ["TOKENIZERS_PARALLELISM"] = (
+        "true" if sys.platform in ("win32", "darwin") else "false"
+    )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
