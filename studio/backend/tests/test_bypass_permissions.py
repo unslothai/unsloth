@@ -106,7 +106,7 @@ class _FakeProc:
 
     returncode = 0
     # Unlikely-to-exist pid: os.getpgid raises ProcessLookupError (caught) -> None.
-    pid = 2 ** 22
+    pid = 2**22
 
     def __init__(self):
         # Readable stdout: iter(readline, "") yields "FAKEOUT" then hits EOF.
