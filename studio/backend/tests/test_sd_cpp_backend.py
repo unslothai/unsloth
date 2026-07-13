@@ -99,6 +99,31 @@ def test_loaded_repo_ids_includes_native_companions():
     assert b.loaded_repo_ids() == ()
 
 
+def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
+    # FLUX.2-klein-9B pairs with Qwen3-8B, and a local *klein-9B*.gguf carries that keyword only in
+    # the basename (not the repo id). loaded_repo_ids() must reproduce the committed load identity
+    # (repo id + GGUF filename), else it falls back to the 4B default encoder and the cache-deletion
+    # guard protects the wrong repo -- leaving the 8B encoder this load actually downloaded deletable
+    # while one-shot sd-cli still re-reads it every generation.
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    fam = detect_family("flux.2-klein")
+    b._state = bk._SdState(
+        repo_id = "local/my-klein-checkpoints",  # no variant keyword; it lives in the filename
+        base_repo = fam.base_repo,
+        family = fam,
+        device = "cpu",
+        files = SdCppModelFiles(diffusion_model = "/m/FLUX.2-klein-9B-Q4_K_M.gguf"),
+        vae_format = fam.sd_cpp_vae_format,
+        sampling_method = fam.sd_cpp_sampling_method,
+        flow_shift = fam.sd_cpp_flow_shift,
+        mode = "oneshot",
+        gguf_filename = "FLUX.2-klein-9B-Q4_K_M.gguf",
+    )
+    ids = set(b.loaded_repo_ids())
+    assert "Comfy-Org/vae-text-encorder-for-flux-klein-9b" in ids  # the 8B encoder this load pulled
+    assert "Comfy-Org/z_image_turbo" not in ids  # the 4B default must not be protected instead
+
+
 class _FakeServer:
     """Stands in for SdCppServer: records the spawn + one img_gen per whole batch."""
 

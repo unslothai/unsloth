@@ -220,6 +220,11 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
+    # The single-file GGUF basename this load committed. Kept so companion resolution
+    # (sd_cpp_text_encoders_for) reproduces the load identity -- some variants pick their
+    # encoder by filename (FLUX.2-klein-9B -> Qwen3-8B), and a local *klein-9B*.gguf carries
+    # that keyword only in the basename, not the repo id.
+    gguf_filename: Optional[str] = None
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -570,6 +575,7 @@ class SdCppDiffusionBackend:
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
+                    gguf_filename = gguf_filename,
                 )
                 with self._lock:
                     if self._load_token != _load_token:
@@ -697,10 +703,15 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
-            # Same per-variant encoder selection as _asset_specs, keyed on the loaded repo id, so the
-            # cache-deletion guard protects the encoder repo this load actually downloaded (the 9B
-            # variant's Qwen3-8B, not the 4B default).
-            repos.extend(terepo for terepo, _f, _k in sd_cpp_text_encoders_for(fam, state.repo_id))
+            # Same per-variant encoder selection as _asset_specs, keyed on the loaded repo id AND
+            # GGUF filename, so the cache-deletion guard protects the encoder repo this load actually
+            # downloaded (the 9B variant's Qwen3-8B, not the 4B default) -- a local *klein-9B*.gguf
+            # carries that keyword only in the basename, so dropping the filename would fall back to
+            # the 4B default and protect the wrong repo.
+            repos.extend(
+                terepo
+                for terepo, _f, _k in sd_cpp_text_encoders_for(fam, state.repo_id, state.gguf_filename)
+            )
             return tuple(dict.fromkeys(r for r in repos if r))
 
     # ── Generate ───────────────────────────────────────────────────────────
