@@ -340,6 +340,26 @@ def test_generate_rejects_non_multiple_of_16(client):
     assert ok.status_code == 200
 
 
+def test_generate_rejects_batch_seed_past_json_safe_range(client):
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    # An explicit seed at the JS-safe cap with a batch derives per-image seeds
+    # (seed+1 ...) that exceed Number.MAX_SAFE_INTEGER and no longer round-trip
+    # through the gallery JSON recipe, so the request is rejected at the boundary.
+    over = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "seed": 2**53 - 1, "batch_size": 2},
+    )
+    assert over.status_code == 422
+    # The top-of-batch seed lands exactly on the cap: still JSON-safe, so accepted.
+    ok = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "seed": 2**53 - 2, "batch_size": 2},
+    )
+    assert ok.status_code == 200
+
+
 def test_non_gguf_load_restricted_to_unsloth(client):
     # gguf_filename is optional now; with none, the load is a full-pipeline kind, which
     # is gated to unsloth/* repos. A non-unsloth repo (no filename) is rejected -> 400.
