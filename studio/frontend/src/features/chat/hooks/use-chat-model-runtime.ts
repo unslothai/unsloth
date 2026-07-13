@@ -440,16 +440,21 @@ export function useChatModelRuntime() {
       // A load is already in flight. If it's this exact pick (id + GGUF variant +
       // native path token), ignore the duplicate click. If it's a different model
       // -- including a different GGUF variant of the same repo -- cancel/unload the
-      // in-flight load first, then continue with the new selection. Centralized here
-      // so every entry point is covered, not just the staged Load button.
+      // in-flight load first, then continue with the new selection. During that
+      // async unload window, loadingModelRef is already cleared but modelLoading
+      // remains true; block fresh loads until the backend unload has settled.
       const inFlightLoad = loadingModelRef.current;
-      if (inFlightLoad) {
-        const loadingSamePick =
-          inFlightLoad.id === modelId &&
-          (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
-          (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (loadingSamePick) return;
-        const stopped = await cancelLoading();
+      const unloadPending =
+        useChatRuntimeStore.getState().modelLoading && !inFlightLoad;
+      if (inFlightLoad || unloadPending) {
+        if (inFlightLoad) {
+          const loadingSamePick =
+            inFlightLoad.id === modelId &&
+            (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
+            (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
+          if (loadingSamePick) return;
+        }
+        const stopped = inFlightLoad ? await cancelLoading() : false;
         if (!stopped) {
           const message =
             "Another model is already loading. Wait for it to finish or cancel it first.";
