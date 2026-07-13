@@ -30,7 +30,12 @@ conversation file), refusing instead so the original open raises
 ``FileNotFoundError``. ``io.open`` is patched
 alongside ``builtins.open`` because ``pathlib.Path.open`` (and therefore
 ``read_text`` / ``write_text`` / ``read_bytes`` / ``write_bytes``) calls
-``io.open`` directly, bypassing the builtins patch. ``os.open`` is patched too
+``io.open`` directly, bypassing the builtins patch. On Python < 3.11 pathlib
+does not resolve ``io.open`` at call time: its module-level accessor singleton
+(``_NormalAccessor.open = io.open``) captured the original at import, so
+``_NormalAccessor.open`` is repointed at the same wrapper too or a 3.10
+``Path('/mnt/data/x').write_text(...)`` would slip past the patch. ``os.open``
+is patched too
 because ``pathlib.Path.touch`` and other low-level creators call it directly,
 bypassing both. ``os.mkdir`` is patched
 alongside ``os.makedirs`` because ``pathlib.Path.mkdir(parents=True)`` -- the
@@ -286,6 +291,21 @@ def _install():
     # pathlib.Path.open / write_text / read_text call io.open directly, not
     # the builtins binding, so the remap must be installed on both.
     io.open = _io_open
+    # Python < 3.11 only: pathlib does NOT look up io.open at call time. Its
+    # module-level accessor singleton captures the ORIGINAL io.open at import
+    # time (``class _NormalAccessor: open = io.open``) and Path.open /
+    # read_text / write_text route through ``self._accessor.open(...)``. So the
+    # io.open patch above never reaches that captured reference, and on 3.10 a
+    # Path('/mnt/data/x').write_text(...) would still hit the real io.open and
+    # raise FileNotFoundError. Repoint the accessor's ``open`` at the SAME
+    # wrapper (staticmethod so ``self._accessor.open`` stays unbound and is
+    # called with the path, not the accessor instance). 3.11+ dropped the
+    # accessor and call io.open directly at call time (already covered above),
+    # so the attribute is absent there and this is an idempotent no-op -- never
+    # a double remap.
+    accessor = getattr(pathlib, "_NormalAccessor", None)
+    if accessor is not None and hasattr(accessor, "open"):
+        accessor.open = staticmethod(_io_open)
     # Path.touch() (and other low-level opens) call os.open directly, bypassing
     # builtins/io, so patch it too for creation-path parity with Path.mkdir.
     os.open = _os_open

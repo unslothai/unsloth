@@ -491,6 +491,59 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
+    # After the leader exits the cancel watcher (which loops on proc.poll()) is
+    # gone, so the finite-timeout drain itself must honor cancellation: a chatty
+    # grandchild inherits stdout and streams for far longer than the reader would
+    # otherwise be waited on. With a large finite timeout, a mid-drain
+    # cancel_event must break the drain promptly and kill the process group,
+    # instead of draining the grandchild for the whole budget.
+    import subprocess as _sp
+    import threading as _th
+
+    from core.inference.tools import _capture_process_group, _drain_process_output
+
+    sentinel = tmp_path / "grandchild_late"
+    # Grandchild inherits stdout, keeps the pipe open, streams a line every
+    # 0.2s, and would touch the sentinel only after 10s -- well past the moment
+    # we cancel. The leader exits immediately, so the drain enters the finite
+    # branch with a live, chatty reader.
+    proc = _sp.Popen(
+        [
+            "bash",
+            "-c",
+            "( for i in $(seq 1 100); do echo tick-$i; sleep 0.2; done; "
+            f"touch '{sentinel}' ) & echo parent-done",
+        ],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        preexec_fn = os.setsid,
+    )
+    pgid = _capture_process_group(proc)
+    assert pgid is not None
+    proc.wait()  # leader exits at once; the cancel watcher would now be gone
+
+    cancel_event = _th.Event()
+    # Signal cancellation shortly into the drain.
+    _th.Timer(0.6, cancel_event.set).start()
+
+    started = time.monotonic()
+    # Finite timeout is large (30s); without the cancel poll the drain would
+    # keep reading the grandchild until the pipe closes ~20s later.
+    output, timed_out = _drain_process_output(
+        proc, 30, lambda _t: None, cancel_event, pgid = pgid
+    )
+    elapsed = time.monotonic() - started
+    assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
+    # Cancellation is not a timeout: the budget never elapsed.
+    assert not timed_out
+    assert "parent-done" in output
+    time.sleep(11.0)  # past the grandchild's 10s sentinel write
+    assert not sentinel.exists(), "cancel did not kill the stdout-holding grandchild group"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, monkeypatch):
     # The proc.wait() timeout branch normally kills the whole group via
     # _kill_process_tree because the leader is still alive when the wait expires.

@@ -3007,13 +3007,27 @@ def _drain_process_output(
     # process's exit.
     if not timed_out:
         if timeout is not None:
-            # Wait out the remaining budget like communicate() would, then
-            # kill the process group so the reader sees EOF.
-            remaining = max(0.0, timeout - (time.monotonic() - started_at))
-            reader.join(timeout = remaining)
-            if reader.is_alive():
-                timed_out = True
-                _killpg_captured(pgid)
+            # Wait out the remaining budget like communicate() would, then kill
+            # the process group so the reader sees EOF. Poll cancel_event in
+            # slices instead of one long join: the leader has already exited, so
+            # the cancel watcher (which loops on proc.poll()) is gone, and a
+            # single reader.join(timeout=remaining) would keep draining a chatty
+            # grandchild for the full budget after a user disconnect/Stop.
+            # Mirror the timeout=None branch and stop promptly on cancellation,
+            # killing the group so the reader sees EOF. The normal (no
+            # grandchild) path still reaches EOF on its own and returns the same
+            # bytes, so the streaming vs non-streaming result is unchanged.
+            deadline = started_at + timeout
+            while reader.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    _killpg_captured(pgid)
+                    break
+                if cancel_event is not None and cancel_event.is_set():
+                    _killpg_captured(pgid)
+                    break
+                reader.join(timeout = min(0.5, remaining))
         else:
             # Unlimited timeout: communicate(timeout=None) waits for EOF, so
             # drain until the pipe closes, however long a lingering grandchild

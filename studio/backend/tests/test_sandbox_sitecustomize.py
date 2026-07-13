@@ -35,16 +35,39 @@ _SHIM = (
 )
 
 
+def _save_patch_targets():
+    """Snapshot every global the shim patches, so tests can restore them.
+
+    On Python < 3.11 the shim also repoints ``pathlib._NormalAccessor.open``
+    (pathlib captured the original io.open at import there); the accessor is
+    absent on 3.11+, so the snapshot skips it.
+    """
+    accessor = getattr(pathlib, "_NormalAccessor", None)
+    return (
+        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir),
+        accessor,
+        accessor.open if accessor is not None else None,
+    )
+
+
+def _restore_patch_targets(saved):
+    """Undo _save_patch_targets so the test process stays clean."""
+    globals_tuple, accessor, accessor_open = saved
+    (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = globals_tuple
+    if accessor is not None:
+        accessor.open = accessor_open
+
+
 def _load_shim():
     """Import the shim without leaving its open()/mkdir patches installed."""
-    saved = (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_under_test", _SHIM)
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)  # runs _install(), patching the globals
     finally:
         # Undo the process-wide patch so the test process stays clean.
-        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = saved
+        _restore_patch_targets(saved)
     mod._notified = True  # silence the one-shot stderr notice in tests
     return mod
 
@@ -229,7 +252,7 @@ def test_os_open_and_path_touch_remap_convention_path(monkeypatch, tmp_path):
     # builtins/io.open. Keep the shim's patches installed (like the mkdir test)
     # under a chdir into tmp_path so os.open is patched, and confirm a
     # convention path is healed into the working directory instead of raising.
-    saved = (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_osopen", _SHIM)
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.chdir(tmp_path)
@@ -244,7 +267,34 @@ def test_os_open_and_path_touch_remap_convention_path(monkeypatch, tmp_path):
         os.close(fd)
         assert os.path.isfile(os.path.join(cwd, "via_os_open.txt"))
     finally:
-        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = saved
+        _restore_patch_targets(saved)
+
+
+def test_path_write_read_text_remap_convention_path(monkeypatch, tmp_path):
+    # Path.open / write_text / read_text route through io.open (3.11+) or the
+    # captured accessor open (< 3.11). Keep the shim's patches installed (like
+    # the os.open/touch test) under a chdir into tmp_path and confirm a
+    # convention path is healed into the working directory on every version,
+    # rather than raising FileNotFoundError. This is the hermetic guard for the
+    # 3.10 accessor path that a plain io.open patch does not reach.
+    saved = _save_patch_targets()
+    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_writetext", _SHIM)
+    mod = importlib.util.module_from_spec(spec)
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+    try:
+        spec.loader.exec_module(mod)  # installs the io.open / accessor patch
+        mod._notified = True
+        pathlib.Path("/mnt/data/note.txt").write_text("pathlib remap")
+        assert os.path.isfile(os.path.join(cwd, "note.txt"))
+        # read_text goes through the same mapped path and sees what was written.
+        assert pathlib.Path("/mnt/data/note.txt").read_text() == "pathlib remap"
+        # A real absolute path passes through both patches untouched.
+        real = tmp_path / "real.txt"
+        pathlib.Path(str(real)).write_text("verbatim")
+        assert real.read_text() == "verbatim"
+    finally:
+        _restore_patch_targets(saved)
 
 
 def test_write_fallback_leaves_relative_and_bytes_paths(monkeypatch, tmp_path):
@@ -304,7 +354,7 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
     # before any open() runs. This keeps the shim's mkdir patches installed
     # (unlike _load_shim) under a chdir into tmp_path, so the only real writes
     # land in that temp dir, and restores every patched global in finally.
-    saved = (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_mkdir", _SHIM)
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.chdir(tmp_path)
@@ -331,4 +381,4 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
         os.mkdir(str(real_os))
         assert real_os.is_dir()
     finally:
-        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = saved
+        _restore_patch_targets(saved)
