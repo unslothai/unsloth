@@ -33,9 +33,7 @@ _SKIP_TAGS = frozenset(
         "math",
         "nav",
         "footer",
-        # Never-rendered / non-content elements. Browsers do not display
-        # <template> children or <dialog> without .show(), and form widgets
-        # carry UI chrome ("Cancel", "Submit feedback"), not page content.
+        # Never-rendered / form-chrome elements, not page content.
         "template",
         "dialog",
         "button",
@@ -43,11 +41,8 @@ _SKIP_TAGS = frozenset(
         "datalist",
     }
 )
-# <aside> is deliberately NOT skipped: documentation pages routinely use it for
-# notes, warnings, and examples (admonition callouts) that are real content, so
-# dropping it unconditionally loses page text. A page-furniture aside (a sidebar
-# outside the <article>/<main>) is already excluded by the main-content scoping
-# pass; an aside inside the selected scope is content and is kept.
+# <aside> is NOT skipped: docs use it for admonition callouts (real content);
+# page-furniture asides are excluded by the main-content scoping pass instead.
 
 # Void elements never produce an end tag, so they must not join the
 # open-element stack used to bound hidden subtrees.
@@ -72,12 +67,10 @@ _VOID_TAGS = frozenset(
 
 
 def _style_hides_element(style: str) -> bool:
-    """True when an inline ``style`` attribute makes the element non-rendered:
-    ``display:none`` or ``visibility:hidden``. The declaration is parsed per
-    property (split on ``;`` then ``:``, with ``!important`` and surrounding
-    whitespace stripped) so an unrelated value like ``display:block``,
-    ``visibility:visible``, or a class/URL that merely contains the substring
-    ``none`` is never misread as hidden."""
+    """True when an inline ``style`` sets ``display:none`` / ``visibility:hidden``.
+
+    Parsed per property so an unrelated value that merely contains ``none`` is
+    not misread as hidden."""
     lowered = style.lower()
     if "none" not in lowered and "hidden" not in lowered:
         return False
@@ -96,17 +89,11 @@ def _style_hides_element(style: str) -> bool:
 
 
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """True when the element is not rendered by a browser: the ``hidden``
-    attribute, ``aria-hidden="true"``, or an inline ``style`` that sets
-    ``display:none`` / ``visibility:hidden``. Client-side placeholders (e.g.
-    GitHub's ``<div data-show-on-forbidden-error hidden>`` "Uh oh! There was
-    an error while loading." blocks, or JS-toggled ``style="display:none"``
-    error/loading blocks) ship in the HTML but are only shown by JavaScript on
-    error, so they must not reach the Markdown output.
-
-    ``hidden`` is an enumerated attribute (hidden / until-found): per the
-    HTML spec its invalid value default is the Hidden state, so any present
-    value -- including ``hidden="false"`` -- means not rendered."""
+    """True when the element is not rendered: the ``hidden`` attribute,
+    ``aria-hidden="true"``, or an inline ``style`` hiding it. Such client-side
+    placeholders ship in the HTML but only show via JS, so they must not reach
+    the Markdown output. ``hidden`` is enumerated: any present value (even
+    ``hidden="false"``) means not rendered."""
     if "hidden" in attr_dict:
         return True
     if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
@@ -114,12 +101,10 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return _style_hides_element(attr_dict.get("style") or "")
 
 
-# HTML5 optional end tags: a start tag in the value set implicitly closes an
-# open element of the key type, exactly as browsers do. Without this, an
-# unclosed ``<p hidden>`` / ``<li hidden>`` would keep its hidden mark on the
-# open-element stack and swallow every following sibling until the parent
-# closed. Keys are the elements whose end tag may be omitted; values are the
-# start tags that imply the close.
+# HTML5 optional end tags: a value-set start tag implicitly closes an open
+# element of the key type, as browsers do. Without this an unclosed
+# ``<p hidden>`` / ``<li hidden>`` would swallow every following sibling.
+# Keys: elements whose end tag may be omitted; values: start tags that close them.
 _P_CLOSING_TAGS = frozenset(
     {
         "address",
@@ -205,17 +190,15 @@ class _MarkdownRenderer(HTMLParser):
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
 
-        # Per-top-level-scope-element output boundaries. Recorded only for a
-        # single scope tag so a caller can size each candidate individually and
-        # a swarm of tiny siblings (e.g. 12 teaser <article> cards) cannot pass
-        # an aggregate threshold together and displace the real <main>.
+        # Per-top-level-scope-element output boundaries, so a caller can size
+        # each candidate individually and a swarm of tiny sibling <article>
+        # cards cannot pass an aggregate threshold and displace the real <main>.
         self.scope_segments: list[str] = []
         self._scope_seg_start: int | None = None
 
-        # Hidden-subtree tracking (`hidden` / aria-hidden="true"): a stack of
-        # currently-open non-void tags plus the stack indices where a hidden
-        # element started. End tags pop to the matching open tag, so an
-        # omitted </p>/<li> close cannot leave the renderer stuck hidden.
+        # Hidden-subtree tracking: stack of open non-void tags plus the indices
+        # where a hidden element started. End tags pop to the matching tag, so
+        # an omitted </p>/<li> close cannot leave the renderer stuck hidden.
         self._open_tags: list[str] = []
         self._hidden_marks: list[int] = []
 
@@ -315,19 +298,11 @@ class _MarkdownRenderer(HTMLParser):
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """Track open/hidden/scope state; return True when the tag's content
         should be rendered (False = suppressed)."""
-        # Optional end tags: pop implicitly-closed open elements (and any
-        # hidden marks that end with them) before this tag opens. Runs for
-        # void tags too (<hr> closes an open <p>), which never join the stack.
-        # Search from the top of the stack down for the nearest ancestor this
-        # tag implicitly closes, drop it and everything nested under it (and the
-        # hidden marks that end with it), then repeat in case that exposes
-        # another closable ancestor. Checking only the top of the stack would
-        # miss a closable block that has an unclosed INLINE descendant on top:
-        # a browser closes an open <p>/<li> when a block/sibling start tag
-        # arrives even with an open <span> inside it, so a hidden
-        # <p hidden><span> region must end there too instead of swallowing every
-        # following visible block. Inline tags are not keys in _IMPLICIT_CLOSERS,
-        # so they are skipped by the search and never trigger a spurious close.
+        # Optional end tags: before this tag opens, pop each implicitly-closed
+        # ancestor (and hidden marks ending with it). Searches the whole stack,
+        # not just the top, so an open <p>/<li> still closes when it has an
+        # unclosed inline descendant like <span> on top; inline tags aren't
+        # _IMPLICIT_CLOSERS keys, so they never trigger a spurious close.
         while True:
             close_at = next(
                 (
@@ -347,10 +322,7 @@ class _MarkdownRenderer(HTMLParser):
             if _is_hidden_element(attr_dict):
                 self._hidden_marks.append(len(self._open_tags) - 1)
         elif _is_hidden_element(attr_dict):
-            # Void elements (<hr>, <br>, ...) never join the open-element
-            # stack, so they can't carry a hidden mark that a later close
-            # would pop. Suppress them inline instead, so a hidden
-            # <hr>/<br> emits nothing.
+            # Void elements never join the stack, so suppress a hidden one inline.
             return False
         if self._scope_tags is not None and tag in self._scope_tags:
             if self._scope_depth == 0:
@@ -609,14 +581,10 @@ class _MarkdownRenderer(HTMLParser):
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
 
-        # A scope left open by truncated HTML (the fetch cap cut the page before
-        # its </article>/</main>) never reached _exit_tag, so its collected
-        # output was never appended to scope_segments. The candidate would then
-        # score 0 and _largest_scope_candidate_len would fall back to rendering
-        # the whole page -- re-leaking the chrome/file tables the scope was
-        # meant to drop. Flush the still-open scope segment here (after the
-        # side-buffers above, so their recovered content is included) so a
-        # truncated main-content page is still scored and preferred correctly.
+        # A scope left open by truncated HTML never reached _exit_tag, so its
+        # output was never appended to scope_segments and would score 0. Flush
+        # the still-open segment here (after the side-buffers above) so a
+        # truncated main-content page is still scored and preferred.
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
             self._scope_seg_start = None
@@ -655,11 +623,9 @@ def _cleanup(text: str) -> str:
     return "\n".join(out).strip()
 
 
-# Known boilerplate fragments stripped from main-content conversions. Matched
-# per line, and only against short lines (a long paragraph that merely
-# mentions one of these phrases is kept). Deterministic substring list, no
-# scoring. Sources: GitHub page furniture / client-side error placeholders,
-# skip-links, cookie banners.
+# Known boilerplate fragments stripped from main-content conversions, matched
+# only against short lines. Sources: GitHub page furniture / client-side error
+# placeholders, skip-links, cookie banners.
 _BOILERPLATE_FRAGMENTS = (
     "skip to content",
     "skip to main content",
@@ -678,12 +644,11 @@ _BOILERPLATE_FRAGMENTS = (
     "accept all cookies",
     "manage cookie preferences",
 )
-# Only lines shorter than this are eligible for boilerplate dropping; real
-# content sentences quoting one of the fragments run longer.
+# Only shorter lines are eligible for boilerplate dropping; real content
+# sentences quoting a fragment run longer.
 _BOILERPLATE_MAX_LINE_CHARS = 300
 
-# Normalized furniture phrases (whitespace-collapsed, case-folded, trailing
-# .!: stripped) for whole-segment matching. See _line_is_boilerplate.
+# Normalized furniture phrases for whole-segment matching. See _line_is_boilerplate.
 _BOILERPLATE_NORMALIZED = frozenset(
     re.sub(r"\s+", " ", fragment).strip().casefold().rstrip(".!:")
     for fragment in _BOILERPLATE_FRAGMENTS
@@ -693,15 +658,10 @@ _BOILERPLATE_NORMALIZED = frozenset(
 def _line_is_boilerplate(line: str) -> bool:
     """True only when a whole line is composed of known furniture phrases.
 
-    A previous substring test dropped any short line that merely CONTAINED a
-    fragment, so a legitimate sentence such as "We use cookies to authenticate
-    API requests." was deleted because it contains "we use cookies". Instead,
-    split the line on sentence terminators and require EVERY non-empty segment
-    to be a known furniture phrase. That still drops a line stacking several
-    phrases (GitHub renders "You signed in with another tab or window. Reload to
-    refresh your session." as one line) while keeping real prose that only
-    quotes one -- its other words leave a non-furniture segment.
-    """
+    Splits on sentence terminators and requires every non-empty segment to be a
+    known furniture phrase, so a line stacking several phrases is dropped while
+    real prose that merely quotes one is kept (its other words leave a
+    non-furniture segment)."""
     normalized = re.sub(r"\s+", " ", line).strip().casefold()
     if not normalized:
         return False
@@ -739,11 +699,9 @@ def _render(source_html: str, scope_tags: frozenset[str] | None) -> str:
 
 
 def _largest_scope_candidate_len(source_html: str, tag: str) -> int:
-    """Length of the largest INDIVIDUAL ``<tag>`` subtree's boilerplate-stripped
-    render. Sizing candidates one at a time (rather than the concatenated
-    ``_render(source, {tag})``) stops many tiny siblings -- 12 teaser/ad
-    ``<article>`` cards, a short ``<aside><article>`` -- from clearing the
-    main-content threshold together and displacing the authoritative subtree."""
+    """Length of the largest individual ``<tag>`` subtree's boilerplate-stripped
+    render. Sizing candidates one at a time stops many tiny sibling cards from
+    clearing the main-content threshold together and displacing the real subtree."""
     renderer = _MarkdownRenderer(scope_tags = frozenset({tag}))
     renderer.feed(source_html)
     renderer.close()
@@ -775,9 +733,7 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     if main_content:
         for scope_tag in ("article", "main"):
-            # Gate on the LARGEST single subtree, not the concatenated render, so
-            # a swarm of tiny cards cannot pass the threshold in aggregate; then
-            # return the full scoped render (all real content of that tag).
+            # Gate on the largest single subtree, then return the full scoped render.
             if _largest_scope_candidate_len(source_html, scope_tag) >= _MIN_MAIN_CONTENT_CHARS:
                 return _strip_boilerplate_lines(_render(source_html, frozenset({scope_tag})))
         return _strip_boilerplate_lines(_render(source_html, None))

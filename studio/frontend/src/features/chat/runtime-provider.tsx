@@ -1335,10 +1335,9 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      {/* Pane identity for the transient tool-output store maps: the stream
-          adapter (same modelType/pairId) prefixes its store keys with this
-          scope so concurrent panes with colliding backend tool ids ("call_0")
-          cannot bleed live output into each other's cards. */}
+      {/* Pane identity for the tool-output store maps: the adapter prefixes its
+          keys with this scope so concurrent panes with colliding tool ids
+          ("call_0") can't bleed live output into each other's cards. */}
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ActiveThreadSync
           enabled={
@@ -1359,9 +1358,8 @@ export function ChatRuntimeProvider({
         {!initialThreadId && newThreadNonce && (
           <ThreadNewChatSwitch nonce={newThreadNonce} />
         )}
-        {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
-            so assistant-ui keeps the run attached and the stream alive. Unmounting
-            it here aborts the in-flight generation. */}
+        {/* The view stays mounted (only CSS-hidden) while off-route so the run
+            stays attached and the stream alive; unmounting aborts generation. */}
         {children}
       </ToolPaneScopeContext.Provider>
     </AssistantRuntimeProvider>

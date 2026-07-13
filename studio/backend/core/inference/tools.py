@@ -84,11 +84,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 # Model-visible cap on python/terminal tool results (protects the context
-# window from a runaway stdout). When a live UI stream is delivered it is
-# capped separately (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS) and much
-# higher, so the user sees far more than the model's truncated copy; on
-# non-streaming chat/API and direct execute_tool() paths nothing is streamed,
-# which is why the truncation notice stays mode-neutral (see _truncate).
+# window). The live UI stream is capped separately and higher
+# (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS), so the truncation notice
+# stays mode-neutral (see _truncate).
 _MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
@@ -184,8 +182,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     blocked: set[str] = set()
 
     # punctuation_chars splits separators into their own tokens, so command
-    # position is detected even in `echo done; rm -rf x` (no whitespace) or
-    # quote-split names (`r''m` collapses to `rm` after `;`).
+    # position is detected even in `echo done; rm -rf x` (no whitespace).
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
@@ -332,10 +329,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
-        # sitecustomize shim: remaps ChatGPT code-interpreter paths
-        # (/mnt/data etc.) onto the sandbox CWD for open()/os.makedirs().
-        # Applies to the python tool and to Python launched from the terminal
-        # tool alike (env inheritance); see sandbox_site/sitecustomize.py.
+        # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
+        # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
     }
     if venv:
@@ -371,13 +366,10 @@ _BYPASS_ENV_SECRET_NAMES = frozenset(
         "KAGGLE_KEY",
         "MYSQL_PWD",  # exact name: markers use PASSWD, not PWD (PWD is the cwd var)
         "LD_PRELOAD",
-        # Auth brokers / capability handles: not secrets by value, but they
-        # hand the child the operator's live agent (ssh/gpg), kube config, or
-        # docker daemon. Names are listed because there is no value signal to
-        # key off. URL config vars (HTTP_PROXY, PIP_INDEX_URL, DATABASE_URL,
-        # ...) are intentionally NOT name-listed: a benign proxy/index without
-        # credentials must keep working in bypass mode, while a credentialed
-        # value is dropped by _is_secret_env_value() regardless of its name.
+        # Auth brokers / capability handles: hand the child the operator's live
+        # agent (ssh/gpg), kube config, or docker daemon. Listed by name (no
+        # value signal). URL config vars are NOT name-listed: a credentialed
+        # value is dropped by _is_secret_env_value() regardless of name.
         "SSH_AUTH_SOCK",
         "SSH_AGENT_PID",
         "GPG_AGENT_INFO",
@@ -397,37 +389,30 @@ _BYPASS_ENV_SECRET_MARKERS = (
     "CREDENTIAL",
     "PRIVATE_KEY",
     "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
-    # Azure App Service connection strings: SQLCONNSTR_/CUSTOMCONNSTR_/... and
-    # WEBSITE_CONTENTAZUREFILECONNECTIONSTRING carry DB/storage credentials.
+    # Azure App Service connection strings carry DB/storage credentials.
     "CONNSTR",
     "CONNECTIONSTRING",
 )
 # Non-secret hardening flags that match a secret prefix/marker but must be KEPT
-# so bypass mode does not silently undo an operator's opt-out. AWS_EC2_METADATA_
-# DISABLED tells the AWS SDK/CLI not to pull instance-role creds from IMDS;
-# dropping it would re-open that path for a bypassed tool.
+# so bypass mode does not undo an operator's opt-out (e.g.
+# AWS_EC2_METADATA_DISABLED blocks the AWS SDK from pulling IMDS creds).
 _BYPASS_ENV_KEEP_NAMES = frozenset(
     {
         "AWS_EC2_METADATA_DISABLED",
         "AWS_EC2_METADATA_V1_DISABLED",
     }
 )
-# Matches a URL that embeds userinfo before the host, covering both
-# "scheme://user:pass@host" and token-only "scheme://token@host" (and
-# percent-encoded variants). The userinfo must precede the first '/', so an '@'
-# in a path or query does not false-positive. Used to scrub credential-bearing
-# URL values regardless of the variable's name.
+# Matches a URL embedding userinfo before the host ("scheme://user:pass@host"
+# and token-only forms). The userinfo must precede the first '/', so an '@' in
+# a path/query does not false-positive.
 _URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
-# Connection-string credential fields (ADO.NET / Azure storage / Service Bus):
-# "...;Password=...", "...;AccountKey=...", "...;SharedAccessKey=...". Catches
-# credential-bearing values whose names dodge the name classifier. "accesskey"
-# also covers Shared/Secret AccessKey via substring; the Name fields (e.g.
-# SharedAccessKeyName=) do not match since "=" must follow the keyword.
+# Connection-string credential fields (ADO.NET / Azure storage / Service Bus)
+# whose names dodge the name classifier. The Name fields (SharedAccessKeyName=)
+# don't match since "=" must follow the keyword.
 _SECRET_VALUE_RE = re.compile(r"(?i)(?:password|pwd|accountkey|accesskey)\s*=\s*[^\s;]")
 
-# Names that hold no secret value but point SDKs at the operator's real
+# Names holding no secret value but pointing SDKs at the operator's real
 # home/cache/config (cached tokens, cred files), defeating the HOME repoint.
-# Startup always sets HF_HOME (-> $HF_HOME/token), so this is the live leak.
 # Dropped in bypass mode so tools fall back to the empty repointed HOME.
 _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
     {
@@ -508,12 +493,12 @@ def _is_secret_env_value(value: str) -> bool:
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
-    """Env for bypass exec: full host env (unrestricted) minus credential vars,
-    with HOME/TMPDIR repointed at the workdir so SDKs cannot read cached creds.
+    """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
+    repointed at the workdir so SDKs cannot read cached creds.
 
-    Note: stripping the child env is necessary but not sufficient on its own -
-    a same-UID child can still read the parent's environment via procfs, so
-    callers also harden the parent (see _harden_parent_against_proc_env_leak).
+    Stripping the child env is necessary but not sufficient (a same-UID child can
+    read the parent's env via procfs), so callers also harden the parent (see
+    _harden_parent_against_proc_env_leak).
     """
     env = {
         k: v
@@ -528,10 +513,8 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
-    # sitecustomize path shim: install the same /mnt/data-style remap the safe
-    # env gets (see _build_safe_env). Without it, model code that writes to
-    # /mnt/data succeeds in normal mode but FileNotFoundErrors in bypass mode.
-    # Bypass inherits the operator's PYTHONPATH, so prepend rather than replace.
+    # sitecustomize path shim (see _build_safe_env). Bypass inherits the
+    # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(
         part for part in (_SANDBOX_SITE_DIR, inherited_pythonpath) if part
@@ -626,24 +609,14 @@ def _harden_parent_against_proc_env_leak() -> bool:
     """Make the Studio process's /proc/<pid>/environ unreadable to its children.
 
     Stripping the child env is not enough on Linux: a bypassed same-UID child
-    runs unsandboxed and can read /proc/<getppid()>/environ to recover the
-    tool-executing process's *unfiltered* secrets (HF_TOKEN, cloud keys, ...).
-    Clearing the dumpable flag (PR_SET_DUMPABLE=0) reparents this process's
-    /proc entries to root, so a same-UID child can no longer read its environ.
+    can read /proc/<getppid()>/environ to recover the parent's unfiltered
+    secrets. Clearing PR_SET_DUMPABLE reparents this process's /proc entries to
+    root, closing that read.
 
-    Returns True when the process is hardened or hardening is unnecessary (no
-    /proc leak off Linux), and False when it is needed but could not be applied
-    (e.g. prctl denied by a seccomp policy). Callers must fail closed - refuse
-    the unsandboxed exec - when this returns False, rather than running with the
-    parent environ still readable.
-
-    Scope: this closes the direct parent read (the demonstrated leak). It is a
-    mitigation, not a full boundary - a bypassed tool is unsandboxed by design,
-    so it can still walk /proc to a same-UID *ancestor* (e.g. the launching
-    shell) or read on-disk credentials by absolute path. Complete isolation
-    needs a separate uid / PID+mount namespace, which is out of scope here; the
-    UI already warns the mode is dangerous. Applied lazily on first bypass exec
-    so non-bypass operation is unchanged.
+    Returns True when hardened or unnecessary (off Linux), False when needed but
+    unappliable (e.g. prctl denied by seccomp); callers must then fail closed.
+    This is a mitigation, not a full boundary - a bypassed tool can still walk
+    /proc to an ancestor or read creds by path. Applied lazily on first bypass.
     """
     global _parent_proc_hardened
     if _parent_proc_hardened:
@@ -770,9 +743,8 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to the python/terminal descriptions: models trained on ChatGPT
-# code-interpreter transcripts habitually write to /mnt/data, which does not
-# exist here. Kept to one sentence (tool descriptions cost tokens per request).
+# Appended to the python/terminal descriptions: models habitually write to
+# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
 _SANDBOX_PATHS_NOTE = (
     " Read and write files using relative paths in the current working "
     "directory, which persists for this conversation; absolute paths like "
@@ -881,9 +853,8 @@ ALL_TOOLS = [
 ]
 
 
-# OpenAI's function.name regex ^[a-zA-Z0-9_-]{1,64}$, enforced before streaming.
-# MCP tool names with '.', '/', spaces, etc. would 400 the whole request, so we
-# validate up front and skip with a warning.
+# OpenAI's function.name regex; MCP names that violate it would 400 the whole
+# request, so validate up front and skip with a warning.
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
@@ -929,8 +900,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
-    # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
-    # carried from a desktop install onto a Colab/network deployment).
+    # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
@@ -955,15 +925,11 @@ async def get_enabled_mcp_tools() -> list[dict]:
             ),
             return_exceptions = True,
         )
-        # An edit/delete can land while we await a probe (up to 305 s for
-        # OAuth); its cache eviction is a no-op against an entry we haven't
-        # written yet. Re-read and drop a result whose server changed or
-        # was removed mid-probe, else a stale tool list caches indefinitely.
+        # An edit/delete can land while we await a probe; re-read and drop a
+        # result whose server changed or was removed mid-probe, else a stale
+        # tool list (or cool-off on a just-fixed server) persists.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
         for server, payload in zip(uncached, results):
-            # Guard the failure branch too: a stale failure must not park a
-            # cool-off on the fresh config, or the server the user just fixed
-            # is skipped for the whole window.
             fresh = current.get(server["id"])
             if fresh is None or any(
                 fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
@@ -1292,11 +1258,10 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
 
-    # Whole-document mode: a thread-attached file under budget is injected in full so
-    # the model reads everything. A KB selection is exclusive, so whole-doc never
-    # preempts it; in a project chat the project sources are still retrieved top-K and
-    # appended under one citation numbering. Oversized files (or no thread doc) fall
-    # through to the combined top-K retrieval below.
+    # Whole-document mode: a thread-attached file under budget is injected in
+    # full. A KB selection is exclusive so whole-doc never preempts it; project
+    # sources are still retrieved top-K and appended under one citation
+    # numbering. Oversized/absent thread docs fall through to top-K below.
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
@@ -1401,9 +1366,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
-# Raw download cap > _MAX_PAGE_CHARS because SSR pages embed large <head>
-# sections stripped during conversion; 512 KB reaches article content even
-# where <head> alone is ~200 KB.
+# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
+# stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
 
 _USER_AGENTS = (
@@ -1486,10 +1450,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        # `not ip.is_global` is the source of truth: it rejects every category
-        # below PLUS shared/CGNAT (100.64.0.0/10) and benchmarking/doc ranges
-        # Python marks is_private=False and is_global=False. The explicit
-        # predicates only give human-readable categories in the error message.
+        # `not ip.is_global` is the source of truth (also rejects CGNAT and
+        # benchmarking/doc ranges); the explicit predicates only label the error.
         if (
             not ip.is_global
             or ip.is_private
@@ -2824,12 +2786,10 @@ def _cancel_watcher(
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
-    # Mode-neutral notice: this same result string serves the streaming UI
-    # path AND non-streaming chat/API and direct execute_tool() callers, where
-    # no output_callback delivers anything to a user, so it must not claim the
-    # user saw the full output. It also stays byte-identical with and without
-    # an output_callback (the streaming vs non-streaming invariant the
-    # regression tests assert), which a mode-dependent wording would break.
+    # Mode-neutral notice: this result string serves both the streaming UI and
+    # non-streaming callers, and must stay byte-identical with and without an
+    # output_callback (the invariant the regression tests assert), so it can't
+    # claim the user saw the full output.
     if len(text) > limit:
         return text[:limit] + (
             f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
@@ -2839,10 +2799,8 @@ def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
     return text
 
 
-# ChatGPT code-interpreter path conventions models write out of habit; none of
-# them exist in the Studio sandbox (its CWD is a per-thread persistent dir).
-# /tmp/outputs is named in the tool description too, so a failure on it earns
-# the same retry hint (the sitecustomize shim remaps it only while absent).
+# ChatGPT code-interpreter path conventions models write out of habit; none
+# exist in the Studio sandbox, so a failure on one earns the retry hint.
 _MISSING_PATH_PREFIXES = (
     "/mnt/data",
     "/mnt/outputs",
@@ -2851,10 +2809,8 @@ _MISSING_PATH_PREFIXES = (
     "/tmp/outputs",
 )
 
-# The quoted path in a Python OSError str ("... No such file or directory:
-# '/abs/path'") and the bare path in a bash error ("cat: /abs/path: No such
-# file or directory"). Both are matched only on the error line so an unrelated
-# quoted path elsewhere in stdout is not mistaken for the failing one.
+# Matches the quoted path in a Python OSError str and the bare path in a bash
+# "No such file or directory" error; applied only to the error line.
 _QUOTED_ABS_PATH_RE = re.compile(r"""['"](/[^'"\n]+)['"]""")
 _BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
 
@@ -2905,41 +2861,26 @@ def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
 
 
 def _missing_path_hint(output: str, workdir: str | None = None) -> str:
-    """Model-visible healing when an execution fails on an absolute path that
-    does not exist in the sandbox (a ChatGPT code-interpreter habit path like
-    ``/mnt/data/x.html``, or a path the model invented from its CWD like
-    ``/home/ubuntu/Sandbox/x.html``). Detected on the full pre-truncation
-    output; identical with and without streaming because the output itself is.
-    The hint echoes the actual failing path so the model retries with the right
-    relative name."""
+    """Model-visible healing when an execution fails on an absolute path missing
+    in the sandbox (a code-interpreter habit path, or one invented from the CWD).
+    Detected on the full pre-truncation output; the hint echoes the failing path
+    so the model retries with the right relative name."""
     error_lines = _missing_error_lines(output)
     if not error_lines:
         return ""
     abs_path = _extract_missing_abs_path(output)
-    # Fast path: a known code-interpreter convention prefix is treated as an
-    # out-of-sandbox habit path only when the exact failing path could not be
-    # isolated -- then the prefix is the sole out-of-sandbox signal. Scoped to
-    # the failing-path error line(s) only -- a convention prefix mentioned
-    # elsewhere (e.g. a traceback frame under a /workspace project root, or the
-    # user's code printing "/mnt/data") must not trigger a misleading
-    # "use a relative path" hint when the actual miss was a local path.
+    # A convention prefix is an out-of-sandbox signal only when the exact failing
+    # path could not be isolated; scoped to the failing-path error line(s) so a
+    # prefix mentioned elsewhere doesn't trigger a misleading hint.
     convention = any(prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES)
     if abs_path is not None:
-        # The failing path was isolated: judge it against the real workdir even
-        # when it matches a convention prefix. A project rooted under a
-        # convention path (a container workdir at /workspace or /workspace/proj)
-        # makes a genuine miss inside it -- /workspace/proj/sub/data.csv --
-        # contain the "/workspace" substring, so the convention fast path would
-        # wrongly tell the model to flatten to the basename and steer it out of
-        # its own project subdirectory. Only hint when the isolated path is
-        # actually outside the workdir; a relative miss (a real typo of a file)
-        # likewise gets no misleading "use a relative path" advice.
+        # Judge the isolated path against the real workdir even when it matches a
+        # convention prefix, so a genuine miss inside a project rooted under such
+        # a prefix (e.g. /workspace/proj) is not steered out of its subdirectory.
         if not _is_outside_workdir(abs_path, workdir):
             return ""
     elif not convention:
-        # No absolute path could be isolated and no convention prefix appears on
-        # the failing line: there is nothing that marks this as an out-of-sandbox
-        # miss, so stay silent.
+        # Nothing marks this as an out-of-sandbox miss; stay silent.
         return ""
     if abs_path:
         example = f"'{os.path.basename(abs_path)}', not '{abs_path}'"
@@ -2972,11 +2913,9 @@ def _drain_process_output(
     """
     chunks: list[str] = []
 
-    # Captured before waiting: once the parent is reaped os.getpgid(proc.pid)
-    # fails and _kill_process_tree short-circuits on the exited parent, so a
-    # grandchild that inherited stdout could not otherwise be killed. The caller
-    # captures this right after Popen (before any watcher can poll/reap the
-    # leader) and passes it in; fall back to capturing here for direct callers.
+    # Captured before waiting so a stdout-holding grandchild can still be killed
+    # after the leader is reaped (getpgid then fails). Callers pass it in from
+    # right after Popen; fall back to capturing here for direct callers.
     if pgid is None:
         pgid = _capture_process_group(proc)
 
@@ -3001,11 +2940,9 @@ def _drain_process_output(
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_process_tree(proc)
-        # The leader can exit in the small window between proc.wait() timing out
-        # and _kill_process_tree() sampling its pgid; _kill_process_tree then
-        # short-circuits on the reaped leader, so also kill the group captured
-        # before the wait to reap a stdout-holding grandchild that outlived it --
-        # matching the non-streaming communicate() timeout path.
+        # Also kill the pre-captured group in case the leader was reaped in the
+        # window before _kill_process_tree sampled its pgid, reaping a
+        # stdout-holding grandchild (matches the non-streaming timeout path).
         _killpg_captured(pgid)
         try:
             proc.wait(timeout = 5)
@@ -3015,16 +2952,10 @@ def _drain_process_output(
     # process's exit.
     if not timed_out:
         if timeout is not None:
-            # Wait out the remaining budget like communicate() would, then kill
-            # the process group so the reader sees EOF. Poll cancel_event in
-            # slices instead of one long join: the leader has already exited, so
-            # the cancel watcher (which loops on proc.poll()) is gone, and a
-            # single reader.join(timeout=remaining) would keep draining a chatty
-            # grandchild for the full budget after a user disconnect/Stop.
-            # Mirror the timeout=None branch and stop promptly on cancellation,
-            # killing the group so the reader sees EOF. The normal (no
-            # grandchild) path still reaches EOF on its own and returns the same
-            # bytes, so the streaming vs non-streaming result is unchanged.
+            # Wait out the remaining budget like communicate() would, polling
+            # cancel_event in slices (the cancel watcher is gone once the leader
+            # exits) so a chatty grandchild doesn't keep draining after a Stop.
+            # The normal path still reaches EOF on its own with the same bytes.
             deadline = started_at + timeout
             while reader.is_alive():
                 remaining = deadline - time.monotonic()
@@ -3037,10 +2968,8 @@ def _drain_process_output(
                     break
                 reader.join(timeout = min(0.5, remaining))
         else:
-            # Unlimited timeout: communicate(timeout=None) waits for EOF, so
-            # drain until the pipe closes, however long a lingering grandchild
-            # holds it open. Stop early only on cancellation, killing the
-            # process group so the reader sees EOF.
+            # Unlimited timeout: drain until the pipe closes (like
+            # communicate(timeout=None)), stopping early only on cancellation.
             while reader.is_alive():
                 if cancel_event is not None and cancel_event.is_set():
                     _killpg_captured(pgid)
@@ -3123,20 +3052,16 @@ def _python_exec(
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # The child invocation is byte-identical with and without streaming:
-        # injecting PYTHONUNBUFFERED (or -u, or stdbuf) to line-buffer stdout
-        # would be model-visible (os.environ / sys.flags would differ from the
-        # non-streaming path). CPython block-buffers stdout when piped, so live
-        # streaming granularity depends on the child flushing: unflushed output
-        # arrives in ~8 KB chunks or at exit, and the final result is unchanged
-        # either way; SSE heartbeats keep the connection alive in the meantime.
+        # injecting PYTHONUNBUFFERED / -u to line-buffer stdout would be
+        # model-visible. CPython block-buffers piped stdout, so streaming
+        # granularity depends on the child flushing; the final result is
+        # unchanged either way.
         proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
 
-        # Capture the process group before any watcher can poll/reap the leader:
-        # once the leader is reaped os.getpgid fails and a stdout-holding
-        # grandchild could not be signaled. None on Windows (no process groups).
+        # Capture the group before any watcher can reap the leader (see
+        # _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
 
-        # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
             watcher = threading.Thread(
                 target = _cancel_watcher,
@@ -3146,12 +3071,9 @@ def _python_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (output_callback may be None):
-        # it kills the captured process group on cancellation, so a grandchild
-        # that inherited stdout and outlived the leader is reaped instead of
-        # holding communicate() blocked (the cancel watcher loops on the leader's
-        # poll() and is already gone once the leader exits). The joined bytes are
-        # identical to communicate(), so the streaming vs non-streaming result
-        # stays byte-identical.
+        # it kills the captured group on cancellation, reaping a grandchild that
+        # outlived the leader, and returns bytes identical to communicate() so
+        # the streaming vs non-streaming result stays byte-identical.
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
@@ -3164,11 +3086,10 @@ def _python_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        # Detect the missing-path pattern on the full output (the error
-        # traceback trails the output, so truncation could hide it), then
-        # append the hint after truncation so it always survives. Judge external
-        # paths against the real workdir (project sessions live outside the
-        # default sandbox root).
+        # Detect the missing-path pattern on the full output (truncation could
+        # hide the trailing traceback), append the hint after truncation. Judge
+        # external paths against the real workdir (project sessions live outside
+        # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
@@ -3242,12 +3163,9 @@ def _bash_exec(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
-            # Match _python_exec: without an explicit encoding the pipe uses
-            # the locale default with strict errors, so invalid output bytes
-            # raise UnicodeDecodeError -- from communicate() on the
-            # non-streaming path but silently swallowed inside the reader
-            # thread on the streaming path (truncating the output). Decoding
-            # with "replace" keeps both paths alive and byte-identical.
+            # Match _python_exec: decode utf-8 with "replace" so invalid output
+            # bytes never raise UnicodeDecodeError (which the streaming reader
+            # thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
             cwd = workdir,
@@ -3272,13 +3190,9 @@ def _bash_exec(
             )
             watcher.start()
 
-        # Always drain via _drain_process_output (output_callback may be None):
-        # it kills the captured process group on cancellation, so a short-lived
-        # shell leader that backgrounds a stdout-holding process is reaped
-        # instead of holding communicate() blocked once the leader exits and the
-        # cancel watcher (which loops on the leader's poll()) is gone. The joined
-        # bytes are identical to communicate(), so the streaming vs non-streaming
-        # result stays byte-identical.
+        # Always drain via _drain_process_output (see _python_exec): kills the
+        # captured group on cancellation and returns bytes identical to
+        # communicate(), keeping streaming vs non-streaming byte-identical.
         output, timed_out = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
@@ -3291,10 +3205,7 @@ def _bash_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        # Same missing-path healing as _python_exec: detect on the full
-        # output, append after truncation so the hint always survives. Judge
-        # external paths against the real workdir (project sessions live outside
-        # the default sandbox root).
+        # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         return result + hint

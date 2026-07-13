@@ -644,15 +644,12 @@ type ChatRuntimeStore = {
    */
   webFetchToolsEnabled: boolean;
   toolStatus: string | null;
-  /** Live stdout/stderr streamed from running server-side tools, keyed by
-   *  toolCallId. Transient (never persisted): appended by tool_output SSE
-   *  events, cleared when the tool's tool_end arrives or the run finishes. */
+  /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
+   *  appended by tool_output events, cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
-  /** Full live-streamed output of FINISHED tools whose final result was
-   *  truncated for the model, keyed by toolCallId. Session-transient (never
-   *  persisted): the finished python/terminal cards prefer this over the
-   *  truncated result text so the user keeps seeing everything the tool
-   *  printed. Set from tool_end handling in the chat adapter. */
+  /** Full live output of FINISHED tools whose result was truncated for the
+   *  model, keyed by toolCallId. Session-transient: finished python/terminal
+   *  cards prefer this over the truncated result. Set from tool_end. */
   toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;

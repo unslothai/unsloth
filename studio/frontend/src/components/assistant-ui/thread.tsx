@@ -3479,8 +3479,7 @@ const MessageError: FC = () => {
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
-        {/* Explicit recovery path for interrupted/failed turns (e.g. a proxy
-            dropped the SSE stream mid-generation): regenerate in place. */}
+        {/* Recovery path for interrupted/failed turns: regenerate in place. */}
         <ActionBarPrimitive.Reload asChild={true}>
           <button
             type="button"

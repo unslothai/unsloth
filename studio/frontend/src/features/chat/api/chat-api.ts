@@ -30,11 +30,9 @@ import type {
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
 /**
- * Thrown when the chat SSE stream ends without a terminal signal
- * (`data: [DONE]` or a finish_reason chunk): the connection was dropped
- * mid-generation (e.g. a proxy idle timeout or network blip), not completed.
- * The adapter surfaces this as an explicit interrupted state instead of
- * silently ending the turn.
+ * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
+ * finish_reason chunk): the connection dropped mid-generation. The adapter
+ * surfaces this as an explicit interrupted state instead of ending the turn.
  */
 export class StreamInterruptedError extends Error {
   constructor() {
@@ -868,9 +866,8 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
-  // Terminal signal tracking: a stream that hits EOF without `[DONE]` or a
-  // finish_reason chunk was cut mid-generation (proxy idle drop, network
-  // blip) and must surface as interrupted, not as a silent success.
+  // A stream that hits EOF without `[DONE]` or a finish_reason chunk was cut
+  // mid-generation and must surface as interrupted, not a silent success.
   let sawTerminalSignal = false;
 
   try {
@@ -928,9 +925,8 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // Tool start/end events carry full input/output for the tool outputs
-        // panel; tool_output streams incremental stdout while a tool runs and
-        // tool_args streams the call arguments while the model writes them.
+        // tool_start/end carry full input/output; tool_output streams
+        // incremental stdout and tool_args streams the call arguments live.
         if (
           "type" in parsed &&
           (parsed.type === "tool_start" ||

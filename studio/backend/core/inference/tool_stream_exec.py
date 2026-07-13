@@ -35,10 +35,9 @@ logger = get_logger(__name__)
 def accepts_output_callback(func: Callable[..., str]) -> bool:
     """Whether an injectable ``execute_tool`` supports ``output_callback``.
 
-    The tool loops treat ``execute_tool`` as replaceable (tests and extensions
-    inject fakes / monkey-patch the pre-PR signature), so the live-output kwarg
-    must only be forwarded when the callable declares it (or takes ``**kwargs``).
-    Passing it unconditionally raises ``TypeError`` on an old-signature callable.
+    ``execute_tool`` is replaceable (tests inject fakes / the pre-PR signature),
+    so forward the kwarg only when the callable declares it or takes ``**kwargs``;
+    passing it unconditionally would ``TypeError`` on an old signature.
     """
     try:
         params = inspect.signature(func).parameters
@@ -56,14 +55,10 @@ TOOL_HEARTBEAT_INTERVAL_S = 10.0
 # How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25
 
-# Cap on total streamed live-output characters per tool call. The final
-# result is truncated separately (tools._MAX_OUTPUT_CHARS); this only bounds
-# the transient UI stream so a tight print loop cannot flood the SSE channel.
-# Deliberately much higher than the model-visible result cap: when the final
-# result is truncated, the UI keeps the accumulated live stream as the
-# displayed output, so this is the ceiling on what the user can see. Chunks
-# are batched per poll interval (~4 events/s), so a large cap stays cheap on
-# the SSE channel.
+# Cap on total streamed live-output characters per tool call, bounding the
+# transient UI stream so a tight print loop cannot flood the SSE channel. Much
+# higher than the model-visible result cap (tools._MAX_OUTPUT_CHARS) since the
+# UI keeps the live stream as the displayed output when the result is truncated.
 TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
@@ -72,20 +67,13 @@ _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
-    With ``max_chars`` set, stop concatenating once that many characters have
-    been gathered and discard the remaining queued chunks in place instead of
-    building them into the joined string. This bounds peak allocation on the
-    batch that first crosses the live-output cap: a chatty tool (``yes``, a
-    tight print loop) can queue far more than the cap before the consumer
-    wakes, and that surplus would only be truncated away, so joining it first
-    would defeat the memory ceiling the cap exists to enforce. The chunk that
-    first crosses the cap is itself sliced to just one character past the
-    budget: the caller only needs the joined prefix to exceed ``max_chars`` so
-    its own truncation stays byte-identical, so materialising the whole
-    crossing chunk (a single multi-megabyte line, or any chunk pulled once the
-    budget is already met at ``max_chars <= 0``) would waste that allocation.
-    Returns ``(joined_text, hit_sentinel)``; the surplus is still scanned so
-    completion is detected promptly.
+    With ``max_chars`` set, stop concatenating once the budget is reached and
+    discard the remaining queued chunks in place, bounding peak allocation on a
+    batch that overshoots the live-output cap (a chatty tool can queue far more
+    than the cap before the consumer wakes). The crossing chunk is sliced to one
+    char past the budget, enough for the caller's truncation to stay
+    byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
+    scanned so completion is detected promptly.
     """
     parts: list[str] = []
     total = 0
@@ -102,10 +90,8 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
         if dropping:
             continue
         if max_chars is not None and total + len(item) > max_chars:
-            # This chunk crosses the cap. Keep only enough of it to push the
-            # gathered length one past the budget -- that preserves the caller's
-            # overflow signal and byte-identical truncation while dropping the
-            # arbitrarily large remainder in place.
+            # Keep only enough of the crossing chunk to push one past the budget,
+            # preserving the overflow signal while dropping the remainder.
             parts.append(item[: max(0, max_chars - total) + 1])
             dropping = True
             continue
@@ -132,17 +118,12 @@ def stream_tool_execution(
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
-    # Bound accepted live output at the PRODUCER boundary. The consumer-side cap
-    # only limits the concatenated stream; it does not stop a fast worker (a
-    # tight print loop) from enqueuing unboundedly while the SSE consumer is
-    # backpressured by a slow/stalled client, growing the queue without limit.
-    # Accept at most one char past the cap so the consumer still crosses
-    # TOOL_OUTPUT_STREAM_MAX_CHARS and emits the capped notice, then discard the
-    # rest in place: callbacks past the budget never enter the queue, so a
-    # continuous post-cap producer can no longer keep _drain_and_drop spinning
-    # and starving heartbeats. The tool's returned result is captured
-    # independently (outcome["result"]), so dropping surplus live output never
-    # changes the byte-identical final result.
+    # Bound accepted live output at the PRODUCER boundary: the consumer-side cap
+    # alone wouldn't stop a fast worker from enqueuing unboundedly while a slow
+    # SSE client backpressures. Accept at most one char past the cap (so the
+    # consumer still emits the capped notice) and drop the rest, keeping
+    # heartbeats alive. The final result is captured independently, so this never
+    # changes the byte-identical result.
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
@@ -175,10 +156,8 @@ def stream_tool_execution(
     )
     worker.start()
 
-    # Heartbeats are paced by counting idle queue polls (each poll waits
-    # ``poll_interval_s``) rather than reading a wall clock: tests patch
-    # ``time.monotonic`` globally, and the wrapper must not consume their
-    # scripted values.
+    # Heartbeats are paced by counting idle queue polls rather than a wall clock
+    # (tests patch ``time.monotonic`` globally, so the wrapper must not read it).
     idle_polls_per_heartbeat = max(1, int(round(heartbeat_interval_s / poll_interval_s)))
     idle_polls = 0
     streamed_chars = 0
@@ -195,12 +174,9 @@ def stream_tool_execution(
     def _drain_and_drop() -> None:
         """Discard the current and every queued chunk without concatenating.
 
-        Once the live-output cap is tripped every chunk is thrown away, so a
-        chatty tool (``yes``, a tight print loop) that enqueues far more than
-        one poll interval's worth of text must not pay to build a combined
-        string only to drop it -- that would let it blow past the memory/CPU
-        ceiling the cap exists to enforce. Still detect completion so the loop
-        can exit promptly.
+        Past the cap every chunk is thrown away, so a chatty tool must not pay to
+        build a combined string only to drop it. Still detect completion so the
+        loop can exit promptly.
         """
         nonlocal finished
         while True:
@@ -226,17 +202,11 @@ def stream_tool_execution(
             break
 
         if stream_capped:
-            # Past the cap this chunk and every queued sibling are discarded.
-            # Drop them without concatenating (see _drain_and_drop): a chatty
-            # tool can enqueue far more than one poll interval's worth of text,
-            # and building a combined string just to throw it away would defeat
-            # the cap's memory/CPU bound. The keepalive cadence must still
-            # survive: draining without pacing would neither yield anything nor
-            # let an idle poll fire (a chatty tool keeps the queue non-empty),
-            # so the SSE stream would go silent past proxy idle timeouts. Sleep
-            # one poll interval per drain (time.sleep, not time.monotonic --
-            # tests patch the clock) and count it as an idle poll so heartbeats
-            # keep flowing at the configured cadence.
+            # Past the cap, drop this chunk and every queued sibling without
+            # concatenating (see _drain_and_drop). Pace the drain with one
+            # time.sleep per poll (not time.monotonic -- tests patch the clock)
+            # counted as an idle poll, so heartbeats keep flowing while a chatty
+            # tool keeps the queue non-empty.
             _drain_and_drop()
             if finished:
                 break
@@ -247,10 +217,9 @@ def stream_tool_execution(
                 yield {"type": "heartbeat"}
             continue
 
-        # Bound the join to the remaining live-output budget so the batch that
-        # first crosses the cap cannot allocate far past it: the surplus is
-        # truncated away below anyway (see _drain_queue). The bound is a prefix
-        # long enough that the truncation stays byte-identical to joining all.
+        # Bound the join to the remaining budget so the crossing batch can't
+        # allocate far past the cap (surplus is truncated below anyway); the
+        # prefix is long enough that truncation stays byte-identical.
         budget = TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars
         chunk = item + _drain_pending(max_chars = budget - len(item))
         idle_polls = 0

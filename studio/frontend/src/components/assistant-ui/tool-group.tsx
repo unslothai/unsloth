@@ -236,8 +236,7 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // Live tool output must be visible while it streams: force the group open
-  // when any of its calls is receiving tool_output events.
+  // Force the group open when any call is receiving tool_output events.
   const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
   const paneScope = useToolPaneScope();
   const hasLiveOutput = useAuiState(({ message }) =>
@@ -252,9 +251,9 @@ const ToolGroupImpl: FC<
           ),
       ),
   );
-  // Keep the group open once a confirmation (or live output) forced it open,
-  // so answering an allow/deny doesn't snap it shut between sequential tool
-  // calls. It reverts to the default collapsed state once the turn finishes.
+  // Keep the group open once a confirmation or live output forced it, so an
+  // allow/deny doesn't snap it shut between sequential calls. Reverts to
+  // collapsed once the turn finishes.
   const forcedOpenRef = useRef(false);
   if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
   const forceOpen =

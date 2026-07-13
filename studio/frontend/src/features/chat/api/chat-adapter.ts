@@ -236,12 +236,10 @@ function wait(ms: number): Promise<void> {
 
 /**
  * Best-effort partial parse of a live tool_args stream into a tool part's
- * `args`, so tool cards (python code, terminal command, render_html canvas)
- * render the payload while the model is still writing it.
+ * `args`, so tool cards render the payload while the model is still writing it.
  *
- * The structured tool-call path streams the raw arguments JSON; the text
- * path streams the surrounding call markup (e.g. `<tool_call>{"name": ...,
- * "arguments": {...}}`), so a call envelope is unwrapped when present.
+ * The structured path streams the raw arguments JSON; the text path streams the
+ * surrounding call markup, so a call envelope is unwrapped when present.
  * Returns null until anything parseable arrives; never throws.
  */
 function parseLiveToolArgs(
@@ -1896,11 +1894,9 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Live/full tool output store keys are scoped by pane identity: local
-      // GGUF tool ids ("call_0") repeat across turns and across concurrently
-      // streaming panes (compare mode), so bare ids would collide. Track the
-      // keys this run wrote so end-of-run cleanup cannot wipe another pane's
-      // still-streaming entries.
+      // Tool output store keys are scoped by pane identity since local tool ids
+      // ("call_0") repeat across turns and concurrent panes (compare mode).
+      // Track the keys this run wrote so cleanup can't wipe another pane's.
       const toolOutputPaneScope = toolPaneScope(
         options.modelType,
         options.pairId,
@@ -2456,10 +2452,9 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // Raw tool_args stream accumulator per tool card: the backend forwards
-      // the arguments while the model is still WRITING them (minutes for a
-      // big code payload), and the partial parse below feeds the card's
-      // args so the code renders live instead of a dead spinner.
+      // Raw tool_args stream accumulator per card: the backend forwards the
+      // arguments while the model is still WRITING them, and the partial parse
+      // below feeds the card's args so the code renders live.
       const liveArgsTextById = new Map<string, string>();
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
@@ -3188,10 +3183,9 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
-                  // Incremental stdout from a running server-side tool: append
-                  // to the transient live-output store keyed by the part id so
-                  // the tool card renders it while the spinner runs. The final
-                  // result still arrives via tool_end.
+                  // Incremental stdout from a running tool: append to the
+                  // transient live-output store keyed by part id so the card
+                  // renders it while the spinner runs. Final result via tool_end.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId =
@@ -3213,12 +3207,10 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "tool_args") {
-                  // The model is still WRITING this tool call's arguments
-                  // (minutes for a large code payload). Accumulate the raw
-                  // stream and feed a best-effort partial parse into the tool
-                  // part's args, so the card shows the code being written
-                  // instead of a dead spinner. The final tool_start replaces
-                  // args with the authoritative parse.
+                  // The model is still WRITING this call's arguments. Accumulate
+                  // the raw stream and feed a partial parse into the part's args
+                  // so the card shows the code live; the final tool_start
+                  // replaces args with the authoritative parse.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId =
@@ -3281,11 +3273,9 @@ export function createOpenAIStreamAdapter(
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
-                  // Backend tool ids repeat across turns and across tool
-                  // iterations within a turn ("call_0" restarts every
-                  // response): drop any stale live/preserved output an
-                  // earlier call left under this key, or the finished card
-                  // would keep showing the previous call's output.
+                  // Backend tool ids repeat across turns/iterations ("call_0"
+                  // restarts every response): drop stale live/preserved output
+                  // under this key, else the card shows the previous call's.
                   const staleKey = scopedToolOutputKey(id);
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
@@ -3343,15 +3333,12 @@ export function createOpenAIStreamAdapter(
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
-                  // The final result replaces the transient live output, but
-                  // when the live stream captured MORE than the final result
-                  // (the model-visible result is truncated to protect the
-                  // context window), preserve the full stream so the finished
-                  // card keeps showing everything the tool printed. A raw length
-                  // comparison misses the case where the truncated result is
-                  // longer by byte count once its footer / "Exit code N:" /
-                  // __IMAGES__ base64 tail is appended, so defer to the shared
-                  // truncation-aware predicate the read side uses.
+                  // The final result replaces the transient live output, but if
+                  // the live stream captured MORE than the truncated result,
+                  // preserve the full stream so the finished card keeps showing
+                  // everything. Defer to the shared truncation-aware predicate
+                  // rather than a raw length compare (the result's footer /
+                  // "Exit code N:" / __IMAGES__ tail can make it longer by byte).
                   const liveKey = scopedToolOutputKey(id);
                   const liveOutput =
                     useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
@@ -3912,10 +3899,8 @@ export function createOpenAIStreamAdapter(
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof StreamInterruptedError) {
-            // The connection dropped mid-turn (proxy idle timeout, network
-            // blip): make the interruption explicit instead of letting the
-            // turn end silently. The rethrow below also marks the message
-            // with an inline error + Retry.
+            // Connection dropped mid-turn: make the interruption explicit. The
+            // rethrow below also marks the message with an inline error + Retry.
             toast.error("Response interrupted", {
               description:
                 "The connection dropped before the model finished. " +
@@ -3948,9 +3933,8 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
-        // Live tool output is transient; the persisted tool result (or the
-        // interrupted state) is the record. Clear only this run's keys: a
-        // concurrently streaming pane (compare mode) owns its own entries.
+        // Live tool output is transient; the persisted result is the record.
+        // Clear only this run's keys: a concurrent pane owns its own entries.
         for (const liveKey of runToolLiveOutputKeys) {
           useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
         }

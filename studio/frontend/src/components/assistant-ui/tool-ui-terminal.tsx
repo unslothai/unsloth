@@ -74,8 +74,8 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 }) => {
   const command = (args as { command?: string })?.command ?? "";
   const isRunning = status?.type === "running";
-  // Args still streaming = the model is WRITING the command (tool_args
-  // events); execution has not started yet, so say so instead of "Running".
+  // Args still streaming = the model is WRITING the command; execution hasn't
+  // started, so say so instead of "Running".
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
   const output =
@@ -85,10 +85,9 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         ? JSON.stringify(result, null, 2)
         : "";
 
-  // When the live stream captured more than the (model-visible, truncated)
-  // final result, show the full stream instead -- but never drop the result's
-  // failure/exit status (timeout notice, "Exit code N"), which the stream
-  // never produced. Session-transient: after a reload only the result remains.
+  // When the live stream captured more than the truncated result, show the
+  // full stream instead, but keep the result's exit status. Session-transient:
+  // after a reload only the result remains.
   const paneScope = useToolPaneScope();
   const fullOutput = useChatRuntimeStore(
     (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
@@ -96,8 +95,8 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   const displayOutput = preferFullToolOutput(fullOutput, output);
 
   return (
-    // Mounted mid-run (tool_start) the card opens so live output is visible;
-    // mounted from history (not running) it stays collapsed as before.
+    // Mounted mid-run the card opens so live output is visible; from history it
+    // stays collapsed.
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}

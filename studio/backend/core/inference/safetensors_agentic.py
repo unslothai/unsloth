@@ -552,8 +552,8 @@ def run_safetensors_tool_loop(
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
         # Live argument streaming offset for the provisional render_html card:
-        # once the card is up, the drained call text streams as tool_args so
-        # the canvas shows the HTML being written instead of a dead spinner.
+        # the drained call text streams as tool_args so the canvas shows the
+        # HTML being written instead of a dead spinner.
         _live_args_streamed_upto = -1
         # When a human confirmation gate is active the real tool_start is keyed
         # by an approval id and carries awaiting_confirmation, so an early
@@ -617,8 +617,7 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
-                    # Backlog first: everything drained so far, so the canvas
-                    # starts from the top of the call being written.
+                    # Backlog first: everything drained so far.
                     yield {
                         "type": "tool_args",
                         "tool_call_id": provisional_render_html_id,
@@ -632,9 +631,9 @@ def run_safetensors_tool_loop(
                     and _live_args_streamed_upto >= 0
                     and len(content_accum) > _live_args_streamed_upto
                 ):
-                    # The model is still writing the call: stream the fragment
-                    # so the card/canvas renders the HTML live. Display only;
-                    # content_accum still feeds the stream-end parser verbatim.
+                    # Still writing the call: stream the fragment so the canvas
+                    # renders live. Display only; content_accum still feeds the
+                    # stream-end parser verbatim.
                     yield {
                         "type": "tool_args",
                         "tool_call_id": provisional_render_html_id,

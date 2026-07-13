@@ -3,52 +3,24 @@
 
 """Sandbox-side compatibility shim for ChatGPT code-interpreter paths.
 
-Models trained on code-interpreter transcripts habitually write to /mnt/data
-(or /mnt/outputs, /home/sandbox, /workspace), none of which exist in the
-Studio sandbox. This module sits on the sandbox subprocess PYTHONPATH (see
-``tools._build_safe_env``), so Python's site machinery imports it at
-interpreter startup in every sandboxed ``python`` tool run AND in any Python
-the ``terminal`` tool launches (the env is inherited).
+Models habitually write to /mnt/data (or /mnt/outputs, /home/sandbox,
+/workspace), none of which exist in the Studio sandbox. This module sits on the
+sandbox subprocess PYTHONPATH (see ``tools._build_safe_env``), so it loads at
+interpreter startup in every sandboxed ``python`` run and any Python the
+``terminal`` tool launches.
 
-It remaps those prefixes onto the working directory in ``open()`` /
-``io.open()``, ``os.makedirs()`` and ``os.mkdir()`` / ``pathlib.Path.mkdir()``:
-the calls model-written file code funnels through. Prefix lists cannot enumerate
-every path a model invents, though: models also hallucinate absolute paths from
-seeing their own CWD (e.g. ``open('/home/ubuntu/Sandbox/flappy_bird.html',
-'w')`` after the sandbox CWD is ``/home/ubuntu/studio_sandbox/<thread>``). So
-``open()`` / ``io.open()`` gain a write-mode fallback on top of the prefix
-remaps: when a write/create-mode open targets an absolute path that is NOT under
-the CWD and whose parent directory does not exist, the file is redirected to the
-basename in the CWD. Read modes never hit the fallback (reading a real system
-file must fail or succeed truthfully); the prefix remaps still cover reads. The
-fallback is deliberately NOT applied to ``os.mkdir`` / ``os.makedirs`` /
-``pathlib.Path.mkdir``: making an arbitrary absolute directory can legitimately
-succeed (e.g. under writable ``/home/ubuntu``) and must not be second-guessed.
-The write fallback is collision-safe: it never redirects onto a path that
-already exists in the CWD (that would clobber an unrelated persistent
-conversation file), refusing instead so the original open raises
-``FileNotFoundError``. ``io.open`` is patched
-alongside ``builtins.open`` because ``pathlib.Path.open`` (and therefore
-``read_text`` / ``write_text`` / ``read_bytes`` / ``write_bytes``) calls
-``io.open`` directly, bypassing the builtins patch. On Python < 3.11 pathlib
-does not resolve ``io.open`` at call time: its module-level accessor singleton
-(``_NormalAccessor.open = io.open``) captured the original at import, so
-``_NormalAccessor.open`` is repointed at the same wrapper too or a 3.10
-``Path('/mnt/data/x').write_text(...)`` would slip past the patch. ``os.open``
-is patched too
-because ``pathlib.Path.touch`` and other low-level creators call it directly,
-bypassing both. ``os.mkdir`` is patched
-alongside ``os.makedirs`` because ``pathlib.Path.mkdir(parents=True)`` -- the
-stock ``Path('/mnt/data').mkdir(parents=True, exist_ok=True)`` setup line --
-calls ``os.mkdir`` per component, not ``os.makedirs``; ``Path.mkdir`` itself is
-patched too so its ``exist_ok`` retry (which probes the intentionally unpatched
-``os.stat`` via ``Path.is_dir``) sees the mapped path and stays idempotent. A
-one-line notice is printed to
-stderr on the first remap so the model learns the real location. Everything
-else (other C-level opens, os.listdir, shutil metadata calls) is intentionally
-NOT patched; those failures are handled by the model-visible retry hint
-appended to the tool result. Failures here must never break the interpreter:
-the whole setup is wrapped in try/except.
+It remaps those prefixes onto the working directory in ``open`` / ``io.open``,
+``os.open``, ``os.makedirs`` / ``os.mkdir`` and ``pathlib.Path.mkdir``. Because
+prefix lists cannot enumerate every path a model invents, ``open`` / ``io.open``
+also get a write-mode fallback: a create-mode open of an absolute path outside
+the CWD whose parent is missing is redirected to the basename in the CWD. Reads
+never hit the fallback, and mkdir never does either (an arbitrary absolute
+directory can legitimately succeed). The fallback is collision-safe: it refuses
+to redirect onto an existing CWD file (letting the original open raise). The
+patch set (io.open, os.open, os.mkdir, Path.mkdir, and the <3.11
+``_NormalAccessor.open``) covers the low-level entry points pathlib routes
+through. A one-line stderr notice fires on the first remap. Everything is
+wrapped in try/except so a failure never breaks the interpreter.
 
 Identical with and without output streaming because the child env is.
 """
@@ -58,17 +30,12 @@ import io
 import os
 import sys
 
-# Code-interpreter convention prefixes. These usually do not exist on the
-# sandbox host, so healing them into the per-conversation workdir is safe. But
-# a host CAN have a real one (a container mount, a user-made /workspace, a
-# /home/sandbox account): remapping is therefore gated on the prefix ROOT being
-# ABSENT (see _remap), so a genuine directory is never shadowed and reads/writes
-# under it stay truthful.
+# Code-interpreter convention prefixes. Remapping is gated on the prefix ROOT
+# being ABSENT (see _remap) so a genuine host mount / user directory is never
+# shadowed and reads/writes under it stay truthful.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
-# /tmp exists on the host and model code can legitimately create /tmp/outputs
-# (e.g. Path('/tmp/outputs').mkdir() or a subprocess mkdir that bypasses these
-# in-process patches). It is kept separate only to document that /tmp itself is
-# always present; the absence gate below applies to every prefix alike.
+# /tmp exists on the host; kept separate only to document that. The absence gate
+# below applies to every prefix alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
 
@@ -77,8 +44,7 @@ def _note(subject, original, mapped):
     """Print the one-shot stderr notice so the model learns the real location.
 
     ``subject`` is what "does not exist" (the convention prefix, or the whole
-    invented path for the write-mode fallback); ``original`` is the exact path
-    the model passed, echoed in the ``(original -> mapped)`` tail.
+    invented path); ``original`` is echoed in the ``(original -> mapped)`` tail.
     """
     global _notified
     if _notified:
@@ -94,13 +60,10 @@ def _note(subject, original, mapped):
 def _contained_join(cwd, rel):
     """Join ``rel`` onto ``cwd`` so the result can never escape ``cwd``.
 
-    A hallucinated habit path can carry ``..`` segments (e.g.
-    ``/mnt/data/../other_session/file``) or repeated separators; joining the
-    suffix verbatim would let the mapped target climb above the per-conversation
-    sandbox and read or overwrite another session's files. Parent-traversal
-    components are dropped rather than allowed to ascend, and empty / ``.``
-    components are ignored, so the mapped path always stays under ``cwd`` while
-    preserving as much of the intended subpath as possible.
+    A habit path can carry ``..`` segments; joining verbatim would let the mapped
+    target climb above the per-conversation sandbox. Parent-traversal components
+    are dropped and empty / ``.`` components ignored, keeping the result under
+    ``cwd`` while preserving as much of the subpath as possible.
     """
     parts = []
     for part in rel.split("/"):
@@ -129,13 +92,9 @@ def _map_onto_cwd(prefix, text):
 def _is_creating_mode(mode):
     """True only when an ``open()`` mode string can CREATE a missing file.
 
-    Only ``w`` (truncate-create), ``a`` (append-create) and ``x`` (exclusive
-    create) create a target. ``+`` on its own does NOT: ``r+`` / ``rb+`` are
-    read-update modes that REQUIRE the path to already exist, so they must never
-    trip the generalized write fallback -- redirecting a missing ``r+`` target
-    onto a same-basename workspace file would open and read (and let the caller
-    corrupt) an unrelated file. ``w+`` / ``a+`` / ``x+`` still match on their
-    base letter.
+    Only ``w`` / ``a`` / ``x`` create a target. ``r+`` / ``rb+`` require the path
+    to exist, so they must not trip the write fallback (which would corrupt an
+    unrelated same-basename file); ``w+`` / ``a+`` / ``x+`` still match.
     """
     return isinstance(mode, str) and any(c in mode for c in ("w", "a", "x"))
 
@@ -143,20 +102,13 @@ def _is_creating_mode(mode):
 def _remap_open(file, mode):
     """Remap for ``open()`` / ``io.open()``.
 
-    The prefix remaps run first (they cover reads and writes and preserve
-    subpaths). Only if no prefix matched and the call is a create does the
-    generalized fallback kick in: an absolute target outside the CWD whose
-    parent directory is missing is a path the model invented from its CWD, so
-    redirect it to the basename in the CWD. Reads and read-update (``r+``) are
-    never redirected here.
+    Prefix remaps run first (covering reads and writes). Only if none matched and
+    the call is a create does the fallback kick in: an absolute target outside
+    the CWD whose parent is missing is redirected to the basename in the CWD.
 
-    Collision safety: if a file already exists at ``CWD/<basename>`` it is an
-    unrelated persistent conversation file. Redirecting an invented absolute
-    path onto it would truncate (``w``) or append into (``a``) data the model
-    never asked to touch. We refuse the redirect in that case and return the
-    original path, so the real ``open()`` raises ``FileNotFoundError`` (the
-    model-visible tool-result hint then steers a relative retry) and the
-    existing file is preserved -- matching pre-heal behavior for that path.
+    Collision safety: if ``CWD/<basename>`` already exists (an unrelated
+    conversation file), refuse the redirect and return the original path so the
+    real ``open()`` raises ``FileNotFoundError`` and the existing file is kept.
     """
     mapped = _remap(file)
     if mapped is not file:
@@ -167,8 +119,7 @@ def _remap_open(file, mode):
         text = os.fspath(file)
     except TypeError:
         return file
-    # bytes paths are left untouched: os.getcwd() is str and the prefix remaps
-    # above already skip non-str, so keep the fallback str-only too.
+    # bytes paths left untouched (str-only, matching the prefix remaps).
     if not isinstance(text, str) or not os.path.isabs(text):
         return file
     cwd = os.getcwd()
@@ -176,25 +127,18 @@ def _remap_open(file, mode):
     if text == cwd or text.startswith(cwd + os.sep):
         return file
     parent = os.path.dirname(text)
-    # Only redirect when the parent directory is missing. An existing external
-    # directory (a real /home/ubuntu path, a user-made dir, a symlink to one --
-    # os.path.exists follows symlinks) is a deliberate, working target and must
-    # pass through untouched so real writes stay truthful.
+    # Only redirect when the parent is missing; an existing external directory is
+    # a deliberate target and must stay truthful (os.path.exists follows symlinks).
     if parent and os.path.exists(parent):
         return file
     base = os.path.basename(text)
-    # A path ending in a separator or a '.'/'..' component yields a basename
-    # that is not a real filename (os.path.basename('/a/b/..') == '..'). Joining
-    # it onto the CWD would point the redirect at the CWD itself or its parent --
-    # outside the sandbox file the model meant to create -- so refuse and let the
-    # original open raise instead of healing into an escaping target.
+    # A trailing separator or '.'/'..' component yields a basename that would
+    # redirect onto the CWD itself or its parent; refuse and let open raise.
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never reinterpret an invented absolute path as permission to overwrite or
-    # append to a different, already-present workspace file (lexists so a
-    # dangling symlink counts as a collision too). Refuse and let the original
-    # open raise, preserving the existing file.
+    # Never overwrite an already-present workspace file (lexists catches dangling
+    # symlinks too); refuse and let open raise, preserving it.
     if os.path.lexists(remapped):
         return file
     _note(text, text, remapped)
@@ -210,11 +154,8 @@ def _remap(path):
     if not isinstance(text, str):
         return path
     for prefix in _PREFIXES + _CONDITIONAL_PREFIXES:
-        # Heal the habit path only while the real prefix directory is absent, so
-        # a genuine host mount / user directory at that prefix is never shadowed
-        # (a nonexistent file under a REAL /mnt/data must pass through so the
-        # real directory's own semantics apply -- write creates it there, a read
-        # miss fails truthfully).
+        # Heal only while the real prefix directory is absent, so a genuine host
+        # mount / user directory at that prefix is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
             return _map_onto_cwd(prefix, text)
     return path
@@ -247,8 +188,7 @@ def _install():
         return original_io_open(_remap_open(file, mode), mode, *args, **kwargs)
 
     # mkdir/makedirs get only the prefix remap, never the write-mode fallback:
-    # creating an arbitrary absolute directory can legitimately succeed on the
-    # host (e.g. under writable /home/ubuntu), so it must not be second-guessed.
+    # an arbitrary absolute directory can legitimately succeed on the host.
     def _makedirs(name, *args, **kwargs):
         return original_makedirs(_remap(name), *args, **kwargs)
 
@@ -263,11 +203,8 @@ def _install():
         dir_fd = None,
     ):
         # Path.touch() and other low-level callers go through os.open, not
-        # builtins.open, so patch it with the same policy or a
-        # Path('/mnt/data/x').touch() would still raise FileNotFoundError.
-        # Map the create flags onto the logical open mode the remap expects:
-        # any of O_CREAT / O_TRUNC / O_APPEND means "creating", everything else
-        # is a read that only the prefix remaps may touch.
+        # builtins.open. Map the create flags onto the logical mode the remap
+        # expects: O_CREAT / O_TRUNC / O_APPEND means "creating", else a read.
         create_flags = os.O_CREAT | os.O_TRUNC | os.O_APPEND
         logical_mode = "w" if (flags & create_flags) else "r"
         mapped = _remap_open(path, logical_mode)
@@ -276,43 +213,28 @@ def _install():
         return original_os_open(mapped, flags, mode, dir_fd = dir_fd)
 
     def _path_mkdir(self, *args, **kwargs):
-        # pathlib drives mkdir through os.mkdir and, on FileExistsError, probes
-        # Path.is_dir()/os.stat (intentionally unpatched). So a bare os.mkdir
-        # remap would still raise on the stock
-        # Path('/mnt/data').mkdir(parents=True, exist_ok=True) whenever the
-        # mapped target already exists. Remap the receiver to a real Path up
-        # front so the whole parents/exist_ok dance runs against the mapped
-        # location and stays idempotent.
+        # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so
+        # a bare os.mkdir remap would still raise when the mapped target exists.
+        # Remap the receiver up front so parents/exist_ok stays idempotent.
         mapped = _remap(self)
         target = self if mapped is self else self.__class__(mapped)
         return original_path_mkdir(target, *args, **kwargs)
 
     builtins.open = _open
-    # pathlib.Path.open / write_text / read_text call io.open directly, not
-    # the builtins binding, so the remap must be installed on both.
+    # pathlib.Path.open / write_text / read_text call io.open directly, so patch both.
     io.open = _io_open
-    # Python < 3.11 only: pathlib does NOT look up io.open at call time. Its
-    # module-level accessor singleton captures the ORIGINAL io.open at import
-    # time (``class _NormalAccessor: open = io.open``) and Path.open /
-    # read_text / write_text route through ``self._accessor.open(...)``. So the
-    # io.open patch above never reaches that captured reference, and on 3.10 a
-    # Path('/mnt/data/x').write_text(...) would still hit the real io.open and
-    # raise FileNotFoundError. Repoint the accessor's ``open`` at the SAME
-    # wrapper (staticmethod so ``self._accessor.open`` stays unbound and is
-    # called with the path, not the accessor instance). 3.11+ dropped the
-    # accessor and call io.open directly at call time (already covered above),
-    # so the attribute is absent there and this is an idempotent no-op -- never
-    # a double remap.
+    # Python < 3.11 only: pathlib's accessor singleton captured the ORIGINAL
+    # io.open at import (``_NormalAccessor.open = io.open``), so the io.open patch
+    # never reaches it. Repoint it at the same wrapper (staticmethod so it stays
+    # unbound). 3.11+ dropped the accessor, so this is an idempotent no-op there.
     accessor = getattr(pathlib, "_NormalAccessor", None)
     if accessor is not None and hasattr(accessor, "open"):
         accessor.open = staticmethod(_io_open)
-    # Path.touch() (and other low-level opens) call os.open directly, bypassing
-    # builtins/io, so patch it too for creation-path parity with Path.mkdir.
+    # Path.touch() and other low-level opens call os.open directly, so patch it too.
     os.open = _os_open
     os.makedirs = _makedirs
-    # pathlib.Path.mkdir(parents=True) calls os.mkdir (not os.makedirs) per
-    # missing component, so patch os.mkdir with the same remap; patch
-    # Path.mkdir itself too so exist_ok/parents land on the mapped path.
+    # Path.mkdir(parents=True) calls os.mkdir per component, so patch os.mkdir;
+    # patch Path.mkdir itself too so exist_ok/parents land on the mapped path.
     os.mkdir = _mkdir
     pathlib.Path.mkdir = _path_mkdir
 

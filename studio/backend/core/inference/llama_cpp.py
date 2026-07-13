@@ -9260,16 +9260,15 @@ class LlamaCppBackend:
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
-                # Live argument streaming: ids whose card already received its
-                # first tool_args event (the accumulated arguments so far);
-                # later fragments stream individually. The model spends the
-                # whole generation writing these arguments (minutes for a big
-                # code payload), so without this the card is a dead spinner.
+                # Live argument streaming: ids whose card already got its first
+                # tool_args event (accumulated args so far); later fragments
+                # stream individually so the card isn't a dead spinner while the
+                # model spends minutes writing a big payload.
                 arg_streamed_tool_call_ids: set[str] = set()
                 # TEXT tool-call path equivalents: once DRAINING commits to an
                 # enabled call, its raw text streams to a provisional card under
-                # the id the stream-end parser will assign to the first call
-                # ("call_0"), so the final tool_start reconciles in place.
+                # the id the stream-end parser assigns the first call ("call_0"),
+                # so the final tool_start reconciles in place.
                 _text_args_call_start = -1
                 _text_args_streamed_upto = -1
                 _text_args_id = ""
@@ -9429,14 +9428,11 @@ class LlamaCppBackend:
                                                     provisional = True,
                                                 ),
                                             }
-                                        # Live argument streaming: once the card
-                                        # exists, forward the arguments text so
-                                        # the UI shows the code being written
-                                        # instead of a dead spinner (the model
-                                        # can spend minutes here). First event
-                                        # carries the backlog, later ones the
-                                        # fragment; display only -- the
-                                        # accumulator above is untouched.
+                                        # Live argument streaming: forward the
+                                        # arguments text so the UI shows the code
+                                        # being written. First event carries the
+                                        # backlog, later ones the fragment;
+                                        # display only, accumulator untouched.
                                         if current_id in provisional_started_tool_calls:
                                             if current_id not in arg_streamed_tool_call_ids:
                                                 arg_streamed_tool_call_ids.add(current_id)
@@ -9497,16 +9493,11 @@ class LlamaCppBackend:
                                     if detect_state == _S_DRAINING:
                                         # Accumulate silently for parsing, but
                                         # stream the drained TEXT call to a
-                                        # provisional card so the UI shows the
-                                        # code being written (the structured
-                                        # path streams arguments fragments
-                                        # instead). Gated on an enabled-name
-                                        # sniff + the provisional size floor so
-                                        # prose and small calls never spawn a
-                                        # pane; the id matches the one the
-                                        # stream-end parser gives the first
-                                        # call, so the final tool_start
-                                        # reconciles the same card.
+                                        # provisional card. Gated on an
+                                        # enabled-name sniff + size floor so
+                                        # prose/small calls spawn no pane; the id
+                                        # matches the first call, so the final
+                                        # tool_start reconciles the same card.
                                         if (
                                             not has_structured_tc
                                             and not _confirm_gated_iteration
@@ -9663,10 +9654,9 @@ class LlamaCppBackend:
                                             # without yielding. A live <think> prefix is
                                             # separate from it -- close that.
                                             detect_state = _S_DRAINING
-                                            # The call text begins where the held
-                                            # buffer begins (for live arg display
-                                            # only; slop is harmless, the UI
-                                            # extracts the code value).
+                                            # Call text begins where the held
+                                            # buffer begins (live arg display
+                                            # only; the UI extracts the code).
                                             _text_args_call_start = len(content_accum) - len(
                                                 content_buffer
                                             )
@@ -9698,9 +9688,8 @@ class LlamaCppBackend:
                                                     }
                                             detect_state = _S_DRAINING
                                             # Live-arg display starts at the held
-                                            # buffer (any visible prefix in it was
-                                            # flushed above; the UI extracts the
-                                            # code value, so slop is harmless).
+                                            # buffer (visible prefix flushed
+                                            # above; the UI extracts the code).
                                             _text_args_call_start = len(content_accum) - len(
                                                 content_buffer
                                             )
@@ -9951,11 +9940,10 @@ class LlamaCppBackend:
                             f"{'structured delta' if has_structured_tc else 'content text'}"
                         )
                     if not tool_calls:
-                        # DRAINING but no tool calls (false positive). Close
-                        # any provisional tool cards first (a >=256-char text
-                        # sniff can open a card whose call later fails to
-                        # parse); without a tool_end the card would spin
-                        # forever while the text is delivered as content.
+                        # DRAINING but no tool calls (false positive). Close any
+                        # provisional cards first (a sniff can open a card whose
+                        # call later fails to parse); without a tool_end it would
+                        # spin forever while the text is delivered as content.
                         for _pid, _pname in provisional_started_tool_calls.items():
                             if _pid not in resolved_provisional_tool_call_ids:
                                 resolved_provisional_tool_call_ids.add(_pid)
@@ -9966,8 +9954,7 @@ class LlamaCppBackend:
                                     "result": "",
                                     "provenance": tool_event_provenance(provisional = True),
                                 }
-                        # Merge accumulated metrics from prior tool iterations
-                        # so they aren't silently dropped.
+                        # Merge metrics from prior tool iterations so they aren't dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.
@@ -10133,14 +10120,12 @@ class LlamaCppBackend:
                     else:
                         # Execute in a worker thread so live stdout chunks and
                         # heartbeats stream while the tool blocks (the SSE route
-                        # turns heartbeats into keepalives; proxies would drop an
-                        # idle connection). The returned result is byte-identical
-                        # to a direct call.
+                        # turns heartbeats into keepalives). Result is
+                        # byte-identical to a direct call.
                         def _invoke_tool(_output_callback, _decision = decision):
-                            # execute_tool is imported at call time and may be
-                            # monkey-patched with the pre-PR signature (no
-                            # output_callback); only forward the live-output kwarg
-                            # when the callable accepts it (matches safetensors).
+                            # execute_tool is injectable and may be monkey-patched
+                            # with the pre-PR signature; only forward
+                            # output_callback when the callable accepts it.
                             kwargs = dict(
                                 cancel_event = cancel_event,
                                 timeout = _effective_timeout,
