@@ -2252,9 +2252,21 @@ def reset_password():
     ]
     had_db = db_file.exists()
 
-    db_file.unlink(missing_ok = True)
+    # Invalidate the stale credential files BEFORE deleting the DB. unlink only
+    # ignores FileNotFoundError, so a locked/undeletable file (Windows AV,
+    # read-only dir) would otherwise survive while auth.db is gone, and the next
+    # startup's re-seed would read that stale plaintext bootstrap password back
+    # and re-validate the credential this reset revoked. Truncate on failure so
+    # its contents can never be reused.
     for path in stale_files:
-        path.unlink(missing_ok = True)
+        try:
+            path.unlink(missing_ok = True)
+        except OSError:
+            try:
+                path.write_text("")
+            except OSError:
+                pass
+    db_file.unlink(missing_ok = True)
 
     if not had_db:
         typer.echo("No auth database found -- nothing to reset.")

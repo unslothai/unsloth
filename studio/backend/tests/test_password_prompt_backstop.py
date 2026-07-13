@@ -242,3 +242,35 @@ def test_lifespan_honors_bootstrap_suppression_in_source():
             assert "_suppress_bootstrap" in line, line
     run_src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert "app.state.suppress_bootstrap_injection = True" in run_src
+
+
+def test_clear_bootstrap_password_truncates_when_unlink_fails(monkeypatch, tmp_path):
+    # If the file cannot be unlinked (Windows AV / read-only auth dir), clear must
+    # truncate it so its stale plaintext cannot be re-seeded by
+    # generate_bootstrap_password() after a later reset-password deletes auth.db,
+    # which would re-validate the revoked bootstrap password.
+    import pathlib
+
+    pw_path = tmp_path / ".bootstrap_password"
+    pw_path.write_text("old-diceware-passphrase")
+    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", pw_path)
+    monkeypatch.setattr(auth_storage, "_bootstrap_password", "old-diceware-passphrase")
+
+    _real_unlink = pathlib.Path.unlink
+
+    def _boom(self, *a, **k):
+        if self == pw_path:
+            raise OSError("locked")
+        return _real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom)
+
+    auth_storage.clear_bootstrap_password()
+
+    assert pw_path.exists()  # unlink failed
+    assert pw_path.read_text() == ""  # but truncated -> no reusable plaintext
+
+    # The stale value must not load back (empty file -> None), so a later re-seed
+    # generates fresh rather than resurrecting the revoked credential.
+    monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
+    assert auth_storage._load_bootstrap_password() is None

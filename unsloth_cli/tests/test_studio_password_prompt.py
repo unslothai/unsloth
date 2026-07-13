@@ -651,6 +651,44 @@ def test_bootstrap_deadline_active_mirrors_backend_parsing(monkeypatch, raw, exp
     assert studio_mod._bootstrap_deadline_active() is expected
 
 
+def test_reset_password_invalidates_locked_bootstrap_before_db_delete(monkeypatch, tmp_path):
+    # reset-password must invalidate the seeded credential files BEFORE deleting
+    # auth.db, and survive a locked/undeletable .bootstrap_password by truncating
+    # it. Otherwise the file's stale plaintext outlives auth.db and the next
+    # re-seed re-validates the revoked bootstrap password.
+    import pathlib
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    auth_dir = tmp_path / "auth"
+    bootstrap_file = auth_dir / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    db_file = auth_dir / "auth.db"
+    assert bootstrap_file.exists() and db_file.exists()
+    assert bootstrap_file.read_text().strip()
+
+    _real_unlink = pathlib.Path.unlink
+
+    def _boom_unlink(self, *a, **k):
+        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
+            raise OSError("locked")
+        return _real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command()(studio_mod.reset_password)
+    result = CliRunner().invoke(app, [], catch_exceptions = True)
+
+    assert result.exit_code == 0, result.output
+    assert not db_file.exists()
+    # The locked file survives, but truncated -- no reusable plaintext.
+    assert bootstrap_file.exists()
+    assert bootstrap_file.read_text() == ""
+
+
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     # Fresh install: the CLI gate writes the password hash + JWT secret before
     # the backend ever runs, so this path must apply the same 0700/0600 modes

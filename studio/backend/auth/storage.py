@@ -96,10 +96,19 @@ def clear_bootstrap_password() -> None:
         try:
             _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
         except OSError as e:
+            # Removal failed (Windows AV, read-only auth dir). The new hash is
+            # already committed, so don't fail the change -- but truncate the file
+            # so its stale plaintext cannot be re-seeded by
+            # generate_bootstrap_password() after a later reset-password deletes
+            # auth.db, which would re-validate this revoked credential.
+            try:
+                _BOOTSTRAP_PW_PATH.write_text("")
+            except OSError:
+                pass
             import sys
             print(
                 f"Warning: could not delete {_BOOTSTRAP_PW_PATH.name} ({e}); "
-                "the old bootstrap password is already invalid.",
+                "cleared its contents so the old bootstrap password cannot be reused.",
                 file = sys.stderr,
                 flush = True,
             )
