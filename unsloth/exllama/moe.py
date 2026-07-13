@@ -191,7 +191,9 @@ def reload_exl3_experts(
     """
     if not is_exllama_available():
         return 0
-    if not os.path.isdir(checkpoint_dir):
+            num_experts = int(getattr(module, "num_experts", 0)) or _infer_num_experts(module)
+            if num_experts == 0:
+                continue
         return 0
 
     require_exllama()
