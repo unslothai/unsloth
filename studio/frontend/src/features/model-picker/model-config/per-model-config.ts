@@ -139,7 +139,12 @@ function deleteOldestEvictableEntry(
   protectedKey?: string,
 ): { key: string; value: StoredMap[string] } | null {
   for (const key of Object.keys(map)) {
-    if (key === protectedKey) {
+    // Never evict a future-schema entry an older client cannot interpret,
+    // matching the save/delete guards.
+    if (
+      key === protectedKey ||
+      storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION
+    ) {
       continue;
     }
     const value = map[key];
@@ -153,7 +158,7 @@ function enforceStorageBudget(map: StoredMap, protectedKey?: string): boolean {
   let entryCount = Object.keys(map).length;
   while (entryCount > MAX_ENTRIES) {
     if (!deleteOldestEvictableEntry(map, protectedKey)) {
-      break;
+      return false;
     }
     entryCount -= 1;
   }
