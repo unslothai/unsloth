@@ -171,11 +171,14 @@ function contentBlocksToText(content: unknown): string {
           parts.push("[thinking]\n" + thinkText + "\n[/thinking]");
         }
       } else if (p.type === "tool-call") {
+        // Keep base64 image payloads out of every export format: use the
+        // model-visible text for MCP image results (matches chat replay).
+        const result = isMcpImageToolResult(p.result) ? p.result.text : p.result;
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,
             args: p.args,
-            result: p.result,
+            result,
           }),
         );
       } else if (p.type === "image") {

@@ -3240,6 +3240,24 @@ export function createOpenAIStreamAdapter(
                           prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
+                    // A valid MCP image envelope wins; an invalid marker falls
+                    // through so a sandbox __IMAGES__ suffix still renders and
+                    // legit text round-trips unchanged.
+                    let mcpImages: McpImageToolResult | null = null;
+                    if (mcpImgIdx !== -1) {
+                      try {
+                        const images = JSON.parse(
+                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
+                        );
+                        const candidate = {
+                          text: rawResult.slice(0, mcpImgIdx),
+                          images,
+                        };
+                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                      } catch {
+                        // Not a valid envelope; fall through below.
+                      }
+                    }
                     if (
                       toolCallParts[idx].toolName === "image_generation" &&
                       typeof imageB64 === "string" &&
@@ -3257,22 +3275,8 @@ export function createOpenAIStreamAdapter(
                         background: toolEvent.background as string | undefined,
                         prompt: toolEvent.prompt as string | undefined,
                       };
-                    } else if (mcpImgIdx !== -1) {
-                      const text = rawResult.slice(0, mcpImgIdx);
-                      try {
-                        const images = JSON.parse(
-                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
-                        );
-                        // Only treat the suffix as an image envelope when it
-                        // validates; legit tool text that merely contains the
-                        // marker must round-trip unchanged.
-                        const candidate = { text, images };
-                        parsedResult = isMcpImageToolResult(candidate)
-                          ? candidate
-                          : rawResult;
-                      } catch {
-                        parsedResult = rawResult;
-                      }
+                    } else if (mcpImages !== null) {
+                      parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox
