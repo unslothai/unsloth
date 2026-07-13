@@ -51,8 +51,25 @@ TRL_TAGS = [
     "v1.2.0",
     "v1.3.0",
     "v1.4.0",
+    "v1.5.0",
+    "v1.5.1",
+    "v1.6.0",
+    "v1.7.0",  # anchor: first release unsloth's TRL>=1.7.0 GRPO patch targets
+    "v1.7.1",  # current PyPI latest
     "main",
 ]
+
+
+def _tag_ge(tag: str, floor: str) -> bool:
+    """True if `tag` is `main` or a version >= `floor` (e.g. "1.7.0")."""
+    if tag == "main":
+        return True
+    from packaging.version import Version
+
+    try:
+        return Version(tag.lstrip("v")) >= Version(floor)
+    except Exception:
+        return False
 
 
 # unsloth/trainer.py + unsloth/models/rl.py rebind these top-level names.
@@ -537,3 +554,96 @@ def test_trl_truncate_with_protected_tokens_optional(tag: str):
     assert src is not None
     has_it = "truncate_with_protected_tokens" in src
     _ = has_it  # informational; pass either way.
+
+
+# 24-27. TRL >= 1.7.0 GRPO source contracts. Unlike the has_def existence
+# checks above, these pin the exact source strings unsloth/models/rl.py and
+# rl_replacements.py transform for TRL >= 1.7.0 (the window PR #6904 fixes).
+# The 1.7.0 break was invisible to the existence checks because the methods
+# still existed -- only their internal structure / return arity changed. If
+# TRL restructures one of these, the transform silently no-ops (or the
+# generated trainer breaks), so failing here on `main` gives a few-day lead.
+
+
+@pytest.mark.parametrize("tag", TRL_TAGS)
+def test_trl_grpo_peft_ref_adapter_block_contract(tag: str):
+    """rl.py (trl>=1.4.0) strips TRL's PEFT ref-adapter init with a re.DOTALL
+    regex anchored on `elif is_peft_model(model) and args.beta != 0.0:` ...
+    `ref_param.data.copy_(param.data)`. Both anchors must exist (else the
+    regex no-ops and the ref adapter is created under Unsloth), and the
+    following `enable_input_require_grads` gradient-checkpointing block must
+    remain present -- the tightened regex must NOT swallow it (PR #6904). The
+    `elif` block shape appeared in TRL 1.4.0, so this contract runs from there."""
+    if not _tag_ge(tag, "1.4.0"):
+        pytest.skip(
+            f"{tag}: pre-1.4.0 uses the `if is_peft_available()...` form (rl.py 0.27 branch)"
+        )
+    src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
+    assert src is not None
+    assert "elif is_peft_model(model) and args.beta != 0.0:" in src, (
+        f"{tag}: PEFT ref-adapter `elif` anchor gone; unsloth/models/rl.py "
+        f"peft_pattern re.sub no-ops and TRL's ref adapter init runs under Unsloth"
+    )
+    assert "ref_param.data.copy_(param.data)" in src, (
+        f"{tag}: `ref_param.data.copy_(param.data)` end-anchor gone; "
+        f"unsloth/models/rl.py peft_pattern loses its DOTALL end match"
+    )
+    assert "enable_input_require_grads" in src, (
+        f"{tag}: `enable_input_require_grads` block gone from grpo_trainer.py; "
+        f"the tightened PR #6904 regex assumed it follows the ref-adapter block"
+    )
+
+
+@pytest.mark.parametrize("tag", TRL_TAGS)
+def test_trl_grpo_quantized_model_cast_contract(tag: str):
+    """rl.py (trl>=1.7.0) neutralizes TRL's hardcoded QLoRA bf16 cast
+    `if _is_quantized_model:` -> `if False:`. A rename leaves the cast active,
+    which ignores the user's dtype and breaks GradScaler with fp16=True."""
+    if not _tag_ge(tag, "1.7.0"):
+        pytest.skip(f"{tag}: pre-1.7.0 spells the cast differently (is_loaded_in_4bit)")
+    src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
+    assert src is not None
+    assert "if _is_quantized_model:" in src, (
+        f"{tag}: `if _is_quantized_model:` gone; unsloth/models/rl.py cannot "
+        f"neutralize TRL's hardcoded QLoRA bf16 cast and it runs under Unsloth"
+    )
+
+
+@pytest.mark.parametrize("tag", TRL_TAGS)
+def test_trl_grpo_aux_loss_enabled_contract(tag: str):
+    """rl.py (trl>=1.7.0) appends a fail-fast after
+    `self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0` so an
+    explicit MoE router-aux opt-in errors instead of silently training without
+    the penalty (the optimized forward cannot compute it). A change to this
+    line drops the guard silently (PR #6904)."""
+    if not _tag_ge(tag, "1.7.0"):
+        pytest.skip(f"{tag}: aux_loss_enabled / router_aux_loss_coef added in TRL 1.7.0")
+    src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
+    assert src is not None
+    assert "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0" in src, (
+        f"{tag}: `aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0` "
+        f"changed; unsloth/models/rl.py's fail-fast .replace() anchor no-ops"
+    )
+
+
+@pytest.mark.parametrize("tag", TRL_TAGS)
+def test_trl_grpo_per_token_logps_aux_arity_contract(tag: str):
+    """TRL 1.7.0 added `compute_aux_loss` to
+    _get_per_token_logps_and_entropies and made every call site unpack a
+    3-tuple. rl_replacements.py version-gates its injected replacement to emit
+    a 3-tuple for trl>=1.7.0 (2-tuple below). This is the exact change the
+    has_def existence checks miss: the method still exists, only its arity
+    changed. If TRL drops/renames the aux return, the gate needs revisiting."""
+    if not _tag_ge(tag, "0.20.0"):
+        pytest.skip(f"{tag}: pre-0.20 uses legacy _get_per_token_logps (2-tuple, no aux)")
+    src = fetch_text("huggingface/trl", tag, "trl/trainer/grpo_trainer.py")
+    assert src is not None
+    assert has_def(src, "_get_per_token_logps_and_entropies", "func"), (
+        f"{tag}: _get_per_token_logps_and_entropies missing on TRL >=0.20; "
+        f"unsloth's per-token-logps injection dispatch key no longer matches"
+    )
+    if _tag_ge(tag, "1.7.0"):
+        assert "compute_aux_loss" in src, (
+            f"{tag}: TRL >=1.7.0 dropped `compute_aux_loss`; the 3-tuple "
+            f"injection gate in unsloth/models/rl_replacements.py must be revisited"
+        )

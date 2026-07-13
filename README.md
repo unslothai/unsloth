@@ -212,7 +212,7 @@ By default `unsloth studio` binds to `127.0.0.1` (this machine only). To reach i
 ```bash
 unsloth studio --secure -p 8888
 ```
-- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network. Only use this on a trusted network.
+- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network. This also starts a public Cloudflare quick tunnel by default, which publishes an internet-reachable `https://*.trycloudflare.com` URL even behind a firewall. Both the raw port and the tunnel expose Studio beyond this machine, so only use this on a network you trust; pass `--no-cloudflare` to drop the public link while keeping the network bind.
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
@@ -228,6 +228,14 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 ```powershell
 $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
+```
+
+Skip the post-install prompt that starts Studio (useful for automated installs):
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
+```
+```powershell
+$env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
 Pin the Python version:
