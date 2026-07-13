@@ -708,6 +708,32 @@ def test_missing_path_hint_respects_project_workdir():
     assert "working directory is writable" in _missing_path_hint(outside_err, workdir)
 
 
+def test_missing_path_hint_project_workdir_under_convention_prefix():
+    # A project workdir can legitimately live under a convention prefix such as
+    # /workspace (common in container deployments). A genuine miss INSIDE that
+    # project root then contains the "/workspace" substring on the failing line,
+    # but it is a real local path, not a code-interpreter habit path: the
+    # convention fast path must not fire and steer the model to flatten it to a
+    # bare basename (which would drop the project subdirectory).
+    workdir = "/workspace/proj"
+    nested = "/workspace/proj/sub/data.csv"
+    output = f"FileNotFoundError: [Errno 2] No such file or directory: '{nested}'"
+    # Judged against the real project workdir the miss is local -> no hint, so
+    # the intended /workspace/proj/sub path is not flattened away.
+    assert _missing_path_hint(output, workdir) == ""
+    # A miss at the project root itself is likewise local.
+    at_root = "/workspace/proj/data.csv"
+    root_output = f"FileNotFoundError: [Errno 2] No such file or directory: '{at_root}'"
+    assert _missing_path_hint(root_output, workdir) == ""
+    # A convention path genuinely outside the project workdir still earns the
+    # hint (e.g. a /mnt/data habit path with a /workspace-rooted project).
+    outside = "FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/x.html'"
+    assert "'x.html', not '/mnt/data/x.html'" in _missing_path_hint(outside, workdir)
+    # Without an explicit workdir the default sandbox root applies, so a
+    # /workspace path is out of sandbox and keeps the habit-path hint.
+    assert "working directory is writable" in _missing_path_hint(root_output)
+
+
 def test_missing_path_hint_convention_scoped_to_failing_line():
     # A convention prefix that appears only OUTSIDE the failing-path error line
     # (a traceback frame under a /workspace project root, or the user's own code

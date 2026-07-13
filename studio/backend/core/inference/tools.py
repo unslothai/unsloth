@@ -2908,19 +2908,31 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     if not error_lines:
         return ""
     abs_path = _extract_missing_abs_path(output)
-    # Fast path: a known code-interpreter convention prefix is always outside
-    # the sandbox, so hint even if the exact path could not be isolated. Scoped
-    # to the failing-path error line(s) only -- a convention prefix mentioned
+    # Fast path: a known code-interpreter convention prefix is treated as an
+    # out-of-sandbox habit path only when the exact failing path could not be
+    # isolated -- then the prefix is the sole out-of-sandbox signal. Scoped to
+    # the failing-path error line(s) only -- a convention prefix mentioned
     # elsewhere (e.g. a traceback frame under a /workspace project root, or the
     # user's code printing "/mnt/data") must not trigger a misleading
     # "use a relative path" hint when the actual miss was a local path.
     convention = any(prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES)
-    if not convention:
-        # Generalized: only hint when the failing path is an absolute path
-        # outside the working directory. A relative miss (a real typo of a
-        # local file) must not get misleading "use a relative path" advice.
-        if abs_path is None or not _is_outside_workdir(abs_path, workdir):
+    if abs_path is not None:
+        # The failing path was isolated: judge it against the real workdir even
+        # when it matches a convention prefix. A project rooted under a
+        # convention path (a container workdir at /workspace or /workspace/proj)
+        # makes a genuine miss inside it -- /workspace/proj/sub/data.csv --
+        # contain the "/workspace" substring, so the convention fast path would
+        # wrongly tell the model to flatten to the basename and steer it out of
+        # its own project subdirectory. Only hint when the isolated path is
+        # actually outside the workdir; a relative miss (a real typo of a file)
+        # likewise gets no misleading "use a relative path" advice.
+        if not _is_outside_workdir(abs_path, workdir):
             return ""
+    elif not convention:
+        # No absolute path could be isolated and no convention prefix appears on
+        # the failing line: there is nothing that marks this as an out-of-sandbox
+        # miss, so stay silent.
+        return ""
     if abs_path:
         example = f"'{os.path.basename(abs_path)}', not '{abs_path}'"
     else:
