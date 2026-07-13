@@ -3278,6 +3278,9 @@ if ($LocalLlamaCppSrc) {
         if ($LASTEXITCODE -ne 0) {
             substep "Could not create directory junction; copying instead..." "Yellow"
             Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+            # The fallback is a Studio-owned copy, not a link into the user's
+            # checkout, so it is safe and necessary to prune the copied files.
+            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
         }
         Write-Host ""
         step "llama.cpp" "linked local directory: $ResolvedLocal"

@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -232,6 +233,110 @@ def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
     assert remove_agent_instruction_files(linked_root) == 0
     assert (external / "AGENTS.md").exists()
     assert (external / "CLAUDE.md").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows junction behavior")
+def test_remove_agent_instruction_files_does_not_follow_windows_junctions(tmp_path: Path):
+    managed = tmp_path / "managed"
+    external = tmp_path / "external"
+    managed.mkdir()
+    external.mkdir()
+    (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
+    (external / "CLAUDE.md").write_text("user-owned Claude", encoding = "utf-8")
+
+    nested_junction = managed / "external-junction"
+    root_junction = tmp_path / "linked-root"
+    for junction in (nested_junction, root_junction):
+        result = subprocess.run(
+            ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(external)],
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"directory junctions unavailable: {result.stderr or result.stdout}")
+
+    assert remove_agent_instruction_files(managed) == 0
+    assert remove_agent_instruction_files(root_junction) == 0
+    assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
+    assert (external / "CLAUDE.md").read_text(encoding = "utf-8") == "user-owned Claude"
+
+
+def test_remove_agent_instruction_files_prunes_linklike_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    managed = tmp_path / "managed"
+    simulated_junction = managed / "simulated-junction"
+    simulated_junction.mkdir(parents = True)
+    agents = simulated_junction / "AGENTS.md"
+    claude = simulated_junction / "CLAUDE.md"
+    agents.write_text("external instructions", encoding = "utf-8")
+    claude.write_text("external Claude instructions", encoding = "utf-8")
+    real_is_link_or_junction = INSTALL_LLAMA_PREBUILT._is_link_or_junction
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_is_link_or_junction",
+        lambda path: path == simulated_junction or real_is_link_or_junction(path),
+    )
+
+    assert remove_agent_instruction_files(managed) == 0
+    assert agents.exists()
+    assert claude.exists()
+
+
+def test_remove_agent_instruction_files_continues_after_unlink_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    blocked = managed / "AGENTS.md"
+    removable = managed / "CLAUDE.md"
+    blocked.write_text("blocked", encoding = "utf-8")
+    removable.write_text("remove me", encoding = "utf-8")
+    real_unlink = Path.unlink
+
+    def selective_unlink(path: Path, *args, **kwargs):
+        if path == blocked:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+
+    assert remove_agent_instruction_files(managed) == 1
+    assert blocked.exists()
+    assert not removable.exists()
+    captured = capsys.readouterr()
+    assert "could not remove contributor-only instruction" in captured.out + captured.err
+
+
+def test_main_preserves_linked_install_path_for_ownership_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "target"
+    linked_root = tmp_path / "linked-root"
+    target.mkdir()
+    try:
+        linked_root.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    received = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--install-dir", str(linked_root)],
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "install_prebuilt",
+        lambda **kwargs: received.update(kwargs),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_LOG_TO_STDOUT", False)
+
+    assert INSTALL_LLAMA_PREBUILT.main() == 0
+    assert received["install_dir"] == linked_root.absolute()
+    assert received["install_dir"].is_symlink()
 
 
 def test_hydrate_source_tree_extracts_upstream_archive_contents(
@@ -2102,6 +2207,12 @@ def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
     assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" in setup_ps1
     assert '"CLAUDE.md"' in setup_ps1
     assert "if (-not $LocalLlamaCppLinked)" in setup_ps1
+    assert (
+        "Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir\n"
+        "            # The fallback is a Studio-owned copy, not a link into the user's\n"
+        "            # checkout, so it is safe and necessary to prune the copied files.\n"
+        "            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)"
+    ) in setup_ps1
     assert not (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "AGENTS.md").exists()
     assert (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "README.md").is_file()
 
