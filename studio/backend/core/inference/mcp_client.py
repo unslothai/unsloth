@@ -632,12 +632,30 @@ def _get_stdio_session(
 
 
 def _release_stdio_session(session: _StdioSession) -> None:
+    victims: list = []
     with _stdio_sessions_lock:
         session.in_flight = max(0, session.in_flight - 1)
         session.last_used = time.monotonic()
         close_now = session.defunct and session.in_flight == 0
+        # Re-enforce the cap once a burst's sessions go idle. Insert-time eviction
+        # only trims idle sessions, so it can overshoot while every cached session
+        # is busy; reclaim that overshoot here instead of waiting for the idle
+        # reaper. Never evict the session we just used (its last_used is newest).
+        while len(_stdio_sessions) > _STDIO_MAX_SESSIONS:
+            idle = [
+                (s.last_used, k)
+                for k, s in _stdio_sessions.items()
+                if s.in_flight == 0 and s is not session
+            ]
+            if not idle:
+                break
+            _, oldest = min(idle, key = lambda item: item[0])
+            victims.append(_stdio_sessions.pop(oldest))
+            _discard_stdio_key_lock(oldest)
     if close_now:
         session.close()
+    for victim in victims:
+        victim.close()
 
 
 def _retire_stdio_session(session: _StdioSession) -> None:
@@ -682,6 +700,10 @@ def close_stdio_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> N
     Two server rows can share a command with different envs; editing one must
     not kill the other's live state, so the routes pass the edited row's env."""
     global _stdio_close_all_gen
+    # HTTP/SSE servers are never cached as stdio sessions, so a specific non-stdio
+    # url has nothing to close and must not accrue a close-generation entry.
+    if url is not None and not is_stdio(url):
+        return
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
     with _stdio_sessions_lock:
         if url is None:

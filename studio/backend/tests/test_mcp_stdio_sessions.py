@@ -579,3 +579,47 @@ def test_multi_block_result_flattens_through_session(fake_clients):
     fake_clients[0].call_tool = _rich_call
     out = call_tool_sync(STDIO_URL, None, "browser_snapshot", {}, scope = "chat")
     assert out == "### Page\n- Page URL: https://example.com/"
+
+
+def test_stdio_cache_trims_overshoot_after_burst(fake_clients, monkeypatch):
+    # A concurrent burst of distinct-scope calls can overshoot the cap while every
+    # session is busy (insert-time eviction only reclaims idle sessions). Once the
+    # calls finish, release-time trimming must bring the cache back within cap.
+    monkeypatch.setattr(mcp_client, "_STDIO_MAX_SESSIONS", 2)
+
+    def slow_client(url, headers, use_oauth = False):
+        client = FakeClient(url)
+        client.call_delay = 0.5  # keep every session in-flight during the burst
+        return client
+
+    monkeypatch.setattr(mcp_client, "_client", slow_client)
+    errors: list = []
+
+    def worker(i: int):
+        try:
+            call_tool_sync(STDIO_URL, None, "t", {}, scope = f"chat-{i}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = worker, args = (i,)) for i in range(5)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10.0)
+    assert not errors, errors
+    assert len(mcp_client._stdio_sessions) <= 2
+
+
+def test_close_http_server_creates_no_stdio_tombstone(fake_clients):
+    # HTTP/SSE servers are never cached as stdio sessions, so closing one on
+    # update/delete must not accrue a close-generation entry (an unbounded leak).
+    before_cfg = len(mcp_client._stdio_cfg_close_gen)
+    before_url = len(mcp_client._stdio_url_close_gen)
+    for i in range(50):
+        close_stdio_sessions(f"https://mcp-{i}.example/mcp", {"K": str(i)})
+        close_stdio_sessions(f"https://mcp-{i}.example/mcp")
+    assert len(mcp_client._stdio_cfg_close_gen) == before_cfg
+    assert len(mcp_client._stdio_url_close_gen) == before_url
+    # a real stdio command still registers a generation (the guard is non-stdio only)
+    close_stdio_sessions(STDIO_URL, {"K": "v"})
+    assert len(mcp_client._stdio_cfg_close_gen) == before_cfg + 1
