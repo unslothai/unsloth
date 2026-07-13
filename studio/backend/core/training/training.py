@@ -989,9 +989,7 @@ class TrainingBackend:
             proc = self._proc
             if proc is None or not proc.is_alive():
                 return
-            watchdog = threading.Thread(
-                target = self._stop_watchdog_loop, args = (proc,), daemon = True
-            )
+            watchdog = threading.Thread(target = self._stop_watchdog_loop, args = (proc,), daemon = True)
             self._stop_watchdog = watchdog
             watchdog.start()
 

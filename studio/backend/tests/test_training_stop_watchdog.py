@@ -144,9 +144,9 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
     b._complete_seen.set()  # worker reported "complete" -> save is done
 
     b._start_stop_watchdog()
-    assert _wait_until(lambda: calls == ["force", "final"]), (
-        "watchdog must force_terminate a worker still alive after the post-save grace"
-    )
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "watchdog must force_terminate a worker still alive after the post-save grace"
     b._stop_watchdog.join(timeout = 5)
 
 
@@ -166,9 +166,9 @@ def test_watchdog_escalates_after_absolute_timeout(monkeypatch):
     # No _complete_seen: simulates a hang during save, no "complete" ever sent.
 
     b._start_stop_watchdog()
-    assert _wait_until(lambda: calls == ["force", "final"]), (
-        "watchdog must force_terminate a worker that never exits within the timeout"
-    )
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "watchdog must force_terminate a worker that never exits within the timeout"
     b._stop_watchdog.join(timeout = 5)
 
 
