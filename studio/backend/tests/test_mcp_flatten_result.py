@@ -77,6 +77,36 @@ def test_strip_result_for_model_drops_image_payload():
     assert PNG_B64 not in stripped
 
 
+def test_strip_preserves_literal_mcp_sentinel_in_text():
+    # A tool that legitimately returns text containing the marker (e.g. reading
+    # source/docs that quote it) must not be truncated: the suffix is not a
+    # valid JSON image array.
+    text = "before\n__MCP_IMAGES__: literal from source\nafter"
+    assert strip_result_for_model(text) == text
+
+
+def test_strip_preserves_non_image_json_after_marker():
+    text = 'log line\n__MCP_IMAGES__:["not", "image", "dicts"]'
+    assert strip_result_for_model(text) == text
+
+
+def test_strip_removes_only_valid_terminal_envelope():
+    text = (
+        "Earlier mention: __MCP_IMAGES__: is documented here"
+        "\n[1 image attached; displayed to the user]"
+        '\n__MCP_IMAGES__:[{"data": "AAAA", "mimeType": "image/png"}]'
+    )
+    assert strip_result_for_model(text) == (
+        "Earlier mention: __MCP_IMAGES__: is documented here"
+        "\n[1 image attached; displayed to the user]"
+    )
+
+
+def test_strip_still_handles_images_and_rag_sentinels():
+    assert strip_result_for_model("output\n__IMAGES__:['a.png']") == "output"
+    assert strip_result_for_model("answer\n__RAG_SOURCES__:[{}]") == "answer"
+
+
 def test_error_result_keeps_error_prefix_and_images():
     flat = _flatten_result(_result(_text("boom"), _image(), is_error = True))
     assert flat.startswith("Error: boom")
