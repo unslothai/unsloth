@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+
+from starlette.background import BackgroundTask
 from starlette.requests import ClientDisconnect
 from typing import Any, Callable, List, Optional, Union
 import json
@@ -6250,6 +6252,12 @@ async def _openai_chat_completions_impl(
     recall_enabled, auto_save_enabled = (
         chat_memory.get_memory_settings() if scope is not None else (False, False)
     )
+
+    def _new_chat_cancel_event():
+        cancel_event = threading.Event()
+        request.state.memory_cancel_event = cancel_event
+        return cancel_event
+
     if payload.request_purpose == "memory_capture":
         if scope is None or not auto_save_enabled:
             return JSONResponse({"id": "memory-capture-skipped", "choices": []})
@@ -6328,7 +6336,7 @@ async def _openai_chat_completions_impl(
             def _commit_deterministic_memory() -> None:
                 if scope.allow_explicit_commands:
                     chat_memory.explicit_command(scope.thread_id, scope.source_message_id)
-                if scope.auto_capture and auto_save_enabled:
+                if scope.auto_capture and chat_memory.get_memory_settings()[1]:
                     chat_memory.direct_statement(scope.thread_id, scope.source_message_id)
 
             request.state.memory_commit = _commit_deterministic_memory
@@ -6631,7 +6639,7 @@ async def _openai_chat_completions_impl(
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
-            cancel_event = threading.Event()
+            cancel_event = _new_chat_cancel_event()
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
 
@@ -6848,7 +6856,7 @@ async def _openai_chat_completions_impl(
                 "Image provided but current GGUF model does not support vision.",
             )
 
-        cancel_event = threading.Event()
+        cancel_event = _new_chat_cancel_event()
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         # `stream` defaults to False on ChatCompletionRequest (OpenAI spec
         # parity). Naive curl / .NET / System.Text.Json clients omitting the
@@ -6922,7 +6930,7 @@ async def _openai_chat_completions_impl(
         if audio_b64:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
 
-        cancel_event = threading.Event()
+        cancel_event = _new_chat_cancel_event()
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
@@ -8231,7 +8239,7 @@ async def _openai_chat_completions_impl(
             reasoning_prefilled = _sf_reasoning_prefilled,
         )
 
-    cancel_event = threading.Event()
+    cancel_event = _new_chat_cancel_event()
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
@@ -8990,11 +8998,36 @@ def _commit_memory_safely(commit) -> None:
         logger.warning("chat_memory.commit_failed")
 
 
-def _defer_memory_commit(response, commit):
+def _defer_memory_commit(
+    response,
+    commit,
+    *,
+    cancel_event = None,
+):
     if commit is None:
         return response
+
+    def _cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     if isinstance(response, StreamingResponse):
         body_iterator = response.body_iterator
+
+        async def _cancel_body_iterator() -> None:
+            if cancel_event is not None:
+                cancel_event.set()
+            athrow = getattr(body_iterator, "athrow", None)
+            if athrow is not None:
+                try:
+                    await athrow(asyncio.CancelledError())
+                    return
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    return
+                except RuntimeError:
+                    pass
+            aclose = getattr(body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
         async def _commit_after_stream():
             done = failed = False
@@ -9004,14 +9037,26 @@ def _defer_memory_commit(response, commit):
                     done = done or chunk_done
                     failed = failed or chunk_failed
                     yield chunk
+            except (asyncio.CancelledError, GeneratorExit):
+                failed = True
+                await _cancel_body_iterator()
+                raise
             finally:
-                if done and not failed:
+                if done and not failed and not _cancelled():
                     _commit_memory_safely(commit)
 
         response.body_iterator = _commit_after_stream()
         return response
     if 200 <= response.status_code < 300:
-        _commit_memory_safely(commit)
+        original_background = response.background
+
+        async def _commit_after_send() -> None:
+            if original_background is not None:
+                await original_background()
+            if not _cancelled():
+                _commit_memory_safely(commit)
+
+        response.background = BackgroundTask(_commit_after_send)
     return response
 
 
@@ -9025,6 +9070,8 @@ async def _dispatch_openai_chat_completions(
     # Clear memory state when tests reuse a request object.
     request.state.memory_commit = None
     request.state.memory_original_messages = None
+
+    request.state.memory_cancel_event = None
     request.state.internal_memory_capture = internal_memory_capture
     request.state.redact_memory_capture_monitor = False
     if internal_memory_capture:
@@ -9035,7 +9082,11 @@ async def _dispatch_openai_chat_completions(
             detail = "memory_capture requests must use /v1/chat/completions/memory-capture.",
         )
     response = await _openai_chat_completions_impl(payload, request, current_subject)
-    return _defer_memory_commit(response, request.state.memory_commit)
+    return _defer_memory_commit(
+        response,
+        request.state.memory_commit,
+        cancel_event = request.state.memory_cancel_event,
+    )
 
 
 @router.post("/chat/completions")

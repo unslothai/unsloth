@@ -138,15 +138,29 @@ _FORGET_EVIDENCE_RE = re.compile(
     r"stopp(?:ed|ing)\s+(?:using|liking|preferring|working))\b",
     re.I,
 )
-_COMMAND_RE = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$", re.I)
+_POLITE_COMMAND_PREFIX = r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?"
+_COMMAND_RE = re.compile(
+    _POLITE_COMMAND_PREFIX + r"remember(?:\s+that)?\s+(.+?)\??\s*$",
+    re.I,
+)
 _FORGET_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?forget(?:\s+that)?\s+(.+?)\??\s*$",
+    _POLITE_COMMAND_PREFIX + r"forget(?:\s+that)?\s+(.+?)\??\s*$",
     re.I,
 )
 _MEMORY_DELETE_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:remove|delete)(?:\s+that)?\s+(?:"
+    _POLITE_COMMAND_PREFIX + r"(?:remove|delete)(?:\s+that)?\s+(?:"
     r"(?P<before>.+?)\s+from\s+(?:saved\s+)?memor(?:y|ies)|"
-    r"(?:the\s+)?(?:saved\s+)?memor(?:y|ies)\s+(?:about|that)\s+(?P<after>.+?))\s*$",
+    r"(?:the\s+)?(?:saved\s+)?memor(?:y|ies)\s+(?:about|that)\s+(?P<after>.+?)|"
+    r"(?P<direct>(?:my|our)\s+.+?)\s+memory)\??\s*$",
+    re.I,
+)
+_BULK_FORGET_TARGET_RE = re.compile(
+    r"^(?:all|every|everything)(?:\s+(?:saved\s+)?memor(?:y|ies))?$",
+    re.I,
+)
+
+_MEMORY_DELETE_INTENT_RE = re.compile(
+    _POLITE_COMMAND_PREFIX + r"(?:remove|delete)\b[^\n]*\bmemor(?:y|ies)\b[^\n]*$",
     re.I,
 )
 _FORGET_INTENT_RE = re.compile(r"\bforget\b", re.I)
@@ -666,7 +680,7 @@ def _forget_target(text: str) -> str | None:
         return match.group(1)
     match = _MEMORY_DELETE_RE.fullmatch(text)
     if match:
-        return match.group("before") or match.group("after")
+        return match.group("before") or match.group("after") or match.group("direct")
     return None
 
 
@@ -674,7 +688,11 @@ def _is_forget_intent(text: str) -> bool:
     return (
         "\n" not in text
         and "```" not in text
-        and (_forget_target(text) is not None or _FORGET_INTENT_RE.search(text) is not None)
+        and (
+            _forget_target(text) is not None
+            or _FORGET_INTENT_RE.search(text) is not None
+            or _MEMORY_DELETE_INTENT_RE.fullmatch(text) is not None
+        )
     )
 
 
@@ -703,6 +721,9 @@ def explicit_command(thread_id: str, source_message_id: str) -> list[dict]:
             return []
     if forget_target:
         target = normalize_content(forget_target).casefold()
+
+        if _BULK_FORGET_TARGET_RE.fullmatch(target):
+            return []
         target_tokens = _tokens(target)
         candidates = [
             row
@@ -756,7 +777,7 @@ def recall_context(
 ) -> str | None:
     thread, _, text = verify_source(thread_id, source_message_id)
 
-    if _is_forget_intent(text):
+    if _COMMAND_RE.fullmatch(text) or _is_forget_intent(text):
         return None
     rows = [
         row

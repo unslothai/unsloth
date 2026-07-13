@@ -20,6 +20,8 @@ from fastapi import HTTPException
 
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from starlette.requests import ClientDisconnect
+
 
 from models.inference import (
     MemoryScopeRequest,
@@ -3418,6 +3420,47 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_deferred_memory_commit_rechecks_auto_save_setting(self, monkeypatch):
+        async def _run():
+            from core.inference import memory as chat_memory
+
+            settings = {"auto_save": True}
+            commits = []
+            monkeypatch.setattr(
+                chat_memory,
+                "get_memory_settings",
+                lambda: (True, settings["auto_save"]),
+            )
+            monkeypatch.setattr(
+                chat_memory, "direct_statement", lambda *_: commits.append("direct")
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                scope = {},
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "I prefer dark mode")],
+                logprobs = True,
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = False,
+                    allow_explicit_commands = False,
+                    auto_capture = True,
+                ),
+            )
+
+            with pytest.raises(HTTPException):
+                await openai_chat_completions(payload, request, current_subject = "test")
+            settings["auto_save"] = False
+            request.state.memory_commit()
+            assert commits == []
+
+        asyncio.run(_run())
+
     def test_memory_capture_recall_respects_persisted_setting(self, monkeypatch):
         async def _run():
             from core.inference import memory as chat_memory
@@ -3456,16 +3499,20 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_deferred_memory_commit_requires_completed_stream(self):
-        async def _consume(lines):
+        async def _consume(lines, *, cancel_before_done = False):
             commits = []
+            cancel_event = threading.Event()
 
             async def body():
                 for line in lines:
+                    if cancel_before_done and "[DONE]" in line:
+                        cancel_event.set()
                     yield line
 
             response = _defer_memory_commit(
                 StreamingResponse(body(), media_type = "text/event-stream"),
                 lambda: commits.append("saved"),
+                cancel_event = cancel_event,
             )
             _ = [chunk async for chunk in response.body_iterator]
             return commits
@@ -3476,6 +3523,78 @@ class TestApiMonitorProviderAndCompletionStreams:
             == []
         )
         assert asyncio.run(_consume(["data: {}\n\n"])) == []
+        assert (
+            asyncio.run(_consume(["data: {}\n\n", "data: [DONE]\n\n"], cancel_before_done = True))
+            == []
+        )
+
+    def test_deferred_memory_commit_propagates_send_cancellation(self):
+        async def _run():
+            commits = []
+            cleaned = asyncio.Event()
+            cancelled = asyncio.Event()
+            cancel_event = threading.Event()
+
+            async def body():
+                try:
+                    yield "data: {}\n\n"
+                    yield "data: [DONE]\n\n"
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                finally:
+                    cleaned.set()
+
+            response = _defer_memory_commit(
+                _SameTaskStreamingResponse(body(), media_type = "text/event-stream"),
+                lambda: commits.append("saved"),
+                cancel_event = cancel_event,
+            )
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                if message.get("type") == "http.response.body" and b"[DONE]" in message.get(
+                    "body", b""
+                ):
+                    raise OSError("client disconnected")
+
+            with pytest.raises(ClientDisconnect):
+                await response({}, receive, send)
+            assert cancel_event.is_set()
+            assert cancelled.is_set()
+            assert cleaned.is_set()
+            assert commits == []
+
+        asyncio.run(_run())
+
+    def test_non_stream_memory_commit_requires_response_delivery(self):
+        async def _deliver(*, fail = False):
+            commits = []
+            response = _defer_memory_commit(
+                JSONResponse({"ok": True}),
+                lambda: commits.append("saved"),
+                cancel_event = threading.Event(),
+            )
+            assert commits == []
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                if fail and message.get("type") == "http.response.body":
+                    raise OSError("client disconnected")
+
+            if fail:
+                with pytest.raises(OSError):
+                    await response({"type": "http"}, receive, send)
+            else:
+                await response({"type": "http"}, receive, send)
+            return commits
+
+        assert asyncio.run(_deliver()) == ["saved"]
+        assert asyncio.run(_deliver(fail = True)) == []
 
     def test_only_dedicated_capture_route_redacts_api_monitor(self, monkeypatch):
         async def _run():

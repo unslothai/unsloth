@@ -228,8 +228,11 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
     (
         "forget my phone number",
         "Can you forget my phone number?",
+        "Can you please forget my phone number?",
         "remove my phone number from memory",
         "delete the memory about my phone number",
+        "Delete my phone number memory",
+        "Can you delete the memory about my phone number?",
     ),
 )
 def test_explicit_forget_matches_partial_targets_and_aliases(tmp_path, monkeypatch, command):
@@ -266,12 +269,61 @@ def test_generic_delete_prompt_does_not_remove_memory(tmp_path, monkeypatch):
     assert studio_db.get_chat_memory(saved["id"]) == saved
 
 
+def test_ambiguous_direct_memory_delete_does_not_remove_memory(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(
+        content = "Use shared memory for worker communication", scope = "global"
+    )
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "delete shared memory"}],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
+    assert memory.explicit_command("thread", "message") == []
+    assert studio_db.get_chat_memory(saved["id"]) == saved
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "delete all memory",
+        "delete all memories",
+        "Can you please delete all memory?",
+        "forget everything",
+    ),
+)
+def test_bulk_delete_memory_request_only_suppresses_recall(tmp_path, monkeypatch, command):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "Run all tests and verify everything", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": command}],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
+    assert memory.explicit_command("thread", "message") == []
+    assert studio_db.get_chat_memory(saved["id"]) == saved
+
+
 @pytest.mark.parametrize(
     "command",
     (
         "remove my phone number from memory",
         "delete the memory about my phone number",
-        "Can you forget my phone number?",
+        "Delete my phone number memory",
+        "Can you please forget my phone number?",
+        "Can you delete the memory about my phone number?",
     ),
 )
 def test_memory_removal_aliases_skip_recall(tmp_path, monkeypatch, command):
@@ -302,6 +354,22 @@ def test_forget_command_skips_recall(tmp_path, monkeypatch):
             "content": [
                 {"type": "text", "text": "Please forget that My phone number is 415-555-0199"}
             ],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
+
+
+def test_remember_command_skips_recall(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    memory.create_memory(content = "My phone number is 415-555-0199", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "remember that my phone number changed"}],
         },
     )
 

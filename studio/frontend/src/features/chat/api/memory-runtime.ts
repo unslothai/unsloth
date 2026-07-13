@@ -8,7 +8,8 @@ const DURABLE_SIGNAL_RE =
   /\b(?:i|my|we|our|for me|actually|no longer|instead|prefer|always|never|this (?:project|repo|app)|(?:project|repo|app) (?:uses|is|has)|goal|constraint|we use)\b/i;
 const CODE_LINE_RE =
   /^\s*(?:import\s|export\s|const\s|let\s|var\s|def\s|class\s|function\s|\{|\}|\[|\]|#include\b)/;
-const EXPLICIT_COMMAND_RE = /^(?:please\s+)?(?:remember|forget)\b/i;
+const EXPLICIT_COMMAND_RE =
+  /^(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?(?:(?:remember|forget)\b|(?:remove|delete)\b[^\n]*\bmemor(?:y|ies)\b)/i;
 const LINE_BREAK_RE = /\r?\n/;
 const FENCED_CODE_RE = /```[\s\S]*?```/g;
 const INTERROGATIVE_RE =
