@@ -19,7 +19,6 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import run  # noqa: E402
-from auth import bootstrap_timeout as auth_bootstrap_timeout  # noqa: E402
 from auth import storage as auth_storage  # noqa: E402
 from auth import terminal_prompt  # noqa: E402
 from auth.terminal_prompt import should_prompt_password_change  # noqa: E402
@@ -129,7 +128,11 @@ def test_gate_warns_and_proceeds_without_tty_when_deadline_arms(monkeypatch):
     out = stderr.getvalue()
     assert "default admin password is still active" in out
     assert "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT" in out
-    assert ".bootstrap_password" in out
+    # The seeded file may already be gone (the CLI parent deletes it before
+    # re-exec), so the warning must point at the reset-password recovery path
+    # instead of promising a file to read.
+    assert "reset-password" in out
+    assert ".bootstrap_password" not in out
 
 
 def test_gate_fails_closed_without_tty_when_deadline_cannot_arm(monkeypatch):

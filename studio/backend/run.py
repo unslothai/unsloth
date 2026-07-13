@@ -1167,16 +1167,20 @@ def _terminal_password_gate(
                 flush = True,
             )
             return False, False
-        _bootstrap_file = _auth_storage.DB_PATH.parent / ".bootstrap_password"
+        # The public page will NOT auto-fill the bootstrap credential (suppressed
+        # below), and the CLI parent may already have removed the seeded
+        # .bootstrap_password file, so do not tell the operator to read it from
+        # disk. Point recovery at the terminal-attached run / reset-password
+        # command, which work regardless of whether the file still exists.
         print(
             "  WARNING: the default admin password is still active while "
             "Studio is about to be published on a public Cloudflare URL, and "
             "no terminal is attached to change it here. The public page will "
-            "NOT auto-fill the bootstrap credential; read it on this machine "
-            f"from {_bootstrap_file}, log in, and change it promptly. Studio "
-            "shuts down after the bootstrap deadline "
-            "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) unless the "
-            "password is changed.",
+            "NOT auto-fill the bootstrap credential. Set a new password by "
+            "running `unsloth studio` locally with a terminal attached, or "
+            "`unsloth studio reset-password`. Studio shuts down after the "
+            "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
+            "unless the password is changed.",
             file = sys.stderr,
             flush = True,
         )

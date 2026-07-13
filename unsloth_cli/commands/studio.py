@@ -776,12 +776,34 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
+            # Mixed-version safety: this launch re-execs a child Studio process,
+            # and an OLD studio-venv child (predating this gate) has no pre-bind
+            # bootstrap suppression. Its lifespan would read the seeded plaintext
+            # credential back from disk (storage.get_bootstrap_password()) and
+            # inject it into the public HTML for up to the bootstrap deadline.
+            # Delete the seeded password file here, in the parent, so a fresh
+            # child of ANY version reads None and never serves it.
+            # must_change_password stays set in the DB, so the login page still
+            # forces a change and the bootstrap shutdown timer still arms; only
+            # the plaintext-on-disk copy of the credential is removed.
+            bootstrap_file = STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE
+            try:
+                bootstrap_file.unlink(missing_ok = True)
+            except OSError:
+                typer.echo(
+                    "Warning: could not remove the seeded bootstrap password file "
+                    f"({bootstrap_file}); the public Studio page may auto-fill the "
+                    "default credential. Delete that file manually, or change the "
+                    "admin password immediately.",
+                    err = True,
+                )
             typer.echo(
                 "Warning: Studio is being exposed publicly while the admin account "
-                "still uses its auto-generated bootstrap password. Change it promptly "
-                "(read it on this machine from "
-                f"{STUDIO_HOME / 'auth' / BOOTSTRAP_PASSWORD_FILE}); Studio shuts "
-                "down after ~1h if it stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
+                "still uses its auto-generated bootstrap password. The seeded password "
+                "file has been removed so it is not served on the public page. Set a new "
+                "password by running `unsloth studio` locally with a terminal attached, "
+                "or `unsloth studio reset-password`; Studio shuts down after ~1h if the "
+                "password stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
                 err = True,
             )
             return
