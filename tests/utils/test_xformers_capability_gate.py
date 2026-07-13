@@ -39,7 +39,7 @@ def test_capability_gate(capability, probe_result, expect_disabled):
 @pytest.mark.skipif(
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 12,
     reason = "on real sm_120+ the probe legitimately returns False when the build ships no "
-             "sm_120 kernel, so asserting True there would be a false failure",
+    "sm_120 kernel, so asserting True there would be a false failure",
 )
 def test_probe_shapes_are_valid_on_working_gpu():
     # Guards against a malformed probe that raises on every GPU and would silently

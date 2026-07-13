@@ -79,7 +79,13 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
     # runs (fp16/bf16 only), so fp32 must be downcast there too or the op raises.
     captured = {}
 
-    def fake_xformers_attention(Q, K, V, attn_bias = None, **kwargs):
+    def fake_xformers_attention(
+        Q,
+        K,
+        V,
+        attn_bias = None,
+        **kwargs,
+    ):
         captured["dtype"] = Q.dtype
         # Mirror the flash-2 op's real dtype constraint so an unfixed dispatch fails loudly.
         if fp32_unsupported and Q.dtype not in (torch.float16, torch.bfloat16):

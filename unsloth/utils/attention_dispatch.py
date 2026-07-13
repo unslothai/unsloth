@@ -260,7 +260,9 @@ def run_attention(
             except (AttributeError, TypeError):
                 downcast_dtype = torch.get_autocast_gpu_dtype()
         else:
-            downcast_dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
+            downcast_dtype = next(
+                (d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None
+            )
         if downcast_dtype not in (torch.float16, torch.bfloat16):
             downcast_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
         Q, K, V = Q.to(downcast_dtype), K.to(downcast_dtype), V.to(downcast_dtype)
