@@ -2914,9 +2914,7 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     # elsewhere (e.g. a traceback frame under a /workspace project root, or the
     # user's code printing "/mnt/data") must not trigger a misleading
     # "use a relative path" hint when the actual miss was a local path.
-    convention = any(
-        prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES
-    )
+    convention = any(prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES)
     if not convention:
         # Generalized: only hint when the failing path is an absolute path
         # outside the working directory. A relative miss (a real typo of a
