@@ -20,7 +20,6 @@ from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
     disable_openai_auto_switch_for_request,
     load_model_for_preview,
-    note_preview_request,
     openai_chat_completions,
 )
 from state.tool_policy import tools_force_disabled
@@ -130,7 +129,6 @@ async def _unlock_after(body_iterator):
             yield chunk
     finally:
         _preview_lock.release()
-        note_preview_request(-1)
 
 
 async def _serve_chat(
@@ -140,7 +138,6 @@ async def _serve_chat(
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
     disable_openai_auto_switch_for_request(getattr(request, "scope", None))
-    note_preview_request(1)
     keep_locked = False
     locked = False
     try:
@@ -156,10 +153,8 @@ async def _serve_chat(
             keep_locked = True
         return response
     finally:
-        if not keep_locked:
-            if locked:
-                _preview_lock.release()
-            note_preview_request(-1)
+        if not keep_locked and locked:
+            _preview_lock.release()
 
 
 @router.get("")

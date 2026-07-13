@@ -524,7 +524,6 @@ from models.inference import LoadRequest
 def slot_state():
     def _reset():
         with inference._preview_slot_lock:
-            inference._preview_request_count = 0
             inference._preview_resident_ident = None
 
     _reset()
@@ -548,6 +547,11 @@ def fake_slot(slot_state, monkeypatch):
     monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: state["ident"])
     monkeypatch.setattr(
         llama_keepwarm, "other_inference_request_count", lambda **kw: state.get("busy", 0)
+    )
+    monkeypatch.setattr(
+        llama_keepwarm,
+        "other_preview_inflight_count",
+        lambda **kw: state.get("other_previews", 0),
     )
     return state
 
@@ -573,10 +577,8 @@ def test_preview_load_refused_when_studio_model_is_loaded(fake_slot):
     assert fake_slot["ident"] == "owner-model"
 
 
-def test_preview_load_allowed_when_checkpoint_already_loaded(fake_slot):
-    # No swap needed: busy traffic on the already-loaded checkpoint is fine.
+def test_preview_load_allowed_when_checkpoint_already_loaded_and_idle(fake_slot):
     fake_slot["ident"] = "/outputs/run/ckpt"
-    fake_slot["busy"] = 1
 
     asyncio.run(
         inference.load_model_for_preview(
@@ -588,24 +590,38 @@ def test_preview_load_allowed_when_checkpoint_already_loaded(fake_slot):
     assert fake_slot["loads"] == ["/outputs/run/ckpt"]
 
 
-def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
-    # A second preview visitor queued on the preview lock is tracked in-flight,
-    # but must not read as foreign traffic (it can't be mid-generation).
+def test_preview_load_refused_on_same_checkpoint_when_studio_busy(fake_slot):
+    # same_target doesn't guarantee a no-op reload (GGUF settings can still force
+    # a restart), so busy Studio traffic blocks even a same-checkpoint request.
     fake_slot["ident"] = "/outputs/run/ckpt"
     fake_slot["busy"] = 1
-    inference.note_preview_request(1)
-    inference.note_preview_request(1)
-    try:
-        asyncio.run(
-            inference.load_model_for_preview(
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
                 LoadRequest(model_path = "/outputs/run/ckpt"),
                 SimpleNamespace(app = None),
                 "admin",
             )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert fake_slot["loads"] == []
+
+
+def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
+    # Busy traffic fully accounted for by other previews isn't foreign traffic.
+    fake_slot["ident"] = "/outputs/run/ckpt"
+    fake_slot["busy"] = 1
+    fake_slot["other_previews"] = 1
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt"),
+            SimpleNamespace(app = None),
+            "admin",
         )
-    finally:
-        inference.note_preview_request(-1)
-        inference.note_preview_request(-1)
+    )
     assert fake_slot["loads"] == ["/outputs/run/ckpt"]
 
 
@@ -662,6 +678,26 @@ def test_borrowed_studio_model_stays_studio_owned(fake_slot):
     exc = asyncio.run(_run())
     assert exc.status_code == 503
     assert fake_slot["ident"] == "/outputs/run/ckpt-a"
+
+
+def test_failed_load_preserves_preview_marker(slot_state):
+    # A real load that fails validation before touching the backend must not
+    # clear the resident marker: the old preview-owned checkpoint is still
+    # loaded, unchanged.
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference._load_model_impl(
+                LoadRequest(model_path = "/outputs/run/ckpt-a", llama_extra_args = ["--host", "0.0.0.0"]),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 400
+    assert inference._is_preview_resident("/outputs/run/ckpt-a")
 
 
 def test_chat_returns_503_when_model_busy(tmp_path, monkeypatch, slot_state):

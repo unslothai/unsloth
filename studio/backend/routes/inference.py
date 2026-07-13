@@ -3592,19 +3592,7 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
 
 
 _preview_slot_lock = threading.Lock()
-_preview_request_count = 0
 _preview_resident_ident: Optional[str] = None
-
-
-def note_preview_request(delta: int) -> None:
-    global _preview_request_count
-    with _preview_slot_lock:
-        _preview_request_count = max(0, _preview_request_count + delta)
-
-
-def _other_preview_requests() -> int:
-    with _preview_slot_lock:
-        return max(0, _preview_request_count - 1)
 
 
 def _set_preview_resident(ident: Optional[str]) -> None:
@@ -3635,6 +3623,7 @@ async def load_model_for_preview(
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
         other_inference_request_count,
+        other_preview_inflight_count,
     )
     async with _auto_switch_lock():
         await _acquire_swap_gate()
@@ -3649,12 +3638,13 @@ async def load_model_for_preview(
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
+                # same_target doesn't guarantee a no-op reload (GGUF settings can
+                # still force a restart), so busy Studio traffic always blocks.
                 if (
-                    not same_target
-                    and other_inference_request_count(
+                    other_inference_request_count(
                         current_request_counted = True, include_pending = False
                     )
-                    > _other_preview_requests()
+                    > other_preview_inflight_count()
                 ):
                     raise HTTPException(
                         status_code = 503,
@@ -3924,7 +3914,6 @@ async def load_model(
 async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
-    _set_preview_resident(None)
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -4129,6 +4118,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
         )
+
+        # Past validation, about to actually touch the backend: reclaim the slot
+        # for Studio now, not before validation could still reject the load and
+        # leave a preview-owned checkpoint resident but unmarked.
+        _set_preview_resident(None)
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:

@@ -22,6 +22,9 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
+# Subset of _inflight that is /p/ preview traffic; same update sites as _inflight
+# so it can't drift out of sync with it.
+_preview_inflight = 0
 # Requests blocked on the unload gate but not yet counted in _inflight: the idle
 # loop must not unload while one is waiting (it would unload out from under it).
 _pending = 0
@@ -64,12 +67,16 @@ _INFERENCE_SUFFIXES = (
 )
 
 
-def _is_inference_path(path: str) -> bool:
-    if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
-        return True
+def _is_preview_path(path: str) -> bool:
     # Public checkpoint preview (/p/{run}/v1/chat/completions) delegates to the
     # chat handler and streams from the same backend, so protect it from idle unload.
     return path.startswith("/p/") and path.endswith("/v1/chat/completions")
+
+
+def _is_inference_path(path: str) -> bool:
+    if path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES):
+        return True
+    return _is_preview_path(path)
 
 
 def _note_pending() -> None:
@@ -84,29 +91,35 @@ def _note_unpending() -> None:
         _pending = max(0, _pending - 1)
 
 
-def _note_start() -> None:
+def _note_start(is_preview: bool = False) -> None:
     # Do not stamp _last_active here: while _inflight > 0 the model is already
     # protected (see _is_idle), and stamping on start lets an external-provider
     # request that is later untracked still reset the local idle timer.
-    global _inflight, _pending
+    global _inflight, _pending, _preview_inflight
     with _lock:
         _pending = max(0, _pending - 1)
         _inflight += 1
+        if is_preview:
+            _preview_inflight += 1
 
 
-def _note_end() -> None:
-    global _inflight, _last_active
+def _note_end(is_preview: bool = False) -> None:
+    global _inflight, _last_active, _preview_inflight
     with _lock:
         _inflight = max(0, _inflight - 1)
         _last_active = time.monotonic()
+        if is_preview:
+            _preview_inflight = max(0, _preview_inflight - 1)
 
 
-def _note_untracked_end() -> None:
+def _note_untracked_end(is_preview: bool = False) -> None:
     # Drop a request that never used the local GGUF without stamping local
     # activity, so periodic external-provider traffic can't keep the model warm.
-    global _inflight
+    global _inflight, _preview_inflight
     with _lock:
         _inflight = max(0, _inflight - 1)
+        if is_preview:
+            _preview_inflight = max(0, _preview_inflight - 1)
 
 
 def _is_idle(ttl_seconds: float) -> bool:
@@ -137,6 +150,15 @@ def other_inference_request_count(
         if current_request_counted and active > 0:
             active -= 1
         return max(0, active) + (_pending if include_pending else 0)
+
+
+def other_preview_inflight_count(current_request_counted: bool = True) -> int:
+    """Preview (/p/) requests in flight other than the current route call."""
+    with _lock:
+        active = _preview_inflight
+        if current_request_counted and active > 0:
+            active -= 1
+        return max(0, active)
 
 
 # Set on the ASGI scope by a route that proved this request won't touch
@@ -209,11 +231,12 @@ class LlamaKeepWarmMiddleware:
         # cheap and invisible to clients (the response is proxied unchanged).
         # Mark pending before the gate so the idle loop (which holds the gate while
         # unloading) can't free the model while this request is waiting to start.
+        is_preview = _is_preview_path(scope.get("path") or "")
         _note_pending()
         started = False
         try:
             async with _unload_gate():
-                _note_start()
+                _note_start(is_preview)
                 started = True
         finally:
             if not started:
@@ -234,9 +257,9 @@ class LlamaKeepWarmMiddleware:
             # unauthenticated probes on an exposed server would keep the model warm
             # and never let idle-unload free VRAM.
             if status["code"] in (401, 403):
-                _note_untracked_end()
+                _note_untracked_end(is_preview)
             else:
-                _note_end()
+                _note_end(is_preview)
 
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":

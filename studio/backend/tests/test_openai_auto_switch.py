@@ -2211,6 +2211,31 @@ def test_note_start_does_not_reset_idle_timer():
         kw._note_end()  # restores _last_active stamp on completion
 
 
+def test_preview_inflight_updates_alongside_general_inflight():
+    # Both counters update under the same lock at the same call site, so a
+    # preview's own inflight count can't race other_inference_request_count's
+    # decrement the way a route-level counter (torn down on body-iterator
+    # exhaustion) could.
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 0
+    kw._preview_inflight = 0
+    kw._note_start(is_preview = True)
+    kw._note_start(is_preview = False)
+    try:
+        assert kw._inflight == 2
+        assert kw._preview_inflight == 1
+        other_busy = kw.other_inference_request_count(
+            current_request_counted = True, include_pending = False
+        ) - kw.other_preview_inflight_count(current_request_counted = True)
+        assert other_busy == 1  # only the non-preview request reads as foreign traffic
+    finally:
+        kw._note_end(is_preview = True)
+        kw._note_end(is_preview = False)
+    assert kw._inflight == 0
+    assert kw._preview_inflight == 0
+
+
 # ── codex review (merge round): reload-only sentinel, Anthropic tool validation ──
 
 
