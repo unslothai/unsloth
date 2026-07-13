@@ -1976,7 +1976,9 @@ class TestEnsureRocmTorchMarker:
 
     def test_pinned_known_family_cpu_pin_repairs(self):
         """A cpu pin whose torch drifted to a CUDA build is reinstalled from the pin."""
-        mock_pip, _ = self._ensure_known("https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128"))
+        mock_pip, _ = self._ensure_known(
+            "https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128")
+        )
         assert mock_pip.call_count == 1
 
     def test_pinned_known_family_skips_rocm_and_gfx_off_windows(self):
@@ -2057,7 +2059,9 @@ class TestEnsureRocmTorchMarker:
 
     def test_pinned_known_family_skips_unknown_family(self):
         """An unknown-family pin is owned by _ensure_verbatim_torch_index, not here."""
-        mock_pip, mock_try = self._ensure_known("https://mirror.local/simple", ("cpu", "", "2.10.0"))
+        mock_pip, mock_try = self._ensure_known(
+            "https://mirror.local/simple", ("cpu", "", "2.10.0")
+        )
         mock_pip.assert_not_called()
         mock_try.assert_not_called()
 
