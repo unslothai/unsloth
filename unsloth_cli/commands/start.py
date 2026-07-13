@@ -170,6 +170,36 @@ def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
 
 
+def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
+    """Route resumed one-shot prompts through Hermes' session-aware chat command."""
+    has_resume = any(
+        arg in ("--resume", "-r", "--continue", "-c")
+        or arg.startswith(("--resume=", "--continue="))
+        for arg in args
+    )
+    if not has_resume:
+        return args
+
+    rewritten = list(args)
+    for index, arg in enumerate(rewritten):
+        if arg in ("-z", "--oneshot"):
+            rewritten[index] = "-q"
+        elif arg.startswith("--oneshot="):
+            rewritten[index] = f"--query={arg.partition('=')[2]}"
+        else:
+            continue
+        if any(item == "--usage-file" or item.startswith("--usage-file=") for item in args):
+            raise typer.BadParameter(
+                "Hermes cannot resume a one-shot session with --usage-file; remove that option."
+            )
+        prefix = ["chat", "-Q"]
+        if "--yolo" not in rewritten:
+            prefix.append("--yolo")
+        rewritten = prefix + rewritten
+        return rewritten
+    return args
+
+
 class LoadOptions(NamedTuple):
     """Model-load knobs forwarded to /api/inference/load when --model triggers a load."""
 
@@ -875,6 +905,16 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
     return None
 
 
+def _wsl_windows_path(path: Path) -> str:
+    try:
+        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        _fail(f"Could not translate WSL path {path}: {exc}")
+    if not translated:
+        _fail(f"Could not translate WSL path {path}")
+    return translated
+
+
 def _looks_like_path(value: str) -> bool:
     # A var only wants the WSLENV /p flag if its value is a filesystem path: an
     # absolute POSIX path (/...), a UNC path (\\...), or a drive-qualified Windows
@@ -1184,6 +1224,7 @@ def write_openclaw_config(
     model: dict,
     path: Path,
     yolo: bool = False,
+    workspace_path: Optional[str] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -1210,6 +1251,11 @@ def write_openclaw_config(
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
     defaults = _subdict(_subdict(config, "agents"), "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
+    # OPENCLAW_STATE_DIR does not relocate the workspace. Keep it beside the managed
+    # config so ephemeral launches avoid ~/.openclaw and persisted sessions retain it.
+    workspace = path.parent / "workspace"
+    workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    defaults["workspace"] = workspace_path or str(workspace)
     # Unauthenticated loopback gateway: without auth.mode=none the client won't open
     # the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
@@ -1339,9 +1385,11 @@ def write_opencode_config(
     tools = ("edit", "bash", "webfetch")
     if yolo:
         # OpenCode has no --yolo flag; auto-approve is the config `permission` block
-        # (singular). Allow the prompting tools so tool calls don't block on the TUI. This
-        # rides inline (OPENCODE_CONFIG_CONTENT) so --yolo works even over a project config.
+        # (singular). Allow the prompting tools and paths outside the launch directory so
+        # tool calls don't block on the TUI. This rides inline (OPENCODE_CONFIG_CONTENT) so
+        # --yolo works even over a project config.
         session_permission = {t: "allow" for t in tools}
+        session_permission["external_directory"] = {"*": "allow"}
         config["permission"] = dict(session_permission)
     else:
         # Undo only what --yolo wrote: our yolo sets an explicit per-tool "allow" for these
@@ -1358,6 +1406,8 @@ def write_opencode_config(
             for tool in tools:
                 if permission.get(tool) == "allow":
                     permission[tool] = "ask"
+            if permission.get("external_directory") == {"*": "allow"}:
+                permission["external_directory"] = {"*": "ask"}
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -1629,8 +1679,18 @@ def openclaw(
     )
     with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
+        workspace_path = None
+        if _wsl_windows_executable(command):
+            workspace_path = _wsl_windows_path(cfg / "workspace")
         # key lives in the config, not the env; --yolo writes the exec policy here too.
-        write_openclaw_config(base, key, entry, config_path, yolo = yolo)
+        write_openclaw_config(
+            base,
+            key,
+            entry,
+            config_path,
+            yolo = yolo,
+            workspace_path = workspace_path,
+        )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
@@ -1729,6 +1789,8 @@ def hermes(
     persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
+    native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
+    command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(
         api_key,
         model,
@@ -1736,7 +1798,6 @@ def hermes(
         serve = serve,
         launch = launch,
     )
-    command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
     install_hint = _hermes_install_hint()
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
