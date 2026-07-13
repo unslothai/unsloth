@@ -344,9 +344,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             # local pipeline dir, so admit it here too (task tagging then classifies it via
             # _local_is_diffusers); otherwise it is hidden from the On Device picker.
             has_pipeline_index = (child / "model_index.json").is_file()
-            has_model_files = (
-                has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
-            )
+            has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
         except OSError:
             # Skip unreadable children rather than failing the scan.
             continue

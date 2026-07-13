@@ -292,7 +292,12 @@ def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
 
     seen: dict = {}
 
-    def _resolve(active, *, hf_token = None, cancel_event = None):
+    def _resolve(
+        active,
+        *,
+        hf_token = None,
+        cancel_event = None,
+    ):
         # Mid-setup: the in-flight generation must already be reported as active.
         seen["progress"] = b.generate_progress()
         return []
