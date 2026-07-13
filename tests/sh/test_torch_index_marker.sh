@@ -18,6 +18,10 @@ _TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
 # Extract the marker helpers from install.sh and source them.
 _FUNC_FILE=$(mktemp)
 {
+    sed -n '/^_strip_index_url_credentials()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_torch_index_url_leaf()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_normalize_family_leaf()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_normalize_index_url()/,/^}/p' "$INSTALL_SH"
@@ -57,6 +61,30 @@ assert_eq "rocm7.2 unchanged" \
     "https://download.pytorch.org/whl/rocm7.2" \
     "$(_normalize_index_url 'https://download.pytorch.org/whl/rocm7.2/')"
 
+echo "=== _strip_index_url_credentials ==="
+assert_eq "user:token@ stripped" \
+    "https://mirror.local/simple" \
+    "$(_strip_index_url_credentials 'https://user:tok@mirror.local/simple')"
+assert_eq "credential-free url unchanged" \
+    "https://mirror.local/simple" \
+    "$(_strip_index_url_credentials 'https://mirror.local/simple')"
+assert_eq "@ in path preserved" \
+    "https://h/pa@th" \
+    "$(_strip_index_url_credentials 'https://u:p@h/pa@th')"
+# Backward compatibility: an OLD marker that recorded credentials must compare
+# equal to the same pin with or without them (normalization strips both sides).
+assert_eq "normalize: creds on either side compare equal" \
+    "$(_normalize_index_url 'https://x/cu128')" \
+    "$(_normalize_index_url 'https://user:tok@x/cu128/')"
+
+echo "=== _torch_index_url_leaf ==="
+assert_eq "query dropped before classification" \
+    "cu128" "$(_torch_index_url_leaf 'https://m/whl/cu128?token=x')"
+assert_eq "fragment dropped before classification" \
+    "cu128" "$(_torch_index_url_leaf 'https://m/whl/cu128#frag')"
+assert_eq "plain leaf lowercased" \
+    "gfx120x-all" "$(_torch_index_url_leaf 'https://m/whl/gfx120X-all/')"
+
 echo "=== _write_torch_index_marker ==="
 _VD=$(mktemp -d)
 _write_torch_index_marker "$_VD" "https://download.pytorch.org/whl/rocm7.2"
@@ -79,6 +107,14 @@ assert_eq "blank url leaves prior marker intact" \
 # No stray temp files left behind by the atomic write.
 _leftover=$(find "$_VD" -maxdepth 1 -name "$_TORCH_INDEX_MARKER_NAME.*.tmp" 2>/dev/null | wc -l | tr -d ' ')
 assert_eq "no stray temp file left" "0" "$_leftover"
+
+# Credentials never persist in the marker file.
+_write_torch_index_marker "$_VD" "https://user:sekrit@mirror.local/simple"
+assert_eq "marker stores credential-free url" \
+    "https://mirror.local/simple" \
+    "$(cat "$_VD/$_TORCH_INDEX_MARKER_NAME" 2>/dev/null)"
+assert_eq "marker body has no secret" \
+    "0" "$(grep -c sekrit "$_VD/$_TORCH_INDEX_MARKER_NAME" 2>/dev/null)"
 
 # Missing venv dir -> no-op, no error, no file created.
 _MISSING="$_VD/does_not_exist_dir"

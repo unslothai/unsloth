@@ -163,9 +163,13 @@ run_install_cmd() {
     # (#6898): when we pass --default-index, neutralize every uv index env var so
     # the pinned index wins. UV_TORCH_BACKEND is cleared too: uv's torch backend
     # redirects torch resolution to its own per-backend index even against a
-    # --default-index pin. Other installs keep the user's mirror and backend.
+    # --default-index pin. UV_NO_CONFIG=1 (and dropping UV_CONFIG_FILE) disables
+    # uv's config-file discovery for the pinned install: a project/user uv.toml or
+    # pyproject [tool.uv] index (or pip.torch-backend) otherwise outranks the CLI
+    # pin (verified with uv 0.10). Other installs keep the user's mirror, backend
+    # and configuration.
     case " $* " in
-        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS "$@" ;;
+        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
     esac
     if _is_verbose; then
         "$@" && return 0
@@ -2224,15 +2228,27 @@ _torch_flavor_tag() {
     esac
 }
 
+# The final path segment of a wheel index URL ($1), lowercased, with any query
+# string or fragment removed first: a token-authenticated pin (.../cu128?token=x)
+# must classify as the cu128 family -- a raw ##*/ leaf keeps the query attached,
+# which passes the cu[0-9]* prefix match but can never equal the installed cu128
+# tag, forcing a reinstall on every update. Classification only; installs and the
+# marker keep the full URL. Mirrors _torch_index_leaf in install_python_stack.py
+# and Get-TorchIndexLeaf in setup.ps1.
+_torch_index_url_leaf() {
+    _tl_u="${1%%\?*}"
+    _tl_u="${_tl_u%%#*}"
+    _tl_u="${_tl_u%/}"
+    printf '%s' "${_tl_u##*/}" | tr '[:upper:]' '[:lower:]'
+}
+
 # Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
 # rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
 # Lowercase the leaf first so gfx120X-all (capital X) / any cased mirror leaf
 # still classifies, keeping the cuXXX tag comparison against _torch_flavor_tag
 # (which emits lowercase cuXXX) case-consistent.
 _expected_torch_flavor_tag() {
-    _u="${1%/}"
-    _leaf="${_u##*/}"
-    _leaf=$(printf '%s' "$_leaf" | tr '[:upper:]' '[:lower:]')
+    _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
         cu[0-9]*)   echo "$_leaf" ;;
         cpu)        echo "cpu" ;;
@@ -2248,9 +2264,7 @@ _expected_torch_flavor_tag() {
 # Unknown/odd-mirror leaves -> no, so we warn rather than risk a wrong reinstall.
 # Lowercase the leaf first so a cased leaf (e.g. gfx120X-all) is recognised.
 _torch_index_repairable() {
-    _u="${1%/}"
-    _leaf="${_u##*/}"
-    _leaf=$(printf '%s' "$_leaf" | tr '[:upper:]' '[:lower:]')
+    _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
         cu[0-9]*|rocm[0-9]*|gfx*) echo "yes" ;;
         *)                        echo "no" ;;
@@ -2267,6 +2281,34 @@ _torch_index_repairable() {
 #   <venv_dir>/.unsloth-torch-index   (single line = the resolved index URL)
 _TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
 
+# Remove userinfo (user:password@) from a wheel index URL ($1). An authenticated
+# pin like https://user:token@mirror.local/simple must not persist its credentials
+# in the marker (mode 0644 under a default umask) or leak them through substep
+# output. Only the authority's userinfo goes (up to the LAST @ before the first
+# path slash); path, query, and fragment stay so the comparison identity is
+# otherwise exact. Mirrors _strip_index_url_credentials in
+# install_python_stack.py / Remove-IndexUrlCredentials in setup.ps1 / install.ps1.
+_strip_index_url_credentials() {
+    _sic_url="$1"
+    case "$_sic_url" in
+        *://*) ;;
+        *) printf '%s' "$_sic_url"; return ;;
+    esac
+    _sic_scheme="${_sic_url%%://*}"
+    _sic_rest="${_sic_url#*://}"
+    _sic_auth="${_sic_rest%%/*}"
+    case "$_sic_auth" in
+        *@*) ;;
+        *) printf '%s' "$_sic_url"; return ;;
+    esac
+    _sic_host="${_sic_auth##*@}"
+    if [ "$_sic_auth" = "$_sic_rest" ]; then
+        printf '%s://%s' "$_sic_scheme" "$_sic_host"
+    else
+        printf '%s://%s/%s' "$_sic_scheme" "$_sic_host" "${_sic_rest#*/}"
+    fi
+}
+
 # Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX); a
 # custom mirror leaf keeps its case so a verbatim URL pin is not falsely matched
 # equal. The rocm prefix is digit-gated: rocm7.2 is a family leaf, but a
@@ -2281,13 +2323,16 @@ _normalize_family_leaf() {
 }
 
 # Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
-# strip ALL trailing slashes, lowercase ONLY a known-family final path segment.
-# Mirrors _normalize_index_url in install_python_stack.py / setup.ps1.
+# strip userinfo credentials (so an OLD marker that recorded them still compares
+# equal to the same pin) and ALL trailing slashes, lowercase ONLY a known-family
+# final path segment. Mirrors _normalize_index_url in install_python_stack.py /
+# setup.ps1.
 _normalize_index_url() {
     _n_url="$1"
     # Trim leading/trailing whitespace.
     _n_url="${_n_url#"${_n_url%%[![:space:]]*}"}"; _n_url="${_n_url%"${_n_url##*[![:space:]]}"}"
     [ -n "$_n_url" ] || { printf '%s' ""; return; }
+    _n_url=$(_strip_index_url_credentials "$_n_url")
     # Strip all trailing slashes.
     while [ "${_n_url%/}" != "$_n_url" ]; do _n_url="${_n_url%/}"; done
     [ -n "$_n_url" ] || { printf '%s' ""; return; }
@@ -2307,7 +2352,8 @@ _normalize_index_url() {
 # Write the resolved torch --index-url ($2) into the marker under venv dir ($1),
 # atomically (temp file + mv). Best-effort: a write failure never aborts the
 # install (the repair path then falls back to the version-tag heuristics). A blank
-# URL is ignored (nothing meaningful to record).
+# URL is ignored (nothing meaningful to record). Userinfo credentials are stripped
+# before persisting: the marker only needs a comparison identity, never a secret.
 _write_torch_index_marker() {
     _wm_venv="$1"
     _wm_url="$2"
@@ -2315,6 +2361,7 @@ _write_torch_index_marker() {
     [ -d "$_wm_venv" ] || return 0
     _wm_url="${_wm_url#"${_wm_url%%[![:space:]]*}"}"; _wm_url="${_wm_url%"${_wm_url##*[![:space:]]}"}"
     [ -n "$_wm_url" ] || return 0
+    _wm_url=$(_strip_index_url_credentials "$_wm_url")
     _wm_marker="$_wm_venv/$_TORCH_INDEX_MARKER_NAME"
     _wm_tmp="$_wm_marker.$$.tmp"
     if printf '%s\n' "$_wm_url" > "$_wm_tmp" 2>/dev/null; then
@@ -2610,7 +2657,11 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # CUDA backend. An unknown leaf leaves the backend var unset so the stack probes
 # the GPU instead of returning early in _ensure_rocm_torch on AMD hosts.
 # Matches _is_cuda_family_leaf (Python) / Test-CudaFamilyLeaf (PowerShell).
-_torch_index_leaf="${TORCH_INDEX_URL%/}"
+# Query string / fragment are dropped first (like _torch_index_url_leaf): a
+# token-authenticated pin (.../cu128?token=x) must still classify as cu128.
+_torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
+_torch_index_leaf="${_torch_index_leaf%%#*}"
+_torch_index_leaf="${_torch_index_leaf%/}"
 _torch_index_leaf="${_torch_index_leaf##*/}"
 _torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]')
 case "$_torch_index_leaf" in
@@ -2884,7 +2935,7 @@ case "$TORCH_INDEX_URL" in
         if [ "$_amd_gpu_radeon" = true ]; then
             substep "wheels: repo.radeon.com (Radeon)"
         else
-            substep "wheels: $TORCH_INDEX_URL"
+            substep "wheels: $(_strip_index_url_credentials "$TORCH_INDEX_URL")"
         fi
         ;;
 esac
@@ -3073,7 +3124,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
 
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
                    [ "$_radeon_versions_match" != true ]; then
-                    substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
+                    substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"
                     run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                         --default-index "$TORCH_INDEX_URL"
@@ -3105,7 +3156,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     fi
                 fi
             else
-                substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
+                substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"
                 run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                     "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                     --default-index "$TORCH_INDEX_URL"
@@ -3117,7 +3168,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 --default-index "$TORCH_INDEX_URL"
         fi
     else
-        substep "installing PyTorch ($TORCH_INDEX_URL)..."
+        substep "installing PyTorch ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))..."
         run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
             --default-index "$TORCH_INDEX_URL"
     fi
@@ -3235,7 +3286,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
             substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
-            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
 fi

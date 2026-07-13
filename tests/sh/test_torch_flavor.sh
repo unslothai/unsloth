@@ -11,10 +11,13 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
-# Extract the three helper functions from install.sh and source them.
+# Extract the helper functions from install.sh and source them
+# (_torch_index_url_leaf is the shared leaf extractor the classifiers call).
 _FUNC_FILE=$(mktemp)
 {
     sed -n '/^_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_torch_index_url_leaf()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_expected_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
@@ -56,6 +59,11 @@ assert_eq "amd gfx index"      "rocm"  "$(_expected_torch_flavor_tag 'https://re
 assert_eq "mirror cu130 leaf"  "cu130" "$(_expected_torch_flavor_tag 'https://my.mirror/pytorch/whl/cu130')"
 assert_eq "unrecognized leaf"  ""      "$(_expected_torch_flavor_tag 'https://my.mirror/whl/simple')"
 assert_eq "empty url"          ""      "$(_expected_torch_flavor_tag '')"
+# Query/fragment dropped before classification: a token-authenticated
+# .../cu128?token=x pin must classify as cu128, not as an opaque leaf that can
+# never equal the installed cu128 tag (which would reinstall on every run).
+assert_eq "query-bearing cu128" "cu128" "$(_expected_torch_flavor_tag 'https://m/whl/cu128?token=x')"
+assert_eq "fragment-bearing cpu" "cpu"  "$(_expected_torch_flavor_tag 'https://m/whl/cpu#frag')"
 
 echo "=== _torch_index_repairable ==="
 assert_eq "cu130 repairable"   "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/cu130')"

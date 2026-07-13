@@ -419,10 +419,39 @@ function Get-PinnedTorchIndexUrl {
 }
 
 # The last path segment of a wheel index URL (cu128 / cpu / rocm6.4 / gfx1151).
+# Query string / fragment are dropped first: a token-authenticated pin
+# (.../cu128?token=x) must classify as the cu128 family, not as an opaque
+# "cu128?token=x" leaf that can never equal the installed cu128 tag (which
+# would force a reinstall on every update). Classification only; installs and
+# the marker keep the full URL. Mirrors _torch_index_leaf in
+# install_python_stack.py / _torch_index_url_leaf in install.sh.
 function Get-TorchIndexLeaf {
     param([string]$Url)
     if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
-    return ($Url.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+    $path = ($Url -split '[?#]', 2)[0]
+    if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+    return ($path.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+}
+
+# Remove userinfo (user:password@) from a wheel index URL. An authenticated pin
+# like https://user:token@mirror.local/simple must not persist its credentials in
+# the marker file or leak them through logged output. Only the authority's
+# userinfo goes (up to the LAST @ before the first path slash); path, query, and
+# fragment stay so the comparison identity is otherwise exact. Mirrors
+# _strip_index_url_credentials in install.sh / install_python_stack.py.
+function Remove-IndexUrlCredentials {
+    param([string]$Url)
+    $sep = $Url.IndexOf('://')
+    if ($sep -lt 0) { return $Url }
+    $scheme = $Url.Substring(0, $sep)
+    $rest = $Url.Substring($sep + 3)
+    $slash = $rest.IndexOf('/')
+    $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
+    $at = $authority.LastIndexOf('@')
+    if ($at -lt 0) { return $Url }
+    $host_ = $authority.Substring($at + 1)
+    if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
+    return "${scheme}://${host_}"
 }
 
 # ── Torch-index marker ───────────────────────────────────────────────────────
@@ -446,11 +475,14 @@ function Get-NormalizedFamilyLeaf {
     return $Leaf
 }
 
-# Mirrors _normalize_index_url in install.sh / install_python_stack.py.
+# Mirrors _normalize_index_url in install.sh / install_python_stack.py. Userinfo
+# credentials are stripped first so marker-vs-pin equality stays stable when
+# either side carries them (an OLD marker that recorded credentials still
+# compares equal to the same pin).
 function Get-NormalizedIndexUrl {
     param([string]$Url)
     if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
-    $u = $Url.Trim().TrimEnd('/')
+    $u = (Remove-IndexUrlCredentials $Url.Trim()).TrimEnd('/')
     if ([string]::IsNullOrWhiteSpace($u)) { return $null }
     $idx = $u.LastIndexOf('/')
     if ($idx -lt 0) { return (Get-NormalizedFamilyLeaf $u) }
@@ -482,7 +514,8 @@ function Read-TorchIndexMarker {
 
 # Record the resolved torch wheel --index-url at the marker path, atomically
 # (temp file + Move). Best-effort: a write failure never aborts the install. A
-# blank URL is ignored (nothing to record).
+# blank URL is ignored (nothing to record). Userinfo credentials are stripped
+# before persisting: the marker only needs a comparison identity, never a secret.
 function Write-TorchIndexMarker {
     param([string]$VenvDir, [string]$IndexUrl)
     if ([string]::IsNullOrWhiteSpace($VenvDir)) { return }
@@ -492,7 +525,7 @@ function Write-TorchIndexMarker {
     $tmp = "$marker.$PID.tmp"
     try {
         # Write a single line, LF-terminated, no BOM (parity with the sh/py writers).
-        [System.IO.File]::WriteAllText($tmp, ($IndexUrl.Trim() + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($tmp, ((Remove-IndexUrlCredentials $IndexUrl.Trim()) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
         Move-Item -LiteralPath $tmp -Destination $marker -Force -ErrorAction Stop
     } catch {
         try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
@@ -2959,13 +2992,20 @@ function Fast-Install {
     # fallback honours PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS in addition to the
     # pinned --index-url, so restoring before the fallback reopens the hole.
     # UV_TORCH_BACKEND / UV_FIND_LINKS likewise reroute a pinned uv resolve.
+    # UV_NO_CONFIG=1 (with UV_CONFIG_FILE dropped) disables uv's config-file
+    # discovery for the pinned install: a project/user uv.toml or pyproject
+    # [tool.uv] index (or pip.torch-backend) otherwise outranks the CLI pin
+    # (verified with uv 0.10).
     $saved = @{}
-    if (@($Args_) -contains '--index-url') {
+    $pinned = @($Args_) -contains '--index-url'
+    if ($pinned) {
         foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
-                       'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS') {
+                       'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
+                       'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
             $saved[$n] = [Environment]::GetEnvironmentVariable($n)
             Remove-Item "Env:$n" -ErrorAction SilentlyContinue
         }
+        $env:UV_NO_CONFIG = '1'
     }
     try {
         if ($UseUv) {
@@ -2975,7 +3015,10 @@ function Fast-Install {
         }
         & python -m pip install @Args_ 2>&1
     }
-    finally { foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } } }
+    finally {
+        if ($pinned) { Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue }
+        foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
+    }
 }
 
 # ── Check if Python deps need updating ──

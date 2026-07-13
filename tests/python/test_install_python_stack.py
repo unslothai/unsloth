@@ -30,9 +30,9 @@ class TestBuildUvCmdTorchBackend:
         env.pop("UV_TORCH_BACKEND", None)
         with mock.patch.dict(os.environ, env, clear = True):
             cmd = self._call(("somepackage",))
-        assert not any(
-            a.startswith("--torch-backend") for a in cmd
-        ), f"--torch-backend should not appear by default, got: {cmd}"
+        assert not any(a.startswith("--torch-backend") for a in cmd), (
+            f"--torch-backend should not appear by default, got: {cmd}"
+        )
 
     def test_uv_torch_backend_auto(self):
         """UV_TORCH_BACKEND=auto adds --torch-backend=auto."""
@@ -50,9 +50,9 @@ class TestBuildUvCmdTorchBackend:
         """UV_TORCH_BACKEND="" (empty string) should NOT add --torch-backend."""
         with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": ""}):
             cmd = self._call(("somepackage",))
-        assert not any(
-            a.startswith("--torch-backend") for a in cmd
-        ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
+        assert not any(a.startswith("--torch-backend") for a in cmd), (
+            f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
+        )
 
     def test_uv_torch_backend_skipped_for_pinned_index(self):
         """A pinned-index command must NOT get --torch-backend: uv's torch backend
@@ -62,9 +62,9 @@ class TestBuildUvCmdTorchBackend:
         for pin_flag in ("--index-url", "--default-index"):
             with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
                 cmd = self._call(("torch", pin_flag, "https://download.pytorch.org/whl/cu128"))
-            assert not any(
-                a.startswith("--torch-backend") for a in cmd
-            ), f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
+            assert not any(a.startswith("--torch-backend") for a in cmd), (
+                f"{pin_flag} command must not carry --torch-backend, got: {cmd}"
+            )
 
     def test_uv_torch_backend_kept_for_unpinned(self):
         """Non-pinned commands still honour UV_TORCH_BACKEND."""
@@ -252,3 +252,23 @@ class TestPinnedIndexClearsUvEnv:
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
         assert env is not None and "UV_TORCH_BACKEND" not in env
+
+    def test_pinned_cmd_disables_uv_config_discovery(self):
+        """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin too
+        (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
+        [[index]] both resolve torch+cpu against an explicit --index-url /
+        --default-index cu126 pin). Pinned commands must run with UV_NO_CONFIG=1
+        and without an inherited UV_CONFIG_FILE."""
+        with mock.patch.dict(os.environ, {"UV_CONFIG_FILE": "/etc/uv/uv.toml"}):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert env.get("UV_NO_CONFIG") == "1"
+        assert "UV_CONFIG_FILE" not in env
+
+    def test_non_pinned_cmd_keeps_uv_config_discovery(self):
+        """Non-pinned installs inherit the caller env unchanged, so a user's uv
+        configuration still applies to base packages."""
+        env = ips._install_env_for_cmd(["uv", "pip", "install", "unsloth"])
+        assert env is None

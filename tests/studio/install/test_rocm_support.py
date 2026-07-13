@@ -825,9 +825,9 @@ class TestEnsureRocmTorch:
             _args = [str(a) for a in _call.args]
             if "--index-url" in _args:
                 _url = _args[_args.index("--index-url") + 1]
-                assert "rocm7.2" not in _url or "torch" not in " ".join(
-                    _args
-                ), "torch must not be reinstalled when the pin already matches"
+                assert "rocm7.2" not in _url or "torch" not in " ".join(_args), (
+                    "torch must not be reinstalled when the pin already matches"
+                )
         # A torch reinstall would pass torch>=... as a positional; assert none did.
         assert not any(
             any(str(a).startswith("torch") for a in _c.args) for _c in mock_pip.call_args_list
@@ -1146,6 +1146,57 @@ class TestTorchIndexMarkerHelpers:
             # Marker matches the pin (case-insensitive leaf, trailing slash) -> False.
             assert stack_mod._marker_pin_mismatch("https://repo.amd.com/rocm/whl/gfx1151/") is False
 
+    def test_strip_index_url_credentials(self):
+        f = stack_mod._strip_index_url_credentials
+        # Userinfo goes; path/query/fragment stay.
+        assert f("https://user:tok@mirror.local/simple") == "https://mirror.local/simple"
+        assert f("https://user@mirror.local/simple") == "https://mirror.local/simple"
+        assert f("https://u:p@m.local/cu128?token=q#f") == "https://m.local/cu128?token=q#f"
+        # Credential-free URLs are unchanged.
+        assert f("https://mirror.local/simple") == "https://mirror.local/simple"
+        # An @ in the PATH is not userinfo (host is after the LAST @ in the authority).
+        assert f("https://u:p@h/pa@th") == "https://h/pa@th"
+        # No scheme -> untouched (not an index URL shape we rewrite).
+        assert f("mirror.local/pa@th") == "mirror.local/pa@th"
+
+    def test_marker_never_persists_credentials(self, tmp_path):
+        marker = tmp_path / ".unsloth-torch-index"
+        with patch.object(stack_mod, "_torch_index_marker_path", return_value = marker):
+            stack_mod._write_torch_index_marker("https://user:sekrit@mirror.local/simple")
+            body = marker.read_text()
+            assert "sekrit" not in body
+            assert body.strip() == "https://mirror.local/simple"
+            # A cred-bearing pin still matches the stripped marker (no reinstall loop).
+            assert (
+                stack_mod._marker_pin_mismatch("https://user:sekrit@mirror.local/simple") is False
+            )
+
+    def test_normalize_strips_credentials_backward_compatible(self):
+        # An OLD marker that recorded credentials must compare equal to the same
+        # pin with or without them: normalization strips userinfo on BOTH sides.
+        f = stack_mod._normalize_index_url
+        assert f("https://user:tok@x/cu128/") == f("https://x/cu128")
+        assert f("https://x/cu128") == f("https://user:tok@x/cu128")
+
+    def test_torch_index_leaf_drops_query_and_fragment(self):
+        # A token-authenticated pin (.../cu128?token=x) must classify as the cu128
+        # family; the raw rsplit leaf ("cu128?token=x") passed the cu-prefix check
+        # but never equalled the installed cu128 tag -> reinstall every update.
+        f = stack_mod._torch_index_leaf
+        assert f("https://m/whl/cu128?token=x") == "cu128"
+        assert f("https://m/whl/cu128#frag") == "cu128"
+        assert f("https://m/whl/gfx120X-all/") == "gfx120x-all"
+        assert f("cu128") == "cu128"
+
+    def test_classifiers_accept_query_bearing_urls(self):
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://m/whl/cu128?token=x"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            # Classified as a CUDA family pin (full URL preserved for the install).
+            assert stack_mod._explicit_cuda_torch_index_url() == ("https://m/whl/cu128?token=x")
+            # NOT routed to the verbatim unknown-family path.
+            assert stack_mod._explicit_unknown_family_torch_index_url() is None
+
     def test_known_211_versions_only_rocm72(self):
         # KNOWN-2.11 rocm set is exactly {rocm7.2} -- rocm7.1/rocm7.3 are NOT in it.
         known = stack_mod._ROCM_KNOWN_TORCH211_VERSIONS
@@ -1314,6 +1365,44 @@ class TestEnsureRocmTorchMarker:
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
+    def test_verbatim_reinstall_keeps_supported_bounds(self, mock_pip):
+        """The verbatim update must install the bounded _CUDA_TORCH_PKG_SPEC trio,
+        not a bare torch/torchvision/torchaudio: a fresh install.sh/install.ps1
+        install from the same unknown-leaf pin constrains torch, so a custom mirror
+        publishing a newer torch must not push the UPDATE path above the supported
+        range (fresh-vs-update asymmetry)."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.dict(stack_mod.os.environ, env, clear = False):
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                    stack_mod._ensure_verbatim_torch_index()
+        args = [str(a) for a in mock_pip.call_args_list[0].args]
+        for spec in stack_mod._CUDA_TORCH_PKG_SPEC:
+            assert spec in args
+        assert "torch" not in args, "bare torch spec must not be used on the verbatim path"
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_verbatim_reinstall_never_prints_credentials(self, mock_pip, capsys):
+        """An authenticated pin's userinfo must be redacted from the repair message
+        and never persisted in the marker."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://user:sekrit@mirror.local/simple"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.dict(stack_mod.os.environ, env, clear = False):
+                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                    stack_mod._ensure_verbatim_torch_index()
+        out = capsys.readouterr().out
+        assert "sekrit" not in out
+        assert "https://mirror.local/simple" in out
+        assert "sekrit" not in self._marker_path.read_text()
+        # The INSTALL command itself keeps the authenticated URL (auth is needed
+        # to reach the mirror); only persistence and logging are stripped.
+        assert "https://user:sekrit@mirror.local/simple" in str(mock_pip.call_args_list[0])
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
     def test_verbatim_custom_url_matching_marker_no_reinstall(self, mock_pip):
         """Marker matches the custom URL pin -> no reinstall (idempotent, no loop)."""
         self._seed("https://mirror.local/current")
@@ -1412,9 +1501,9 @@ class TestHasRocmGpuKfdVendorGuard:
 
         src = self._src()
         # Word boundary so "vendor_id 41098" doesn't match "vendor_id 4098".
-        assert (
-            _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src
-        ), "_has_rocm_gpu vendor_id check should use word boundary anchors"
+        assert _re.search(r"\\b.*vendor_id.*\\b", src) or "\\bvendor_id" in src, (
+            "_has_rocm_gpu vendor_id check should use word boundary anchors"
+        )
 
     def test_sysfs_fallback_guarded_by_non_win32(self):
         """KFD sysfs fallback must be Linux-only (guarded by sys.platform != 'win32')."""
@@ -1424,9 +1513,9 @@ class TestHasRocmGpuKfdVendorGuard:
     def test_cpu_node_excluded(self):
         """gpu_id == '0' must be excluded (CPU topology nodes)."""
         src = self._src()
-        assert (
-            '!= "0"' in src or "== '0'" in src or "!= '0'" in src or '"0"' in src
-        ), "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
+        assert '!= "0"' in src or "== '0'" in src or "!= '0'" in src or '"0"' in src, (
+            "_has_rocm_gpu must skip gpu_id 0 nodes (CPU nodes)"
+        )
 
     def test_install_sh_has_vendor_check(self):
         """_has_amd_rocm_gpu in install.sh sysfs fallback must also check vendor_id 4098."""
@@ -1459,12 +1548,12 @@ class TestHasRocmGpuKfdVendorGuard:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert (
-            "_has_usable_nvidia_gpu" in func_body
-        ), "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
-        assert (
-            "return 1" in func_body
-        ), "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
+        assert "_has_usable_nvidia_gpu" in func_body, (
+            "_has_amd_rocm_gpu must call _has_usable_nvidia_gpu to block NVIDIA hosts"
+        )
+        assert "return 1" in func_body, (
+            "_has_amd_rocm_gpu must return 1 (false) when NVIDIA GPU is detected"
+        )
 
     def test_has_usable_nvidia_gpu_proc_fallback_present(self):
         """`_has_usable_nvidia_gpu` must have a /proc/driver/nvidia fallback."""
@@ -1680,12 +1769,12 @@ class TestInstallShStructure:
         rocm_call = body.find("_has_amd_rocm_gpu")
         assert nvidia_call >= 0, "get_torch_index_url should call _has_usable_nvidia_gpu"
         assert no_nvidia_branch >= 0, "get_torch_index_url should gate ROCm on no-nvidia branch"
-        assert (
-            rocm_call > no_nvidia_branch
-        ), "ROCm detection should sit inside the 'no NVIDIA' branch"
-        assert (
-            nvidia_call < no_nvidia_branch
-        ), "NVIDIA detection should run before the no-NVIDIA branch"
+        assert rocm_call > no_nvidia_branch, (
+            "ROCm detection should sit inside the 'no NVIDIA' branch"
+        )
+        assert nvidia_call < no_nvidia_branch, (
+            "NVIDIA detection should run before the no-NVIDIA branch"
+        )
 
     def test_bitsandbytes_amd_install(self):
         """install.sh should install bitsandbytes for AMD when ROCm detected."""
@@ -1751,9 +1840,9 @@ class TestInstallShStructure:
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            assert (
-                "((" not in line or "))" not in line or "$(()" in line
-            ), f"get_torch_index_url line {i} may use non-POSIX (( ))"
+            assert "((" not in line or "))" not in line or "$(()" in line, (
+                f"get_torch_index_url line {i} may use non-POSIX (( ))"
+            )
 
     def test_macos_returns_cpu_before_rocm_check(self):
         """macOS should return CPU immediately (before any ROCm check)."""
@@ -1772,9 +1861,9 @@ class TestInstallShStructure:
         torch_url_pos = source.find("TORCH_INDEX_URL=$(get_torch_index_url)")
         backend_pos = source.find("UNSLOTH_TORCH_BACKEND")
         assert backend_pos > 0, "UNSLOTH_TORCH_BACKEND must be set in install.sh"
-        assert (
-            backend_pos > torch_url_pos
-        ), "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
+        assert backend_pos > torch_url_pos, (
+            "UNSLOTH_TORCH_BACKEND must be set AFTER TORCH_INDEX_URL is resolved"
+        )
         assert '"cuda"' in source[backend_pos : backend_pos + 500]
         assert '"rocm"' in source[backend_pos : backend_pos + 500]
         assert '"cpu"' in source[backend_pos : backend_pos + 500]
@@ -1788,12 +1877,12 @@ class TestInstallShStructure:
         func_start = source.find("_has_amd_rocm_gpu()")
         func_end = source.find("\n}", func_start)
         func_body = source[func_start:func_end]
-        assert (
-            "vendor_id" in func_body
-        ), "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
-        assert (
-            "4098" in func_body
-        ), "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
+        assert "vendor_id" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must check vendor_id to exclude NVIDIA KFD nodes"
+        )
+        assert "4098" in func_body, (
+            "_has_amd_rocm_gpu sysfs fallback must require AMD vendor_id 4098 (0x1002)"
+        )
 
     def test_kfd_awk_resets_state_per_file(self):
         """KFD sysfs awk must reset gpu/amd state per file (FNR==1) to avoid Ryzen+NVIDIA false positives."""
@@ -1818,9 +1907,9 @@ class TestInstallShStructure:
             "get_torch_index_url must use a _nvidia_detected flag (separate from "
             "_smi) so that proc-only NVIDIA detection still selects CUDA wheels"
         )
-        assert (
-            '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body
-        ), "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
+        assert '_nvidia_detected" -eq 0' in func_body or "_nvidia_detected" in func_body, (
+            "get_torch_index_url AMD branch must be skipped when _nvidia_detected=1"
+        )
 
 
 # TEST: Live regression on current host (NVIDIA B200 expected)
@@ -2809,9 +2898,9 @@ class TestRuntimeBnbRocmSourceGuards:
         """A failed redetect must not downgrade a persisted suffix to '72'."""
         for path in (self._MAIN_PATH, self._TRAINING_WORKER_PATH):
             source = path.read_text(encoding = "utf-8")
-            assert (
-                '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in source
-            ), path.name
+            assert '_bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"' in source, (
+                path.name
+            )
 
     def test_main_requires_found_rocm_dll(self):
         """HIP_PATH/ROCM_PATH alone (HIP SDK on a CUDA/CPU box) must not force
@@ -3260,9 +3349,9 @@ class TestStrixHaloGfxArchDetection:
         """Both files must use the gfx\\d+[a-z]? regex to parse arch from amd-smi output."""
         for path in (_SETUP_PS1_PATH, _INSTALL_PS1_PATH):
             source = path.read_text(encoding = "utf-8")
-            assert (
-                "gfx\\d+" in source or r"gfx\d+" in source
-            ), f"gfx arch regex not found in {path.name}"
+            assert "gfx\\d+" in source or r"gfx\d+" in source, (
+                f"gfx arch regex not found in {path.name}"
+            )
 
 
 # TEST: HIP SDK tool path resolution via HIP_PATH / ROCM_PATH env vars

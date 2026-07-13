@@ -21,6 +21,7 @@ if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "setup.ps1 has 
 $TorchIndexMarkerName = ".unsloth-torch-index"
 
 foreach ($name in @(
+    "Get-TorchIndexLeaf", "Remove-IndexUrlCredentials",
     "Get-NormalizedFamilyLeaf", "Get-NormalizedIndexUrl", "Get-TorchIndexMarkerPath",
     "Read-TorchIndexMarker", "Write-TorchIndexMarker", "Test-MarkerPinMismatch",
     "Test-RocmKnown211Version"
@@ -51,6 +52,23 @@ Check "gfx120X-all == gfx120x-all after normalize" `
     ((Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all") -eq (Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120x-all"))
 Check "empty -> null" ($null -eq (Get-NormalizedIndexUrl "   "))
 
+Write-Host "Remove-IndexUrlCredentials (userinfo never persists or prints)"
+Check "user:token@ stripped" `
+    ((Remove-IndexUrlCredentials "https://user:tok@mirror.local/simple") -ceq "https://mirror.local/simple")
+Check "credential-free url unchanged" `
+    ((Remove-IndexUrlCredentials "https://mirror.local/simple") -ceq "https://mirror.local/simple")
+Check "@ in path preserved" `
+    ((Remove-IndexUrlCredentials "https://u:p@h/pa@th") -ceq "https://h/pa@th")
+# Backward compatibility: an OLD marker that recorded credentials must compare
+# equal to the same pin with or without them (normalization strips both sides).
+Check "normalize: creds on either side compare equal" `
+    ((Get-NormalizedIndexUrl "https://user:tok@x/cu128/") -ceq (Get-NormalizedIndexUrl "https://x/cu128"))
+
+Write-Host "Get-TorchIndexLeaf (query/fragment dropped before classification)"
+Check "query dropped" ((Get-TorchIndexLeaf "https://m/whl/cu128?token=x") -ceq "cu128")
+Check "fragment dropped" ((Get-TorchIndexLeaf "https://m/whl/cu128#frag") -ceq "cu128")
+Check "plain leaf" ((Get-TorchIndexLeaf "https://m/whl/gfx120X-all/") -ceq "gfx120x-all")
+
 Write-Host "Write/Read-TorchIndexMarker (round trip, atomic, blank ignored)"
 $venv = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-marker-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $venv | Out-Null
@@ -69,6 +87,15 @@ try {
     # No stray temp file left behind.
     $tmpLeft = @(Get-ChildItem -LiteralPath $venv -Filter "$TorchIndexMarkerName.*.tmp" -ErrorAction SilentlyContinue).Count
     Check "no stray temp file left" ($tmpLeft -eq 0)
+    # Credentials never persist in the marker file.
+    Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://user:sekrit@mirror.local/simple"
+    $markerBody = Read-TorchIndexMarker -VenvDir $venv
+    Check "marker stores credential-free url" ($markerBody -ceq "https://mirror.local/simple")
+    Check "marker body has no secret" (-not ($markerBody -like "*sekrit*"))
+    # A cred-bearing pin still matches the stripped marker (no reinstall loop).
+    Check "cred pin vs stripped marker -> no mismatch" `
+        ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://user:sekrit@mirror.local/simple") -eq $false)
+    Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all"
 
     Write-Host "Test-MarkerPinMismatch (exact compare; null when no marker)"
     # Marker gfx120X-all now recorded. A gfx1151 pin differs -> mismatch (#2543).

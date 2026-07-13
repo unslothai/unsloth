@@ -52,7 +52,8 @@ function Install-UnslothStudio {
         param([string]$TorchIndexUrl)
         if ($SkipTorch) { return "none" }
         if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return "none" }
-        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        # Drop query/fragment first so a token-authenticated pin classifies by family.
+        $leaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
         if (@("cpu", "cu118", "cu124", "cu126", "cu128", "cu130") -contains $leaf) { return $leaf }
         if ($leaf -match '^rocm[0-9]+\.[0-9]+$') { return $leaf }
         return "auto"
@@ -475,14 +476,19 @@ function Install-UnslothStudio {
         )
         # Installer-pinned index installs (torch) must beat an inherited uv mirror
         # (#6898): when the command pins an index, clear every uv index env var so
-        # it wins, then restore in finally. Other installs keep the user's mirror.
+        # it wins, then restore in finally. UV_NO_CONFIG=1 (with UV_CONFIG_FILE
+        # dropped) also disables uv's config-file discovery for the pinned
+        # install: a project/user uv.toml or pyproject [tool.uv] index (or
+        # pip.torch-backend) otherwise outranks the CLI pin (verified with uv
+        # 0.10). Other installs keep the user's mirror and configuration.
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
-            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL', 'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
                 $savedUvIndex[$n] = [Environment]::GetEnvironmentVariable($n)
                 Remove-Item "Env:$n" -ErrorAction SilentlyContinue
             }
+            $env:UV_NO_CONFIG = '1'
         }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
@@ -503,7 +509,10 @@ function Install-UnslothStudio {
             return [int]$LASTEXITCODE
         } finally {
             $ErrorActionPreference = $prevEap
-            if ($savedUvIndex) { foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } } }
+            if ($savedUvIndex) {
+                Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
+                foreach ($n in $savedUvIndex.Keys) { if ($null -ne $savedUvIndex[$n]) { Set-Item "Env:$n" $savedUvIndex[$n] } }
+            }
         }
     }
 
@@ -2003,6 +2012,25 @@ exit 0
     # install.sh, studio/setup.ps1 and install_python_stack.py:
     #   <VenvDir>\.unsloth-torch-index   (single line = the resolved index URL)
     # install.ps1 only WRITES the marker; setup.ps1 reads it during stale detection.
+    # Remove userinfo (user:password@) from a wheel index URL before it is
+    # persisted or printed: an authenticated pin must not leave its credentials
+    # in the marker file or in logged output. Mirrors _strip_index_url_credentials
+    # in install.sh / install_python_stack.py and setup.ps1's helper.
+    function Remove-IndexUrlCredentials {
+        param([string]$Url)
+        $sep = $Url.IndexOf('://')
+        if ($sep -lt 0) { return $Url }
+        $scheme = $Url.Substring(0, $sep)
+        $rest = $Url.Substring($sep + 3)
+        $slash = $rest.IndexOf('/')
+        $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
+        $at = $authority.LastIndexOf('@')
+        if ($at -lt 0) { return $Url }
+        $host_ = $authority.Substring($at + 1)
+        if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
+        return "${scheme}://${host_}"
+    }
+
     function Write-TorchIndexMarker {
         param([string]$VenvDir, [string]$IndexUrl)
         if ([string]::IsNullOrWhiteSpace($VenvDir)) { return }
@@ -2012,7 +2040,8 @@ exit 0
         $tmp = "$marker.$PID.tmp"
         try {
             # Single LF-terminated line, no BOM (parity with the sh/py writers).
-            [System.IO.File]::WriteAllText($tmp, ($IndexUrl.Trim() + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+            # Credentials never persist: the marker is a comparison identity only.
+            [System.IO.File]::WriteAllText($tmp, ((Remove-IndexUrlCredentials $IndexUrl.Trim()) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
             Move-Item -LiteralPath $tmp -Destination $marker -Force -ErrorAction Stop
         } catch {
             try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
@@ -2037,7 +2066,9 @@ exit 0
         param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
         if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
         if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return $null }
-        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        # Drop query/fragment first: a .../cu128?token=x pin must classify as cu128,
+        # or the expected-vs-installed tag compare reinstalls on every run.
+        $leaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
         if ($leaf -match '^cu\d+$') { return $leaf }
         if ($leaf -eq 'cpu')        { return 'cpu' }
         if ($leaf -match '^rocm')   { return 'rocm' }
@@ -2155,7 +2186,7 @@ exit 0
     # bug). Route a pinned ROCm index through the ROCm install path with the same
     # 2.11 floor/companions the unpinned reroute derives from the gfx arch.
     if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {
-        $_pinLeaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLower()
+        $_pinLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
         $_pinRocm211 = $false
         if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
             # Only KNOWN-2.11 rocm indexes (rocm7.2) get the 2.11 floor; do not floor
@@ -2312,7 +2343,7 @@ exit 0
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
         } elseif ($ROCmIndexUrl) {
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
-            substep "installing PyTorch from $ROCmIndexUrl..."
+            substep "installing PyTorch from $(Remove-IndexUrlCredentials $ROCmIndexUrl)..."
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
             # Pin the companions to match $torchSpec; bare names can resolve an
             # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
@@ -2347,7 +2378,7 @@ exit 0
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
-            substep "installing PyTorch ($TorchIndexUrl)..."
+            substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red

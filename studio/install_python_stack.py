@@ -155,12 +155,50 @@ def _normalize_family_leaf(leaf: str) -> str:
     return leaf
 
 
+def _strip_index_url_credentials(url: str) -> str:
+    """Remove userinfo (user:password@) from a wheel index URL.
+
+    An authenticated pin like https://user:token@mirror.local/simple must not
+    persist its credentials in the marker file (mode 0644 under a default umask
+    on POSIX) or leak them through printed repair messages. Only the authority's
+    userinfo is removed (everything up to the LAST "@" before the first path
+    slash); path, query, and fragment are untouched so the comparison identity
+    stays exact otherwise. MUST match install.sh / setup.ps1 / install.ps1.
+    Pure function.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    authority, slash, tail = rest.partition("/")
+    if "@" not in authority:
+        return url
+    host = authority.rpartition("@")[2]
+    return f"{scheme}://{host}{slash}{tail}"
+
+
+def _torch_index_leaf(url: str) -> str:
+    """The final URL path segment, lowercased, with query/fragment removed first.
+
+    A token-authenticated pin like .../cu128?token=x must classify as the cu128
+    family: a raw rsplit("/") leaf keeps the query ("cu128?token=x"), which passes
+    the cu-prefix family check but can never equal the installed +cu128 tag, so
+    every update force-reinstalled multi-GB wheels. Only CLASSIFICATION uses this
+    leaf; the install command and the marker keep the full pinned URL. MUST match
+    the leaf extraction in install.sh / setup.ps1 / install.ps1. Pure function.
+    """
+    path = url.split("?", 1)[0].split("#", 1)[0]
+    return path.rstrip("/").rsplit("/", 1)[-1].lower()
+
+
 def _normalize_index_url(url: "str | None") -> "str | None":
     """Canonicalise a wheel index URL for exact marker/pin comparison.
 
-    Trims surrounding whitespace, strips ALL trailing slashes, and lowercases the
-    FINAL path segment ONLY when it is a known wheel-family leaf (cu128 / cpu /
-    rocm7.2 / gfx1151 / gfx120X-all) -- see _normalize_family_leaf. The host part is
+    Trims surrounding whitespace, strips userinfo credentials (user:token@) and
+    ALL trailing slashes, and lowercases the FINAL path segment ONLY when it is a
+    known wheel-family leaf (cu128 / cpu / rocm7.2 / gfx1151 / gfx120X-all) -- see
+    _normalize_family_leaf. Credential stripping keeps marker-vs-pin equality
+    stable when either side carries credentials (an OLD marker written before
+    credential stripping still compares equal to the same pin). The host part is
     left untouched (case-sensitive on some mirrors), and a custom (unknown-family)
     leaf keeps its case so a verbatim URL pin is not falsely matched equal. MUST
     match the same normalization in install.sh / setup.ps1. Returns None for an
@@ -171,6 +209,7 @@ def _normalize_index_url(url: "str | None") -> "str | None":
     url = url.strip()
     if not url:
         return None
+    url = _strip_index_url_credentials(url)
     url = url.rstrip("/")
     if not url:
         return None
@@ -212,12 +251,14 @@ def _write_torch_index_marker(index_url: "str | None") -> None:
     Best-effort and atomic (temp file in the same dir + os.replace). Never raises:
     a marker write failure must not abort an otherwise-successful install (the
     repair path then falls back to the heuristics, same as an old venv). A blank
-    index_url is ignored (nothing meaningful to record).
+    index_url is ignored (nothing meaningful to record). Userinfo credentials are
+    stripped before persisting (see _strip_index_url_credentials): the marker only
+    needs a comparison identity, never a reusable secret.
     """
     if not index_url or not index_url.strip():
         return
     marker = _torch_index_marker_path()
-    payload = index_url.strip() + "\n"
+    payload = _strip_index_url_credentials(index_url.strip()) + "\n"
     try:
         marker.parent.mkdir(parents = True, exist_ok = True)
         fd, tmp = tempfile.mkstemp(prefix = ".unsloth-torch-index.", dir = str(marker.parent))
@@ -1271,8 +1312,7 @@ def _explicit_rocm_torch_index_url() -> "str | None":
     url = _explicit_torch_index_url()
     if url is None:
         return None
-    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
-    return url if _is_pip_rocm_family_leaf(leaf) else None
+    return url if _is_pip_rocm_family_leaf(_torch_index_leaf(url)) else None
 
 
 def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
@@ -1297,7 +1337,7 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     A pin that resolves to the same family as what is installed is NOT a mismatch,
     so a correct ROCm venv is never needlessly reinstalled. Pure function.
     """
-    leaf = pin_url.rstrip("/").rsplit("/", 1)[-1].lower()
+    leaf = _torch_index_leaf(pin_url)
     # Pinned ROCm version (from a rocmX.Y leaf).
     _pin_rocm = re.match(r"^rocm(\d+)\.(\d+)", leaf)
     _pin_ver = (int(_pin_rocm.group(1)), int(_pin_rocm.group(2))) if _pin_rocm else None
@@ -1359,8 +1399,7 @@ def _explicit_cpu_torch_index_url() -> "str | None":
     url = _explicit_torch_index_url()
     if url is None:
         return None
-    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
-    return url if leaf == "cpu" else None
+    return url if _torch_index_leaf(url) == "cpu" else None
 
 
 def _is_cuda_family_leaf(leaf: str) -> bool:
@@ -1387,8 +1426,7 @@ def _explicit_cuda_torch_index_url() -> "str | None":
     url = _explicit_torch_index_url()
     if url is None:
         return None
-    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
-    return url if _is_cuda_family_leaf(leaf) else None
+    return url if _is_cuda_family_leaf(_torch_index_leaf(url)) else None
 
 
 def _explicit_unknown_family_torch_index_url() -> "str | None":
@@ -1405,7 +1443,7 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     url = _explicit_torch_index_url()
     if url is None:
         return None
-    leaf = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    leaf = _torch_index_leaf(url)
     if _is_pip_rocm_family_leaf(leaf) or leaf == "cpu" or _is_cuda_family_leaf(leaf):
         return None
     return url
@@ -1429,9 +1467,12 @@ def _ensure_verbatim_torch_index() -> None:
     records this exact pin (False). A user who did NOT set the override gets
     pin=None and is never touched, so an out-of-band torch install is safe. macOS/
     no-torch: skipped (no torch to repair). The install uses the pinned URL
-    exclusively (--index-url) with bare specs so it "wins verbatim" -- an incomplete
-    mirror that cannot serve the trio fails loudly here, same as the marker-present
-    path (that is the cost of honouring an explicit pin).
+    exclusively (--index-url), so it "wins verbatim" -- an incomplete mirror that
+    cannot serve the trio fails loudly here, same as the marker-present path (that
+    is the cost of honouring an explicit pin). The trio keeps the supported bounds
+    (_CUDA_TORCH_PKG_SPEC): a FRESH install.sh / install.ps1 install from the same
+    unknown-leaf pin constrains torch, so the update path must not drift above the
+    supported range when the mirror publishes a newer torch.
     """
     if NO_TORCH or IS_MACOS:
         return
@@ -1446,14 +1487,18 @@ def _ensure_verbatim_torch_index() -> None:
         # the next update a no-op.
         return
     _why = "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
-    print(f"   explicit torch index pin ({pin}) {_why} -- reinstalling torch verbatim from it")
+    _pin_display = _strip_index_url_credentials(pin)
+    print(
+        f"   explicit torch index pin ({_pin_display}) {_why} -- reinstalling torch verbatim from it"
+    )
+    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
     pip_install(
         "torch (pinned custom index)",
         "--force-reinstall",
         "--no-cache-dir",
-        "torch",
-        "torchvision",
-        "torchaudio",
+        _torch_pkg,
+        _vision_pkg,
+        _audio_pkg,
         "--index-url",
         pin,
         constrain = False,
@@ -1582,7 +1627,7 @@ def _ensure_cuda_torch() -> None:
     # stays ineffective. A healthy CUDA torch matching the pin, or a CPU wheel
     # with no CUDA pin, is deliberate and left alone.
     _pin = _explicit_torch_index_url()
-    _pin_leaf = _pin.rstrip("/").rsplit("/", 1)[-1].lower() if _pin else ""
+    _pin_leaf = _torch_index_leaf(_pin) if _pin else ""
     _pinned_cuda = _is_cuda_family_leaf(_pin_leaf)
     if _marker == "hip":
         _why = "torch is a ROCm build on an NVIDIA host"
@@ -1610,7 +1655,7 @@ def _ensure_cuda_torch() -> None:
     index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
     print(
-        f"   {_why} -- reinstalling CUDA torch from {index_url}\n"
+        f"   {_why} -- reinstalling CUDA torch from {_strip_index_url_credentials(index_url)}\n"
         f"   (set UNSLOTH_TORCH_BACKEND=rocm or cpu to keep a deliberate "
         f"non-CUDA torch)"
     )
@@ -1688,7 +1733,7 @@ def _ensure_cpu_torch() -> None:
     else:
         _why = "torch is a GPU build but an explicit CPU index is pinned"
 
-    print(f"   {_why} -- reinstalling CPU torch from {pin}")
+    print(f"   {_why} -- reinstalling CPU torch from {_strip_index_url_credentials(pin)}")
     # Pin to the supported torch<2.11 family (same bounds as the CUDA/ROCm repair
     # specs). The /cpu index now also serves torch 2.11+, so a bare trio off the
     # exclusive --index-url could resolve outside the supported range or drag in
@@ -1801,7 +1846,10 @@ def _ensure_rocm_torch() -> None:
             if index_url is None:
                 print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
-            print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
+            print(
+                f"   {gfx_arch} (Windows) -- installing torch from "
+                f"{_strip_index_url_credentials(index_url)}"
+            )
             # Pin companions for the arches install.ps1/setup.ps1 pin (gfx120X /
             # Strix) so the per-arch index resolves an ABI-consistent trio; other
             # arches stay bare (no published floor), matching the PowerShell side.
@@ -2021,7 +2069,10 @@ def _ensure_rocm_torch() -> None:
     if _strix_override_url is not None and _strix_override_pkgs is not None:
         index_url = _strix_override_url
         _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
-        print(f"   Strix ROCm 7.1 override -- installing torch from {index_url}")
+        print(
+            f"   Strix ROCm 7.1 override -- installing torch from "
+            f"{_strip_index_url_credentials(index_url)}"
+        )
         pip_install(
             "ROCm torch (Strix arch-specific)",
             "--force-reinstall",
@@ -2046,7 +2097,7 @@ def _ensure_rocm_torch() -> None:
         _override_idx = _explicit_rocm_torch_index_url()
         if _override_idx is not None:
             index_url = _override_idx
-            tag = index_url.rstrip("/").rsplit("/", 1)[-1].lower()
+            tag = _torch_index_leaf(index_url)
         else:
             tag = next(
                 (
@@ -2061,7 +2112,7 @@ def _ensure_rocm_torch() -> None:
         else:
             if _override_idx is None:
                 index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm torch -- installing from {index_url}")
+            print(f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}")
             # Only the gfx arches with the _grouped_mm bug (gfx120X-all, gfx1151,
             # gfx1150) need the torch 2.11 spec; other gfx per-arch indexes
             # (gfx110X-all, gfx90a, gfx908) publish <2.11 wheels, so a pinned
@@ -2179,7 +2230,7 @@ if not _TORCH_BACKEND:
         os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
         or os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     )
-    _idx_leaf = _idx_override.rstrip("/").rsplit("/", 1)[-1].lower()
+    _idx_leaf = _torch_index_leaf(_idx_override)
     if _idx_leaf.startswith(("rocm", "gfx")):
         _TORCH_BACKEND = "rocm"
     elif _idx_leaf == "cpu":
@@ -2626,7 +2677,13 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
 # --extra-index-url env form adds indexes "in addition to --index-url", so an
 # inherited mirror could still satisfy torch off the pin. (PIP_INDEX_URL needs no
 # strip: the command's explicit --index-url flag overrides it.)
+# UV_CONFIG_FILE is stripped and UV_NO_CONFIG=1 set for pinned commands (see
+# _install_env_for_cmd): a DISCOVERED uv.toml / pyproject [tool.uv] outranks the
+# CLI pin too -- verified with uv 0.10: `[pip] torch-backend = "cpu"` and a
+# non-default `[[index]]` both resolve torch+cpu against an explicit
+# --index-url/--default-index .../cu126 pin; UV_NO_CONFIG=1 restores the pin.
 _UV_INDEX_ENV_VARS = (
+    "UV_CONFIG_FILE",
     "UV_DEFAULT_INDEX",
     "UV_INDEX_URL",
     "UV_INDEX",
@@ -2651,14 +2708,17 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     UV_EXTRA_INDEX_URL mirror. When the command passes --index-url / --default-index
     (the torch repair paths), the uv index env vars (and UV_TORCH_BACKEND) are
     removed so the pinned index is not overridden by an inherited mirror or torch
-    backend (uv treats the default index as lowest priority). Mirrors install.sh's
-    run_install_cmd gate (#6898).
+    backend (uv treats the default index as lowest priority), and UV_NO_CONFIG=1
+    disables uv's config-file discovery: a project/user uv.toml or pyproject
+    [tool.uv] index (or pip.torch-backend) otherwise outranks the CLI pin.
+    Mirrors install.sh's run_install_cmd gate (#6898).
     """
     if not _is_pinned_index_cmd(cmd):
         return None
     env = os.environ.copy()
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)
+    env["UV_NO_CONFIG"] = "1"
     return env
 
 
