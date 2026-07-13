@@ -953,6 +953,18 @@ _latest_repair_failed_at: float = 0.0
 _LATEST_REPAIR_BACKOFF_SECS = 5 * 60
 
 
+def _latest_sidecar_intact() -> bool:
+    """Pinned latest sidecar has its transformers dir and every pinned package.
+    A sidecar that kept transformers/ but lost a pinned package would otherwise
+    route models to the latest tier and fail activation in workers, which refuse
+    parent-only repairs."""
+    pin = _latest_pin_data()
+    if pin is None:
+        # No valid pin means nothing to repair against (callers gate on the pin).
+        return True
+    return _venv_dir_is_valid(_VENV_T5_LATEST_DIR, tuple(pin["packages"]))
+
+
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
     global _latest_repair_failed_at
@@ -967,11 +979,13 @@ def _overlay_transformers_dir(tier: str) -> str | None:
             "latest": _VENV_T5_LATEST_DIR,
         }.get(tier)
         src = os.path.join(root, "transformers") if root else None
-        if src and not _safe_is_dir(Path(src)) and tier == "latest":
-            # A valid pin whose source dir vanished (partial deletion, disk issue)
-            # must self-heal, or latest-only models silently route to older tiers
-            # until a manual reinstall. Repair under the swap reservation; back
-            # off after a failure so routing calls don't hammer pip.
+        if src and tier == "latest" and not _latest_sidecar_intact():
+            # A valid pin whose sidecar vanished or lost a pinned package (partial
+            # deletion, disk issue, interrupted external edits) must self-heal, or
+            # latest-only models either silently route to older tiers or reach a
+            # worker that cannot repair, failing every load until a manual
+            # reinstall. Repair under the swap reservation; back off after a
+            # failure so routing calls don't hammer pip.
             if time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS:
                 if _ensure_venv_t5_latest_exists():
                     _latest_repair_failed_at = 0.0

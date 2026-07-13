@@ -2838,6 +2838,66 @@ class TestSidecarSwapReservation:
             tv.end_sidecar_swap()
 
 
+class TestOverlayRepairsIncompleteSidecar:
+    """Routing self-heals a pinned latest sidecar that is present but incomplete,
+    not only one whose transformers/ dir vanished: workers refuse parent-only
+    repairs, so a sidecar missing a pinned package would fail every load."""
+
+    def _setup(self, monkeypatch, tmp_path, valid):
+        import utils.transformers_version as tv
+
+        live = tmp_path / "venv_t5_latest"
+        (live / "transformers").mkdir(parents = True)
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
+        monkeypatch.setattr(
+            tv,
+            "_latest_pin_data",
+            lambda: {"version": "5.99.0", "packages": ["transformers==5.99.0", "tiktoken"]},
+        )
+        monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: valid)
+        monkeypatch.setattr(tv, "_latest_repair_failed_at", 0.0)
+        return tv
+
+    def test_incomplete_sidecar_triggers_repair(self, monkeypatch, tmp_path):
+        tv = self._setup(monkeypatch, tmp_path, valid = False)
+        called = {"n": 0}
+
+        def _fake_repair():
+            called["n"] += 1
+            return True
+
+        monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
+        src = tv._overlay_transformers_dir("latest")
+        assert called["n"] == 1
+        assert src == str(tmp_path / "venv_t5_latest" / "transformers")
+
+    def test_intact_sidecar_skips_repair(self, monkeypatch, tmp_path):
+        tv = self._setup(monkeypatch, tmp_path, valid = True)
+
+        def _must_not_run():
+            raise AssertionError("intact sidecar must not trigger a repair")
+
+        monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _must_not_run)
+        assert tv._overlay_transformers_dir("latest") == str(
+            tmp_path / "venv_t5_latest" / "transformers"
+        )
+
+    def test_failed_repair_backs_off(self, monkeypatch, tmp_path):
+        tv = self._setup(monkeypatch, tmp_path, valid = False)
+        called = {"n": 0}
+
+        def _fake_repair():
+            called["n"] += 1
+            return False
+
+        monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
+        tv._overlay_transformers_dir("latest")
+        tv._overlay_transformers_dir("latest")
+        assert called["n"] == 1
+
+
 class TestStageAndSwapBeforeSwap:
     """before_swap fires only when the staged install succeeded and the swap is next."""
 
