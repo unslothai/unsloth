@@ -636,7 +636,8 @@ class TestFirstCustomPinAppliedWithoutMarker:
 
     def test_stack_py_applies_pin_when_marker_absent(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        body = text[text.find("def _ensure_verbatim_torch_index") :][:2200]
+        body = text[text.find("def _ensure_verbatim_torch_index") :]
+        body = body[: body.find("\ndef _record_torch_index_pin_baseline")]
         # The short-circuit must be "already this exact pin" (False), NOT the old
         # "anything other than a definite mismatch" (is not True), which also bailed
         # on a None (no-marker) result.
@@ -839,6 +840,46 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             'env["UV_NO_CONFIG"] = "1"' in stack
         ), "_install_env_for_cmd must set UV_NO_CONFIG=1 for pinned installs"
+
+    def test_pip_fallbacks_disable_pip_config_files(self):
+        """The pip FALLBACK (uv missing/failed) honours user/site pip config files
+        even with the PIP_* env vars stripped: `pip config set
+        global.extra-index-url` still adds indexes to a pinned install. pip loads
+        NO configuration files when PIP_CONFIG_FILE is the platform devnull, so
+        the two installers that HAVE a pip fallback (install_python_stack.py and
+        setup.ps1's Fast-Install) must set it in their pinned scrub. install.sh
+        and install.ps1 are uv-only (no python -m pip fallback) and need no
+        equivalent."""
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert 'env["PIP_CONFIG_FILE"] = os.devnull' in stack, (
+            "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
+            "pinned installs (pip fallback isolation)"
+        )
+        setup = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "$env:PIP_CONFIG_FILE = 'nul'" in setup, (
+            "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
+            "(Windows devnull) so the pip fallback ignores user/site pip config"
+        )
+        assert "'PIP_CONFIG_FILE'" in setup, (
+            "setup.ps1 must save/restore PIP_CONFIG_FILE around the pinned scrub"
+        )
+
+    def test_setup_ps1_bounds_unknown_leaf_pinned_torch(self):
+        """A first-time/changed unknown-leaf custom pin routes through setup.ps1's
+        CUDA branch; install.ps1's fresh pinned install and the Python verbatim
+        path bound torch, so the Windows update path must too -- a private mirror
+        serving newer torch must not lift the venv above the supported range."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert (
+            'if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) '
+            '{ $cudaTorchSpec = "torch>=2.4,<2.11.0" }'
+        ) in text, (
+            "setup.ps1 must bound torch for a pinned unknown-leaf install "
+            "(parity with install.ps1's fresh pinned install)"
+        )
+        assert "Fast-Install $cudaTorchSpec torchvision torchaudio" in text, (
+            "setup.ps1's CUDA branch must install via the bounded spec variable"
+        )
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the

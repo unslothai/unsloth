@@ -1449,6 +1449,54 @@ def _explicit_unknown_family_torch_index_url() -> "str | None":
     return url
 
 
+def _installed_trio_snapshot() -> "tuple[str, ...] | None":
+    """The installed torch/torchvision/torchaudio versions as pkg==ver lines.
+
+    Subprocess probe (same style as the _ensure_* wheel probes) so it reads the
+    dist-info on disk NOW, not what this process imported earlier. None on probe
+    failure. Used by _ensure_verbatim_torch_index to detect a later dependency
+    step clobbering a trio it already applied this run: an unknown-family pin has
+    no wheel-tag signal, so version drift is the only clobber evidence the final
+    safety pass can see.
+    """
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from importlib.metadata import version, PackageNotFoundError\n"
+                    "for p in ('torch', 'torchvision', 'torchaudio'):\n"
+                    "    try:\n"
+                    "        print(p + '==' + version(p))\n"
+                    "    except PackageNotFoundError:\n"
+                    "        print(p + '==absent')\n"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if probe.returncode != 0:
+        return None
+    lines = tuple(
+        line.strip()
+        for line in probe.stdout.decode(errors = "replace").splitlines()
+        if line.strip().startswith(("torch==", "torchvision==", "torchaudio=="))
+    )
+    return lines or None
+
+
+# The venv trio as of the moment the verbatim pin was last known applied in THIS
+# run (set after a reinstall, or on the first matching-marker pass). The final
+# safety pass compares against it to catch an intermediate dependency install
+# clobbering the pinned trio: the known-family helpers detect that by probing the
+# wheel's flavor tag, which an unknown-family pin does not have.
+_VERBATIM_TRIO_SNAPSHOT: "tuple[str, ...] | None" = None
+
+
 def _ensure_verbatim_torch_index() -> None:
     """Reinstall torch/vision/audio VERBATIM from an explicit custom index pin.
 
@@ -1464,7 +1512,11 @@ def _ensure_verbatim_torch_index() -> None:
     silently ignored on the first `studio update` -- the user asked for this index,
     so apply it verbatim ONCE and record it. The write below makes every later
     update a no-op (marker == pin -> False). Skips only when the marker already
-    records this exact pin (False). A user who did NOT set the override gets
+    records this exact pin (False) AND the trio has not drifted since this run last
+    applied/verified it: the final safety pass runs after dependency steps that can
+    pull torch from PyPI, and marker equality alone would mask that clobber (the
+    wheel of an unknown-family index carries no flavor tag to probe, so the trio
+    snapshot is the only signal). A user who did NOT set the override gets
     pin=None and is never touched, so an out-of-band torch install is safe. macOS/
     no-torch: skipped (no torch to repair). The install uses the pinned URL
     exclusively (--index-url), so it "wins verbatim" -- an incomplete mirror that
@@ -1474,6 +1526,7 @@ def _ensure_verbatim_torch_index() -> None:
     unknown-leaf pin constrains torch, so the update path must not drift above the
     supported range when the mirror publishes a newer torch.
     """
+    global _VERBATIM_TRIO_SNAPSHOT
     if NO_TORCH or IS_MACOS:
         return
     pin = _explicit_unknown_family_torch_index_url()
@@ -1481,12 +1534,20 @@ def _ensure_verbatim_torch_index() -> None:
         return
     _mismatch = _marker_pin_mismatch(pin)
     if _mismatch is False:
-        # Marker already records this exact pin -> no reinstall (no per-update loop).
-        # True (marker differs) or None (no marker yet) both fall through to apply
-        # the explicit pin verbatim once, then _write_torch_index_marker below makes
-        # the next update a no-op.
-        return
-    _why = "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
+        # Marker already records this exact pin. On the first pass this run,
+        # remember what the applied trio looks like and stop (no per-update
+        # loop). On a LATER pass (the final safety repair), a trio that drifted
+        # from that snapshot means an intermediate dependency install clobbered
+        # the pinned torch -- fall through and reapply. A failed probe skips the
+        # comparison (never loop on missing evidence).
+        _snap = _installed_trio_snapshot()
+        if _VERBATIM_TRIO_SNAPSHOT is None or _snap is None or _snap == _VERBATIM_TRIO_SNAPSHOT:
+            if _VERBATIM_TRIO_SNAPSHOT is None:
+                _VERBATIM_TRIO_SNAPSHOT = _snap
+            return
+        _why = "was clobbered by a later dependency install"
+    else:
+        _why = "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
     _pin_display = _strip_index_url_credentials(pin)
     print(
         f"   explicit torch index pin ({_pin_display}) {_why} -- reinstalling torch verbatim from it"
@@ -1504,6 +1565,48 @@ def _ensure_verbatim_torch_index() -> None:
         constrain = False,
     )
     _write_torch_index_marker(pin)
+    _VERBATIM_TRIO_SNAPSHOT = _installed_trio_snapshot()
+
+
+def _probe_torch_flavor() -> "tuple[str, str] | None":
+    """Probe the installed torch's flavor: ("hip"|"cuda"|"cpu", "+cuXXX tag or '').
+
+    Same subprocess probe as _ensure_cuda_torch (dist state on disk, not this
+    process's import cache). None when torch is missing, broken, or the probe
+    fails -- callers must treat that as "cannot confirm anything".
+    """
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import torch, re; "
+                    "hip = getattr(torch.version, 'hip', '') or ''; "
+                    "cuda = getattr(torch.version, 'cuda', '') or ''; "
+                    "ver = getattr(torch, '__version__', '').lower(); "
+                    "m = re.search(r'\\+(cu\\d+)', ver); "
+                    "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
+                    "print(marker + '|' + (m.group(1) if m else ''))"
+                ),
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            timeout = 90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if probe.returncode != 0:
+        return None
+    lines = [
+        line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
+    ]
+    if not lines or "|" not in lines[-1]:
+        return None
+    marker, _, cutag = lines[-1].partition("|")
+    if marker not in ("hip", "cuda", "cpu"):
+        return None
+    return marker, cutag
 
 
 def _record_torch_index_pin_baseline() -> None:
@@ -1521,9 +1624,16 @@ def _record_torch_index_pin_baseline() -> None:
     marker. Recording the resolved pin here as a baseline breaks that loop and lets a
     LATER genuine pin change (a different mirror or family) be detected and applied.
 
-    Writes ONLY when a pin is set and NO marker exists yet; a present marker (matching,
-    or just rewritten by a reinstall above) is left untouched, so this never overrides
-    a real install source. macOS/no-torch: nothing to record.
+    Writes ONLY when a pin is set, NO marker exists yet, AND the installed torch is
+    importable with a flavor consistent with the pinned family; a present marker
+    (matching, or just rewritten by a reinstall above) is left untouched, so this
+    never overrides a real install source. The flavor gate matters because the
+    known-family helpers return WITHOUT reinstalling when their torch probe fails
+    (broken/missing torch) -- recording the baseline then would make
+    --torch-pin-needs-apply report the pin as applied forever, freezing the broken
+    venv out of the very pass that could repair it. Unknown-family pins are owned
+    by _ensure_verbatim_torch_index (which reinstalls and writes the marker itself)
+    and get no baseline here. macOS/no-torch: nothing to record.
     """
     if NO_TORCH or IS_MACOS:
         return
@@ -1532,6 +1642,24 @@ def _record_torch_index_pin_baseline() -> None:
         return
     if _read_torch_index_marker() is not None:
         return
+    leaf = _torch_index_leaf(pin)
+    flavor = _probe_torch_flavor()
+    if flavor is None:
+        return  # torch missing/broken: keep the pass running on future updates
+    _marker, _cutag = flavor
+    if re.match(r"^cu[0-9]", leaf):
+        # A tagged wheel must match the pinned cuXXX exactly; an untagged CUDA
+        # build cannot be confirmed either way, so do not freeze it as applied.
+        if _marker != "cuda" or _cutag != leaf:
+            return
+    elif leaf == "cpu":
+        if _marker != "cpu":
+            return
+    elif re.match(r"^rocm\d", leaf) or leaf.startswith("gfx"):
+        if _marker != "hip":
+            return
+    else:
+        return  # unknown family: the verbatim path owns the marker
     _write_torch_index_marker(pin)
 
 
@@ -2711,7 +2839,12 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     backend (uv treats the default index as lowest priority), and UV_NO_CONFIG=1
     disables uv's config-file discovery: a project/user uv.toml or pyproject
     [tool.uv] index (or pip.torch-backend) otherwise outranks the CLI pin.
-    Mirrors install.sh's run_install_cmd gate (#6898).
+    PIP_CONFIG_FILE is pointed at os.devnull for the pip FALLBACK (uv missing or
+    failed): stripping PIP_EXTRA_INDEX_URL/PIP_FIND_LINKS covers only the env
+    channel, while a `pip config set global.extra-index-url` in a user/site pip
+    config file still adds indexes to a pinned install; pip documents (and
+    implements) devnull as "load NO configuration files". Harmless for uv, which
+    does not read pip config. Mirrors install.sh's run_install_cmd gate (#6898).
     """
     if not _is_pinned_index_cmd(cmd):
         return None
@@ -2719,6 +2852,7 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     for name in _UV_INDEX_ENV_VARS:
         env.pop(name, None)
     env["UV_NO_CONFIG"] = "1"
+    env["PIP_CONFIG_FILE"] = os.devnull
     return env
 
 

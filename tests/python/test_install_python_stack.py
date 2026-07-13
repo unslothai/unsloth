@@ -267,6 +267,17 @@ class TestPinnedIndexClearsUvEnv:
         assert env.get("UV_NO_CONFIG") == "1"
         assert "UV_CONFIG_FILE" not in env
 
+    def test_pinned_cmd_disables_pip_config_files(self):
+        """The pip FALLBACK honours user/site pip config files (pip config set
+        global.extra-index-url) even with the PIP_* env vars stripped; pip loads
+        NO configuration files when PIP_CONFIG_FILE is os.devnull. Harmless for
+        uv, decisive for the fallback."""
+        env = ips._install_env_for_cmd(
+            ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+        )
+        assert env is not None
+        assert env.get("PIP_CONFIG_FILE") == os.devnull
+
     def test_non_pinned_cmd_keeps_uv_config_discovery(self):
         """Non-pinned installs inherit the caller env unchanged, so a user's uv
         configuration still applies to base packages."""

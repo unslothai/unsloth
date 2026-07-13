@@ -1223,8 +1223,12 @@ class TestEnsureRocmTorchMarker:
     @pytest.fixture(autouse = True)
     def _marker(self, tmp_path):
         self._marker_path = tmp_path / ".unsloth-torch-index"
+        # The verbatim clobber snapshot is per-run module state; reset it so one
+        # test's snapshot can never leak into another's clobber comparison.
+        stack_mod._VERBATIM_TRIO_SNAPSHOT = None
         with patch.object(stack_mod, "_torch_index_marker_path", return_value = self._marker_path):
             yield
+        stack_mod._VERBATIM_TRIO_SNAPSHOT = None
 
     def _seed(self, url):
         self._marker_path.write_text(url + "\n")
@@ -1435,30 +1439,30 @@ class TestEnsureRocmTorchMarker:
                         stack_mod._ensure_verbatim_torch_index()
             mock_pip.assert_not_called()
 
+    def _baseline(self, url, flavor):
+        """Run _record_torch_index_pin_baseline with the pin env + a mocked flavor probe."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": url}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._record_torch_index_pin_baseline()
+
     def test_baseline_records_pin_when_marker_absent(self):
         """A known-family pin on a pre-marker venv whose torch is already that family
         is NOT force-reinstalled (identical wheels), but _record_torch_index_pin_baseline
         records the resolved pin so `studio update` stops re-entering the dependency pass
         and a later genuine change is detected. No marker seeded by the autouse fixture."""
         assert not self._marker_path.exists()
-        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cu128"}
-        with patch.object(stack_mod, "NO_TORCH", False):
-            with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.dict(stack_mod.os.environ, env, clear = False):
-                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                    stack_mod._record_torch_index_pin_baseline()
+        self._baseline("https://mirror.local/cu128", ("cuda", "cu128"))
         assert "https://mirror.local/cu128" in self._marker_path.read_text()
 
     def test_baseline_leaves_present_marker_untouched(self):
         """A present marker (a real install source, or one a reinstall just wrote) is
         never overwritten by the baseline record."""
         self._seed("https://download.pytorch.org/whl/cu128")
-        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cu128"}
-        with patch.object(stack_mod, "NO_TORCH", False):
-            with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.dict(stack_mod.os.environ, env, clear = False):
-                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                    stack_mod._record_torch_index_pin_baseline()
+        self._baseline("https://mirror.local/cu128", ("cuda", "cu128"))
         assert self._marker_path.read_text().strip() == "https://download.pytorch.org/whl/cu128"
 
     def test_baseline_noop_without_pin(self):
@@ -1470,6 +1474,89 @@ class TestEnsureRocmTorchMarker:
                     stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                     stack_mod._record_torch_index_pin_baseline()
         assert not self._marker_path.exists()
+
+    def test_baseline_skips_broken_torch(self):
+        """A failed torch probe (missing/broken torch) must NOT record the baseline:
+        the known-family helpers returned without reinstalling, and freezing the pin
+        as applied would make --torch-pin-needs-apply skip the repair pass forever."""
+        self._baseline("https://mirror.local/cu128", None)
+        assert not self._marker_path.exists()
+
+    def test_baseline_skips_flavor_mismatch(self):
+        """A torch whose flavor does not match the pinned family must NOT be recorded
+        as that pin: a CPU build under a cu128 pin (or an untagged CUDA build whose
+        cuXXX cannot be confirmed) still needs the pass to run and repair."""
+        # CPU build under a CUDA pin.
+        self._baseline("https://mirror.local/cu128", ("cpu", ""))
+        assert not self._marker_path.exists()
+        # Untagged CUDA build: the pinned cu128 cannot be confirmed.
+        self._baseline("https://mirror.local/cu128", ("cuda", ""))
+        assert not self._marker_path.exists()
+        # CUDA build under a ROCm pin.
+        self._baseline("https://mirror.local/rocm7.2", ("cuda", "cu128"))
+        assert not self._marker_path.exists()
+
+    def test_baseline_records_matching_rocm_and_cpu(self):
+        """Matching flavors DO record: hip build under a rocm/gfx pin, cpu build
+        under a cpu pin."""
+        self._baseline("https://mirror.local/rocm7.2", ("hip", ""))
+        assert "rocm7.2" in self._marker_path.read_text()
+        self._marker_path.unlink()
+        self._baseline("https://mirror.local/cpu", ("cpu", ""))
+        assert "cpu" in self._marker_path.read_text()
+
+    def test_baseline_leaves_unknown_family_to_verbatim(self):
+        """An unknown-family pin gets NO baseline: _ensure_verbatim_torch_index owns
+        that marker (it reinstalls and writes it itself)."""
+        self._baseline("https://mirror.local/simple", ("cuda", "cu128"))
+        assert not self._marker_path.exists()
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_verbatim_repairs_clobbered_trio_in_final_pass(self, mock_pip):
+        """The FINAL safety pass must reapply a verbatim pin when a dependency step
+        clobbered torch after the first pass applied it: marker equality alone is
+        blind to that (an unknown-family wheel has no flavor tag to probe), so the
+        trio snapshot is the clobber signal. A reinstall refreshes the snapshot,
+        so the repair cannot loop."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
+        snapshots = [
+            ("torch==2.10.0",),   # after the first-pass reinstall
+            ("torch==2.13.0",),   # final pass: a dependency step swapped torch
+            ("torch==2.10.0",),   # after the repair reinstall
+            ("torch==2.10.0",),   # any later pass: matches -> no loop
+        ]
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.object(
+                    stack_mod, "_installed_trio_snapshot", side_effect = snapshots
+                ):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._ensure_verbatim_torch_index()  # pass 1: applies pin
+                        assert mock_pip.call_count == 1
+                        stack_mod._ensure_verbatim_torch_index()  # final pass: clobbered
+                        assert mock_pip.call_count == 2
+                        stack_mod._ensure_verbatim_torch_index()  # stable: no loop
+                        assert mock_pip.call_count == 2
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_verbatim_matching_marker_across_runs_no_reinstall(self, mock_pip):
+        """A NEW run (snapshot None) with marker == pin must stay a no-op: the
+        snapshot only detects drift within a run, never forces a reinstall on a
+        healthy pinned venv."""
+        self._seed("https://mirror.local/simple")
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.object(
+                    stack_mod, "_installed_trio_snapshot", return_value = ("torch==2.10.0",)
+                ):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._ensure_verbatim_torch_index()
+        mock_pip.assert_not_called()
 
 
 # TEST: install_python_stack.py -- _has_rocm_gpu KFD sysfs vendor_id guard

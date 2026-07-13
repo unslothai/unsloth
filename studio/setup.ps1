@@ -3001,11 +3001,18 @@ function Fast-Install {
     if ($pinned) {
         foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
                        'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
-                       'UV_CONFIG_FILE', 'UV_NO_CONFIG') {
+                       'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE') {
             $saved[$n] = [Environment]::GetEnvironmentVariable($n)
             Remove-Item "Env:$n" -ErrorAction SilentlyContinue
         }
         $env:UV_NO_CONFIG = '1'
+        # The env strips cover only pip's environment channel: a
+        # `pip config set global.extra-index-url` in a user/site pip config file
+        # still adds indexes to the pinned pip FALLBACK below. pip loads NO
+        # configuration files when PIP_CONFIG_FILE is the platform devnull
+        # ('nul' on Windows). uv does not read pip config, so this only affects
+        # the fallback.
+        $env:PIP_CONFIG_FILE = 'nul'
     }
     try {
         if ($UseUv) {
@@ -3016,7 +3023,10 @@ function Fast-Install {
         & python -m pip install @Args_ 2>&1
     }
     finally {
-        if ($pinned) { Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue }
+        if ($pinned) {
+            Remove-Item "Env:UV_NO_CONFIG" -ErrorAction SilentlyContinue
+            Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
+        }
         foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
     }
 }
@@ -3339,12 +3349,20 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # keep the old build and the changed CUDA pin (e.g. cu126 -> cu128) never applies.
     $cudaForce = @()
     if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
+    # An unknown-leaf custom pin (/simple, /current) routes through this branch
+    # with $CuTag set to that leaf. Bound torch like install.ps1's fresh pinned
+    # install and install_python_stack.py's verbatim path: a private mirror that
+    # serves newer torch must not lift the venv above the supported range while
+    # the marker records the pin as applied. Known cu* leaves keep the bare spec
+    # (the family index itself bounds what can resolve).
+    $cudaTorchSpec = "torch"
+    if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) { $cudaTorchSpec = "torch>=2.4,<2.11.0" }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl
+        Fast-Install $cudaTorchSpec torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install $cudaTorchSpec torchvision torchaudio @cudaForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {
