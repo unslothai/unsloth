@@ -158,10 +158,23 @@ export const en = {
         sectionTitle: "Recent dictations",
         sectionDescription:
           "Your recent dictations will appear here so you can recover text",
+        manageLabel: "Dictation history",
+        manage: "Manage",
+        dialogDescription: "View, copy, or delete your saved dictations.",
         empty: "No dictations yet",
+        dictationColumn: "Dictation",
+        dateColumn: "Date created",
+        copy: "Copy dictation",
         copied: "Copied to clipboard",
         copyFailed: "Could not copy to clipboard",
+        delete: "Delete dictation",
+        deleteTitle: "Delete dictation",
+        deleteDescription:
+          "Delete this saved dictation? This cannot be undone.",
         clear: "Clear recent dictations",
+        clearTitle: "Clear recent dictations",
+        clearDescription: "Delete all saved dictations? This cannot be undone.",
+        clearConfirm: "Clear all",
       },
       readAloud: {
         sectionTitle: "Read aloud",

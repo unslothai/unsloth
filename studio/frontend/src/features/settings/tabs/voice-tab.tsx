@@ -26,11 +26,9 @@ import {
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useT } from "@/i18n";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import {
-  Copy01Icon,
   Delete02Icon,
   PlusSignIcon,
   VolumeHighIcon,
@@ -38,6 +36,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { RecentDictationsDialog } from "../components/recent-dictations-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
@@ -282,10 +281,6 @@ export function VoiceTab() {
   const removeDictionaryEntry = useVoiceSettingsStore(
     (s) => s.removeDictionaryEntry,
   );
-  const recentDictations = useVoiceSettingsStore((s) => s.recentDictations);
-  const clearRecentDictations = useVoiceSettingsStore(
-    (s) => s.clearRecentDictations,
-  );
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
   const ttsEngine = useVoiceSettingsStore((s) => s.ttsEngine);
@@ -307,6 +302,7 @@ export function VoiceTab() {
   );
   const [newEntry, setNewEntry] = useState("");
   const [previewing, setPreviewing] = useState(false);
+  const [recentsOpen, setRecentsOpen] = useState(false);
 
   const dictationSupported = StudioDictationAdapter.isSupported();
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
@@ -748,64 +744,19 @@ export function VoiceTab() {
         </div>
       </SettingsSection>
 
-      <SettingsSection
-        title={t("settings.voice.recents.sectionTitle")}
-        description={t("settings.voice.recents.sectionDescription")}
-      >
-        {recentDictations.length === 0 ? (
-          <p className="py-3 text-sm text-muted-foreground">
-            {t("settings.voice.recents.empty")}
-          </p>
-        ) : (
-          <>
-            {recentDictations.map((item) => (
-              <div
-                key={`${item.at}-${item.text.slice(0, 24)}`}
-                className="flex items-start justify-between gap-3 py-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="whitespace-pre-wrap break-words text-sm text-foreground">
-                    {item.text}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    {new Date(item.at).toLocaleString()}
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 shrink-0 text-muted-foreground"
-                  aria-label="Copy dictation"
-                  onClick={async () => {
-                    // Helper falls back to execCommand where navigator.clipboard
-                    // is unavailable (Safari, insecure http LAN contexts).
-                    if (await copyToClipboard(item.text)) {
-                      toast.success(t("settings.voice.recents.copied"));
-                    } else {
-                      toast.error(t("settings.voice.recents.copyFailed"));
-                    }
-                  }}
-                >
-                  <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
-                </Button>
-              </div>
-            ))}
-            <div className="flex justify-end py-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={clearRecentDictations}
-                className="text-destructive hover:text-destructive hover:border-destructive/60"
-              >
-                <HugeiconsIcon
-                  icon={Delete02Icon}
-                  className="mr-1.5 size-3.5"
-                />
-                {t("settings.voice.recents.clear")}
-              </Button>
-            </div>
-          </>
-        )}
+      <SettingsSection title={t("settings.voice.recents.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.voice.recents.manageLabel")}
+          description={t("settings.voice.recents.sectionDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRecentsOpen(true)}
+          >
+            {t("settings.voice.recents.manage")}
+          </Button>
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.voice.readAloud.sectionTitle")}>
@@ -962,6 +913,11 @@ export function VoiceTab() {
           />
         )}
       </SettingsSection>
+
+      <RecentDictationsDialog
+        open={recentsOpen}
+        onOpenChange={setRecentsOpen}
+      />
     </div>
   );
 }

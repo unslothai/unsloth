@@ -8,6 +8,7 @@ import { persist } from "zustand/middleware";
 // changes apply without reloading the chat runtime.
 
 export interface RecentDictation {
+  id: string;
   text: string;
   at: number;
 }
@@ -73,6 +74,7 @@ export interface VoiceSettingsState {
   /** Final transcripts, newest first, so text can be recovered. */
   recentDictations: RecentDictation[];
   addRecentDictation: (text: string) => void;
+  removeRecentDictation: (id: string) => void;
   clearRecentDictations: () => void;
 
   /** Show the read-aloud button on assistant responses. */
@@ -171,14 +173,27 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       addRecentDictation: (text) =>
         set((state) => {
           const trimmed = text.trim();
-          if (!trimmed) return state;
+          if (!trimmed) {
+            return state;
+          }
+          const at = Date.now();
           return {
             recentDictations: [
-              { text: trimmed, at: Date.now() },
+              {
+                id: `${at}-${Math.random().toString(36).slice(2, 10)}`,
+                text: trimmed,
+                at,
+              },
               ...state.recentDictations,
             ].slice(0, MAX_RECENT_DICTATIONS),
           };
         }),
+      removeRecentDictation: (id) =>
+        set((state) => ({
+          recentDictations: state.recentDictations.filter(
+            (dictation) => dictation.id !== id,
+          ),
+        })),
       clearRecentDictations: () => set({ recentDictations: [] }),
 
       ttsEnabled: true,
@@ -226,14 +241,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 .map((v) => v.trim().slice(0, MAX_DICTIONARY_ENTRY_LENGTH))
                 .slice(0, MAX_DICTIONARY_ENTRIES)
             : [],
-          recentDictations: Array.isArray(saved?.recentDictations)
-            ? saved.recentDictations
-                .filter(
-                  (v): v is RecentDictation =>
-                    typeof v?.text === "string" && typeof v?.at === "number",
-                )
-                .slice(0, MAX_RECENT_DICTATIONS)
-            : [],
+          recentDictations: normalizeRecentDictations(saved?.recentDictations),
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
           ttsEngine: saved?.ttsEngine === "studio" ? "studio" : "system",
@@ -249,6 +257,40 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;
+}
+
+function normalizeRecentDictations(value: unknown): RecentDictation[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: RecentDictation[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const candidate = entry as Partial<RecentDictation>;
+    if (
+      typeof candidate.text !== "string" ||
+      !candidate.text.trim() ||
+      typeof candidate.at !== "number" ||
+      !Number.isFinite(candidate.at)
+    ) {
+      continue;
+    }
+    normalized.push({
+      id:
+        typeof candidate.id === "string" && candidate.id
+          ? candidate.id
+          : `legacy-${candidate.at}-${index}`,
+      text: candidate.text.trim(),
+      at: candidate.at,
+    });
+    if (normalized.length === MAX_RECENT_DICTATIONS) {
+      break;
+    }
+  }
+  return normalized;
 }
 
 function clampNumber(
