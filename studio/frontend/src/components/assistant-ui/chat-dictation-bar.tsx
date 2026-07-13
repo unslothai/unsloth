@@ -3,7 +3,6 @@
 
 import { cancelActiveStudioDictation } from "@/features/chat/adapters/studio-dictation-adapter";
 import { subscribeDictationLevel } from "@/features/chat/adapters/studio-model-dictation-adapter";
-import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { CheckIcon, XIcon } from "lucide-react";
 import { type FC, useEffect, useRef, useState } from "react";
@@ -25,10 +24,11 @@ function formatElapsed(ms: number): string {
 }
 
 /**
- * ChatGPT-style recording bar. Shown while dictation is active: a live waveform
- * with a discard (X) and a confirm (tick) control. The tick stops recording and
- * transcribes the whole clip; X throws the recording away and keeps any text
- * already in the composer.
+ * ChatGPT-style recording UI, rendered in place of the composer input while
+ * dictating: a live waveform in the middle with a discard (X) and a confirm
+ * (tick) on the right, matching ChatGPT's layout. The tick transcribes the
+ * recording; X throws it away and keeps any text already in the composer. The
+ * left composer tools (the "+") stay visible alongside it.
  */
 export const ChatDictationBar: FC = () => {
   const aui = useAui();
@@ -107,53 +107,53 @@ export const ChatDictationBar: FC = () => {
 
   return (
     <div
-      className="unsloth-dictation-bar absolute inset-0 z-30 flex items-center gap-2 rounded-[inherit] bg-background px-2"
+      // order-2 places the bar in the input's slot, after the left "+" tools
+      // (order 1) and matching ChatGPT's [+] [waveform] [X] [tick] layout.
+      className="unsloth-dictation-bar order-2 flex min-w-0 flex-1 items-center gap-2"
       role="group"
       aria-label="Voice recording"
     >
-      <TooltipIconButton
-        tooltip="Discard recording"
-        aria-label="Discard recording"
-        variant="ghost"
-        onClick={discard}
-        disabled={transcribing}
-        className="size-9 shrink-0 rounded-full text-muted-foreground hover:text-foreground"
+      <div
+        ref={rowRef}
+        aria-hidden="true"
+        className="unsloth-dictation-wave flex h-8 min-w-0 flex-1 items-center gap-[3px] overflow-hidden"
       >
-        <XIcon className="size-5" />
-      </TooltipIconButton>
-
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <div
-          ref={rowRef}
-          aria-hidden="true"
-          className="unsloth-dictation-wave flex h-8 min-w-0 flex-1 items-center gap-[3px] overflow-hidden"
-        >
-          {Array.from({ length: BAR_COUNT }).map((_, i) => (
-            <span
-              key={`wave-bar-${i}`}
-              className="h-full w-[3px] shrink-0 origin-center scale-y-[0.08] rounded-full bg-foreground/80 opacity-35 transition-transform duration-75"
-            />
-          ))}
-        </div>
-        <span className="shrink-0 tabular-nums text-sm text-muted-foreground">
-          {formatElapsed(elapsed)}
-        </span>
+        {Array.from({ length: BAR_COUNT }).map((_, i) => (
+          <span
+            key={`wave-bar-${i}`}
+            className="h-full w-[3px] shrink-0 origin-center scale-y-[0.08] rounded-full bg-foreground/80 opacity-35 transition-transform duration-75"
+          />
+        ))}
       </div>
-
-      <TooltipIconButton
-        tooltip={transcribing ? "Transcribing…" : "Stop and transcribe"}
-        aria-label="Stop and transcribe"
-        variant="default"
-        onClick={confirm}
-        disabled={transcribing}
-        className={cn("size-9 shrink-0 rounded-full")}
-      >
-        {transcribing ? (
-          <Spinner className="size-4" />
-        ) : (
-          <CheckIcon className="size-5" />
-        )}
-      </TooltipIconButton>
+      <span className="shrink-0 tabular-nums text-sm text-muted-foreground">
+        {formatElapsed(elapsed)}
+      </span>
+      <div className="flex shrink-0 items-center gap-1">
+        <TooltipIconButton
+          tooltip="Discard recording"
+          aria-label="Discard recording"
+          variant="ghost"
+          onClick={discard}
+          disabled={transcribing}
+          className="size-8 rounded-full text-muted-foreground hover:text-foreground"
+        >
+          <XIcon className="size-5" />
+        </TooltipIconButton>
+        <TooltipIconButton
+          tooltip={transcribing ? "Transcribing…" : "Stop and transcribe"}
+          aria-label="Stop and transcribe"
+          variant="default"
+          onClick={confirm}
+          disabled={transcribing}
+          className="size-8 rounded-full"
+        >
+          {transcribing ? (
+            <Spinner className="size-4" />
+          ) : (
+            <CheckIcon className="size-5" />
+          )}
+        </TooltipIconButton>
+      </div>
     </div>
   );
 };

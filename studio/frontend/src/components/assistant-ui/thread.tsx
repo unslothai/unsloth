@@ -1416,6 +1416,7 @@ const Composer: FC<{
   menuSide?: "top" | "bottom";
 }> = ({ disabled, threadId, menuSide }) => {
   const aui = useAui();
+  const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -1850,11 +1851,9 @@ const Composer: FC<{
       />
       <ToolStatusDisplay />
       <div
-        className="unsloth-composer-line relative"
+        className="unsloth-composer-line"
         data-expanded={composerExpanded ? "true" : "false"}
       >
-        {/* ChatGPT-style recording bar; covers the input row while dictating. */}
-        <ChatDictationBar />
         <div
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
@@ -1876,46 +1875,54 @@ const Composer: FC<{
             </>
           ) : null}
         </div>
-        <ComposerPrimitive.Input
-          placeholder={
-            overlay ? "Type your edits for your image" : "Ask anything"
-          }
-          ref={inputRef}
-          className="aui-composer-input unsloth-composer-input"
-          minRows={1}
-          maxRows={12}
-          autoFocus={!disabled}
-          disabled={disabled}
-          aria-label={overlay ? "Image edit instructions" : "Message input"}
-          // dir="auto": browser picks LTR/RTL from the first strong char;
-          // no effect on Latin / CJK / Devanagari.
-          dir="auto"
-          {...inputProps}
-        />
-        <ComposerRightControls
-          disabled={
-            disabled ||
-            !hasSendableContent ||
-            isComposing ||
-            hasPendingAttachments
-          }
-          queueDisabled={!canQueueCurrentPrompt}
-          onQueueClick={() => {
-            const queuedPrompt = composerText.trim();
-            if (queuedPrompt.length === 0) {
-              return;
-            }
-            flushResourcesSync(() => {
-              aui.composer().setText("");
-            });
-            startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
-          }}
-          onSendClick={interceptSend}
-          onStopClick={stopQueue}
-          pendingSend={pendingSend}
-          menuSide={effectiveMenuSide}
-          queueThreadIds={promptQueueThreadIds}
-        />
+        {isDictating ? (
+          // ChatGPT-style recording UI replaces the input + send controls while
+          // dictating; the left tools above stay put.
+          <ChatDictationBar />
+        ) : (
+          <>
+            <ComposerPrimitive.Input
+              placeholder={
+                overlay ? "Type your edits for your image" : "Ask anything"
+              }
+              ref={inputRef}
+              className="aui-composer-input unsloth-composer-input"
+              minRows={1}
+              maxRows={12}
+              autoFocus={!disabled}
+              disabled={disabled}
+              aria-label={overlay ? "Image edit instructions" : "Message input"}
+              // dir="auto": browser picks LTR/RTL from the first strong char;
+              // no effect on Latin / CJK / Devanagari.
+              dir="auto"
+              {...inputProps}
+            />
+            <ComposerRightControls
+              disabled={
+                disabled ||
+                !hasSendableContent ||
+                isComposing ||
+                hasPendingAttachments
+              }
+              queueDisabled={!canQueueCurrentPrompt}
+              onQueueClick={() => {
+                const queuedPrompt = composerText.trim();
+                if (queuedPrompt.length === 0) {
+                  return;
+                }
+                flushResourcesSync(() => {
+                  aui.composer().setText("");
+                });
+                startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
+              }}
+              onSendClick={interceptSend}
+              onStopClick={stopQueue}
+              pendingSend={pendingSend}
+              menuSide={effectiveMenuSide}
+              queueThreadIds={promptQueueThreadIds}
+            />
+          </>
+        )}
       </div>
     </>
   );
