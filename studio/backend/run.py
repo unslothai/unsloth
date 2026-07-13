@@ -1356,6 +1356,20 @@ def run_server(
         (time.perf_counter() - boot_started) * 1000,
     )
 
+    # Warm the OS-sandbox probe in the background so the "tool execution
+    # sandboxed / unsandboxed" status is logged at startup instead of being
+    # deferred to the first tool call, and so that first call does not pay the
+    # probe's timeout. Best effort: a failure here must never block startup.
+    def _warm_sandbox_probe():
+        try:
+            from core.inference.sandbox import sandbox_available
+
+            sandbox_available()
+        except Exception as exc:  # never let the probe crash server startup
+            logger.debug("sandbox availability probe failed at startup: %s", exc)
+
+    Thread(target = _warm_sandbox_probe, daemon = True).start()
+
     _write_pid_file()
     import atexit
 

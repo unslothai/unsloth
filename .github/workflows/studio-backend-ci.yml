@@ -80,6 +80,26 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
           pip install 'transformers>=4.51,<5.5'
 
+      - name: Enable and probe the OS sandbox (bubblewrap)
+        # Install bubblewrap and confirm it can actually build a namespace on
+        # this runner. Ubuntu 24.04 restricts unprivileged user namespaces via
+        # AppArmor, so relax that knob first (best effort). The enforcement
+        # tests in tests/test_sandbox.py only fail-closed when
+        # UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE=1, which is exported below only when
+        # this probe confirms the sandbox applies here; otherwise those tests
+        # self-skip and the run stays green with a warning.
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          if bwrap --ro-bind / / --unshare-all --die-with-parent /usr/bin/true 2>/tmp/bwrap_probe.txt; then
+            echo "UNSLOTH_STUDIO_SANDBOX_CI_ENFORCE=1" >> "$GITHUB_ENV"
+            echo "bwrap probe OK: OS-sandbox enforcement tests will run"
+          else
+            echo "::warning::bwrap probe failed on this runner; OS-sandbox enforcement tests will skip"
+            cat /tmp/bwrap_probe.txt || true
+          fi
+
       - name: Backend tests
         working-directory: studio/backend
         # Locally validated against this dep set: 831 passed, 5 skipped, 35 deselected.

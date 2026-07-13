@@ -1732,6 +1732,30 @@ case "$OS" in
         else
             step "deps" "all system dependencies found"
         fi
+
+        # OS-level sandbox (bubblewrap): best effort, never fatal. The studio
+        # backend wraps python/terminal tool execution in bwrap when it is
+        # present; when it is absent tool execution falls back to the in-process
+        # guard and logs a warning (set UNSLOTH_STUDIO_SANDBOX_STRICT=1 to refuse
+        # instead of falling back). Missing bwrap must not block install, so this
+        # is intentionally outside the required-dependency handling above.
+        if command -v bwrap >/dev/null 2>&1; then
+            step "sandbox" "bubblewrap found (OS-level tool sandbox enabled)"
+        elif command -v apt-get >/dev/null 2>&1; then
+            apt-get install -y bubblewrap </dev/null >/dev/null 2>&1 || true
+            if ! command -v bwrap >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+                sudo -n apt-get install -y bubblewrap </dev/null >/dev/null 2>&1 || true
+            fi
+            if command -v bwrap >/dev/null 2>&1; then
+                step "sandbox" "installed bubblewrap (OS-level tool sandbox enabled)"
+            else
+                step "sandbox" "bubblewrap not installed; tool execution uses the in-process guard only" "$C_WARN"
+                substep "Optional: sudo apt-get install -y bubblewrap  (enables the OS-level sandbox)"
+            fi
+        else
+            step "sandbox" "bubblewrap not found; tool execution uses the in-process guard only" "$C_WARN"
+            substep "Optional: install 'bubblewrap' with your package manager to enable the OS-level sandbox"
+        fi
         ;;
 esac
 
