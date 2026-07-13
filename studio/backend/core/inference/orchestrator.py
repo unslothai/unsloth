@@ -187,8 +187,7 @@ class InferenceOrchestrator:
 
         if sidecar_swap_kind() == "repair":
             raise SidecarSwapInProgress(
-                "A transformers repair is replacing the latest sidecar; "
-                "retry when it completes."
+                "A transformers repair is replacing the latest sidecar; retry when it completes."
             )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
