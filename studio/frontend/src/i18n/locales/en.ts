@@ -105,6 +105,21 @@ export const en = {
       description: "Microphone, dictation, and read-aloud",
       dictation: {
         sectionTitle: "Dictation",
+        engineLabel: "Dictation engine",
+        engineBrowser: "Browser",
+        engineModel: "Load STT model",
+        engineBrowserDescription: "Sends audio to the browser speech service, needs internet",
+        engineModelDescription: "Runs locally on this server, works offline and with any chat model",
+        sttModelLabel: "STT model",
+        sttModelDescription: "Downloaded once, then kept in memory for instant use",
+        sttModelFailed: "Could not load the STT model",
+        sttModelUnsupported: "Recording is not supported in this browser",
+        sttChecking: "Checking…",
+        sttLoadingModel: "Loading model…",
+        sttReady: "Ready on {device}",
+        sttUnavailable:
+          "Not installed on this server. Run `unsloth studio update` to enable local dictation.",
+        sttRetry: "Retry",
         microphoneLabel: "Microphone",
         microphoneDescription: "Used for dictation",
         microphoneFallbackHint:

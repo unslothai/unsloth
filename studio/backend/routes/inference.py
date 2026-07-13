@@ -1676,6 +1676,8 @@ async def _aiter_llama_stream_items(
 from models.inference import (
     LoadRequest,
     UnloadRequest,
+    TranscribeRequest,
+    SttLoadRequest,
     GenerateRequest,
     LoadResponse,
     LoadProgressResponse,
@@ -5277,6 +5279,103 @@ async def generate_audio(
             ],
         }
     )
+
+
+# =====================================================================
+# Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
+# =====================================================================
+
+
+@router.get("/audio/stt/status")
+async def stt_status(current_subject: str = Depends(get_current_subject)):
+    """Report STT availability and which model, if any, is warm."""
+    from core.inference.stt_sidecar import (
+        DEFAULT_STT_MODEL,
+        STT_MODELS,
+        get_stt_sidecar,
+        is_available,
+    )
+
+    sidecar = get_stt_sidecar()
+    return JSONResponse(
+        content = {
+            "available": is_available(),
+            "loaded_model": sidecar.loaded_model,
+            "loading": sidecar.is_loading(),
+            "device": sidecar.device,
+            "default_model": DEFAULT_STT_MODEL,
+            "models": list(STT_MODELS.keys()),
+        }
+    )
+
+
+@router.post("/audio/stt/load")
+async def stt_load(
+    payload: SttLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Warm the STT sidecar so the first dictation is not slowed by a load."""
+    from core.inference.stt_sidecar import (
+        SttUnavailableError,
+        get_stt_sidecar,
+    )
+
+    sidecar = get_stt_sidecar()
+    try:
+        await asyncio.to_thread(sidecar.load, payload.model)
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except Exception as e:
+        logger.error(f"STT load error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    return JSONResponse(
+        content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device}
+    )
+
+
+@router.post("/audio/transcribe")
+async def transcribe_audio(
+    payload: TranscribeRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Transcribe dictation audio to text via the STT sidecar.
+
+    Runs alongside the chat model without evicting it, so any model (including
+    text-only ones) can be driven by voice.
+    """
+    from core.inference.stt_sidecar import (
+        SttAudioDecodeError,
+        SttUnavailableError,
+        get_stt_sidecar,
+    )
+
+    b64 = payload.audio or ""
+    if not b64:
+        raise HTTPException(status_code = 400, detail = "No audio provided.")
+    if len(b64) > _MAX_AUDIO_B64_CHARS:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    try:
+        raw = base64.b64decode(b64, validate = True)
+    except Exception:
+        raise HTTPException(status_code = 400, detail = "Audio is not valid base64.")
+    if not raw:
+        raise HTTPException(status_code = 400, detail = "Audio is empty.")
+    if len(raw) > _MAX_AUDIO_RAW_BYTES:
+        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+
+    sidecar = get_stt_sidecar()
+    try:
+        result = await asyncio.to_thread(
+            sidecar.transcribe, raw, payload.model, payload.language
+        )
+    except SttUnavailableError as e:
+        raise HTTPException(status_code = 501, detail = str(e))
+    except SttAudioDecodeError as e:
+        raise HTTPException(status_code = 400, detail = str(e))
+    except Exception as e:
+        logger.error(f"Transcription error: {e}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    return JSONResponse(content = result)
 
 
 # =====================================================================

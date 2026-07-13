@@ -16,10 +16,31 @@ const MAX_RECENT_DICTATIONS = 20;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
+/** STT model ids, mirrored from the backend allowlist (stt_sidecar.py). */
+export const STT_MODELS = [
+  "base",
+  "small",
+  "distil-large-v3",
+  "large-v3-turbo",
+  "large-v3",
+] as const;
+export type SttModel = (typeof STT_MODELS)[number];
+export const DEFAULT_STT_MODEL: SttModel = "base";
+
+export type DictationEngine = "browser" | "model";
+
 export interface VoiceSettingsState {
   /** Input device for dictation. "default" = system default microphone. */
   micDeviceId: string;
   setMicDeviceId: (value: string) => void;
+
+  /** "browser": Web Speech API. "model": a loaded STT model via the backend. */
+  dictationEngine: DictationEngine;
+  setDictationEngine: (value: DictationEngine) => void;
+
+  /** STT model to load when dictationEngine is "model". */
+  sttModel: SttModel;
+  setSttModel: (value: SttModel) => void;
 
   /** BCP 47 tag for speech recognition, or "auto" for the browser locale. */
   dictationLanguage: string;
@@ -63,6 +84,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     (set) => ({
       micDeviceId: "default",
       setMicDeviceId: (micDeviceId) => set({ micDeviceId }),
+
+      dictationEngine: "browser",
+      setDictationEngine: (dictationEngine) => set({ dictationEngine }),
+
+      sttModel: DEFAULT_STT_MODEL,
+      setSttModel: (sttModel) => set({ sttModel }),
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) => set({ dictationLanguage }),
@@ -145,6 +172,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         return {
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
+          dictationEngine:
+            saved?.dictationEngine === "model" ? "model" : "browser",
+          sttModel: (STT_MODELS as readonly string[]).includes(
+            saved?.sttModel as string,
+          )
+            ? (saved?.sttModel as SttModel)
+            : DEFAULT_STT_MODEL,
           dictationLanguage: asString(saved?.dictationLanguage, "auto"),
           dictionary: Array.isArray(saved?.dictionary)
             ? saved.dictionary

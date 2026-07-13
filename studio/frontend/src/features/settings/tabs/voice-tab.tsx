@@ -18,10 +18,13 @@ import {
   curateSystemVoices,
   generateStudioTtsAudio,
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
+import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
 import {
-  StudioWebSpeechDictationAdapter,
-  isMissingDeviceError,
-} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+  StudioModelDictationAdapter,
+  fetchSttStatus,
+  loadSttModel,
+} from "@/features/chat/adapters/studio-model-dictation-adapter";
+import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { MicIcon } from "@/lib/mic-icon";
@@ -37,9 +40,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
-  applyDictationDictionary,
-  recordRecentDictation,
-  resolveDictationLanguage,
+  DEFAULT_STT_MODEL,
+  STT_MODELS,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
@@ -60,6 +62,16 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
 ];
+
+// Approximate download sizes, shown in the STT model picker so users know
+// what a first-time selection will fetch.
+const STT_MODEL_SIZES: Record<string, string> = {
+  base: "~150 MB",
+  small: "~500 MB",
+  "distil-large-v3": "~1.5 GB",
+  "large-v3-turbo": "~1.6 GB",
+  "large-v3": "~3 GB",
+};
 
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth Studio! This is a preview of the selected voice.";
@@ -125,141 +137,64 @@ function useSystemVoices() {
   return voices;
 }
 
-/** Inline mic test: runs speech recognition and shows the live transcript. */
+/** Inline mic test: runs dictation on the selected engine and shows the text. */
 function DictationTest() {
   const t = useT();
   const [testing, setTesting] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [interim, setInterim] = useState("");
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  // Mirrors the transcript state so onend can record it without stale closures.
-  const transcriptRef = useRef("");
-
-  // Single cleanup path: the browser can end recognition on its own (silence
-  // timeout, service disconnect), so onend must release the mic and save the
-  // transcript, not just the Stop button.
-  const finalize = useCallback(() => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    recognitionRef.current = null;
-    if (transcriptRef.current) {
-      recordRecentDictation(transcriptRef.current);
-      transcriptRef.current = "";
-    }
-    setTesting(false);
-    setInterim("");
-  }, []);
+  const sessionRef = useRef<StudioDictationSession | null>(null);
+  // Set before the listen() call so a double click cannot start two sessions.
+  const startingRef = useRef(false);
 
   const stop = useCallback(() => {
-    const recognition = recognitionRef.current;
-    if (recognition) {
-      // onend fires next and runs finalize()
-      recognition.stop();
-    } else {
-      finalize();
-    }
-  }, [finalize]);
+    // onEnd resets state once the session (and any transcription) finishes.
+    void sessionRef.current?.stop();
+  }, []);
 
   useEffect(
     () => () => {
-      recognitionRef.current?.abort();
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+      sessionRef.current?.cancel();
+      sessionRef.current = null;
     },
     [],
   );
 
-  // Set before the getUserMedia await so a double click or a slow
-  // permission prompt cannot start a second recognizer over the first.
-  const startingRef = useRef(false);
-
   const start = useCallback(async () => {
-    const SpeechRecognitionAPI =
-      window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!SpeechRecognitionAPI) return;
-    if (startingRef.current || recognitionRef.current) return;
+    if (startingRef.current || sessionRef.current) return;
+    if (!StudioDictationAdapter.isSupported()) return;
     startingRef.current = true;
     setTranscript("");
     setInterim("");
-    transcriptRef.current = "";
 
-    const { micDeviceId } = useVoiceSettingsStore.getState();
-    let audioTrack: MediaStreamTrack | undefined;
+    let session: StudioDictationSession;
     try {
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio:
-            micDeviceId && micDeviceId !== "default"
-              ? { deviceId: { exact: micDeviceId } }
-              : true,
-        });
-      } catch (error) {
-        // Saved mic may be unplugged; fall back to the default device.
-        if (micDeviceId !== "default" && isMissingDeviceError(error)) {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        } else {
-          throw error;
-        }
-      }
-      streamRef.current = stream;
-      audioTrack = stream.getAudioTracks()[0];
+      // Routes to the browser or STT-model engine; the adapter applies the
+      // dictionary and saves the result to Recent dictations.
+      session = new StudioDictationAdapter().listen();
     } catch {
       startingRef.current = false;
       toast.error(t("settings.voice.dictation.micOpenFailed"));
       return;
     }
-
-    const recognition = new SpeechRecognitionAPI();
-    recognition.lang = resolveDictationLanguage();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interimText = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const text = result?.[0]?.transcript ?? "";
-        if (result?.isFinal) {
-          const corrected = applyDictationDictionary(text.trim());
-          setTranscript((prev) => {
-            const next = prev ? `${prev} ${corrected}` : corrected;
-            transcriptRef.current = next;
-            return next;
-          });
-        } else {
-          interimText += text;
-        }
-      }
-      setInterim(interimText);
-    };
-    recognition.onerror = () => {
-      // an end event follows and finalize() runs there
-    };
-    recognition.onend = () => finalize();
-    try {
-      if (audioTrack) {
-        try {
-          recognition.start(audioTrack);
-        } catch {
-          // Engine has no start(track) overload: it will capture from the
-          // default device, so release the selected-device stream.
-          streamRef.current?.getTracks().forEach((track) => track.stop());
-          streamRef.current = null;
-          recognition.start();
-        }
-      } else {
-        recognition.start();
-      }
-    } catch {
-      startingRef.current = false;
-      finalize();
-      return;
-    }
-    recognitionRef.current = recognition;
-    startingRef.current = false;
+    sessionRef.current = session;
     setTesting(true);
-  }, [finalize, t]);
+    session.onSpeech((result) => {
+      const text = result.transcript?.trim() ?? "";
+      if (result.isFinal) {
+        setInterim("");
+        if (text) setTranscript((prev) => (prev ? `${prev} ${text}` : text));
+      } else {
+        setInterim(result.transcript ?? "");
+      }
+    });
+    session.onEnd?.(() => {
+      if (sessionRef.current === session) sessionRef.current = null;
+      setTesting(false);
+      setInterim("");
+    });
+    startingRef.current = false;
+  }, [t]);
 
   const finishedTest = !testing && transcript;
 
@@ -322,6 +257,10 @@ export function VoiceTab() {
   const t = useT();
   const micDeviceId = useVoiceSettingsStore((s) => s.micDeviceId);
   const setMicDeviceId = useVoiceSettingsStore((s) => s.setMicDeviceId);
+  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
+  const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
+  const sttModel = useVoiceSettingsStore((s) => s.sttModel);
+  const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
   const dictationLanguage = useVoiceSettingsStore((s) => s.dictationLanguage);
   const setDictationLanguage = useVoiceSettingsStore(
     (s) => s.setDictationLanguage,
@@ -364,8 +303,77 @@ export function VoiceTab() {
   const [newEntry, setNewEntry] = useState("");
   const [previewing, setPreviewing] = useState(false);
 
-  const dictationSupported = StudioWebSpeechDictationAdapter.isSupported();
+  const dictationSupported = StudioDictationAdapter.isSupported();
+  const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
+
+  // Local STT warms automatically when the model engine is active so the first
+  // dictation is instant. Tracks the phase to show live status in the UI.
+  type SttPhase =
+    | "idle"
+    | "checking"
+    | "unavailable"
+    | "loading"
+    | "ready"
+    | "error";
+  const [sttPhase, setSttPhase] = useState<SttPhase>("idle");
+  const [sttDevice, setSttDevice] = useState<string | null>(null);
+  const [warmNonce, setWarmNonce] = useState(0);
+
+  useEffect(() => {
+    if (dictationEngine !== "model" || !modelSttSupported) {
+      setSttPhase("idle");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      setSttPhase("checking");
+      try {
+        const status = await fetchSttStatus();
+        if (cancelled) return;
+        if (!status.available) {
+          setSttPhase("unavailable");
+          return;
+        }
+        if (status.loaded_model === sttModel && !status.loading) {
+          setSttDevice(status.device);
+          setSttPhase("ready");
+          return;
+        }
+        setSttPhase("loading");
+        await loadSttModel(sttModel);
+        if (cancelled) return;
+        const after = await fetchSttStatus();
+        if (cancelled) return;
+        setSttDevice(after.device);
+        setSttPhase("ready");
+      } catch {
+        if (!cancelled) setSttPhase("error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [dictationEngine, sttModel, modelSttSupported, warmNonce]);
+
+  const sttStatusText = (() => {
+    switch (sttPhase) {
+      case "checking":
+        return t("settings.voice.dictation.sttChecking");
+      case "loading":
+        return t("settings.voice.dictation.sttLoadingModel");
+      case "ready":
+        return t("settings.voice.dictation.sttReady", {
+          device: (sttDevice ?? "cpu").toUpperCase(),
+        });
+      case "unavailable":
+        return t("settings.voice.dictation.sttUnavailable");
+      case "error":
+        return t("settings.voice.dictation.sttModelFailed");
+      default:
+        return "";
+    }
+  })();
 
   // Keep an item for an unplugged saved mic so the value stays visible.
   const knownMic = devices.some((d) => d.deviceId === micDeviceId);
@@ -461,6 +469,100 @@ export function VoiceTab() {
       </header>
 
       <SettingsSection title={t("settings.voice.dictation.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.voice.dictation.engineLabel")}
+          description={
+            dictationEngine === "model"
+              ? t("settings.voice.dictation.engineModelDescription")
+              : t("settings.voice.dictation.engineBrowserDescription")
+          }
+        >
+          <Select
+            value={dictationEngine}
+            onValueChange={(value) =>
+              setDictationEngine(value as "browser" | "model")
+            }
+          >
+            <SelectTrigger
+              aria-label="Dictation engine"
+              className="w-56"
+              size="sm"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="browser">
+                {t("settings.voice.dictation.engineBrowser")}
+              </SelectItem>
+              <SelectItem value="model">
+                {t("settings.voice.dictation.engineModel")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+
+        {dictationEngine === "model" ? (
+          modelSttSupported ? (
+            <SettingsRow
+              label={t("settings.voice.dictation.sttModelLabel")}
+              description={t("settings.voice.dictation.sttModelDescription")}
+            >
+              <div className="flex flex-col items-end gap-1.5">
+                <Select
+                  value={sttModel}
+                  onValueChange={(value) =>
+                    setSttModel(
+                      (STT_MODELS as readonly string[]).includes(value)
+                        ? (value as (typeof STT_MODELS)[number])
+                        : DEFAULT_STT_MODEL,
+                    )
+                  }
+                >
+                  <SelectTrigger
+                    aria-label="STT model"
+                    className="w-56"
+                    size="sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STT_MODELS.map((model) => (
+                      <SelectItem key={model} value={model}>
+                        {`${model}  ·  ${STT_MODEL_SIZES[model]}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {sttStatusText ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {sttPhase === "loading" || sttPhase === "checking" ? (
+                      <span className="size-1.5 animate-pulse rounded-full bg-current" />
+                    ) : sttPhase === "ready" ? (
+                      <span className="size-1.5 rounded-full bg-emerald-500" />
+                    ) : null}
+                    <span>{sttStatusText}</span>
+                    {sttPhase === "error" || sttPhase === "unavailable" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-5 px-1.5 text-xs"
+                        onClick={() => setWarmNonce((n) => n + 1)}
+                      >
+                        {t("settings.voice.dictation.sttRetry")}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : (
+            <SettingsRow
+              label={t("settings.voice.dictation.sttModelLabel")}
+              description={t("settings.voice.dictation.sttModelUnsupported")}
+            />
+          )
+        ) : null}
+
         <SettingsRow
           label={t("settings.voice.dictation.microphoneLabel")}
           description={

@@ -33,8 +33,8 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
-import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
@@ -1024,8 +1024,8 @@ function useStudioRuntimeAdapters(
 
   const dictation = useMemo(
     () =>
-      StudioWebSpeechDictationAdapter.isSupported()
-        ? new StudioWebSpeechDictationAdapter()
+      StudioDictationAdapter.isSupported()
+        ? new StudioDictationAdapter()
         : undefined,
     [],
   );

@@ -10,6 +10,14 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 
+/**
+ * A dictation session with an extra onEnd hook (not part of the assistant-ui
+ * interface) so non-runtime callers can reset when the session ends by itself.
+ */
+export type StudioDictationSession = DictationAdapter.Session & {
+  onEnd?: (callback: () => void) => () => void;
+};
+
 const getSpeechRecognitionAPI = ():
   | SpeechRecognitionConstructor
   | undefined => {
@@ -107,6 +115,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     const speechCallbacks = new Set<
       (result: DictationAdapter.Result) => void
     >();
+    const endCallbacks = new Set<() => void>();
 
     let stream: MediaStream | null = null;
     let finalTranscript = "";
@@ -117,7 +126,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       resolveEnded = resolve;
     });
 
-    const session: DictationAdapter.Session = {
+    const session: StudioDictationSession = {
       status: { type: "starting" },
 
       stop: async () => {
@@ -157,6 +166,15 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
           speechCallbacks.delete(callback);
         };
       },
+
+      // Extra to the DictationAdapter interface: lets callers reset UI when the
+      // session ends on its own (silence, error), not just via stop().
+      onEnd: (callback: () => void) => {
+        endCallbacks.add(callback);
+        return () => {
+          endCallbacks.delete(callback);
+        };
+      },
     };
 
     const finish = (reason: "stopped" | "cancelled" | "error") => {
@@ -174,6 +192,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         }
         finalTranscript = "";
       }
+      for (const callback of endCallbacks) callback();
       resolveEnded?.();
     };
 

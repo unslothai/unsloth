@@ -10,6 +10,7 @@ omegaconf
 einx
 pyloudnorm
 openai-whisper
+faster-whisper                   # fast, accurate STT sidecar for dictation (torch-free, CTranslate2)
 uroman                           # 4.0 MB - used for Outetts.
 MeCab                            # 19.9 MB - used for Outetts.
 inflect                          # number-to-words, required by OuteTTS
