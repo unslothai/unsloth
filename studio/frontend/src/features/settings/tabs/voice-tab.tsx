@@ -44,7 +44,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { RecentDictationsDialog } from "../components/recent-dictations-dialog";
+import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
@@ -311,7 +311,10 @@ export function VoiceTab() {
   );
   const [newEntry, setNewEntry] = useState("");
   const [previewing, setPreviewing] = useState(false);
-  const [recentsOpen, setRecentsOpen] = useState(false);
+  const [subpage, setSubpage] = useState<"main" | "recents">("main");
+  const [selectedDictationId, setSelectedDictationId] = useState<string | null>(
+    null,
+  );
 
   const dictationSupported = StudioDictationAdapter.isSupported();
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
@@ -626,6 +629,19 @@ export function VoiceTab() {
 
   // Stop any preview playback when the tab unmounts.
   useEffect(() => stopPreview, [stopPreview]);
+
+  if (subpage === "recents") {
+    return (
+      <RecentDictationsView
+        selectedId={selectedDictationId}
+        onSelect={setSelectedDictationId}
+        onBack={() => {
+          setSelectedDictationId(null);
+          setSubpage("main");
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -989,7 +1005,10 @@ export function VoiceTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setRecentsOpen(true)}
+            onClick={() => {
+              setSelectedDictationId(null);
+              setSubpage("recents");
+            }}
           >
             {t("settings.voice.recents.manage")}
           </Button>
@@ -1150,11 +1169,6 @@ export function VoiceTab() {
           />
         )}
       </SettingsSection>
-
-      <RecentDictationsDialog
-        open={recentsOpen}
-        onOpenChange={setRecentsOpen}
-      />
     </div>
   );
 }
