@@ -608,9 +608,36 @@ _BOILERPLATE_FRAGMENTS = (
 # content sentences quoting one of the fragments run longer.
 _BOILERPLATE_MAX_LINE_CHARS = 300
 
+# Normalized furniture phrases (whitespace-collapsed, case-folded, trailing
+# .!: stripped) for whole-segment matching. See _line_is_boilerplate.
+_BOILERPLATE_NORMALIZED = frozenset(
+    re.sub(r"\s+", " ", fragment).strip().casefold().rstrip(".!:")
+    for fragment in _BOILERPLATE_FRAGMENTS
+)
+
+
+def _line_is_boilerplate(line: str) -> bool:
+    """True only when a whole line is composed of known furniture phrases.
+
+    A previous substring test dropped any short line that merely CONTAINED a
+    fragment, so a legitimate sentence such as "We use cookies to authenticate
+    API requests." was deleted because it contains "we use cookies". Instead,
+    split the line on sentence terminators and require EVERY non-empty segment
+    to be a known furniture phrase. That still drops a line stacking several
+    phrases (GitHub renders "You signed in with another tab or window. Reload to
+    refresh your session." as one line) while keeping real prose that only
+    quotes one -- its other words leave a non-furniture segment.
+    """
+    normalized = re.sub(r"\s+", " ", line).strip().casefold()
+    if not normalized:
+        return False
+    segments = [segment.strip().rstrip(".!:") for segment in re.split(r"[.!]", normalized)]
+    segments = [segment for segment in segments if segment]
+    return bool(segments) and all(segment in _BOILERPLATE_NORMALIZED for segment in segments)
+
 
 def _strip_boilerplate_lines(text: str) -> str:
-    """Drop short lines that consist of known page-furniture fragments.
+    """Drop short lines that consist entirely of known page-furniture phrases.
 
     Fenced code blocks are preserved verbatim: boilerplate never renders
     inside ``<pre>``, while READMEs legitimately quote error strings."""
@@ -621,10 +648,8 @@ def _strip_boilerplate_lines(text: str) -> str:
             in_fence = not in_fence
             out.append(line)
             continue
-        if not in_fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS:
-            lowered = line.lower()
-            if any(fragment in lowered for fragment in _BOILERPLATE_FRAGMENTS):
-                continue
+        if not in_fence and len(line) <= _BOILERPLATE_MAX_LINE_CHARS and _line_is_boilerplate(line):
+            continue
         out.append(line)
     # Collapse blank runs the dropped lines may have left behind.
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()

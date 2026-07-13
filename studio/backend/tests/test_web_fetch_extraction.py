@@ -280,6 +280,35 @@ def test_default_conversion_unscoped_and_unstripped():
     assert "gone" not in out
 
 
+def test_boilerplate_filter_preserves_phrase_inside_real_prose():
+    # The furniture filter matched by substring, so a legitimate sentence that
+    # merely CONTAINS a fragment ("we use cookies") was deleted. It must now
+    # only drop lines COMPOSED of furniture, keeping real prose that quotes one.
+    body = (
+        "<article><h1>Authentication</h1>"
+        "<p>We use cookies to authenticate API requests and keep sessions safe.</p>"
+        "<p>%s</p></article>"
+    ) % ("Additional documentation content to select the article. " * 8)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "We use cookies to authenticate API requests" in out
+
+
+def test_boilerplate_filter_still_drops_standalone_and_stacked_furniture():
+    # A line that is purely a furniture phrase is still dropped, and a line that
+    # stacks several furniture phrases (as GitHub renders them) is dropped too.
+    body = (
+        "<article>"
+        "<p>Skip to content</p>"
+        "<p>You signed in with another tab or window. Reload to refresh your session.</p>"
+        "<p>Real README body. %s</p>"
+        "</article>"
+    ) % ("Genuine documentation text. " * 8)
+    out = html_to_markdown(f"<body>{body}</body>", main_content = True)
+    assert "Real README body." in out
+    assert "Skip to content" not in out
+    assert "Reload to refresh your session" not in out
+
+
 def test_boilerplate_not_stripped_inside_code_fences():
     html = (
         "<body><article><p>%s</p>"

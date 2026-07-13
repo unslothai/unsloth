@@ -18,10 +18,13 @@ Covers three invariants:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -368,6 +371,89 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     assert not sentinel.exists(), "grandchild survived the timeout process-group kill"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
+    # The NON-streaming path (output_callback=None) uses proc.communicate() +
+    # _kill_process_tree, which short-circuits once the reaped leader has
+    # exited. A backgrounded grandchild holding stdout would then survive unless
+    # the group captured right after spawn is killed too. This must match the
+    # streaming path's exited-leader handling.
+    sentinel = tmp_path / "grandchild_ran"
+    command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
+    result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
+    assert "timed out" in result
+    time.sleep(4.0)
+    assert not sentinel.exists(), "non-streaming timeout leaked a stdout-holding grandchild"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_python_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
+    sentinel = tmp_path / "grandchild_ran"
+    code = (
+        "import subprocess\n"
+        f"subprocess.Popen(['bash', '-c', \"sleep 3; touch '{sentinel}'\"])\n"
+        "print('parent-done')\n"
+        "import time; time.sleep(30)\n"
+    )
+    result = _python_exec(code, timeout = 1)  # no output_callback -> communicate path
+    assert "timed out" in result
+    time.sleep(4.0)
+    assert not sentinel.exists(), "non-streaming timeout leaked a stdout-holding grandchild"
+
+
+def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
+    # On Windows os.getpgid / os.killpg do not exist; _drain_process_output must
+    # not raise AttributeError before it can read the child's output. Simulate
+    # that by removing the APIs and flipping os.name. The child still runs and
+    # its output is captured; only the process-group kill path is skipped.
+    import subprocess as _sp
+
+    from core.inference.tools import _drain_process_output
+
+    monkeypatch.delattr(os, "getpgid", raising = False)
+    monkeypatch.delattr(os, "killpg", raising = False)
+    monkeypatch.setattr(os, "name", "nt")
+
+    proc = _sp.Popen(
+        [sys.executable, "-c", "print('ok-no-pgid')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    output, timed_out = _drain_process_output(proc, 10, lambda _t: None)
+    assert not timed_out
+    assert "ok-no-pgid" in output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
+def test_captured_group_survives_fast_leader_reap(tmp_path):
+    # Capture the group right after spawn, deliberately reap the leader first
+    # (as a polling cancel watcher would), then drain: the pre-captured pgid must
+    # still reap the stdout-holding grandchild even though os.getpgid(pid) would
+    # now fail on the reaped leader.
+    import subprocess as _sp
+
+    from core.inference.tools import _capture_process_group, _drain_process_output
+
+    sentinel = tmp_path / "grandchild_ran"
+    proc = _sp.Popen(
+        ["bash", "-c", f"( sleep 3; touch '{sentinel}' ) & echo parent-done"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+        preexec_fn = os.setsid,
+    )
+    pgid = _capture_process_group(proc)
+    assert pgid is not None
+    proc.wait()  # reap the leader before draining
+
+    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    assert timed_out
+    assert "parent-done" in output
+    time.sleep(4.0)
+    assert not sentinel.exists(), "pre-captured group failed to reap the grandchild"
+
+
 # ── GGUF loop regression: model-visible messages unchanged ───────
 
 
@@ -564,6 +650,31 @@ def test_missing_path_hint_generalizes_beyond_convention_prefixes():
     # A bash-style error on an absolute path outside the workdir is echoed too.
     bash_err = "cat: /var/data/report.csv: No such file or directory"
     assert "'report.csv', not '/var/data/report.csv'" in _missing_path_hint(bash_err)
+
+
+def test_missing_path_hint_respects_project_workdir():
+    # Project-backed sessions run under a project root OUTSIDE ~/studio_sandbox
+    # (see _get_workdir). A legitimate miss INSIDE that project workspace must
+    # not be misclassified as an external habit path and told to flatten to its
+    # basename; judged against the real workdir it gets no hint. Fabricated
+    # absolute paths (realpath needs no real dirs) that contain no convention
+    # prefix substring, so only the workdir judgement decides.
+    workdir = "/srv/projroot/session_area"
+    missing = "/srv/projroot/session_area/data/missing.csv"
+    output = (
+        "FileNotFoundError: [Errno 2] No such file or directory: "
+        f"'{missing}'"
+    )
+    # Judged against the static sandbox root (no workdir) it is an external
+    # absolute path and wrongly earns the flatten hint.
+    assert "working directory is writable" in _missing_path_hint(output)
+    # Judged against the real project workdir it is local -> no hint.
+    assert _missing_path_hint(output, workdir) == ""
+    # A path genuinely outside the project workdir still earns the hint.
+    outside_err = (
+        "FileNotFoundError: [Errno 2] No such file or directory: '/srv/other/x.html'"
+    )
+    assert "working directory is writable" in _missing_path_hint(outside_err, workdir)
 
 
 def test_code_tool_descriptions_mention_relative_paths():

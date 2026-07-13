@@ -2249,6 +2249,39 @@ async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
         pass
 
 
+async def _drain_pending_next_task(task, cancel_event) -> None:
+    """Wait for a pending ``asyncio.to_thread(next, gen, ...)`` task to finish
+    before its generator is closed.
+
+    On disconnect/cancellation a ``next(gen)`` call may still be running in a
+    worker thread (blocked in a web/MCP/generator call). Cancelling the awaiting
+    task does NOT stop that thread, and calling ``gen.close()`` while the thread
+    is inside ``next(gen)`` raises ``ValueError: generator already executing``
+    (swallowed), leaving the generator's ``finally`` cleanup unrun and the
+    thread/tool resources leaked. So re-set the cancel flag (the generator polls
+    it) and keep shielding the task until the worker returns, matching the GGUF
+    tool stream's guarded cleanup. Safe no-op when there is no pending task.
+    """
+    if task is None:
+        return
+    if cancel_event is not None:
+        cancel_event.set()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            continue
+        except Exception:
+            break
+    if task.done():
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
 # where the canvas tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
@@ -8279,6 +8312,7 @@ async def openai_chat_completions(
 
         async def sf_tool_stream():
             gen = None
+            _sf_next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -8325,6 +8359,9 @@ async def openai_chat_completions(
                             break
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     event = _sf_next_task.result()
+                    # Task is done; drop the reference so the finally-block drain
+                    # is a no-op on the happy path (nothing left running).
+                    _sf_next_task = None
                     if event is _sf_tool_sentinel:
                         break
 
@@ -8430,6 +8467,12 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing the
+                # generator: closing while the thread is inside next(gen) raises
+                # ValueError('generator already executing') and leaves the
+                # generator's finally (tool/resource cleanup) unrun. Matches the
+                # GGUF tool stream's guarded cleanup.
+                await _drain_pending_next_task(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
                         gen.close()
@@ -11926,6 +11969,7 @@ async def _anthropic_tool_stream(
         drop_until_tool_end = False
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # events, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -11948,6 +11992,9 @@ async def _anthropic_tool_stream(
                         break
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                 event = _next_task.result()
+                # Task is done; drop the reference so the finally-block drain is
+                # a no-op on the happy path.
+                _next_task = None
                 if event is _sentinel:
                     break
                 etype = event.get("type")
@@ -12016,6 +12063,17 @@ async def _anthropic_tool_stream(
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker, then close the generator so
+            # a mid-prefill disconnect releases the thread, generator, and tool
+            # resources instead of leaking them. Closing before the drain would
+            # race the worker and raise ValueError('generator already
+            # executing') (matches the GGUF/safetensors guarded cleanup).
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use

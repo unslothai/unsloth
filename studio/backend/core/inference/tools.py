@@ -2740,19 +2740,37 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _capture_process_group(proc):
+    """Return the setsid process-group id, or ``None`` when unavailable.
+
+    Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
+    the leader cannot make ``os.getpgid(proc.pid)`` fail first. POSIX-only:
+    Windows has no process groups (and no ``os.getpgid``), so return ``None``
+    there and let the single-pid ``proc.kill()`` fallback handle cleanup.
+    """
+    if os.name != "posix" or not hasattr(os, "getpgid"):
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        return None
+
+
 def _kill_process_tree(proc) -> None:
     """SIGKILL the setsid process group; fall back to single-pid kill."""
     if proc.poll() is not None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
-    if pgid is not None:
+    pgid = None
+    if hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+    if pgid is not None and hasattr(os, "killpg"):
         try:
             os.killpg(pgid, signal.SIGKILL)
             return
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
     try:
         proc.kill()
@@ -2767,12 +2785,13 @@ def _killpg_captured(pgid) -> None:
     the leader is reaped ``os.getpgid(proc.pid)`` fails, so a grandchild that
     inherited stdout and outlived the parent could not otherwise be signaled.
     The setsid group id captured before the wait still targets the whole tree.
+    No-op when there is no ``os.killpg`` (Windows) or nothing was captured.
     """
-    if pgid is None:
+    if pgid is None or not hasattr(os, "killpg"):
         return
     try:
         os.killpg(pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         pass
 
 
@@ -2780,10 +2799,17 @@ def _cancel_watcher(
     proc,
     cancel_event,
     poll_interval = 0.2,
+    pgid = None,
 ):
-    """Daemon thread that kills a process when cancel_event is set."""
+    """Daemon thread that kills a process when cancel_event is set.
+
+    ``pgid`` is the group id captured right after spawn; killing it directly
+    reaps a stdout-holding grandchild even when the watcher's own ``poll()``
+    already reaped the leader (which makes ``_kill_process_tree`` short-circuit).
+    """
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
         cancel_event.wait(poll_interval) if cancel_event else None
@@ -2843,14 +2869,24 @@ def _extract_missing_abs_path(output: str) -> str | None:
     return None
 
 
-def _is_outside_workdir(abs_path: str) -> bool:
-    """True when ``abs_path`` is not the sandbox working directory or under it."""
-    root = os.path.realpath(_SANDBOX_ROOT)
-    rp = os.path.realpath(abs_path)
+def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
+    """True when ``abs_path`` is not the working directory or under it.
+
+    ``workdir`` is the executor's actual working directory. It defaults to the
+    default sandbox root, but project-backed sessions run under a project root
+    OUTSIDE ``~/studio_sandbox`` (see ``_get_workdir``), so a legitimate miss
+    inside that project workspace must be judged against the real workdir, not
+    a static sandbox root, or it is wrongly classed as an external habit path.
+    """
+    try:
+        root = os.path.realpath(workdir or _SANDBOX_ROOT)
+        rp = os.path.realpath(abs_path)
+    except (OSError, ValueError):
+        return True
     return rp != root and not rp.startswith(root + os.sep)
 
 
-def _missing_path_hint(output: str) -> str:
+def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     """Model-visible healing when an execution fails on an absolute path that
     does not exist in the sandbox (a ChatGPT code-interpreter habit path like
     ``/mnt/data/x.html``, or a path the model invented from its CWD like
@@ -2868,7 +2904,7 @@ def _missing_path_hint(output: str) -> str:
         # Generalized: only hint when the failing path is an absolute path
         # outside the working directory. A relative miss (a real typo of a
         # local file) must not get misleading "use a relative path" advice.
-        if abs_path is None or not _is_outside_workdir(abs_path):
+        if abs_path is None or not _is_outside_workdir(abs_path, workdir):
             return ""
     if abs_path:
         example = f"'{os.path.basename(abs_path)}', not '{abs_path}'"
@@ -2886,6 +2922,8 @@ def _drain_process_output(
     timeout,
     output_callback,
     cancel_event = None,
+    *,
+    pgid = None,
 ) -> tuple[str, bool]:
     """``proc.communicate(timeout=...)`` equivalent that also streams each
     stdout line to ``output_callback`` as it is produced.
@@ -2901,11 +2939,11 @@ def _drain_process_output(
 
     # Captured before waiting: once the parent is reaped os.getpgid(proc.pid)
     # fails and _kill_process_tree short-circuits on the exited parent, so a
-    # grandchild that inherited stdout could not otherwise be killed.
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
+    # grandchild that inherited stdout could not otherwise be killed. The caller
+    # captures this right after Popen (before any watcher can poll/reap the
+    # leader) and passes it in; fall back to capturing here for direct callers.
+    if pgid is None:
+        pgid = _capture_process_group(proc)
 
     def _reader() -> None:
         try:
@@ -3038,15 +3076,24 @@ def _python_exec(
         # either way; SSE heartbeats keep the connection alive in the meantime.
         proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
 
+        # Capture the process group before any watcher can poll/reap the leader:
+        # once the leader is reaped os.getpgid fails and a stdout-holding
+        # grandchild could not be signaled. None on Windows (no process groups).
+        pgid = _capture_process_group(proc)
+
         # Spawn cancel watcher if we have a cancel event
         if cancel_event is not None:
             watcher = threading.Thread(
-                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
         if output_callback is not None:
-            output, timed_out = _drain_process_output(proc, timeout, output_callback, cancel_event)
+            output, timed_out = _drain_process_output(
+                proc, timeout, output_callback, cancel_event, pgid = pgid
+            )
             if timed_out:
                 return _truncate(f"Execution timed out after {timeout} seconds.")
         else:
@@ -3054,6 +3101,12 @@ def _python_exec(
                 output, _ = proc.communicate(timeout = timeout)
             except subprocess.TimeoutExpired:
                 _kill_process_tree(proc)
+                # The leader may have already exited while a grandchild holds
+                # stdout open (communicate waits for EOF, not just the leader);
+                # _kill_process_tree short-circuits on the reaped leader, so kill
+                # the captured group directly to reap the grandchild too --
+                # matching the streaming drain path's exited-leader handling.
+                _killpg_captured(pgid)
                 try:
                     proc.communicate(timeout = 5)
                 except subprocess.TimeoutExpired:
@@ -3068,8 +3121,10 @@ def _python_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Detect the missing-path pattern on the full output (the error
         # traceback trails the output, so truncation could hide it), then
-        # append the hint after truncation so it always survives.
-        hint = _missing_path_hint(result)
+        # append the hint after truncation so it always survives. Judge external
+        # paths against the real workdir (project sessions live outside the
+        # default sandbox root).
+        hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
 
@@ -3160,14 +3215,22 @@ def _bash_exec(
 
         proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
 
+        # Capture the group before any watcher can poll/reap the leader (see
+        # _python_exec); None on Windows.
+        pgid = _capture_process_group(proc)
+
         if cancel_event is not None:
             watcher = threading.Thread(
-                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
         if output_callback is not None:
-            output, timed_out = _drain_process_output(proc, timeout, output_callback, cancel_event)
+            output, timed_out = _drain_process_output(
+                proc, timeout, output_callback, cancel_event, pgid = pgid
+            )
             if timed_out:
                 return _truncate(f"Execution timed out after {timeout} seconds.")
         else:
@@ -3175,6 +3238,10 @@ def _bash_exec(
                 output, _ = proc.communicate(timeout = timeout)
             except subprocess.TimeoutExpired:
                 _kill_process_tree(proc)
+                # Leader may have exited while a grandchild holds stdout open;
+                # kill the captured group directly so the grandchild is reaped
+                # too (mirrors the streaming drain path).
+                _killpg_captured(pgid)
                 try:
                     proc.communicate(timeout = 5)
                 except subprocess.TimeoutExpired:
@@ -3188,8 +3255,10 @@ def _bash_exec(
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec: detect on the full
-        # output, append after truncation so the hint always survives.
-        hint = _missing_path_hint(result)
+        # output, append after truncation so the hint always survives. Judge
+        # external paths against the real workdir (project sessions live outside
+        # the default sandbox root).
+        hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         return result + hint
 

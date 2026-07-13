@@ -24,6 +24,8 @@ import os
 import pathlib
 from pathlib import Path
 
+import pytest
+
 _SHIM = (
     Path(__file__).resolve().parent.parent
     / "core"
@@ -35,14 +37,14 @@ _SHIM = (
 
 def _load_shim():
     """Import the shim without leaving its open()/mkdir patches installed."""
-    saved = (builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    saved = (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_under_test", _SHIM)
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)  # runs _install(), patching the globals
     finally:
         # Undo the process-wide patch so the test process stays clean.
-        builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir = saved
+        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = saved
     mod._notified = True  # silence the one-shot stderr notice in tests
     return mod
 
@@ -97,6 +99,110 @@ def test_write_fallback_passes_through_existing_external_dir(monkeypatch, tmp_pa
     monkeypatch.chdir(workdir)
     target = str(external / "out.txt")
     assert mod._remap_open(target, "w") is target
+
+
+def test_write_fallback_never_clobbers_same_basename(monkeypatch, tmp_path):
+    # A same-named file already in the working directory is an unrelated
+    # persistent conversation file. Redirecting an invented absolute path (with
+    # a missing parent) onto it would truncate/append to data the model never
+    # asked to touch. The fallback must REFUSE the redirect and return the
+    # original path so the real open() raises FileNotFoundError and the existing
+    # file is preserved. Semantics: refuse-on-collision for every create mode.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+
+    existing = tmp_path / "report.txt"
+    existing.write_text("KEEP-ME")
+
+    requested = "/definitely_missing_parent_7083/report.txt"
+    for mode in ("w", "a", "x", "w+", "a+"):
+        # Refused: returns the original absolute path unchanged (no redirect).
+        assert mod._remap_open(requested, mode) == requested
+
+    # And opening the refused path really does raise, leaving the file intact.
+    with pytest.raises(FileNotFoundError):
+        open(mod._remap_open(requested, "w"), "w")
+    assert existing.read_text() == "KEEP-ME"
+
+    # No collision -> still healed into the working directory as before.
+    fresh = "/definitely_missing_parent_7083/brand_new.txt"
+    assert mod._remap_open(fresh, "w") == os.path.join(os.getcwd(), "brand_new.txt")
+
+
+@pytest.mark.parametrize("mode", ["r+", "rb+"])
+def test_read_update_modes_never_redirected_even_with_missing_parent(monkeypatch, tmp_path, mode):
+    # r+ / rb+ REQUIRE the target to already exist; they never create. A "+" in
+    # the mode must not qualify as creation, or a missing absolute path would be
+    # redirected onto a same-basename workspace file and opened for read/update,
+    # corrupting unrelated data. The parent here is missing, so only the mode
+    # predicate protects the victim.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("original")
+
+    requested = "/definitely_missing_parent_xyz/victim.txt"
+    assert mod._remap_open(requested, mode) == requested
+    with pytest.raises(FileNotFoundError):
+        open(mod._remap_open(requested, mode), mode)
+    assert victim.read_text() == "original"
+
+
+def test_existing_convention_prefix_is_not_shadowed(monkeypatch, tmp_path):
+    # A convention prefix (/mnt/data etc.) is remapped ONLY while it is absent.
+    # If a real host directory exists at that prefix it must pass through so its
+    # own filesystem semantics apply -- a real read succeeds, a missing file
+    # under an EXISTING real prefix is created there by a write, never shadowed
+    # by a CWD file.
+    mod = _load_shim()
+    external = tmp_path / "real_prefix"
+    external.mkdir()
+    (external / "data.txt").write_text("real external content")
+
+    workdir = tmp_path / "conversation"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setattr(mod, "_PREFIXES", (str(external),))
+    monkeypatch.setattr(mod, "_CONDITIONAL_PREFIXES", ())
+
+    target = str(external / "data.txt")
+    # Prefix exists -> pass through for read and write.
+    assert mod._remap(target) == target
+    assert mod._remap_open(target, "r") == target
+    assert mod._remap_open(target, "w") == target
+    # A missing file under the EXISTING real prefix is left alone (parent
+    # exists), so the real directory creates it -- not a CWD shadow.
+    missing = str(external / "new.txt")
+    assert mod._remap_open(missing, "w") == missing
+
+    # Remove the prefix directory -> healing resumes (absent prefix).
+    (external / "data.txt").unlink()
+    external.rmdir()
+    assert mod._remap(target) == os.path.join(os.getcwd(), "data.txt")
+
+
+def test_os_open_and_path_touch_remap_convention_path(monkeypatch, tmp_path):
+    # Path.touch() and other low-level creators go through os.open, not
+    # builtins/io.open. Keep the shim's patches installed (like the mkdir test)
+    # under a chdir into tmp_path so os.open is patched, and confirm a
+    # convention path is healed into the working directory instead of raising.
+    saved = (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_osopen", _SHIM)
+    mod = importlib.util.module_from_spec(spec)
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+    try:
+        spec.loader.exec_module(mod)  # installs the os.open patch
+        mod._notified = True
+        pathlib.Path("/mnt/data/touched.txt").touch()
+        assert os.path.isfile(os.path.join(cwd, "touched.txt"))
+        # Direct os.open with create flags is healed too.
+        fd = os.open("/mnt/data/via_os_open.txt", os.O_CREAT | os.O_WRONLY, 0o600)
+        os.close(fd)
+        assert os.path.isfile(os.path.join(cwd, "via_os_open.txt"))
+    finally:
+        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = saved
 
 
 def test_write_fallback_leaves_relative_and_bytes_paths(monkeypatch, tmp_path):
@@ -156,7 +262,7 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
     # before any open() runs. This keeps the shim's mkdir patches installed
     # (unlike _load_shim) under a chdir into tmp_path, so the only real writes
     # land in that temp dir, and restores every patched global in finally.
-    saved = (builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
+    saved = (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir)
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_mkdir", _SHIM)
     mod = importlib.util.module_from_spec(spec)
     monkeypatch.chdir(tmp_path)
@@ -183,4 +289,4 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
         os.mkdir(str(real_os))
         assert real_os.is_dir()
     finally:
-        builtins.open, io.open, os.makedirs, os.mkdir, pathlib.Path.mkdir = saved
+        (builtins.open, io.open, os.open, os.makedirs, os.mkdir, pathlib.Path.mkdir) = saved
