@@ -87,6 +87,13 @@ class LocalModelInfo(BaseModel):
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
     )
+    is_sharded: bool = Field(
+        False,
+        description = (
+            "True when this GGUF model is a multi-part split "
+            "(``-NNN-of-NNN.gguf`` shards). Used by the UI to badge the row."
+        ),
+    )
     capabilities: LocalModelCapabilities = Field(
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",

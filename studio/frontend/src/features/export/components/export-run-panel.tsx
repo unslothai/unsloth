@@ -5,6 +5,13 @@ import { Button } from "@/components/ui/button";
 import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
@@ -93,6 +100,22 @@ function waitingMessage(phase: string, stage: string | null): string {
   return "Starting...";
 }
 
+// Preset shard sizes offered in the dropdown. unsloth only accepts an integer
+// followed by "GB"/"MB" (unsloth/save.py:_resolve_gguf_shard_size), so every
+// preset is a pre-validated string. "__custom__" reveals a free-text field.
+const SHARD_SIZE_PRESETS = [
+  "128MB",
+  "256MB",
+  "512MB",
+  "1GB",
+  "2GB",
+  "4GB",
+  "8GB",
+  "16GB",
+] as const;
+const SHARD_SIZE_CUSTOM = "__custom__";
+const SHARD_SIZE_DEFAULT = "2GB";
+
 export interface ExportRunPanelProps {
   exportMethod: ExportMethod | null;
   quantLevels: string[];
@@ -113,6 +136,9 @@ export interface ExportRunPanelProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  /** Custom GGUF shard size (e.g. "2GB"); blank keeps unsloth's default. */
+  ggufShardSize: string;
+  onGgufShardSizeChange: (v: string) => void;
   /** Kick off the export (the page assembles params and calls the store). */
   onStart: () => void;
   /** Collapse the panel; only offered before a run or after a terminal one. */
@@ -140,9 +166,25 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     onHfTokenChange,
     privateRepo,
     onPrivateRepoChange,
+    ggufShardSize,
+    onGgufShardSizeChange,
     onStart,
     onClose,
   } = props;
+
+  // View-only state for the GGUF split toggle. The resolved value lives in the
+  // page as `ggufShardSize`: "0" = single file (no split), else a size string.
+  const [splitMode, setSplitMode] = useState<"single" | "split">(
+    ggufShardSize.trim() && ggufShardSize.trim() !== "0" ? "split" : "single",
+  );
+  // True when the user picked "Custom…" so the free-text size field is shown
+  // (also inferred on mount when the size isn't one of the presets).
+  const [customSize, setCustomSize] = useState(
+    splitMode === "split" &&
+      !SHARD_SIZE_PRESETS.includes(
+        ggufShardSize.trim() as (typeof SHARD_SIZE_PRESETS)[number],
+      ),
+  );
 
   const run = useExportRuntimeStore(
     useShallow((s) => ({
@@ -306,6 +348,93 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   </>
                 )}
               </p>
+            </div>
+          )}
+
+          {exportMethod === "gguf" && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                GGUF file splitting
+              </label>
+              <div className="flex gap-2">
+                <Button
+                  variant={splitMode === "single" ? "dark" : "outline"}
+                  onClick={() => {
+                    setSplitMode("single");
+                    setCustomSize(false);
+                    onGgufShardSizeChange("0");
+                  }}
+                  className="flex-1"
+                >
+                  Single file
+                </Button>
+                <Button
+                  variant={splitMode === "split" ? "dark" : "outline"}
+                  onClick={() => {
+                    setSplitMode("split");
+                    // Seed a sensible preset when leaving the no-split state.
+                    if (!ggufShardSize.trim() || ggufShardSize.trim() === "0") {
+                      setCustomSize(false);
+                      onGgufShardSizeChange(SHARD_SIZE_DEFAULT);
+                    }
+                  }}
+                  className="flex-1"
+                >
+                  Split into shards
+                </Button>
+              </div>
+              {splitMode === "split" ? (
+                <>
+                  <Select
+                    value={customSize ? SHARD_SIZE_CUSTOM : ggufShardSize.trim()}
+                    onValueChange={(value) => {
+                      if (value === SHARD_SIZE_CUSTOM) {
+                        setCustomSize(true);
+                        return;
+                      }
+                      setCustomSize(false);
+                      onGgufShardSizeChange(value);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Choose a shard size" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SHARD_SIZE_PRESETS.map((preset) => (
+                        <SelectItem key={preset} value={preset}>
+                          {preset.replace("GB", " GB").replace("MB", " MB")}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value={SHARD_SIZE_CUSTOM}>Custom…</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {customSize && (
+                    <Input
+                      className="font-mono text-[12px]"
+                      value={ggufShardSize === "0" ? "" : ggufShardSize}
+                      onChange={(e) => onGgufShardSizeChange(e.target.value)}
+                      spellCheck={false}
+                      placeholder="e.g. 512MB, 6GB"
+                    />
+                  )}
+                  <p className="text-[11px] text-muted-foreground/70">
+                    {customSize ? (
+                      <>
+                        Whole number + <code className="font-mono">GB</code> or{" "}
+                        <code className="font-mono">MB</code> (e.g.{" "}
+                        <code className="font-mono">512MB</code>). Decimals and bare
+                        numbers are not accepted.
+                      </>
+                    ) : (
+                      "Each file will be at most this size. Quantized outputs are always a single file."
+                    )}
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground/70">
+                  One GGUF file, no splitting regardless of size.
+                </p>
+              )}
             </div>
           )}
 

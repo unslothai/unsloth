@@ -3142,7 +3142,13 @@ export function HubModelPicker({
                         <div key={m.id}>
                           <ModelRow
                             label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
+                            meta={
+                              isGguf
+                                ? m.is_sharded
+                                  ? "GGUF · Sharded"
+                                  : "GGUF"
+                                : "Local"
+                            }
                             tooltipText={localPathTooltip(
                               m.model_id ?? m.display_name,
                               m.path,
@@ -3235,7 +3241,13 @@ export function HubModelPicker({
                         <div key={m.id}>
                           <ModelRow
                             label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
+                            meta={
+                              isGguf
+                                ? m.is_sharded
+                                  ? "GGUF · Sharded"
+                                  : "GGUF"
+                                : "Local"
+                            }
                             tooltipText={localPathTooltip(
                               m.model_id ?? m.display_name,
                               m.path,
@@ -3320,7 +3332,13 @@ export function HubModelPicker({
                         <div key={m.id}>
                           <ModelRow
                             label={m.model_id ?? m.display_name}
-                            meta={isGguf ? "GGUF" : "Local"}
+                            meta={
+                              isGguf
+                                ? m.is_sharded
+                                  ? "GGUF · Sharded"
+                                  : "GGUF"
+                                : "Local"
+                            }
                             tooltipText={localPathTooltip(
                               m.model_id ?? m.display_name,
                               m.path,

@@ -415,6 +415,8 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
+                private = cmd.get("private", False),
+                gguf_shard_size = cmd.get("gguf_shard_size"),
                 imatrix_file = cmd.get("imatrix_file"),
             )
         elif export_type == "lora":

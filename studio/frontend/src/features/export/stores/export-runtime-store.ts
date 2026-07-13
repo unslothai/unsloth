@@ -152,6 +152,8 @@ export interface RunExportParams {
   loraGguf?: boolean;
   loraGgufOuttype?: string;
   saveDirectory: string;
+  /** Custom GGUF shard size (e.g. "2GB", "4GB"); blank/null keeps unsloth's default. */
+  ggufShardSize?: string | null;
   destination: ExportDestination;
   repoId?: string;
   token?: string;
@@ -492,6 +494,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             push_to_hub: pushToHub,
             repo_id: params.repoId,
             hf_token: params.token,
+            private: params.privateRepo,
+            gguf_shard_size: params.ggufShardSize?.trim() || null,
             imatrix: params.useImatrix,
           }),
         );

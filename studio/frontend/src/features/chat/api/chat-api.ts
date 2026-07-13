@@ -285,6 +285,9 @@ export interface LocalModelInfo {
   // Backend-detected weights format ("gguf" when known), so the UI can
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
+  // True when the GGUF model is a multi-part split (``-NNN-of-NNN.gguf``),
+  // so the row can show a "Sharded" badge next to GGUF.
+  is_sharded?: boolean;
   updated_at?: number | null;
 }
 

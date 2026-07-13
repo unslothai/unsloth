@@ -185,7 +185,7 @@ class ExportBaseModelRequest(ExportCommonOptions):
     # Uses fields from ExportCommonOptions only
 
 
-class ExportGGUFRequest(BaseModel):
+class ExportGGUFRequest(ExportCommonOptions):
     """Request for exporting the current model to GGUF format."""
 
     save_directory: str = Field(
@@ -203,17 +203,15 @@ class ExportGGUFRequest(BaseModel):
         description = 'GGUF quantization method(s). A single method (e.g. "Q4_K_M") or a list '
         '(e.g. ["Q4_K_M", "Q8_0"]) to produce multiple GGUFs from one model load.',
     )
-    push_to_hub: bool = Field(
-        False,
-        description = "If True, also push GGUF artifacts to the Hugging Face Hub",
-    )
-    repo_id: Optional[str] = Field(
+    gguf_shard_size: Optional[str] = Field(
         None,
-        description = "Hugging Face Hub repository ID for GGUF upload",
-    )
-    hf_token: Optional[str] = Field(
-        None,
-        description = "Hugging Face token for GGUF upload",
+        description = (
+            "Maximum shard size for the initial full-precision GGUF conversion. "
+            "Pass None or '' to use the default (50GB, one file for most models). "
+            "Pass '0' or 'none' to force a single file regardless of model size. "
+            "Examples: '2GB', '4GB', '10GB'. "
+            "Note: quantized outputs (Q4_K_M etc.) are always a single file."
+        ),
     )
     imatrix: bool = Field(
         False,

@@ -1734,6 +1734,23 @@ def get_executable(executables):
     return None
 
 
+def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
+    """
+    Resolve a user-supplied gguf_shard_size value to the string passed to
+    convert_to_gguf's max_shard_size argument.
+
+    - None or ""      → "50GB"  (default: effectively one file for most models)
+    - "0" or "none"   → "100000GB"  (no sharding: one file regardless of size)
+    - anything else   → passed through as-is (e.g. "2GB", "4GB")
+    """
+    if gguf_shard_size is None:
+        return "50GB"
+    cleaned = gguf_shard_size.strip().lower()
+    if cleaned in ("", "0", "none"):
+        return "100000GB"
+    return gguf_shard_size.strip()
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -1744,6 +1761,7 @@ def save_to_gguf(
     first_conversion: str = None,
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
+    gguf_shard_size: Optional[str] = None,
     imatrix = None,
 ):
     """
@@ -1915,7 +1933,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
+            max_shard_size = _resolve_gguf_shard_size(gguf_shard_size),
             print_output = print_output,
         )
     # update is_vlm switch
@@ -2701,6 +2719,7 @@ def unsloth_save_pretrained_gguf(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    gguf_shard_size: Optional[str] = None,
     save_method: str = None,
     imatrix_file = None,
 ):
@@ -2826,6 +2845,10 @@ def unsloth_save_pretrained_gguf(
     del arguments["model_name"]
     del arguments["base_model_name"]
     del arguments["is_processor"]
+    # gguf_shard_size is consumed later by save_to_gguf (the GGUF conversion),
+    # not by the intermediate 16-bit merge below; drop it so unsloth_generic_save
+    # doesn't choke on the unknown kwarg.
+    del arguments["gguf_shard_size"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
 
     # Step 3: Fix tokenizer BOS token if needed
@@ -2955,6 +2978,7 @@ def unsloth_save_pretrained_gguf(
             first_conversion = first_conversion,
             is_vlm = is_vlm,  # Pass VLM flag
             is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            gguf_shard_size = gguf_shard_size,
             imatrix = imatrix_path,
         )
     except Exception as e:
@@ -3052,6 +3076,7 @@ def unsloth_push_to_hub_gguf(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     datasets: Optional[List[str]] = None,
+    gguf_shard_size: Optional[str] = None,
     save_method: str = None,
     imatrix_file = None,
 ):
@@ -3148,6 +3173,7 @@ def unsloth_push_to_hub_gguf(
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            gguf_shard_size = gguf_shard_size,
             imatrix_file = imatrix_file,
         )
 

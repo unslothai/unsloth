@@ -275,6 +275,10 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
+  // GGUF shard size string sent to the backend. "0" = single file (no split,
+  // the default); a size like "2GB" splits the base conversion into shards.
+  const [ggufShardSize, setGgufShardSize] = useState("0");
+
   // Export run state lives in the global runtime store so it keeps running and
   // streaming in the background, in parallel with training and inference.
   const runExport = useExportRuntimeStore((s) => s.runExport);
@@ -748,6 +752,7 @@ export function ExportPage() {
       loraGguf: emitLoraGguf,
       loraGgufOuttype,
       saveDirectory,
+      ggufShardSize,
       destination,
       repoId,
       token,
@@ -790,6 +795,7 @@ export function ExportPage() {
     privateRepo,
     modelSource,
     runExport,
+    ggufShardSize,
   ]);
 
   // Open the inline panel into a fresh config state. Clears any previous
@@ -1618,6 +1624,8 @@ export function ExportPage() {
                       onHfTokenChange={setHfToken}
                       privateRepo={privateRepo}
                       onPrivateRepoChange={setPrivateRepo}
+                      ggufShardSize={ggufShardSize}
+                      onGgufShardSizeChange={setGgufShardSize}
                       onStart={handleStart}
                       onClose={handleClosePanel}
                     />
