@@ -23,7 +23,9 @@ import {
 
 const SOURCE = "recipe-indexeddb-v1";
 const LEGACY_PAGE_SIZE = 100;
+const MAX_LEGACY_BATCH_BYTES = 8 * 1024 * 1024;
 const MAX_VISIBLE_DETAILS = 100;
+const utf8Encoder = new TextEncoder();
 
 type LegacyPage<T> = {
   items: T[];
@@ -52,6 +54,35 @@ type LegacyImportCoordinatorProps = {
 
 function withoutRevision(recipe: LegacyRecipe) {
   return { ...recipe, revision: undefined };
+}
+
+function splitByLegacyBatchBytes<T extends object>(
+  items: T[],
+  kind: "recipes" | "executions",
+): T[][] {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  const byteLength = (values: T[]): number =>
+    utf8Encoder.encode(
+      JSON.stringify({
+        recipes: kind === "recipes" ? values : [],
+        executions: kind === "executions" ? values : [],
+      }),
+    ).byteLength;
+
+  for (const item of items) {
+    const candidate = [...current, item];
+    if (current.length > 0 && byteLength(candidate) > MAX_LEGACY_BATCH_BYTES) {
+      batches.push(current);
+      current = [item];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
 }
 
 async function scanUncoveredCount<T extends { id: string }>(
@@ -200,11 +231,11 @@ export function LegacyImportCoordinator({
       const recipes = page.items
         .filter((item) => !importedIds.has(item.id))
         .map(withoutRevision);
-      if (recipes.length > 0) {
+      for (const recipeBatch of splitByLegacyBatchBytes(recipes, "recipes")) {
         const batch = await importLegacyUserAssets({
           source: SOURCE,
           confirmSubject: bootstrap.subject,
-          recipes,
+          recipes: recipeBatch,
           executions: [],
         });
         addEffectiveResults(aggregate, "recipes", batch.recipes);
@@ -224,12 +255,15 @@ export function LegacyImportCoordinator({
     do {
       const page = await readExecutions(cursor, LEGACY_PAGE_SIZE);
       const executions = page.items.filter((item) => !importedIds.has(item.id));
-      if (executions.length > 0) {
+      for (const executionBatch of splitByLegacyBatchBytes(
+        executions,
+        "executions",
+      )) {
         const batch = await importLegacyUserAssets({
           source: SOURCE,
           confirmSubject: bootstrap.subject,
           recipes: [],
-          executions,
+          executions: executionBatch,
         });
         const retryIds = new Set(
           batch.executions
@@ -242,7 +276,7 @@ export function LegacyImportCoordinator({
             source: SOURCE,
             confirmSubject: bootstrap.subject,
             recipes: [],
-            executions: executions.filter((item) => retryIds.has(item.id)),
+            executions: executionBatch.filter((item) => retryIds.has(item.id)),
           });
           effective = effectiveRetryResults(batch.executions, retry.executions);
         }

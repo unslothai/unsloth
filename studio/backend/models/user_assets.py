@@ -103,7 +103,7 @@ class PortableTrainingConfig(StrictModel):
         random_seed: int
         packing: bool
         train_on_completions: bool
-        gradient_checkpointing: Literal["none", "true", "unsloth"] | bool
+        gradient_checkpointing: Literal["none", "true", "unsloth", "mlx"] | bool
         optim: str
         lr_scheduler_type: str
         vision_image_size: int | str | None = None

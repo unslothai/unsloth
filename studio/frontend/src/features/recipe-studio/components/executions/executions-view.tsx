@@ -198,8 +198,7 @@ export function ExecutionsView({
     selectedExecution &&
       selectedExecution.kind === "full" &&
       selectedExecution.status === "completed" &&
-      selectedExecution.jobId &&
-      selectedExecution.artifact_path,
+      selectedExecution.jobId,
   );
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;

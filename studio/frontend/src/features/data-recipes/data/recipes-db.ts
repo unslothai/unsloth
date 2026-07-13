@@ -15,6 +15,119 @@ import type { RecipeRecord, SaveRecipeInput } from "../types";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
 const repositoryListeners = new Set<() => void>();
+const DENIED_SECRET_KEYS = new Set([
+  "api_key",
+  "hf_token",
+  "github_token",
+  "wandb_token",
+  "access_token",
+  "refresh_token",
+  "authorization",
+  "cookie",
+  "set_cookie",
+  "password",
+  "secret",
+  "aws_secret_access_key",
+  "s3_secret_access_key",
+]);
+
+function normalizeSecretKey(key: string): string {
+  return key
+    .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (typeof value === "object") {
+    return Object.keys(value).length > 0;
+  }
+  return true;
+}
+
+function isSecretField(path: string[], key: string, value: unknown): boolean {
+  if (!hasValue(value)) {
+    return false;
+  }
+  const normalizedKey = normalizeSecretKey(key);
+  if (normalizedKey === "api_key_env") {
+    return false;
+  }
+  if (
+    normalizedKey === "token" &&
+    path.slice(-2).join(".") === "seed_config.source"
+  ) {
+    return true;
+  }
+  if (
+    DENIED_SECRET_KEYS.has(normalizedKey) ||
+    [
+      "_api_key",
+      "_token",
+      "_password",
+      "_secret",
+      "_credential",
+      "_credentials",
+      "_private_key",
+      "_access_key",
+      "_access_key_id",
+    ].some((suffix) => normalizedKey.endsWith(suffix))
+  ) {
+    return true;
+  }
+  const inMcpEnv =
+    path.at(-1) === "env" &&
+    path.slice(0, -1).some((part) => part.includes("mcp"));
+  return (
+    inMcpEnv &&
+    ["secret", "token", "password", "credential"].some((part) =>
+      normalizedKey.includes(part),
+    )
+  );
+}
+
+function sanitizeRecipeForPersistence(
+  value: unknown,
+  path: string[] = [],
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeRecipeForPersistence(entry, path));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const normalizedKey = normalizeSecretKey(key);
+    if (isSecretField(path, key, entry)) {
+      continue;
+    }
+    output[key] = sanitizeRecipeForPersistence(entry, [...path, normalizedKey]);
+  }
+  if (
+    output.provider_type === "stdio" &&
+    output.env &&
+    typeof output.env === "object" &&
+    !Array.isArray(output.env)
+  ) {
+    output.env = Object.fromEntries(
+      Object.keys(output.env).map((envKey) => [envKey, ""]),
+    );
+  }
+  return output;
+}
 
 function notifyRepositoryChanged(): void {
   for (const listener of repositoryListeners) listener();
@@ -49,12 +162,15 @@ export async function saveRecipe(
   input: SaveRecipeInput,
 ): Promise<RecipeRecord> {
   const name = normalizeNonEmptyName(input.name);
+  const payload = sanitizeRecipeForPersistence(
+    input.payload,
+  ) as RecipeRecord["payload"];
   const record =
     input.id && input.revision !== undefined
       ? await updateServerRecipe({
           id: input.id,
           name,
-          payload: input.payload,
+          payload,
           revision: input.revision,
           learningRecipeId: input.learningRecipeId,
           learningRecipeTitle: input.learningRecipeTitle,
@@ -62,7 +178,7 @@ export async function saveRecipe(
       : await createServerRecipe({
           id: input.id ?? crypto.randomUUID(),
           name,
-          payload: input.payload,
+          payload,
           learningRecipeId: input.learningRecipeId,
           learningRecipeTitle: input.learningRecipeTitle,
         });
