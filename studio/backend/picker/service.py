@@ -47,6 +47,12 @@ _JINJA_TEMPLATE_PATHS = ("chat_template.jinja", "LLM/chat_template.jinja")
 _PROCESSOR_TEMPLATE_PATHS = ("chat_template.json", "LLM/chat_template.json")
 
 
+def _leaf_inside_allowlist(path: Path, allow_roots: Optional[list[Path]]) -> bool:
+    # Block symlinked children from escaping the validated directory
+    # (realpath-checked). None = trusted caller (HF cache / remote download).
+    return allow_roots is None or _is_path_inside_allowlist(path, allow_roots)
+
+
 def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
     text = (template or "").strip()
     if not text:
@@ -89,10 +95,10 @@ def _chat_template_from_tokenizer_config(config: dict) -> Optional[str]:
     return None
 
 
-def _chat_template_from_jinja_file(dir_path: Path) -> Optional[str]:
+def _chat_template_from_jinja_file(dir_path: Path, allow_roots: Optional[list[Path]] = None) -> Optional[str]:
     for rel in _JINJA_TEMPLATE_PATHS:
         template_file = dir_path / rel
-        if not template_file.exists():
+        if not template_file.exists() or not _leaf_inside_allowlist(template_file, allow_roots):
             continue
         try:
             template = template_file.read_text(encoding = "utf-8")
@@ -103,10 +109,10 @@ def _chat_template_from_jinja_file(dir_path: Path) -> Optional[str]:
     return None
 
 
-def _chat_template_from_processor_json(dir_path: Path) -> Optional[str]:
+def _chat_template_from_processor_json(dir_path: Path, allow_roots: Optional[list[Path]] = None) -> Optional[str]:
     for rel in _PROCESSOR_TEMPLATE_PATHS:
         config_file = dir_path / rel
-        if not config_file.exists():
+        if not config_file.exists() or not _leaf_inside_allowlist(config_file, allow_roots):
             continue
         try:
             config = json.loads(config_file.read_text(encoding = "utf-8"))
@@ -118,13 +124,13 @@ def _chat_template_from_processor_json(dir_path: Path) -> Optional[str]:
     return None
 
 
-def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
-    jinja = _chat_template_from_jinja_file(dir_path)
+def _chat_template_from_tokenizer_dir(dir_path: Path, allow_roots: Optional[list[Path]] = None) -> Optional[str]:
+    jinja = _chat_template_from_jinja_file(dir_path, allow_roots)
     if jinja:
         return jinja
     for rel in _TOKENIZER_CONFIG_PATHS:
         config_file = dir_path / rel
-        if not config_file.exists():
+        if not config_file.exists() or not _leaf_inside_allowlist(config_file, allow_roots):
             continue
         try:
             config = json.loads(config_file.read_text(encoding = "utf-8"))
@@ -133,7 +139,7 @@ def _chat_template_from_tokenizer_dir(dir_path: Path) -> Optional[str]:
         template = _chat_template_from_tokenizer_config(config)
         if template:
             return template
-    return _chat_template_from_processor_json(dir_path)
+    return _chat_template_from_processor_json(dir_path, allow_roots)
 
 
 _GGUF_SCAN_MAX_DEPTH = 2
@@ -201,14 +207,18 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
         return ggufs[0]
 
 
-def _chat_template_from_dir(dir_path: Path, gguf_variant: Optional[str] = None) -> Optional[str]:
+def _chat_template_from_dir(
+    dir_path: Path, gguf_variant: Optional[str] = None, allow_roots: Optional[list[Path]] = None
+) -> Optional[str]:
     def from_gguf() -> Optional[str]:
         gguf = _find_gguf_in_dir(dir_path, gguf_variant)
-        return read_gguf_chat_template(str(gguf)) if gguf is not None else None
+        if gguf is None or not _leaf_inside_allowlist(gguf, allow_roots):
+            return None
+        return read_gguf_chat_template(str(gguf))
 
     if gguf_variant:
-        return from_gguf() or _chat_template_from_tokenizer_dir(dir_path)
-    return _chat_template_from_tokenizer_dir(dir_path) or from_gguf()
+        return from_gguf() or _chat_template_from_tokenizer_dir(dir_path, allow_roots)
+    return _chat_template_from_tokenizer_dir(dir_path, allow_roots) or from_gguf()
 
 
 def read_default_chat_template(
@@ -223,12 +233,13 @@ def read_default_chat_template(
     if is_local_path(name):
         try:
             target = Path(normalize_path(name)).expanduser()
-            if not _is_path_inside_allowlist(target, _build_browse_allowlist()):
+            allow_roots = _build_browse_allowlist()
+            if not _is_path_inside_allowlist(target, allow_roots):
                 logger.debug("Refused chat template read outside allowed folders: %s", name)
                 return None
             if name.lower().endswith(".gguf"):
                 return read_gguf_chat_template(str(target))
-            return _chat_template_from_dir(target, gguf_variant)
+            return _chat_template_from_dir(target, gguf_variant, allow_roots)
         except Exception as exc:
             logger.debug("Could not read local chat template for %s: %s", name, exc)
             return None

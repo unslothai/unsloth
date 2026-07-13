@@ -69,6 +69,7 @@ import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   normalizeMaxSeqLength,
+  resolveInitialConfig,
   type PerModelConfig,
 } from "@/features/model-picker";
 import { loadModel, validateModel } from "./api/chat-api";
@@ -936,9 +937,6 @@ export function SharedComposer({
       const store = useChatRuntimeStore.getState();
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const fallbackChatTemplateOverride = cleanCompareChatTemplate(
-        store.chatTemplateOverride,
-      );
       const fallbackTensorParallel = store.tensorParallel;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
@@ -960,9 +958,13 @@ export function SharedComposer({
           config?.customContextLength ??
           normalizeMaxSeqLength(config?.maxSeqLength) ??
           maxSeqLength;
-        const effectiveChatTemplateOverride = config
-          ? cleanCompareChatTemplate(config.chatTemplateOverride)
-          : fallbackChatTemplateOverride;
+        // Use this pane's own remembered template, never the other pane's
+        // (store) template; a model with no saved config loads its default.
+        const ownConfig =
+          config ?? resolveInitialConfig(sel.id, sel.ggufVariant ?? null).config;
+        const effectiveChatTemplateOverride = cleanCompareChatTemplate(
+          ownConfig.chatTemplateOverride,
+        );
         const effectiveSpeculativeType =
           config?.speculativeType ?? specSettings.speculativeType;
         const effectiveSpecDraftNMax = config
