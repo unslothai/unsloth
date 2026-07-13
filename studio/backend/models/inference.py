@@ -225,6 +225,11 @@ class InstallLatestTransformersResponse(BaseModel):
         description = "Whether the active chat model was unloaded before the swap "
         "(reported even on failure, so the client can restore its state)",
     )
+    latest_version: Optional[str] = Field(
+        None,
+        description = "On a version-mismatch failure: the release that superseded "
+        "the requested one, so the client can retry with it",
+    )
 
 
 class GenerateRequest(BaseModel):

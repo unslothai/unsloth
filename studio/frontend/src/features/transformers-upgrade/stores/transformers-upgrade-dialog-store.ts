@@ -109,11 +109,17 @@ export const useTransformersUpgradeDialogStore =
         }
         // Structured failure: the swap failed but may have already unloaded the
         // chat model; record that so a later cancel still rolls the caller back.
+        // A version mismatch also carries the superseding release, so Retry
+        // re-requests a version that can actually succeed.
+        const { upgrade } = get();
         set({
           phase: "error",
           errorMessage: result.message || "Failed to install transformers.",
           serverUnloadedChat:
             get().serverUnloadedChat || Boolean(result.model_unloaded),
+          ...(result.latest_version && upgrade
+            ? { upgrade: { ...upgrade, pypi_version: result.latest_version } }
+            : {}),
         });
       }
     },

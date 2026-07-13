@@ -944,8 +944,15 @@ def _latest_tier_disabled() -> bool:
     )
 
 
+# Failed lazy repairs back off so a broken sidecar can't turn every routing
+# call into a pip install attempt.
+_latest_repair_failed_at: float = 0.0
+_LATEST_REPAIR_BACKOFF_SECS = 5 * 60
+
+
 def _overlay_transformers_dir(tier: str) -> str | None:
     """transformers source dir for a tier, located without importing it."""
+    global _latest_repair_failed_at
     if tier != "default":
         # latest requires a valid pin and the kill switch off.
         if tier == "latest" and (_latest_tier_disabled() or latest_venv_pinned_version() is None):
@@ -957,6 +964,16 @@ def _overlay_transformers_dir(tier: str) -> str | None:
             "latest": _VENV_T5_LATEST_DIR,
         }.get(tier)
         src = os.path.join(root, "transformers") if root else None
+        if src and not _safe_is_dir(Path(src)) and tier == "latest":
+            # A valid pin whose source dir vanished (partial deletion, disk issue)
+            # must self-heal, or latest-only models silently route to older tiers
+            # until a manual reinstall. Repair under the swap reservation; back
+            # off after a failure so routing calls don't hammer pip.
+            if time.time() - _latest_repair_failed_at >= _LATEST_REPAIR_BACKOFF_SECS:
+                if _ensure_venv_t5_latest_exists():
+                    _latest_repair_failed_at = 0.0
+                else:
+                    _latest_repair_failed_at = time.time()
         return src if src and _safe_is_dir(Path(src)) else None
     # default: the base 4.x transformers. find_spec resolves to a 5.x sidecar if one
     # is already on sys.path, so skip any .venv_t5_* / llmcompressor overlay dir.
@@ -2069,6 +2086,38 @@ def _stage_and_swap_latest_venv(
     return True
 
 
+def _workers_active_for_repair() -> bool:
+    """Best-effort: any parent-visible chat/training/export worker alive. Never
+    raises; unavailable backends (worker subprocess, early startup) count idle."""
+    try:
+        from core.training import get_training_backend
+
+        if get_training_backend().is_training_active():
+            return True
+    except Exception:
+        pass
+    try:
+        from core.export import get_export_backend
+
+        _alive = getattr(get_export_backend(), "is_worker_alive", None)
+        if callable(_alive) and _alive():
+            return True
+    except Exception:
+        pass
+    try:
+        from core.inference import get_inference_backend
+
+        backend = get_inference_backend()
+        if getattr(backend, "active_model_name", None):
+            return True
+        _alive = getattr(backend, "is_worker_alive", None)
+        if callable(_alive) and _alive():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _ensure_venv_t5_latest_exists() -> bool:
     """Ensure .venv_t5_latest/ holds its pinned transformers version.
 
@@ -2088,6 +2137,17 @@ def _ensure_venv_t5_latest_exists() -> bool:
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
             "cannot repair it.",
             version,
+        )
+        return False
+    # The install route quiesces workers before its swap; a lazy repair has no such
+    # teardown, so refuse while any parent-visible worker is active rather than
+    # replace a directory a live process may lazy-import from. In worker
+    # subprocesses these backends are fresh singletons with no state, so the check
+    # only bites in the parent (routes/probes), where the backends are real.
+    if _workers_active_for_repair():
+        logger.warning(
+            "Cannot repair .venv_t5_latest: active chat/training/export workers "
+            "may be importing from it. Retry when they are idle."
         )
         return False
     # Same stage-and-swap as the install, under the same reservation so training/export starts
