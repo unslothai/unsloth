@@ -363,7 +363,6 @@ export const ptBR = {
         "Acesse o Unsloth por meio da API compatível com OpenAI.",
       readDocs: "Leia a documentação da API",
       noAccess: "Nenhum acesso à API ainda.",
-      newBadge: "Novo",
       accessTokens: "Tokens de acesso",
       loadError: "Não foi possível carregar o acesso à API.",
       createError: "Não foi possível criar o token de acesso.",

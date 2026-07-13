@@ -1264,22 +1264,124 @@ with sync_playwright() as p:
     # placeholder, and /api/health goes unreachable shortly after.
     # ─────────────────────────────────────────────────────
     step("Shutdown via account menu")
-    # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth guard
-    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
-    # ("interrupted by another navigation"); resolve on domcontentloaded and
-    # tolerate either -- the pw-field wait below confirms we are on /login.
-    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    # Start fresh after the CLI rotation invalidates this browser session.
+    # Stay in the SAME context: macOS Chromium runs --single-process, where
+    # closing the last context kills the browser and a second context cannot
+    # be created. Open the new page before closing the old one; the context
+    # init script covers the new page.
     try:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+        ctx.clear_cookies()
     except Exception as exc:
-        if not any(t in str(exc) for t in _tolerated_nav):
-            raise
-        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
-    pw_field = page.locator("#password")
-    pw_field.wait_for(state = "visible", timeout = 60_000)
-    pw_field.fill(NEW2)
-    page.locator('button[type="submit"]').click()
+        info(f"WARN clearing stale session cookies failed: {exc!r}")
+    # Auth tokens live in localStorage, and /login's guest guard redirects on
+    # their mere presence, so drop them before navigating.
+    try:
+        page.evaluate(
+            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
+            ".forEach((key) => localStorage.removeItem(key))"
+        )
+    except Exception as exc:
+        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    _fresh_page = ctx.new_page()
+    _fresh_page.set_default_timeout(60_000)
+    _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
+    _fresh_page.on("console", _on_console)
+    try:
+        page.close()
+    except Exception:
+        pass
+    page = _fresh_page
+
+    # Re-login with NEW2 for a valid /api/shutdown token. Route changes can
+    # still abort or interrupt this navigation, so the field wait below is the
+    # final confirmation that we reached /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    # A slow CI runner can make this re-login navigation time out even with the
+    # server healthy, so retry the whole goto/wait/fill/submit sequence (mirrors
+    # the change-password retry above). wait_for_health is a diagnostic pre-gate.
+    wait_for_health(BASE, timeout = 30.0, info = info)
+    relogin_err: Exception | None = None
+    for _relogin_attempt in range(3):
+        try:
+            try:
+                page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+            except Exception as exc:
+                if not any(t in str(exc) for t in _tolerated_nav):
+                    raise
+                info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
+            pw_field = page.locator("#password")
+            pw_field.wait_for(state = "visible", timeout = 60_000)
+            pw_field.fill(NEW2)
+            # Wait on the login POST so a transient 4xx/5xx is caught and retried
+            # here, not swallowed until the out-of-loop composer wait.
+            status, _ = click_and_wait_for_response(
+                page,
+                url_substr = "/api/auth/login",
+                method = "POST",
+                do_click = lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms = 30_000,
+                info = lambda m: print(f"[ui]   {m}", flush = True),
+            )
+            if status is not None and status >= 400:
+                raise AssertionError(
+                    f"login POST returned {status}; see console_errors={console_errors[:1]!r}"
+                )
+            relogin_err = None
+            break
+        except Exception as e:
+            relogin_err = e
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = "<page closed>"
+            print(
+                f"[ui]   re-login attempt {_relogin_attempt + 1} failed: "
+                f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
+                flush = True,
+            )
+            if console_errors:
+                print(
+                    f"[ui]   first console.error: {console_errors[0][:200]!r}",
+                    flush = True,
+                )
+            if page_errors:
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+            try:
+                shoot(f"18-relogin-attempt-{_relogin_attempt + 1}-fail")
+            except Exception:
+                pass
+            if _relogin_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; back off 5s then 15s before retrying.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _relogin_attempt == 0 else 15
+                    print(
+                        f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
+                # Replace the page if it died; otherwise next iteration's
+                # page.goto() handles the reload.
+                old_page = page
+                page = recover_or_replace_page(
+                    page,
+                    ctx,
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                )
+                # A freshly created replacement page loses the pageerror/console
+                # listeners; re-attach so error tracking survives recovery.
+                if page is not old_page:
+                    page.on("pageerror", lambda e: page_errors.append(str(e)))
+                    page.on("console", _on_console)
+    if relogin_err is not None:
+        raise relogin_err
+    # Composer mount confirms the rotated session is authenticated. Kept OUTSIDE the
+    # retry: the loop breaks right after submit, so we never re-goto /login once login
+    # has set tokens -- that would hit the guest guard, redirect to /chat, and make a
+    # merely-slow composer look like a broken login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
     shoot("18-relogin-with-NEW2")
