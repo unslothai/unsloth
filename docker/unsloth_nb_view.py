@@ -121,6 +121,14 @@ def build_view(
     if not os.path.isdir(nb_dir):
         raise SystemExit(f"no nb/ dir under {dest}")
 
+    # An operator may route the VIEW through a symlink to persistent/mounted
+    # storage. Build inside its target instead of unlinking the routing.
+    if os.path.islink(view):
+        resolved = os.path.realpath(view)
+        if not os.path.isdir(resolved):
+            raise SystemExit(f"view symlink has no directory target: {view} -> {resolved}")
+        view = resolved
+
     rows = parse_readme(readme) if os.path.isfile(readme) else []
 
     def allowed(fname):
@@ -152,7 +160,7 @@ def build_view(
     # Rebuild VIEW: drop the symlinks/empty folders we made last boot, but never
     # the user's own files (VIEW is also JupyterLab's landing dir, so a user may
     # have saved real notebooks here).
-    _clear_view(view)
+    _clear_view(view, os.path.realpath(dest))
     os.makedirs(view, exist_ok = True)
 
     n_links = 0
@@ -164,9 +172,9 @@ def build_view(
             target = os.path.join(nb_dir, fname)
             rel = os.path.relpath(target, folder)  # ../../unsloth-notebooks/nb/<file>
             try:
-                if os.path.islink(link):
+                if os.path.islink(link) and _points_into(link, os.path.realpath(dest)):
                     os.remove(link)  # replace our own stale symlink
-                elif os.path.exists(link):
+                elif os.path.islink(link) or os.path.exists(link):
                     # a real user file/dir already occupies this name -- never
                     # clobber it; leave it and skip linking this notebook.
                     print(f"[unsloth-nb] view: keep user file, skip link {fname}", file = sys.stderr)
@@ -178,41 +186,54 @@ def build_view(
     return len(order), n_links
 
 
-def _clear_view(path):
+def _points_into(link, dest_real):
+    """True when a symlink resolves into the notebooks tree we link from.
+
+    Every link this tool creates points at DEST/nb/<file>, so this is the
+    ownership test for cleanup: a user's own symlink (to a dataset, project,
+    mounted dir, ...) resolves elsewhere and must survive a rebuild. realpath
+    resolves a broken link's path string too, so stale links to since-removed
+    notebooks are still recognised as ours.
+    """
+    try:
+        target = os.path.realpath(link)
+    except OSError:
+        return False
+    return target == dest_real or target.startswith(dest_real + os.sep)
+
+
+def _clear_view(path, dest_real):
     # Tear down a previously built VIEW in place. VIEW is also JupyterLab's
-    # landing directory, so a user may have saved real notebooks here -- those
-    # MUST survive a rebuild. We therefore unlink only symlinks (the notebooks we
-    # link) and rmdir only folders that end up empty; any regular file is left
-    # untouched, and a non-empty folder simply stays.
+    # landing directory, so a user may have saved real notebooks (or their own
+    # symlinks) here -- those MUST survive a rebuild. We therefore unlink only
+    # the symlinks we own (they resolve into DEST, see _points_into) and rmdir
+    # only folders that end up empty; any regular file and any user symlink is
+    # left untouched, and a non-empty folder simply stays.
     #
-    # islink is tested BEFORE isdir on the root: os.path.isdir() follows a
-    # symlink-to-directory, so without this a VIEW that is itself a symlink (e.g.
-    # pointed at the real nb/ tree) would be walked into and its target wiped.
-    if os.path.islink(path):
-        os.remove(path)
-        return
-    if not os.path.isdir(path):
+    # The VIEW root itself is never unlinked: build_view already resolved a
+    # symlinked root to its target, and an operator's routing symlink must
+    # survive. isdir on a non-link root is safe to walk.
+    if os.path.islink(path) or not os.path.isdir(path):
         return
     for root, dirs, files in os.walk(path, topdown = False):
         for name in files:
             p = os.path.join(root, name)
-            if os.path.islink(p):  # our notebook symlinks only
+            if os.path.islink(p) and _points_into(p, dest_real):  # our notebook symlinks only
                 try:
                     os.remove(p)
                 except OSError:
                     pass
-            # a regular file here is user-created -> keep it
+            # a regular file / user symlink here is user-created -> keep it
         for name in dirs:
             p = os.path.join(root, name)
             try:
                 if os.path.islink(p):
-                    os.remove(p)  # symlinked dir: unlink, never recurse
+                    if _points_into(p, dest_real):
+                        os.remove(p)  # our symlinked dir: unlink, never recurse
                 else:
                     os.rmdir(p)  # succeeds only if we emptied it
             except OSError:
                 pass  # holds user files -> keep
-    # Leave the VIEW root itself in place: it may still hold user files, and
-    # build_view recreates it right after anyway.
 
 
 def main(argv):

@@ -41,6 +41,9 @@ assert_eq() {
 # $1 = compute_cap(s) the mock nvidia-smi reports, ONE PER LINE ("none" -> no
 # nvidia-smi on PATH). A multi-line value models a mixed-GPU host so we can check
 # that every visible cap is scanned, not just the first.
+# $2 (optional) = the target libnvrtc.so.12 starts on; defaults to the baked
+# cu12.8 default, and "libnvrtc.so.12.cu13" models the stale link an earlier
+# sm_103/sm_121 boot left in the same container's writable layer.
 # Builds a fake Studio venv NVRTC dir exactly as the build stages it: the real
 # cu12.8 lib as .cu128.orig, libnvrtc.so.12 -> it (the immutable default), and a
 # .cu13 alias pointing at a stand-in cu13 lib. Runs the function against it via
@@ -48,6 +51,7 @@ assert_eq() {
 # host, so its glob is skipped. Prints "<PTXAS_STATE> <NVRTC_TARGET>".
 run_select() {
     _cap="$1"
+    _init="${2:-libnvrtc.so.12.cu128.orig}"
     _tmp=$(mktemp -d)
     mkdir -p "$_tmp/bin"
     if [ "$_cap" != "none" ]; then
@@ -62,7 +66,7 @@ run_select() {
     : > "$_nvrtc/libnvrtc.so.12.cu128.orig"                       # real cu12.8 lib
     : > "$_nvrtc/libnvrtc.so.13.stub"                             # stand-in cu13 lib
     ln -sf libnvrtc.so.13.stub "$_nvrtc/libnvrtc.so.12.cu13"      # staged cu13 alias
-    ln -sf libnvrtc.so.12.cu128.orig "$_nvrtc/libnvrtc.so.12"     # immutable cu12.8 default
+    ln -sf "$_init" "$_nvrtc/libnvrtc.so.12"                      # cu12.8 default (or stale cu13)
     bash -c '
         set -euo pipefail
         export PATH="'"$_tmp"'/bin:/usr/bin:/bin"
@@ -100,6 +104,14 @@ assert_eq "H100 then B300 -> cu13 NVRTC selected" "UNSET libnvrtc.so.12.cu13"   
 assert_eq "B200 then GB10 -> cu13 NVRTC selected" "UNSET libnvrtc.so.12.cu13"       "$(run_select "$(printf '10.0\n12.1')")"
 assert_eq "B300 then H100 -> cu13 NVRTC selected" "UNSET libnvrtc.so.12.cu13"       "$(run_select "$(printf '10.3\n9.0')")"
 assert_eq "H100 then A100 -> cu128 default kept"  "UNSET libnvrtc.so.12.cu128.orig" "$(run_select "$(printf '9.0\n8.0')")"
+
+# Stateful transition: a cu13 selection left in the same container's writable
+# layer by an earlier sm_103/sm_121 boot must be reversed when the container
+# later starts on an ordinary GPU (or none) -- a 570-579 driver cannot load
+# cu13-produced cubins -- and kept when the datacenter Blackwell is still there.
+assert_eq "A100 after B300 -> cu128 restored"   "UNSET libnvrtc.so.12.cu128.orig" "$(run_select 8.0 libnvrtc.so.12.cu13)"
+assert_eq "no GPU after B300 -> cu128 restored" "UNSET libnvrtc.so.12.cu128.orig" "$(run_select none libnvrtc.so.12.cu13)"
+assert_eq "B300 after B300 -> cu13 kept"        "UNSET libnvrtc.so.12.cu13"       "$(run_select 10.3 libnvrtc.so.12.cu13)"
 
 rm -f "$_FUNC_FILE"
 

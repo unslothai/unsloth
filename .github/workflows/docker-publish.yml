@@ -37,9 +37,14 @@ on:
   workflow_dispatch:
     inputs:
       unsloth_ref:
-        description: 'unsloth git ref to bake in'
+        # Blank means "the dispatched branch" (the resolver below falls back to
+        # the triggering sha, then main). The stable-tag gates (:core/:latest/
+        # :studio) require this input to be EMPTY -- stable tags only when the
+        # operator did not override the source ref -- so a non-blank default
+        # would make every UI-default dispatch publish SHA tags only.
+        description: 'unsloth git ref override (blank = dispatched branch + stable tags)'
         required: false
-        default: 'main'
+        default: ''
       unsloth_zoo_ref:
         description: 'unsloth-zoo git ref to bake in'
         required: false
@@ -114,10 +119,10 @@ jobs:
 
       # Freeze the requested unsloth ref to ONE concrete sha before the matrix
       # fans out, so both base arch legs AND the Studio build bake the identical
-      # unsloth commit even when the requested ref is a mutable branch (the
-      # workflow_dispatch default is unsloth_ref=main) that advances during the
-      # ~4h base + Studio run. Same requested-ref precedence the inline build-arg
-      # used: the dispatch input wins (default main), else the pushed tag, else
+      # unsloth commit even when the requested ref is a mutable branch that
+      # advances during the ~4h base + Studio run. Same requested-ref precedence
+      # the inline build-arg used: the dispatch input wins (blank by default,
+      # so stable tags stay enabled), else the pushed tag, else
       # the triggering commit sha, else main. A 40-char sha (branch/schedule
       # push) is already frozen; a branch/tag is resolved via ls-remote, exactly
       # like the zoo and notebooks steps, falling back to the bare ref on a
@@ -276,8 +281,8 @@ jobs:
           # passed as a bogus --build-arg. Explanations live here instead:
           #   UNSLOTH_REF (from the prepare job): resolved to ONE sha before the
           #     matrix fans out, so both arch legs and the Studio build bake the
-          #     identical unsloth commit even if a mutable branch (dispatch's
-          #     unsloth_ref=main default) advances mid-run. Same requested-ref
+          #     identical unsloth commit even if a mutable branch (an explicit
+          #     dispatch unsloth_ref) advances mid-run. Same requested-ref
           #     precedence as before: dispatch input, else the pushed tag, else
           #     the triggering commit sha, else main.
           #   UNSLOTH_ZOO_REF (from the prepare job): explicit dispatch input,

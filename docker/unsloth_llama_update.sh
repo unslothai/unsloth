@@ -98,7 +98,28 @@ fi
 # an atomic rename), then swap. On any failure the existing install is untouched.
 parent="$(dirname "$INSTALL_DIR")"
 work="$(mktemp -d "$parent/.llamaupd.XXXXXX")"
-trap 'rm -rf "$work" "${INSTALL_DIR}.old.$$" 2>/dev/null || true' EXIT
+backup="${INSTALL_DIR}.old.$$"
+swap_done=0
+# The exit handler must never delete $backup while it is the ONLY copy of the
+# install (signal between the two renames, or a failed swap whose restore also
+# failed): put the old tree back first, and remove it only after the new tree
+# is verifiably active. The signal traps make bash run the EXIT trap on
+# HUP/INT/TERM too.
+cleanup() {
+    if [ "$swap_done" -ne 1 ] && [ ! -e "$INSTALL_DIR" ] && [ -e "$backup" ]; then
+        if ! mv "$backup" "$INSTALL_DIR" 2>/dev/null; then
+            echo "[llama-update] CRITICAL: restore failed; previous install preserved at $backup" >&2
+        fi
+    fi
+    rm -rf "$work" 2>/dev/null || true
+    if [ "$swap_done" = "1" ]; then
+        rm -rf "$backup" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 new="$work/llama.cpp"
 
 echo "[llama-update] fetching llama.cpp '$TAG' ($ARCH portable) ..."
@@ -108,12 +129,12 @@ echo "[llama-update] fetching llama.cpp '$TAG' ($ARCH portable) ..."
 [ -e "$INSTALL_DIR/.unsloth-studio-owned" ] && touch "$new/.unsloth-studio-owned"
 
 echo "[llama-update] swapping into place ..."
-mv "$INSTALL_DIR" "${INSTALL_DIR}.old.$$"
+mv "$INSTALL_DIR" "$backup"
 if mv "$new" "$INSTALL_DIR"; then
-    rm -rf "${INSTALL_DIR}.old.$$"
+    swap_done=1
 else
     echo "[llama-update] swap failed; restoring previous install" >&2
-    mv "${INSTALL_DIR}.old.$$" "$INSTALL_DIR"
+    mv "$backup" "$INSTALL_DIR"
     exit 1
 fi
 

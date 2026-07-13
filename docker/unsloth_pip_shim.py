@@ -245,6 +245,17 @@ def _version_pin(token):
     return m.group(1) if m else None
 
 
+# pip expands ${UPPERCASE_NAME} in requirements files AFTER we classify the
+# literal text (pip's ENV_VAR_RE; uv matches it), so `${PKG}==...` with
+# PKG=torch would slip a protected package past _KEEP. Expand with the same
+# syntax for CLASSIFICATION only; kept lines are forwarded verbatim.
+_ENV_REF_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
+
+
+def _expand_env_refs(text):
+    return _ENV_REF_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), text)
+
+
 def _classify_flag_target(spec):
     """Classify the value that rides on -e/--editable or -P/--upgrade-package.
 
@@ -319,9 +330,12 @@ def _rewrite_include(line, stripped, src_dir, depth):
     parent at that filtered copy. URLs and unreadable/absolute-unfiltered files
     fall back to an absolutised path so they still resolve. Returns
     (new_line, changed, recorded, dropped)."""
-    flag, target, comment = _parse_include(stripped)
-    if not target:
+    flag, raw_target, comment = _parse_include(stripped)
+    if not raw_target:
         return line, False, None, []
+    # Resolve pip's ${VAR} references so the include we read/filter is the file
+    # pip would actually read (a literal `${DIR}/reqs.txt` never resolves here).
+    target = _expand_env_refs(raw_target)
     newline_char = "\n" if line.endswith("\n") else ""
 
     def _emit(new_target):
@@ -336,7 +350,7 @@ def _rewrite_include(line, stripped, src_dir, depth):
     # (mirrors the top-level remote `-r`/`-c` refusal in main). new_line=None
     # tells the caller to remove the line entirely.
     if "://" in target:
-        return None, True, None, [flag + " " + target]
+        return None, True, None, [flag + " " + raw_target]
     abs_target = target if os.path.isabs(target) else os.path.join(src_dir, target)
     # Recursively filter the included file. Guard against cyclic / deep includes.
     if depth < 8:
@@ -390,7 +404,7 @@ def _filter_requirements_file(path, _depth = 0):
             # the target is protected; a transformers pin is still recorded.
             e_flag, e_target, _e_comment = _parse_editable(stripped)
             if e_target is not None:
-                _action, _ver = _classify_flag_target(e_target)
+                _action, _ver = _classify_flag_target(_expand_env_refs(e_target))
                 if _action == "drop":
                     if _ver and not recorded:
                         recorded = _ver
@@ -412,12 +426,13 @@ def _filter_requirements_file(path, _depth = 0):
             dropped.extend(inc_drp)
             continue
         spec = stripped.split(" #", 1)[0].strip()  # drop any inline comment
-        name = _canon(spec)
+        classified = _expand_env_refs(spec)  # classify what pip will SEE
+        name = _canon(classified)
         if name is None:
             out.append(line)  # url / path / vcs / unparseable -> keep
             continue
         if name == "transformers":
-            v = _version_pin(spec)
+            v = _version_pin(classified)
             if v and not recorded:
                 recorded = v
             dropped.append(spec)
@@ -434,9 +449,48 @@ def _filter_requirements_file(path, _depth = 0):
         fd, tmp = tempfile.mkstemp(prefix = "unsloth-nb-req-", suffix = ".txt")
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.writelines(out)
-    except OSError:
-        return path, None, []  # can't write temp -> pass the file through unchanged
+    except OSError as exc:
+        # Fail CLOSED: protected requirements were detected in this file, so
+        # forwarding the original would hand pip exactly the specs we must
+        # filter. Abort the install with a clear error instead.
+        raise SystemExit(
+            f"[unsloth-nb] could not write a filtered copy of {path} ({exc}); "
+            "refusing to forward a requirements file that pins protected packages."
+        )
     return tmp, recorded, dropped
+
+
+def _protected_constraints_file():
+    """Write `name==version` pins for every INSTALLED protected package to a
+    temp constraints file and return its path (None when nothing is pinned or
+    the file cannot be written).
+
+    Argument filtering alone does not constrain pip/uv's RESOLVER: a kept
+    package may declare e.g. `torch==99.0` as a dependency and the tool would
+    replace the baked torch to satisfy it. Pinning the protected set on every
+    forwarded install makes such an install fail loudly instead. This is
+    belt-and-braces on top of the argument filtering, so a failure here keeps
+    the install usable rather than aborting it.
+    """
+    try:
+        from importlib.metadata import distributions
+
+        pins = {}
+        for dist in distributions():
+            raw = (dist.metadata["Name"] or "").strip()
+            name = raw.lower().replace("_", "-")
+            if not name or name in pins:
+                continue
+            if name == "transformers" or name in _KEEP or name.startswith(_KEEP_PREFIX):
+                pins[name] = f"{raw}=={dist.version}"
+        if not pins:
+            return None
+        fd, tmp = tempfile.mkstemp(prefix = "unsloth-nb-protected-", suffix = ".txt")
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
+            f.write("\n".join(pins[name] for name in sorted(pins)) + "\n")
+        return tmp
+    except Exception:
+        return None
 
 
 def main():
@@ -667,6 +721,12 @@ def main():
         print("[unsloth-nb] nothing to install after keeping the baked stack; ok.")
         return
     cmd = [REAL[tool]] + head + keep_args
+    # Constrain the resolver too: without this an allowed target could pull an
+    # incompatible torch/transformers/etc. in as a DEPENDENCY and replace the
+    # baked wheel even though the argument filter kept it off the command line.
+    constraints = _protected_constraints_file()
+    if constraints:
+        cmd += ["--constraint", constraints]
     sys.stdout.flush()
     os.execv(REAL[tool], cmd)
 

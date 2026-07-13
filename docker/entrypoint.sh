@@ -56,12 +56,25 @@ select_cuda_jit_tools() {
             10.3|12.1) need_cu13=1 ;;
         esac
     done <<< "${caps}"
-    # Non-datacenter / undetectable / CPU host: nothing to do. cu12.8 is the
-    # immutable baked default (libnvrtc.so.12 -> .cu128.orig, Triton on its
-    # bundled cu12.8 ptxas), loadable on every supported 570+ driver, and needs
-    # NO write -- so a non-root `docker run --user` container is never left on a
-    # cu13 NVRTC a 570-579 driver cannot load.
-    [[ "${need_cu13}" -eq 1 ]] || return 0
+    # Non-datacenter / undetectable / CPU host: cu12.8 is the immutable baked
+    # default (libnvrtc.so.12 -> .cu128.orig, Triton on its bundled cu12.8
+    # ptxas), loadable on every supported 570+ driver, and needs NO write -- so
+    # a non-root `docker run --user` container is never left on a cu13 NVRTC a
+    # 570-579 driver cannot load. One exception needs a write: an earlier boot
+    # of this SAME container on sm_103/sm_121 left libnvrtc.so.12 -> .cu13 in
+    # the writable layer, and the container now runs on a GPU whose 570-579
+    # driver cannot load cu13 output -- deterministically reverse exactly that
+    # selection (best-effort, same non-root caveat as the forward switch).
+    if [[ "${need_cu13}" -ne 1 ]]; then
+        for nvrtc_dir in \
+            /opt/unsloth-venv/lib/python*/site-packages/nvidia/cuda_nvrtc/lib \
+            "${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"/unsloth_studio/lib/python*/site-packages/nvidia/cuda_nvrtc/lib; do
+            [[ -e "${nvrtc_dir}/libnvrtc.so.12.cu128.orig" ]] || continue
+            [[ "$(readlink "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null)" == "libnvrtc.so.12.cu13" ]] || continue
+            ln -sf libnvrtc.so.12.cu128.orig "${nvrtc_dir}/libnvrtc.so.12" 2>/dev/null || true
+        done
+        return 0
+    fi
     # Blackwell datacenter present: cu12.8 cannot emit compute_103/121, so point
     # Triton at cu13 ptxas and retarget each venv's libnvrtc.so.12 -> the staged
     # cu13 alias. -z guard leaves an explicit `docker run -e TRITON_PTXAS_PATH`

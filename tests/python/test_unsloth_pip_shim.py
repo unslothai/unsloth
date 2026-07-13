@@ -80,10 +80,21 @@ def _run(shim, tool, args):
             shim.main()
             execd = None
         except _Exec as exc:
-            # main() builds [REAL[tool]] + head + keep_args; head ends with the
-            # `install` verb, so everything after it is what we asserted on.
+            # main() builds [REAL[tool]] + head + keep_args + the protected
+            # constraints pair; head ends with the `install` verb, so everything
+            # after it is what we asserted on. The trailing
+            # `--constraint <unsloth-nb-protected-*.txt>` pair is injected on
+            # EVERY forwarded install (resolver-level protection); strip it here
+            # so each test asserts on its own arguments -- the dedicated
+            # constraint-injection tests below cover the pair itself.
             i = exc.argv.index("install")
             execd = exc.argv[i + 1 :]
+            if (
+                len(execd) >= 2
+                and execd[-2] == "--constraint"
+                and os.path.basename(execd[-1]).startswith("unsloth-nb-protected-")
+            ):
+                execd = execd[:-2]
     marker = shim._marker_path.read_text() if shim._marker_path.exists() else None
     return execd, marker
 
@@ -530,3 +541,104 @@ def test_upgrade_strategy_only_if_needed_also_dropped(shim):
     # keeps the kept target installing normally.
     execd, _ = _run(shim, "pip", ["--upgrade-strategy", "only-if-needed", "peft"])
     assert execd == ["peft"], execd
+
+
+# --------------------------------------------------------------------------
+# Resolver-level protection: every forwarded install carries a constraints
+# file pinning the installed protected packages, so a kept target's
+# DEPENDENCY on an incompatible torch/transformers/etc. fails loudly instead
+# of replacing the baked wheel.
+# --------------------------------------------------------------------------
+def _raw_execd(shim, tool, args):
+    """Like _run but WITHOUT stripping the injected constraint pair."""
+    argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(shim.sys, "argv", argv)
+        try:
+            shim.main()
+            return None
+        except _Exec as exc:
+            return exc.argv[exc.argv.index("install") + 1 :]
+
+
+def test_forwarded_install_carries_protected_constraints(shim):
+    execd = _raw_execd(shim, "pip", ["peft"])
+    assert execd is not None and execd[-2] == "--constraint", execd
+    pins = Path(execd[-1]).read_text(encoding = "utf-8").strip().splitlines()
+    assert pins, "constraints file must pin the installed protected packages"
+    assert all("==" in pin for pin in pins), pins
+    names = {pin.split("==", 1)[0].lower().replace("_", "-") for pin in pins}
+    protected = {"transformers"} | shim._KEEP | {"nvidia-"}
+    assert all(
+        n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
+    ), names
+
+
+def test_noop_install_gets_no_constraints(shim):
+    # A cell whose only target is protected still no-ops (no exec at all).
+    execd = _raw_execd(shim, "pip", ["torch"])
+    assert execd is None
+
+
+# --------------------------------------------------------------------------
+# pip expands ${UPPERCASE} in requirements files AFTER the shim classifies the
+# literal text; classification must expand the same way or `${PKG}==...` with
+# PKG=torch walks straight past _KEEP.
+# --------------------------------------------------------------------------
+def test_env_expanded_protected_requirement_dropped(shim, tmp_path, monkeypatch):
+    monkeypatch.setenv("PKG", "torch")
+    req = tmp_path / "reqs.txt"
+    req.write_text("${PKG}==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    assert execd is not None and execd[0] == "-r", execd
+    filtered = Path(execd[1]).read_text(encoding = "utf-8")
+    assert "snac==1.2.0" in filtered
+    assert "${PKG}" not in filtered and "torch" not in filtered
+
+
+def test_env_expanded_transformers_pin_recorded(shim, tmp_path, monkeypatch):
+    monkeypatch.setenv("TF_PKG", "transformers")
+    req = tmp_path / "reqs.txt"
+    req.write_text("${TF_PKG}==4.56.2\nsnac==1.2.0\n", encoding = "utf-8")
+    _, marker = _run(shim, "pip", ["-r", str(req)])
+    assert marker == "4.56.2"
+
+
+def test_unset_env_reference_left_verbatim(shim, tmp_path, monkeypatch):
+    monkeypatch.delenv("NOT_SET_ANYWHERE", raising = False)
+    req = tmp_path / "reqs.txt"
+    req.write_text("${NOT_SET_ANYWHERE}==1.0\nsnac==1.2.0\n", encoding = "utf-8")
+    execd, _ = _run(shim, "pip", ["-r", str(req)])
+    # Nothing protected detected -> the original file is forwarded unchanged
+    # (pip forwards unset references verbatim too).
+    assert execd == ["-r", str(req)], execd
+
+
+# --------------------------------------------------------------------------
+# Filtered-copy write failures fail CLOSED: the original file pins protected
+# packages, so forwarding it would hand pip exactly what must be filtered.
+# --------------------------------------------------------------------------
+def test_filter_write_failure_refuses_original_file(shim, tmp_path, monkeypatch):
+    req = tmp_path / "reqs.txt"
+    req.write_text("torch==2.11.0\nsnac==1.2.0\n", encoding = "utf-8")
+
+    def denied(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(shim.tempfile, "mkstemp", denied)
+    with pytest.raises(SystemExit, match = "refusing to forward"):
+        shim._filter_requirements_file(str(req))
+
+
+def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypatch):
+    # A file with nothing protected never needs the temp copy, so a broken
+    # TMPDIR must not block it.
+    req = tmp_path / "reqs.txt"
+    req.write_text("snac==1.2.0\n", encoding = "utf-8")
+
+    def denied(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(shim.tempfile, "mkstemp", denied)
+    path, recorded, dropped = shim._filter_requirements_file(str(req))
+    assert path == str(req) and recorded is None and dropped == []

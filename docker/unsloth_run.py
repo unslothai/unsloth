@@ -68,19 +68,35 @@ def main():
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
 
-    # Materialise the notebook locally for nbconvert.
+    # Materialise the notebook locally for nbconvert. With --out, stage both the
+    # input copy and the executed result as temp files NEXT TO the destination
+    # (same dir, so the kernel cwd matches and the publish is one atomic
+    # os.replace) and only publish over an existing --out file when execution
+    # succeeded -- a timeout / failed cell / missing kernel must not destroy the
+    # previous output.
     tmp_dir = None
-    if args.notebook.startswith(("http://", "https://")) or args.out:
-        if args.out:
-            src_path = args.out
-        else:
-            tmp_dir = tempfile.mkdtemp()
-            src_path = os.path.join(tmp_dir, os.path.basename(args.notebook.split("?")[0]))
+    tmp_files = []
+    publish_from = None
+    if args.out:
+        out_path = os.path.abspath(args.out)
+        out_dir = os.path.dirname(out_path) or "."
+        os.makedirs(out_dir, exist_ok = True)
+        fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
+        with os.fdopen(fd, "w") as f:
+            json.dump(nb, f)
+        tmp_files.append(src_path)
+        fd, publish_from = tempfile.mkstemp(prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir)
+        os.close(fd)
+        tmp_files.append(publish_from)
+    elif args.notebook.startswith(("http://", "https://")):
+        tmp_dir = tempfile.mkdtemp()
+        src_path = os.path.join(tmp_dir, os.path.basename(args.notebook.split("?")[0]))
         with open(src_path, "w") as f:
             json.dump(nb, f)
+        out_path = src_path
     else:
         src_path = args.notebook
-    out_path = args.out or src_path
+        out_path = src_path
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"  # enable safe-install for the notebook's cells
@@ -97,6 +113,7 @@ def main():
     else:
         print("[unsloth-run] no transformers pin/model tier detected; using base venv")
 
+    nbconvert_out = publish_from if publish_from is not None else out_path
     cmd = [
         "/opt/unsloth-venv/bin/jupyter",
         "nbconvert",
@@ -107,17 +124,25 @@ def main():
         "--ExecutePreprocessor.kernel_name=python3",
         src_path,
         "--output",
-        os.path.basename(out_path),
+        os.path.basename(nbconvert_out),
         "--output-dir",
-        os.path.dirname(os.path.abspath(out_path)) or ".",
+        os.path.dirname(os.path.abspath(nbconvert_out)) or ".",
     ]
-    print("[unsloth-run] executing:", os.path.basename(src_path))
+    print("[unsloth-run] executing:", os.path.basename(args.notebook.split("?")[0]) if args.out else os.path.basename(src_path))
     try:
         rc = subprocess.call(cmd, env = env)
+        if rc == 0 and publish_from is not None:
+            os.replace(publish_from, out_path)
     finally:
-        # Clean up the temp dir we materialised a downloaded notebook into.
+        # Clean up the temp dir we materialised a downloaded notebook into and
+        # any staging files left next to --out (already gone when published).
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors = True)
+        for p in tmp_files:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
     sys.exit(rc)
 
 

@@ -4798,14 +4798,31 @@ def move_install_dir_aside(src: Path, dst: Path) -> None:
     path is on a different overlay) fall back to copy + remove. A busy/in-use
     failure is deliberately NOT copy-faked here: the source is a live install and
     a partial copy + rmtree would be worse than failing, so it re-raises.
+
+    The copy never writes into ``dst`` directly: callers treat ``dst.exists()``
+    as proof of a complete tree (activation recovery restores a rollback dir
+    whenever it exists), so a copy that dies halfway (ENOSPC, I/O error) must
+    not leave a partial tree at ``dst``. Copy to a temp sibling and publish it
+    with one atomic rename; on failure remove the temp copy and leave ``src``
+    untouched.
     """
     try:
         os.replace(src, dst)
     except OSError as exc:
         if not is_cross_device_error(exc):
             raise
-        log(f"os.replace cross-device ({exc!r}); copy+remove {src} -> {dst}")
-        shutil.copytree(src, dst, dirs_exist_ok = True)
+        copy_tmp = dst.with_name(dst.name + ".copying")
+        counter = 0
+        while copy_tmp.exists():
+            counter += 1
+            copy_tmp = dst.with_name(f"{dst.name}.copying-{counter}")
+        log(f"os.replace cross-device ({exc!r}); copy+publish {src} -> {dst}")
+        try:
+            shutil.copytree(src, copy_tmp)
+            os.replace(copy_tmp, dst)
+        except BaseException:
+            remove_tree(copy_tmp)
+            raise
         remove_tree(src)
 
 
