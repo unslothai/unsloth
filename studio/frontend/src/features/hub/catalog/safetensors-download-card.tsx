@@ -242,7 +242,8 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {/* Info/actions hairline; omitted before a lone Run button, matching the GGUF and on-device cards. */}
+        {/* Info/actions hairline; dropped for the run action row (no divider before
+            Run, as in the GGUF card's Run CTA), restored when the Train pair ships. */}
         {(!showActionPair || trainActionVisible) && <CardDivider />}
         {showActionPair ? (
           <div
