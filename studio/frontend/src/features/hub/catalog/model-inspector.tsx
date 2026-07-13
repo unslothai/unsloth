@@ -263,17 +263,22 @@ type VramInfo = { est: number; status: "fits" | "tight" | "exceeds" } | null;
 function ModelStatusChips({
   isDataset,
   isGguf,
+  chatOnly,
   unslothSupport,
   vramInfo,
 }: {
   isDataset: boolean;
   isGguf: boolean;
+  chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
   const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The format-unsupported chip already explains itself; this one covers the
+  // supported-format model a chat-only host still can't run.
+  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showVram) return null;
+  if (!showUnsupported && !showChatOnly && !showVram) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -317,6 +322,26 @@ function ModelStatusChips({
                 {unslothSupport.reason}
               </span>
             )}
+            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              Still downloadable to your Hugging Face cache.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showChatOnly && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="GGUF-only device" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This device has no supported GPU or usable MLX, so only GGUF models
+            can run here.
             <span className="mt-1 block text-[10.5px] font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
@@ -770,6 +795,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
+          chatOnly={chatOnly}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />
