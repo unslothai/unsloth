@@ -132,6 +132,63 @@ def test_aria_hidden_false_subtree_is_kept():
     assert "still here" in html_to_markdown(html)
 
 
+def test_inline_style_display_none_subtree_is_dropped():
+    # Client-side error/loading blocks are frequently hidden with inline CSS
+    # rather than the ``hidden`` attribute; browsers do not render them, so
+    # they must not leak into the Markdown.
+    html = (
+        "<body><p>visible</p>"
+        '<div style="display:none">secret loading block</div>'
+        "<p>after</p></body>"
+    )
+    out = html_to_markdown(html)
+    assert "visible" in out
+    assert "after" in out
+    assert "secret loading block" not in out
+
+
+def test_inline_style_visibility_hidden_subtree_is_dropped():
+    html = '<body><p>keep</p><span style="visibility:hidden">ghost</span></body>'
+    out = html_to_markdown(html)
+    assert "keep" in out
+    assert "ghost" not in out
+
+
+def test_inline_style_display_none_important_is_dropped():
+    # The !important flag must not defeat the display:none detection.
+    html = '<body><p>keep</p><div style="display:none !important">gone</div></body>'
+    out = html_to_markdown(html)
+    assert "keep" in out
+    assert "gone" not in out
+
+
+def test_inline_style_display_none_among_other_declarations():
+    html = (
+        "<body><p>keep</p>"
+        '<div style="color: red; display : none ; margin:0">gone</div></body>'
+    )
+    out = html_to_markdown(html)
+    assert "keep" in out
+    assert "gone" not in out
+
+
+def test_inline_style_visible_display_is_kept():
+    # Over-strip guard: display:block / visibility:visible are rendered, and a
+    # value or URL that merely contains the substring "none" must not trigger
+    # the hidden path.
+    html = (
+        "<body>"
+        '<div style="display:block">block kept</div>'
+        '<div style="visibility:visible">visible kept</div>'
+        '<a style="background:url(none.png)">link kept</a>'
+        "</body>"
+    )
+    out = html_to_markdown(html)
+    assert "block kept" in out
+    assert "visible kept" in out
+    assert "link kept" in out
+
+
 def test_hidden_recovers_from_omitted_close_tags():
     # <p hidden> is never closed; the parent </div> must still end the hidden
     # region so the rest of the page is not swallowed.
@@ -588,3 +645,28 @@ def test_single_substantial_article_still_preferred_over_main():
     out = html_to_markdown(html, main_content = True)
     assert "Real README documentation body text." in out
     assert "JavaScript 89.3%" not in out
+
+
+# ── truncated (unclosed) main-content scopes must still be scored ──
+
+
+def test_truncated_open_article_scope_is_scored_and_preferred():
+    # _fetch_url_raw caps large pages, so the download can end before the
+    # closing </article>. The scope is still the page's main content and must
+    # be preferred over the whole document (which re-leaks the page chrome).
+    chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
+    article_body = "Real README documentation body text. " * 20
+    # No closing </article> / </body> -- the fetch cap truncated the page.
+    html = f"<body>{chrome}<article><h1>Guide</h1><p>{article_body}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "Real README documentation body text." in out
+    assert "Repository file tree and page chrome." not in out
+
+
+def test_truncated_open_main_scope_is_scored_and_preferred():
+    chrome = "<nav>Skip to content</nav><div>Repository file tree and page chrome.</div>"
+    main_body = "Authoritative main documentation content. " * 30
+    html = f"<body>{chrome}<main><h1>Doc</h1><p>{main_body}</p>"
+    out = html_to_markdown(html, main_content = True)
+    assert "Authoritative main documentation content." in out
+    assert "Repository file tree and page chrome." not in out

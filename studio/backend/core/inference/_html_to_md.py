@@ -71,19 +71,47 @@ _VOID_TAGS = frozenset(
 )
 
 
+def _style_hides_element(style: str) -> bool:
+    """True when an inline ``style`` attribute makes the element non-rendered:
+    ``display:none`` or ``visibility:hidden``. The declaration is parsed per
+    property (split on ``;`` then ``:``, with ``!important`` and surrounding
+    whitespace stripped) so an unrelated value like ``display:block``,
+    ``visibility:visible``, or a class/URL that merely contains the substring
+    ``none`` is never misread as hidden."""
+    lowered = style.lower()
+    if "none" not in lowered and "hidden" not in lowered:
+        return False
+    for declaration in style.split(";"):
+        prop, sep, value = declaration.partition(":")
+        if not sep:
+            continue
+        prop = prop.strip().lower()
+        # Drop any !important flag and keep the first token of the value.
+        value = value.split("!", 1)[0].strip().lower()
+        if prop == "display" and value == "none":
+            return True
+        if prop == "visibility" and value == "hidden":
+            return True
+    return False
+
+
 def _is_hidden_element(attr_dict: dict) -> bool:
     """True when the element is not rendered by a browser: the ``hidden``
-    attribute or ``aria-hidden="true"``. Client-side placeholders (e.g.
+    attribute, ``aria-hidden="true"``, or an inline ``style`` that sets
+    ``display:none`` / ``visibility:hidden``. Client-side placeholders (e.g.
     GitHub's ``<div data-show-on-forbidden-error hidden>`` "Uh oh! There was
-    an error while loading." blocks) ship in the HTML but are only shown by
-    JavaScript on error, so they must not reach the Markdown output.
+    an error while loading." blocks, or JS-toggled ``style="display:none"``
+    error/loading blocks) ship in the HTML but are only shown by JavaScript on
+    error, so they must not reach the Markdown output.
 
     ``hidden`` is an enumerated attribute (hidden / until-found): per the
     HTML spec its invalid value default is the Hidden state, so any present
     value -- including ``hidden="false"`` -- means not rendered."""
     if "hidden" in attr_dict:
         return True
-    return (attr_dict.get("aria-hidden") or "").strip().lower() == "true"
+    if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
+        return True
+    return _style_hides_element(attr_dict.get("style") or "")
 
 
 # HTML5 optional end tags: a start tag in the value set implicitly closes an
@@ -580,6 +608,19 @@ class _MarkdownRenderer(HTMLParser):
                 self._bq_stack[-1].append("\n\n" + prefixed + "\n\n")
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
+
+        # A scope left open by truncated HTML (the fetch cap cut the page before
+        # its </article>/</main>) never reached _exit_tag, so its collected
+        # output was never appended to scope_segments. The candidate would then
+        # score 0 and _largest_scope_candidate_len would fall back to rendering
+        # the whole page -- re-leaking the chrome/file tables the scope was
+        # meant to drop. Flush the still-open scope segment here (after the
+        # side-buffers above, so their recovered content is included) so a
+        # truncated main-content page is still scored and preferred correctly.
+        if self._scope_seg_start is not None:
+            self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
+            self._scope_seg_start = None
+            self._scope_depth = 0
 
 
 # Post-processing
