@@ -19,18 +19,23 @@ def mk():
 
 
 def timed(fn, iters = 20):
-    torch.cuda.synchronize()
-    for _ in range(3):
-        try:
+    try:
+        torch.cuda.synchronize()
+        for _ in range(3):
             fn()
-        except Exception as e:  # noqa: BLE001
-            return f"UNSUPPORTED ({type(e).__name__})"
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        fn()
-    torch.cuda.synchronize()
-    return (time.perf_counter() - t0) / iters * 1e3
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            fn()
+        torch.cuda.synchronize()
+        return (time.perf_counter() - t0) / iters * 1e3
+    except torch.OutOfMemoryError:
+        # An occupied / too-small cuda:0 OOMs on the dense NxN mask; that is a memory limit,
+        # not a backend rejecting the mask, so don't mislabel it UNSUPPORTED.
+        torch.cuda.empty_cache()
+        return "OOM"
+    except Exception as e:  # noqa: BLE001
+        return f"UNSUPPORTED ({type(e).__name__})"
 
 
 q, k, v = mk(), mk(), mk()

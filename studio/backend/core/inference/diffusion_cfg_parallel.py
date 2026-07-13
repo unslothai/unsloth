@@ -230,13 +230,24 @@ class CFGParallelProxy:
             raise
 
     def disable_cache(self) -> None:
-        self._primary.disable_cache()
-        try:
-            self._replica.disable_cache()
-            self._broken = False
-        except Exception as exc:  # noqa: BLE001 -- replica out of sync: stop routing
-            self._broken = True
-            _warn(self._logger, "cfg-parallel replica disable_cache", exc)
+        # Removal must be transactional: if the primary's disable_cache raised while it ran
+        # outside this guard, the replica was never cleaned and _broken stayed False, so a
+        # half-removed pair kept routing. Attempt BOTH, record every failure, and only then
+        # decide _broken -- any failure disables routing and surfaces so the caller reloads.
+        failures: list[tuple[str, Exception]] = []
+        for name, module in (("primary", self._primary), ("replica", self._replica)):
+            try:
+                module.disable_cache()
+            except Exception as exc:  # noqa: BLE001 -- collect, don't skip the other branch
+                failures.append((name, exc))
+                _warn(self._logger, f"cfg-parallel {name} disable_cache", exc)
+        self._broken = bool(failures)
+        if failures:
+            details = "; ".join(f"{name}: {exc}" for name, exc in failures)
+            raise RuntimeError(
+                f"CFG-parallel cache removal failed ({details}); parallel routing is "
+                "disabled until the model is reloaded"
+            )
 
     def _reset_stateful_cache(self, *args: Any, **kwargs: Any) -> None:
         for module in (self._primary, self._replica):
@@ -400,6 +411,14 @@ def _install_threadsafe_cudnn_attention(logger: Any = None) -> bool:
                     enable_gqa = enable_gqa,
                     return_lse = return_lse,
                     _parallel_config = _parallel_config,
+                )
+            # F.scaled_dot_product_attention (what the stock backend calls) treats a boolean
+            # mask as "True participates" and converts it to an ADDITIVE bias internally; the
+            # lower-level cuDNN op takes that bias directly, so a bool mask passed straight
+            # through is misread for any partial (non-all-True) mask. Convert to match SDPA.
+            if attn_mask is not None and attn_mask.dtype == torch.bool:
+                attn_mask = torch.zeros_like(attn_mask, dtype = query.dtype).masked_fill_(
+                    ~attn_mask, float("-inf")
                 )
             q, k, v = (x.permute(0, 2, 1, 3).contiguous() for x in (query, key, value))
             out = torch.ops.aten._scaled_dot_product_cudnn_attention(

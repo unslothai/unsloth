@@ -451,9 +451,32 @@ def _step_cache_all_or_none(
     expert(s) and report the cache off. Otherwise the whole MoE reports cached while
     half the schedule runs uncached. Returns (mode-or-None, failure-reason-or-None); a
     single-DiT family can never see a mixed outcome."""
+    pairs = list(zip(_views_for(pipe, fam), _transformer_names(pipe, fam)))
     results: list[tuple[Any, str, Optional[str]]] = []
-    for view, expert_name in zip(_views_for(pipe, fam), _transformer_names(pipe, fam)):
-        results.append((view, expert_name, engage_fn(view, expert_name)))
+    try:
+        for view, expert_name in pairs:
+            results.append((view, expert_name, engage_fn(view, expert_name)))
+    except BaseException as exc:
+        # A later expert raising mid-loop leaves the experts engaged BEFORE it still cached
+        # while the load unwinds -- the same silent all-or-none violation as a mixed outcome,
+        # so tear down every expert that got a marker, then re-raise (or a reload-required
+        # error if rollback itself fails).
+        rollback_failed: list[str] = []
+        for view, name in pairs:
+            transformer = getattr(view, "transformer", None)
+            if getattr(transformer, "_unsloth_step_cache", None) is None:
+                continue
+            if not _disengage_step_cache(
+                transformer, reason = "all-or-none transaction aborted", logger = logger
+            ):
+                rollback_failed.append(name)
+        if rollback_failed:
+            raise RuntimeError(
+                "step-cache transaction raised and rollback failed for "
+                + ", ".join(rollback_failed)
+                + "; reload the video model before generating"
+            ) from exc
+        raise
     engaged = [(view, name, mode) for view, name, mode in results if mode is not None]
     if engaged and len(engaged) < len(results):
         missing = ", ".join(name for _, name, mode in results if mode is None)
@@ -518,6 +541,8 @@ class VideoBackend:
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         vae_quant: Optional[str] = None,
+        transformer_cache_quality: Optional[str] = None,
+        cfg_parallel: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -620,6 +645,11 @@ class VideoBackend:
         normalize_te_quant(text_encoder_quant)
         # Same for vae_quant (the dense VAE is resident for every load kind).
         normalize_vae_quant(vae_quant)
+        # Reject malformed cache-quality / cfg-parallel here too: the HTTP Literal fields gate
+        # the route, but a direct backend caller (bench, plugin, test) would otherwise start a
+        # worker and do checkpoint/download work before an invalid value fails deep in the load.
+        normalize_cache_quality(transformer_cache_quality)
+        normalize_cfg_parallel(cfg_parallel)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -656,6 +686,8 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             vae_quant = vae_quant,
+            transformer_cache_quality = transformer_cache_quality,
+            cfg_parallel = cfg_parallel,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -1039,6 +1071,8 @@ class VideoBackend:
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
             vae_quant = vae_quant,
+            transformer_cache_quality = transformer_cache_quality,
+            cfg_parallel = cfg_parallel,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         # An explicit Speed="off" (bit-exact) load pins the companions dense too: promoting
@@ -1555,11 +1589,18 @@ class VideoBackend:
                 # The cache engaged on the primary BEFORE the proxy existed; re-engage
                 # THROUGH the proxy so the replica carries the same hooks and each branch's
                 # cache state matches the single-GPU run (the bit-identity precondition).
-                _disengage_step_cache(
+                # If the primary-only cache cannot be removed, reapplying through the proxy
+                # would double-hook the primary and desync the branches, so fail the load
+                # (the _precommit_cfg_parallel rollback then tears the proxy back down).
+                if not _disengage_step_cache(
                     cfg_parallel_proxy._primary,
                     reason = "re-engaging through the cfg-parallel proxy",
                     logger = logger,
-                )
+                ):
+                    raise RuntimeError(
+                        "could not disable the primary-only step cache before installing "
+                        "CFG-parallel cache hooks; reload the video model before generating"
+                    )
                 cache_engaged = apply_step_cache(
                     pipe,
                     mode = cache_request,

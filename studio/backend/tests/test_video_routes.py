@@ -104,6 +104,8 @@ class _FakeBackend(video_module.VideoBackend):
         transformer_quant = None,
         text_encoder_quant = None,
         vae_quant = None,
+        transformer_cache_quality = None,
+        cfg_parallel = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.

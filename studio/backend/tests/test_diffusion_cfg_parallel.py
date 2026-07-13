@@ -411,6 +411,26 @@ def test_replica_enable_failure_reraises_and_breaks(monkeypatch):
     proxy.shutdown()
 
 
+def test_disable_cache_primary_failure_still_cleans_replica_and_breaks(monkeypatch):
+    # The primary's disable_cache used to run OUTSIDE the guard: if it raised, the replica was
+    # never cleaned and _broken stayed False, so a half-removed pair kept routing. Removal must
+    # be transactional -- clean both branches, mark broken, and surface a reload-required error.
+    proxy, primary, replica, _ = _make_proxy(monkeypatch)
+
+    def _boom():
+        raise RuntimeError("primary hook removal failed")
+
+    primary.disable_cache = _boom
+    with pytest.raises(RuntimeError, match = "CFG-parallel cache removal failed"):
+        proxy.disable_cache()
+    assert proxy._broken is True
+    assert replica.disables == 1
+    # A broken proxy pins the sequential passthrough (no parallel routing).
+    plan = proxy.plan_generation(cache_engaged = True, steps = 30, width = 1280, height = 720, frames = 33)
+    assert plan["enabled"] is False
+    proxy.shutdown()
+
+
 def test_reset_stateful_cache_fans_out(monkeypatch):
     proxy, primary, replica, _ = _make_proxy(monkeypatch)
     proxy._reset_stateful_cache()

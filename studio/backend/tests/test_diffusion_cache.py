@@ -372,6 +372,49 @@ def test_toggle_reengages_after_a_disable(monkeypatch):
     assert mode == TC_FBCACHE and t.enables == 2
 
 
+def test_toggle_magcache_step_change_hard_errors_when_disable_fails(monkeypatch):
+    # A failed removal during a magcache step-count change used to fall through and report
+    # "magcache" while the OLD #sN curve stayed armed (wrong ratio schedule). Fail closed.
+    import core.inference.diffusion_cache as dc_mod
+
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    t._unsloth_step_cache = "magcache@0.06#s50"
+    monkeypatch.setattr(dc_mod, "_disengage_step_cache", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match = "reload the video model"):
+        maybe_toggle_step_cache(
+            _pipe(t), steps = 30, mode = dc_mod.TC_MAGCACHE, family = "hunyuanvideo-1.5"
+        )
+
+
+def test_toggle_below_bar_hard_errors_when_disable_fails(monkeypatch):
+    # Below the cache threshold we want uncached; a failed disable used to report the stale
+    # mode instead of surfacing that the (wrong-step) cache is still armed.
+    import core.inference.diffusion_cache as dc_mod
+
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    t._unsloth_step_cache = "magcache@0.06#s50"
+    monkeypatch.setattr(dc_mod, "_disengage_step_cache", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match = "reload the video model"):
+        maybe_toggle_step_cache(
+            _pipe(t),
+            steps = FBCACHE_MIN_STEPS - 1,
+            mode = dc_mod.TC_MAGCACHE,
+            family = "hunyuanvideo-1.5",
+        )
+
+
+def test_apply_step_cache_enable_and_cleanup_failure_requires_reload(monkeypatch):
+    # enable_cache fails AFTER partially hooking and the cleanup disable_cache ALSO fails:
+    # the transformer may keep partial hooks, so surface it instead of a clean uncached None.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer(fail = True)
+    t.disable_cache = lambda: (_ for _ in ()).throw(RuntimeError("cleanup failed"))
+    with pytest.raises(RuntimeError, match = "partially cached and must be reloaded"):
+        apply_step_cache(_pipe(t), mode = "fbcache")
+
+
 def test_toggle_noop_without_cache_support(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _NonCacheMixinTransformer()

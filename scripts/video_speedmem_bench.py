@@ -623,11 +623,17 @@ def _timed_video(
             marker = getattr(transformer, "_unsloth_step_cache", None)
             if not marker or str(marker).endswith(f"#s{int(steps)}"):
                 return "magcache"  # already sized for these steps
-            _disengage_step_cache(
+            # Fail closed like production: reapplying over a cache that would not disengage
+            # double-hooks the transformer and times a stale/stacked curve as if it were fresh.
+            if not _disengage_step_cache(
                 transformer,
                 reason = f"explicit magcache re-interpolating for {steps} steps",
                 logger = logger,
-            )
+            ):
+                raise RuntimeError(
+                    "could not disable the existing MagCache before resizing it for "
+                    f"{steps} steps; restart the benchmark with a fresh pipeline"
+                )
             return apply_step_cache(
                 view,
                 mode = "magcache",

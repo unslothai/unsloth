@@ -675,10 +675,20 @@ def apply_step_cache(
         # reported-uncached model isn't half-cached. Restore armed compiled inners FIRST
         # (remove_hook splices original_forward back into module.forward).
         _restore_hooked_block_inners(transformer)
-        try:
-            transformer.disable_cache()
-        except Exception:  # noqa: BLE001
-            pass
+        disable_cache = getattr(transformer, "disable_cache", None)
+        if callable(disable_cache):
+            try:
+                disable_cache()
+                transformer._unsloth_step_cache = None
+            except Exception as rollback_exc:  # noqa: BLE001
+                # Both the enable AND its cleanup failed: the transformer may keep partial hooks
+                # while we'd otherwise report a clean uncached None. Surface it so the caller
+                # reloads instead of generating on a half-cached model.
+                raise RuntimeError(
+                    "step-cache enable failed and rollback also failed; the transformer may be "
+                    "partially cached and must be reloaded "
+                    f"(enable error: {exc}; rollback error: {rollback_exc})"
+                ) from rollback_exc
         _warn(logger, mode, exc)
         return None
 
@@ -770,10 +780,17 @@ def maybe_toggle_step_cache(
         and mode == TC_MAGCACHE
         # endswith, not substring: "#s5" would match inside "#s50".
         and not str(engaged).endswith(f"#s{int(steps)}")
-        and _disengage_step_cache(
-            transformer, reason = f"magcache re-interpolating for {steps} steps", logger = logger
-        )
     ):
+        # A failed removal used to short-circuit and fall through to `return mode`, reporting
+        # "magcache" while the OLD #sN curve stayed armed (wrong ratio schedule, silently
+        # degraded output). Fail closed so the caller reloads instead.
+        if not _disengage_step_cache(
+            transformer, reason = f"magcache re-interpolating for {steps} steps", logger = logger
+        ):
+            raise RuntimeError(
+                "could not disable the existing MagCache before resizing it for "
+                f"{steps} steps; reload the video model before generating"
+            )
         engaged = None
     if want and not engaged:
         return apply_step_cache(
@@ -788,13 +805,18 @@ def maybe_toggle_step_cache(
             logger = logger,
         )
     if not want and engaged:
-        if _disengage_step_cache(
+        # Below the cache threshold we want uncached; a failed disable leaves the (possibly
+        # wrong-step) cache armed, so surface it rather than reporting the stale mode.
+        if not _disengage_step_cache(
             transformer,
             reason = f"auto: {steps} steps < {FBCACHE_MIN_STEPS}",
             logger = logger,
         ):
-            return None
-        return mode
+            raise RuntimeError(
+                "could not disable the existing step cache for a short generation; "
+                "reload the video model before generating"
+            )
+        return None
     return mode if engaged else None
 
 

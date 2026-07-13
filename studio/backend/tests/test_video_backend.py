@@ -2159,6 +2159,30 @@ def test_step_cache_all_or_none_rolls_back_first_expert_failure(monkeypatch):
     assert disengaged == [t2]
 
 
+def test_step_cache_all_or_none_rolls_back_when_later_expert_raises(monkeypatch):
+    # A later expert RAISING mid-loop (not returning None) must not leave earlier experts
+    # engaged: the helper disengages any expert that got a cache marker, then re-raises.
+    import core.inference.video as video
+
+    pipe, fam, t1, _t2 = _moe_pipe_and_fam()
+    disengaged: list = []
+    monkeypatch.setattr(
+        video,
+        "_disengage_step_cache",
+        lambda transformer, *, reason, logger = None: disengaged.append(transformer) or True,
+    )
+
+    def engage(view, expert_name):
+        if expert_name == "transformer":
+            view.transformer._unsloth_step_cache = "magcache@0.1#s30"
+            return "magcache"
+        raise RuntimeError("expert 2 boom")
+
+    with pytest.raises(RuntimeError, match = "expert 2 boom"):
+        video._step_cache_all_or_none(pipe, fam, engage, logger = None)
+    assert disengaged == [t1]
+
+
 def test_step_cache_all_or_none_uniform_outcomes(monkeypatch):
     # Both experts engaged -> the mode is reported with no rollback; neither engaged
     # -> plain uncached with no failure reason (the pre-existing best-effort path).

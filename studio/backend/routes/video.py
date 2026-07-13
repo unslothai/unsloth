@@ -107,6 +107,8 @@ async def load_video_model(
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
             vae_quant = request.vae_quant,
+            transformer_cache_quality = request.transformer_cache_quality,
+            cfg_parallel = request.cfg_parallel,
         )
         # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
         _guard_video_load_against_training()

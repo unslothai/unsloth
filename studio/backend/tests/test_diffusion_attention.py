@@ -143,6 +143,16 @@ def test_flash3_dropped_on_blackwell(monkeypatch):
     assert select_attention_backend(_target(), "flash3", speed_active = False) == "_flash_3_hub"
 
 
+def test_flash2_dropped_below_ampere(monkeypatch):
+    # Dao-AILab FlashAttention 2 needs Ampere (SM80)+; on Turing (SM75) diffusers accepts the
+    # backend then crashes at generation, so the arch gate must drop it like cuDNN/FA3/FA4.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (7, 5))
+    assert select_attention_backend(_target(), "flash", speed_active = False) is None
+    # Ampere+ still honors it.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (8, 0))
+    assert select_attention_backend(_target(), "flash", speed_active = False) == "flash"
+
+
 def test_explicit_cudnn_dropped_below_sm80(monkeypatch):
     # An explicit cuDNN request on pre-Ampere (T4 SM75 / V100 SM70) must drop to native,
     # not set fine and crash at first generation -- the same gate the auto path applies.
@@ -549,6 +559,13 @@ def test_backend_supported_on_device_cudnn_needs_ampere(monkeypatch):
     _stub_cuda_capability(monkeypatch, {0: (9, 0), 1: (7, 5)})
     assert att.attention_backend_supported_on_device("_native_cudnn", 0) is True
     assert att.attention_backend_supported_on_device("_native_cudnn", 1) is False
+
+
+def test_backend_supported_on_device_flash2_needs_ampere(monkeypatch):
+    # FlashAttention 2 needs Ampere+ (SM80): rejected on a pre-Ampere (T4/SM75) replica.
+    _stub_cuda_capability(monkeypatch, {0: (8, 0), 1: (7, 0)})
+    assert att.attention_backend_supported_on_device("flash", 0) is True
+    assert att.attention_backend_supported_on_device("flash", 1) is False
 
 
 def test_backend_supported_on_device_unqueryable_is_permissive(monkeypatch):
