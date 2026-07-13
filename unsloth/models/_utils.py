@@ -1863,6 +1863,8 @@ model_architectures = [
 # rope_scaling).
 _skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
 
+import importlib as _importlib
+
 for model_name in model_architectures:
     if _skip_config_exec_patch:
         break
@@ -1870,7 +1872,8 @@ for model_name in model_architectures:
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
     config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
-        exec(f"from {config_filepath} import {config_filename}", globals())
+        _cfg_mod = _importlib.import_module(config_filepath)
+        globals()[config_filename] = getattr(_cfg_mod, config_filename)
     except:
         continue
 
@@ -1880,7 +1883,8 @@ for model_name in model_architectures:
         continue
     if "RopeParameters" in config:
         try:
-            exec(f"from {config_filepath} import RopeParameters", globals())
+            _cfg_mod = _importlib.import_module(config_filepath)
+            globals()["RopeParameters"] = getattr(_cfg_mod, "RopeParameters")
         except:
             continue
 
@@ -1901,8 +1905,8 @@ for model_name in model_architectures:
 
     try:
         exec(config, globals())
-        exec(f"import {config_filepath}", globals())
-        exec(f"{config_filepath}.{config_filename} = {config_filename}", globals())
+        _cfg_mod2 = _importlib.import_module(config_filepath)
+        setattr(_cfg_mod2, config_filename, globals()[config_filename])
     except Exception:
         continue
 # =============================================
