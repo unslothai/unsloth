@@ -242,8 +242,8 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {/* Divider sits above the bottom CTA row; it drops only when the action pair is gated off. */}
-        {(!showActionPair || runActionsVisible) && <CardDivider />}
+        {/* Info/actions hairline; omitted before a lone Run button, matching the GGUF and on-device cards. */}
+        {(!showActionPair || (HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && !!onTrain)) && <CardDivider />}
         {showActionPair ? (
           <div
             className={cn(
