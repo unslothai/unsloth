@@ -8714,9 +8714,7 @@ async def openai_chat_completions(
                     # it returns. next(gen, _DONE) returns _DONE instead of
                     # raising StopIteration -- StopIteration can't propagate
                     # through asyncio futures (Python limitation).
-                    _next_task = asyncio.create_task(
-                        asyncio.to_thread(next, gen, _DONE)
-                    )
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
                     while True:
                         _done_tasks, _ = await asyncio.wait(
                             {_next_task},

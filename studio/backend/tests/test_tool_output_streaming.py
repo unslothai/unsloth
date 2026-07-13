@@ -1047,10 +1047,19 @@ def test_continuous_over_cap_output_does_not_starve_heartbeats():
 def test_accepts_output_callback_signature_detection():
     from core.inference.tool_stream_exec import accepts_output_callback
 
-    def legacy(name, arguments, cancel_event = None, timeout = None):
+    def legacy(
+        name,
+        arguments,
+        cancel_event = None,
+        timeout = None,
+    ):
         return "ok"
 
-    def modern(name, arguments, output_callback = None):
+    def modern(
+        name,
+        arguments,
+        output_callback = None,
+    ):
         return "ok"
 
     def kwargs_only(name, arguments, **kw):

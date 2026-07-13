@@ -48,6 +48,7 @@ def accepts_output_callback(func: Callable[..., str]) -> bool:
         return True
     return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
+
 # Cadence of heartbeat events while a tool blocks with no output. Well under
 # common proxy idle caps (Cloudflare ~100 s, nginx default 60 s).
 TOOL_HEARTBEAT_INTERVAL_S = 10.0
