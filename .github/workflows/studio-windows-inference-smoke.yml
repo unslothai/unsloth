@@ -1702,6 +1702,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Run Windows junction cleanup regression
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pytest filelock
+          python -m pytest -q tests/studio/install/test_install_llama_prebuilt_logic.py -k windows_junctions
+
       - name: Install Pester v5
         shell: pwsh
         run: |
