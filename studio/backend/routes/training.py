@@ -351,23 +351,29 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Latest-sidecar models size and train 16-bit (same flip as chat load):
-        # 4-bit is disabled for brand-new architectures, so VRAM coexistence
-        # checks must not underestimate against a load the worker will refuse.
-        if training_kwargs["load_in_4bit"]:
-            from utils.transformers_version import latest_tier_active_for
-            if await asyncio.to_thread(
-                latest_tier_active_for,
+        # Resolve the latest tier UNCONDITIONALLY (not only for a 4-bit run): tier
+        # resolution self-heals a present-but-incomplete .venv_t5_latest in the parent,
+        # and repairs are parent-only (the training worker refuses them, then hard-fails
+        # activation). Gating this behind load_in_4bit left an explicitly-16-bit run of a
+        # latest-tier model unable to repair. Sidecar integrity and quantization are
+        # independent, so the repair must not ride on the quantization branch.
+        from utils.transformers_version import latest_tier_active_for
+        latest_active = await asyncio.to_thread(
+            latest_tier_active_for,
+            training_kwargs["model_name"],
+            training_kwargs["hf_token"] or None,
+        )
+        # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is
+        # disabled for brand-new architectures, so VRAM coexistence checks must not
+        # underestimate against a load the worker will refuse.
+        if training_kwargs["load_in_4bit"] and latest_active:
+            training_kwargs["load_in_4bit"] = False
+            logger.info(
+                "Latest-transformers sidecar active for %s - sizing and "
+                "training in 16-bit (4-bit is disabled for brand-new "
+                "architectures)",
                 training_kwargs["model_name"],
-                training_kwargs["hf_token"] or None,
-            ):
-                training_kwargs["load_in_4bit"] = False
-                logger.info(
-                    "Latest-transformers sidecar active for %s - sizing and "
-                    "training in 16-bit (4-bit is disabled for brand-new "
-                    "architectures)",
-                    training_kwargs["model_name"],
-                )
+            )
 
         # Training page has no trust_remote_code toggle, so honor the YAML default
         # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a

@@ -87,6 +87,15 @@ async def load_checkpoint(
     try:
         _ensure_export_supported()
         backend = get_export_backend()
+        # Resolve the tier in the parent BEFORE spawning, mirroring /load: a
+        # present-but-incomplete .venv_t5_latest self-heals only here, since repairs are
+        # parent-only and the export worker refuses them and then hard-fails activation.
+        # Otherwise a latest-tier checkpoint could never repair. latest_tier_active_for
+        # early-returns on hosts with no sidecar pin, so this is a cheap no-op normally.
+        from utils.transformers_version import latest_tier_active_for
+        await asyncio.to_thread(
+            latest_tier_active_for, request.checkpoint_path, request.hf_token
+        )
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
         success, message = await asyncio.to_thread(

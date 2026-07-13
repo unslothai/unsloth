@@ -2802,7 +2802,8 @@ class TestSidecarSwapReservation:
         assert tv.sidecar_swap_in_progress() is False
 
     def test_foreign_process_lock_file_visible(self, monkeypatch, tmp_path):
-        """A repair in a worker subprocess is seen (via the lock file) by this process."""
+        """A repair in a LIVE worker subprocess is seen (via the lock file) by this
+        process, and its lock is never broken while the owner is alive."""
         import os
         import time
         import utils.transformers_version as tv
@@ -2810,12 +2811,27 @@ class TestSidecarSwapReservation:
         monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
         lock = tv._swap_lock_path()
         lock.parent.mkdir(parents = True, exist_ok = True)
-        lock.write_text('{"pid": 999999}')
+        # A live owner (this process): visible and never reclaimed, even once aged past
+        # the cutoff -- a slow but live pip install must keep its lock.
+        lock.write_text('{"pid": %d}' % os.getpid())
         assert tv.sidecar_swap_in_progress() is True
         assert tv.try_begin_sidecar_swap() is False
-        # A stale lock (crashed owner) is broken and the reservation re-acquired.
         old_ts = time.time() - 3 * 60 * 60
         os.utime(lock, (old_ts, old_ts))
+        assert tv.sidecar_swap_in_progress() is True
+        assert tv.try_begin_sidecar_swap() is False
+
+    def test_dead_owner_lock_reclaimed_promptly(self, monkeypatch, tmp_path):
+        """A fresh lock whose recorded owner is dead is reclaimed at once, not after the
+        long cutoff: a crash mid-install must not wedge loads/training/export for hours."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        lock = tv._swap_lock_path()
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        # 999999 is not a live PID: a fresh dead-owner lock is immediately stale.
+        lock.write_text('{"pid": 999999, "kind": "install"}')
+        assert tv._pid_alive(999999) is False
         assert tv.sidecar_swap_in_progress() is False
         assert tv.try_begin_sidecar_swap() is True
         try:
@@ -2823,6 +2839,23 @@ class TestSidecarSwapReservation:
         finally:
             tv.end_sidecar_swap()
         assert not lock.exists()
+
+    def test_unreadable_pid_lock_uses_age_cutoff(self, monkeypatch, tmp_path):
+        """A lock with no readable owner PID (mid create-before-write, or corrupt) is not
+        reclaimed while fresh -- only after the long cutoff -- so a lock a live owner just
+        created is not stolen before its PID lands."""
+        import os
+        import time
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        lock = tv._swap_lock_path()
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock.write_text("")  # created but metadata not yet written
+        assert tv.sidecar_swap_in_progress() is True
+        old_ts = time.time() - (tv._SWAP_LOCK_STALE_SECS + 60)
+        os.utime(lock, (old_ts, old_ts))
+        assert tv.sidecar_swap_in_progress() is False
 
     def test_repair_refused_while_install_holds_reservation(self, monkeypatch, tmp_path):
         tv = self._repair_setup(monkeypatch, tmp_path)
@@ -2836,6 +2869,46 @@ class TestSidecarSwapReservation:
             assert tv._ensure_venv_t5_latest_exists() is False
         finally:
             tv.end_sidecar_swap()
+
+
+class TestRecoverStrandedSidecar:
+    """A swap whose activation rename AND rollback both fail strands the previous sidecar
+    at .old with no live dir (its pin marker went with it). Reading the pin self-heals it,
+    but never while a swap legitimately holds the reservation."""
+
+    def _setup(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        live = str(tmp_path / "venv_t5_latest")
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", live)
+        # Stranded state: live gone, previous sidecar (with its marker) sits at .old.
+        retired = Path(live + ".old")
+        retired.mkdir(parents = True)
+        (retired / tv._LATEST_PIN_MARKER).write_text(
+            '{"version": "5.99.0", "packages": ["transformers==5.99.0"]}'
+        )
+        return tv, Path(live), retired
+
+    def test_stranded_old_recovered_on_pin_read(self, monkeypatch, tmp_path):
+        tv, live, retired = self._setup(monkeypatch, tmp_path)
+        data = tv._latest_pin_data()
+        assert live.is_dir()
+        assert not retired.exists()
+        assert data is not None and data["version"] == "5.99.0"
+
+    def test_stranded_recovery_skipped_during_swap(self, monkeypatch, tmp_path):
+        tv, live, retired = self._setup(monkeypatch, tmp_path)
+        assert tv.try_begin_sidecar_swap() is True
+        try:
+            # A swap holds the reservation and may be mid-rename; do not race it.
+            assert tv._latest_pin_data() is None
+            assert not live.exists()
+            assert retired.is_dir()
+        finally:
+            tv.end_sidecar_swap()
+        # Once the swap is done, the next pin read recovers the stranded sidecar.
+        assert tv._latest_pin_data() is not None
+        assert live.is_dir()
 
 
 class TestOverlayRepairsIncompleteSidecar:

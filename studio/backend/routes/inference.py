@@ -4912,8 +4912,11 @@ async def install_latest_transformers_route(
             # still holds sidecar modules (and blocks the rename on Windows).
             worker_alive = getattr(backend, "is_worker_alive", None)
             if callable(worker_alive) and worker_alive():
-                backend._shutdown_subprocess()
-                if worker_alive():
+                # _shutdown_subprocess keeps the handle when the worker outlives SIGKILL,
+                # so both its False result and the liveness recheck catch a survivor
+                # rather than the recheck being fooled by a nulled handle.
+                stopped = backend._shutdown_subprocess()
+                if not stopped or worker_alive():
                     raise RuntimeError("Inference worker still alive before the transformers swap")
 
         def _run_install() -> dict:

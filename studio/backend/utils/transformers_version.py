@@ -1910,12 +1910,32 @@ def _is_safe_pin_spec(spec: str) -> bool:
     return name in {n.replace("_", "-") for n in _PIN_ALLOWED_NAMES}
 
 
+def _recover_stranded_latest_sidecar() -> None:
+    """Restore a sidecar stranded at ``.old`` by a swap whose activation rename AND its
+    rollback both failed (e.g. a lingering worker file handle on Windows blocked both).
+
+    That double failure leaves no live dir and the pin marker gone with it, so the
+    sidecar reads as unprovisioned and never self-heals. Recover only when no live dir
+    exists and no swap is in flight: the reservation is held throughout the swap, so the
+    transient live-absent window of a legitimate swap never triggers a restore."""
+    live = Path(_VENV_T5_LATEST_DIR)
+    retired = Path(_VENV_T5_LATEST_DIR + ".old")
+    try:
+        if live.exists() or not retired.is_dir() or sidecar_swap_in_progress():
+            return
+        os.rename(retired, live)
+        logger.info("Recovered .venv_t5_latest from a stranded .old after a failed swap")
+    except OSError:
+        pass
+
+
 def _latest_pin_data() -> dict | None:
     """Parsed pin marker: {"version": str, "packages": [specs...]}, or None.
 
     The marker is JSON; a plain version string (older/simpler writers) is tolerated and
     expanded with the default package set.
     """
+    _recover_stranded_latest_sidecar()
     marker = Path(_VENV_T5_LATEST_DIR) / _LATEST_PIN_MARKER
     try:
         if not marker.is_file():
@@ -1991,6 +2011,26 @@ def _pid_alive(pid) -> bool:
         return psutil.pid_exists(pid)
     except Exception:
         pass
+    if os.name == "nt":
+        # os.kill(pid, 0) is NOT a POSIX signal-0 liveness probe on Windows: signal 0
+        # is CTRL_C_EVENT, so CPython routes it through GenerateConsoleCtrlEvent (a real
+        # Ctrl+C to that console group) rather than a harmless check. Probe via OpenProcess.
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            # PROCESS_QUERY_LIMITED_INFORMATION: minimal right, granted across integrity levels.
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            # ERROR_ACCESS_DENIED means the process exists but we may not query it.
+            return ctypes.get_last_error() == 5
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
@@ -2001,16 +2041,21 @@ def _pid_alive(pid) -> bool:
 
 
 def _swap_lock_is_stale(path: Path) -> bool:
-    """Old AND owner-dead. Age alone is not enough: a slow but live pip install
-    can exceed the cutoff, and breaking its lock would let two processes rename
-    the same staging dirs concurrently."""
+    """Stale when the recorded owner is provably dead: a crashed installer is reclaimed
+    at once, not after the long cutoff, so `/load`, training, export, and repair are not
+    wedged for hours after a crash. A live but slow pip install keeps its lock (its PID
+    is alive), so breaking it and racing two swaps on the same staging dirs stays
+    impossible. Only a lock whose PID can't be read (mid-write or corrupt) falls back to
+    the age cutoff, so the create-before-metadata-write window is never mistaken for dead."""
     try:
-        if (time.time() - path.stat().st_mtime) <= _SWAP_LOCK_STALE_SECS:
-            return False
+        age = time.time() - path.stat().st_mtime
     except OSError:
         return False
     data = _read_swap_lock(path) or {}
-    return not _pid_alive(data.get("pid"))
+    pid = data.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return age > _SWAP_LOCK_STALE_SECS
+    return not _pid_alive(pid)
 
 
 class SidecarSwapInProgress(RuntimeError):

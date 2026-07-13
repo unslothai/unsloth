@@ -253,11 +253,17 @@ class ExportOrchestrator:
         adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
-    def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
-        """Gracefully shut down the export subprocess."""
+    def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        """Gracefully shut down the export subprocess.
+
+        Returns True only once the worker is confirmed dead. If it survives
+        terminate/kill (e.g. wedged in an uninterruptible CUDA syscall that outlives
+        SIGKILL) the live handle is KEPT, not nulled, so is_worker_alive() and the
+        pre-swap liveness guard can still observe the survivor instead of a cleared
+        handle and refuse the destructive sidecar swap."""
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
-            return
+            return True
 
         self._drain_queue()
 
@@ -287,10 +293,20 @@ class ExportOrchestrator:
                 except Exception:
                     pass
 
+        if self._proc is not None and self._proc.is_alive():
+            # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
+            # and the pre-swap guard see a live worker rather than a nulled one.
+            logger.error(
+                "Export subprocess still alive after terminate/kill; "
+                "preserving its handle for the pre-swap liveness check"
+            )
+            return False
+
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
         logger.info("Export subprocess shut down")
+        return True
 
     def _cleanup(self):
         """atexit handler."""
