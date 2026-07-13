@@ -1677,13 +1677,11 @@ def _fetch_page_text(
             readme_body = body
             if _looks_like_html(body):
                 from ._html_to_md import html_to_markdown
-
                 converted = html_to_markdown(body, main_content = True)
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n"
-                    + readme_body,
+                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
                     max_chars,
                 )
 
