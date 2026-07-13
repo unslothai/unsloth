@@ -1091,6 +1091,12 @@ export function SharedComposer({
                 ggufNativeContextLength: resp.native_context_length ?? null,
               }
             : { ggufContextLength: null }),
+          // Compare loads resolve by id (HF repo / local path), never through a
+          // native-path lease, so a token left by a previously loaded native
+          // GGUF is stale here -- isLoadedGguf keys off it, and a stale token
+          // would dress a non-GGUF compare load in GGUF controls. Mirror the
+          // interactive path, which writes it on every load success.
+          activeNativePathToken: null,
           ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
