@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs tests/python/test_cross_platform_parity.py on Windows and macOS.
+# Runs installer parity and autostart opt-out tests on Windows and macOS.
 #
 # Why: that test is the guard that install.sh and install.ps1 stay in
 # sync, but today it only runs on ubuntu-latest (auto-discovered by
@@ -21,6 +21,7 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'tests/test_installer_skip_autostart.py'
       - 'tests/python/test_cross_platform_parity.py'
       - '.github/workflows/cross-platform-parity-ci.yml'
   push:
@@ -28,6 +29,7 @@ on:
     paths:
       - 'install.sh'
       - 'install.ps1'
+      - 'tests/test_installer_skip_autostart.py'
       - 'tests/python/test_cross_platform_parity.py'
       - '.github/workflows/cross-platform-parity-ci.yml'
   workflow_dispatch:
@@ -57,5 +59,11 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
       - run: python -m pip install -U pip pytest
-      - name: Cross-platform parity test
-        run: python -m pytest tests/python/test_cross_platform_parity.py -q
+      - name: Cross-platform parity tests
+        env:
+          UNSLOTH_NO_TORCH: '1'
+        run: >-
+          python -m pytest
+          tests/python/test_cross_platform_parity.py
+          tests/test_installer_skip_autostart.py
+          -q

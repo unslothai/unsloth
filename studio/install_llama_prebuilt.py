@@ -20,6 +20,7 @@ import re
 import shutil
 import site
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -2762,6 +2763,64 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     return _tokens[0]
 
 
+# Display-adapter device class: one NNNN subkey per installed display driver
+# config, each carrying the driver's DriverDesc and PCI MatchingDeviceId.
+_WINDOWS_DISPLAY_CLASS_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+
+
+def windows_intel_gpu_in_registry() -> bool:
+    """Whether the Windows registry lists an Intel display adapter.
+
+    In-process Windows counterpart of the Linux DRM vendor-id check (0x8086),
+    with weaker semantics: the class key lists installed display-driver
+    configs, which can outlive removed hardware, where sysfs lists present
+    devices. A stale Intel entry at worst routes to the upstream Vulkan
+    prebuilt instead of the fork CPU bundle: inference still works (the
+    Vulkan build runs on CPU when no Vulkan device exists), at the cost of
+    fork-only extras such as the DiffusionGemma visual server. detect_host's
+    PowerShell + WMI probe can silently miss a real Intel GPU: a cold
+    powershell.exe start plus the first CIM query routinely exceeds the 15s
+    budget on hosts with slow AV scanning or a degraded WMI repository, and
+    the probe swallows the timeout (#4452, Arc A770 routed to the CPU
+    prebuilt). Reading the display-adapter class key needs no subprocess and
+    answers in microseconds. Matches the PCI vendor id in MatchingDeviceId
+    (ven_8086) or an Intel DriverDesc.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
+            for index in range(winreg.QueryInfoKey(class_key)[0]):
+                try:
+                    name = winreg.EnumKey(class_key, index)
+                    if not name.isdigit():
+                        # "Properties" is ACL-restricted and not an adapter.
+                        continue
+                    with winreg.OpenKey(class_key, name) as adapter_key:
+                        for value_name, needle in (
+                            ("MatchingDeviceId", "ven_8086"),
+                            ("DriverDesc", "intel"),
+                        ):
+                            try:
+                                value, _ = winreg.QueryValueEx(adapter_key, value_name)
+                            except OSError:
+                                continue
+                            if needle in str(value).lower():
+                                return True
+                except OSError:
+                    continue
+    except Exception:
+        # Advisory probe: any unexpected failure must degrade to the CIM
+        # fallback, never crash the installer (mirrors detect_host's own
+        # swallow around the CIM probe).
+        return False
+    return False
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -2974,9 +3033,10 @@ def detect_host() -> HostInfo:
         # since the HIP SDK can be installed without an AMD GPU.
 
     # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM sysfs
-    # vendor id (0x8086); Windows queries the WMI video controller list. Only
-    # probed with no usable NVIDIA and no ROCm (matching the Vulkan branches),
-    # keeping the probe (notably the Windows powershell call) off that path.
+    # vendor id (0x8086); Windows reads the display-adapter registry class,
+    # then falls back to the WMI video controller list. Only probed with no
+    # usable NVIDIA and no ROCm (matching the Vulkan branches), keeping the
+    # probe (notably the Windows powershell call) off that path.
     has_intel_gpu = False
     if not has_usable_nvidia and not has_rocm:
         if is_linux:
@@ -2989,23 +3049,28 @@ def detect_host() -> HostInfo:
                 except OSError:
                     continue
         elif is_windows:
-            _ps = shutil.which("powershell") or shutil.which("pwsh")
-            if _ps:
-                try:
-                    _result = run_capture(
-                        [
-                            _ps,
-                            "-NoProfile",
-                            "-Command",
-                            "Get-CimInstance Win32_VideoController | "
-                            "Select-Object -ExpandProperty Name",
-                        ],
-                        timeout = 15,
-                    )
-                    if _result.returncode == 0 and "intel" in _result.stdout.lower():
-                        has_intel_gpu = True
-                except Exception:
-                    pass
+            # Registry first (in-process; see windows_intel_gpu_in_registry).
+            # The CIM query stays as the fallback when the registry shows no
+            # Intel adapter.
+            has_intel_gpu = windows_intel_gpu_in_registry()
+            if not has_intel_gpu:
+                _ps = shutil.which("powershell") or shutil.which("pwsh")
+                if _ps:
+                    try:
+                        _result = run_capture(
+                            [
+                                _ps,
+                                "-NoProfile",
+                                "-Command",
+                                "Get-CimInstance Win32_VideoController | "
+                                "Select-Object -ExpandProperty Name",
+                            ],
+                            timeout = 15,
+                        )
+                        if _result.returncode == 0 and "intel" in _result.stdout.lower():
+                            has_intel_gpu = True
+                    except Exception:
+                        pass
 
     return HostInfo(
         system = system,
@@ -4321,6 +4386,48 @@ def copy_directory_contents(source_dir: Path, destination: Path) -> None:
             shutil.copy2(item, target)
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    """Return whether ``path`` redirects to another filesystem location."""
+    if os.name == "nt":
+        try:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        except OSError:
+            return True
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    try:
+        return path.is_symlink()
+    except OSError:
+        return True
+
+
+def remove_agent_instruction_files(root: Path) -> int:
+    """Best-effort removal inside a managed tree without following links."""
+    if _is_link_or_junction(root) or not root.is_dir():
+        return 0
+
+    removed = 0
+    for current_dir, dirnames, filenames in os.walk(root, topdown = True, followlinks = False):
+        current_path = Path(current_dir)
+        # followlinks=False still follows Windows junctions.
+        if current_path != root and _is_link_or_junction(current_path):
+            dirnames.clear()
+            continue
+        dirnames[:] = [
+            dirname for dirname in dirnames if not _is_link_or_junction(current_path / dirname)
+        ]
+        for filename in sorted({"AGENTS.md", "CLAUDE.md"}.intersection(filenames)):
+            candidate = current_path / filename
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                log(f"could not remove contributor-only instruction {candidate}: {exc}")
+            else:
+                removed += 1
+    return removed
+
+
 def hydrate_source_tree(
     source_ref: str,
     install_dir: Path,
@@ -4383,6 +4490,9 @@ def hydrate_source_tree(
                 "upstream source archive was missing required repo files: " + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
+        removed = remove_agent_instruction_files(install_dir)
+        if removed:
+            log(f"removed {removed} contributor-only agent instruction file(s) from staged source")
     except PrebuiltFallback:
         raise
     except Exception as exc:
@@ -6760,6 +6870,7 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    instruction_cleanup_root: Path | None = None,
 ) -> None:
     host = detect_host()
     host = _apply_host_overrides(
@@ -6772,8 +6883,15 @@ def install_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
     choice: AssetChoice | None = None
+    cleanup_root = install_dir if instruction_cleanup_root is None else instruction_cleanup_root
     try:
         with install_lock(install_lock_path(install_dir)):
+            if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
+                removed = remove_agent_instruction_files(cleanup_root)
+                if removed:
+                    log(
+                        f"removed {removed} contributor-only agent instruction file(s) from install"
+                    )
             if install_dir.exists():
                 log(
                     f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"
@@ -7104,14 +7222,16 @@ def main() -> int:
     # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
+    install_arg = Path(args.install_dir).expanduser()
     install_prebuilt(
-        install_dir = Path(args.install_dir).expanduser().resolve(),
+        install_dir = install_arg.resolve(),
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,
+        instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS
 
