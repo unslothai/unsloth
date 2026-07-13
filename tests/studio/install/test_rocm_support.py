@@ -1015,7 +1015,12 @@ class TestEnsureRocmTorch:
                 stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                 with patch("subprocess.run", return_value = mock_probe):
                     with patch.object(stack_mod, "_marker_pin_mismatch", return_value = mismatch):
-                        stack_mod._ensure_cpu_torch()
+                        # Pin NO_TORCH False like the sibling tests: a suite run with
+                        # UNSLOTH_NO_TORCH=1 in the env sets stack_mod.NO_TORCH True at
+                        # import, and _ensure_cpu_torch returns early on it, which would
+                        # make the reinstall assertions below fail spuriously.
+                        with patch.object(stack_mod, "NO_TORCH", False):
+                            stack_mod._ensure_cpu_torch()
             return mock_pip.called
 
         assert _run(True) is True  # marker records a different /cpu index -> reinstall
@@ -1503,26 +1508,34 @@ class TestEnsureRocmTorchMarker:
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current/"}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.dict(stack_mod.os.environ, env, clear = False):
-                    stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                    stack_mod._ensure_verbatim_torch_index()
+                # torch imports (a healthy flavor) so the health probe passes and the
+                # matching marker keeps the fast path; family is irrelevant here.
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                    with patch.dict(stack_mod.os.environ, env, clear = False):
+                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                        stack_mod._ensure_verbatim_torch_index()
         mock_pip.assert_not_called()
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
     def test_verbatim_matching_marker_broken_torch_reinstalls(self, mock_pip):
-        """Marker matches the custom pin but torch is unimportable (snapshot None): a
-        matching marker cannot vouch for a torch that does not import, so the verbatim
-        pin is reapplied rather than snapshotting the broken state (which the final pass
-        would then see as 'no drift' and skip). Item 4 broken-torch case."""
+        """Marker matches the custom pin but torch does not import: the metadata snapshot
+        still lists torch (a REMOVED dist reads back as 'torch==absent', a NON-None
+        tuple, and a broken import reads its stale version), so a snapshot-only check
+        would read 'no drift' and skip. The import probe (_probe_torch_flavor -> None) is
+        the health signal, so the verbatim pin is reapplied rather than trusting a broken
+        state the final pass would then see as 'no drift'. Item 4: the snapshot is
+        deliberately NON-None here (the exact case the old `_snap is None` check missed)."""
         self._seed("https://mirror.local/current")
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
+        absent = ("torch==absent", "torchvision==absent", "torchaudio==absent")
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.object(stack_mod, "_installed_trio_snapshot", return_value = None):
-                    with patch.dict(stack_mod.os.environ, env, clear = False):
-                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                        stack_mod._ensure_verbatim_torch_index()
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = None):
+                    with patch.object(stack_mod, "_installed_trio_snapshot", return_value = absent):
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._ensure_verbatim_torch_index()
         assert mock_pip.call_count == 1
         assert "https://mirror.local/current" in str(mock_pip.call_args_list[0])
 
@@ -1639,15 +1652,19 @@ class TestEnsureRocmTorchMarker:
         ]
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.object(stack_mod, "_installed_trio_snapshot", side_effect = snapshots):
-                    with patch.dict(stack_mod.os.environ, env, clear = False):
-                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                        stack_mod._ensure_verbatim_torch_index()  # pass 1: applies pin
-                        assert mock_pip.call_count == 1
-                        stack_mod._ensure_verbatim_torch_index()  # final pass: clobbered
-                        assert mock_pip.call_count == 2
-                        stack_mod._ensure_verbatim_torch_index()  # stable: no loop
-                        assert mock_pip.call_count == 2
+                # torch imports throughout (healthy probe), so the DRIFT signal is the
+                # snapshot, not the import health check -- this test exercises the
+                # clobber-via-version-drift path, not the broken-torch path.
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                    with patch.object(stack_mod, "_installed_trio_snapshot", side_effect = snapshots):
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._ensure_verbatim_torch_index()  # pass 1: applies pin
+                            assert mock_pip.call_count == 1
+                            stack_mod._ensure_verbatim_torch_index()  # final pass: clobbered
+                            assert mock_pip.call_count == 2
+                            stack_mod._ensure_verbatim_torch_index()  # stable: no loop
+                            assert mock_pip.call_count == 2
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install")
@@ -1659,12 +1676,15 @@ class TestEnsureRocmTorchMarker:
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.object(
-                    stack_mod, "_installed_trio_snapshot", return_value = ("torch==2.10.0",)
-                ):
-                    with patch.dict(stack_mod.os.environ, env, clear = False):
-                        stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                        stack_mod._ensure_verbatim_torch_index()
+                # torch imports (healthy probe): a NEW run with matching marker snapshots
+                # the trio and stops -- the health check never forces a reinstall.
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")):
+                    with patch.object(
+                        stack_mod, "_installed_trio_snapshot", return_value = ("torch==2.10.0",)
+                    ):
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._ensure_verbatim_torch_index()
         mock_pip.assert_not_called()
 
     # --- _torch_flavor_matches_pin (shared by baseline + probe) ---------------
@@ -1714,6 +1734,23 @@ class TestEnsureRocmTorchMarker:
 
     def test_probe_no_pin_keeps_fast_path(self):
         assert self._needs_apply("", None) is False
+
+    def test_probe_no_torch_keeps_fast_path(self):
+        # UNSLOTH_NO_TORCH: torch is absent by design, so a pin never needs applying,
+        # regardless of env vars, marker state, or a failed flavor probe. Without this
+        # guard a torch-index env var + an absent marker would force the pass on EVERY
+        # update (the failed-probe branch), with no marker ever written to stop it, since
+        # the dependency pass also honors NO_TORCH and installs no torch (round-7 item 3).
+        with patch.object(stack_mod, "NO_TORCH", True):
+            assert self._needs_apply("https://mirror.local/cu128", None) is False
+            assert (
+                self._needs_apply(
+                    "https://mirror.local/cu128",
+                    ("cpu", "", "2.10.0"),
+                    marker = "https://mirror.local/cu126",
+                )
+                is False
+            )
 
     def test_probe_absent_marker_forces_pass(self):
         # No marker seeded -> mismatch is None -> apply (the round-2 behavior).
@@ -1855,19 +1892,22 @@ class TestEnsureRocmTorchMarker:
                             stack_mod._record_torch_index_pin_baseline()
         assert "https://mirror.local/cpu" in self._marker_path.read_text()
 
-    # --- _ensure_pinned_known_family_torch (Windows/macOS-ARM cu*/cpu repair) ----
-    def _ensure_known(self, url, flavor):
+    # --- _ensure_pinned_known_family_torch (Windows/macOS-ARM known-family repair) --
+    def _ensure_known(self, url, flavor, is_windows = False):
         """Run _ensure_pinned_known_family_torch with a pin + mocked flavor probe,
-        returning the pip_install mock so callers can assert on the reinstall."""
+        returning the pip_install mock so callers can assert on the reinstall. is_windows
+        pins stack_mod.IS_WINDOWS so the ROCm-on-Windows branch is exercised
+        deterministically (the runner is Linux, where IS_WINDOWS is False)."""
         env = {"UNSLOTH_TORCH_INDEX_URL": url}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MAC_INTEL", False):
-                with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
-                    with patch.object(stack_mod, "pip_install") as mock_pip:
-                        with patch.dict(stack_mod.os.environ, env, clear = False):
-                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
-                            stack_mod._ensure_pinned_known_family_torch()
-                        return mock_pip
+                with patch.object(stack_mod, "IS_WINDOWS", is_windows):
+                    with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
+                        with patch.object(stack_mod, "pip_install") as mock_pip:
+                            with patch.dict(stack_mod.os.environ, env, clear = False):
+                                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                                stack_mod._ensure_pinned_known_family_torch()
+                            return mock_pip
 
     def test_pinned_known_family_repairs_clobbered_cuda(self):
         """A cu128 pin whose main-venv torch was clobbered to a CPU wheel (Windows: a
@@ -1895,12 +1935,61 @@ class TestEnsureRocmTorchMarker:
         mock_pip = self._ensure_known("https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128"))
         assert mock_pip.call_count == 1
 
-    def test_pinned_known_family_skips_rocm_and_gfx(self):
-        """ROCm/gfx per-arch pins are owned by setup.ps1's ROCm block, so this helper
-        must not reinstall them with the CPU/CUDA bounded spec even on a drift."""
+    def test_pinned_known_family_skips_rocm_and_gfx_off_windows(self):
+        """OFF Windows (macOS ARM, where this helper otherwise runs), ROCm/gfx pins are
+        NOT handled here: Apple Silicon has no ROCm, so a rocm/gfx pin is left to the
+        verbatim/other paths and never reinstalled with a CUDA/CPU spec."""
         for url in ("https://mirror.local/rocm7.2", "https://repo.amd.com/rocm/whl/gfx1151"):
-            mock_pip = self._ensure_known(url, ("cpu", "", "2.10.0"))
+            mock_pip = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = False)
             mock_pip.assert_not_called()
+
+    def test_pinned_known_family_windows_rocm_repairs_from_pin(self):
+        """On Windows, an explicit rocm/gfx pin whose torch was clobbered to CPU is
+        reinstalled FROM THE PINNED url (per-arch index, a rocm<d> mirror, or a private
+        mirror to a gfx family), and the marker is rewritten. Round-7 item 2:
+        _ensure_rocm_torch's Windows path would instead reinstall from the hipinfo-
+        detected arch (wrong source for a mismatched/private pin) and skip a headless
+        box; enforcing the pin here fixes both."""
+        for url in (
+            "https://repo.amd.com/rocm/whl/gfx1151",  # AMD per-arch index
+            "https://mirror.local/rocm7.2",  # rocm<d> mirror
+            "https://private.example/whl/gfx1151",  # private mirror to a gfx family
+        ):
+            mock_pip = self._ensure_known(url, ("cpu", "", "2.10.0"), is_windows = True)
+            assert mock_pip.call_count == 1, url
+            call = str(mock_pip.call_args)
+            assert url in call, f"must reinstall from the pinned url, got {call}"
+            assert url in self._marker_path.read_text()
+            self._marker_path.unlink(missing_ok = True)
+
+    def test_pinned_known_family_windows_rocm_gfx_uses_floor_spec(self):
+        """A Windows 2.11-line gfx pin (gfx1151) reinstalls with the per-arch floor
+        setup.ps1 uses (torch>=2.11), while a rocm<d> mirror stays bare -- matching the
+        PowerShell side and _ensure_rocm_torch's Windows spec selection."""
+        gfx = self._ensure_known(
+            "https://repo.amd.com/rocm/whl/gfx1151", ("cpu", "", "2.10.0"), is_windows = True
+        )
+        gfx_args = [str(a) for a in gfx.call_args.args]
+        for spec in stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]:
+            assert spec in gfx_args, f"gfx1151 must use the rocm7.2 floor spec {spec}"
+        self._marker_path.unlink(missing_ok = True)
+        rocm = self._ensure_known(
+            "https://mirror.local/rocm7.2", ("cpu", "", "2.10.0"), is_windows = True
+        )
+        rocm_args = [str(a) for a in rocm.call_args.args]
+        assert {"torch", "torchvision", "torchaudio"}.issubset(rocm_args), (
+            "a rocm<d> mirror pin stays bare (no published floor)"
+        )
+
+    def test_pinned_known_family_windows_rocm_matching_no_reinstall(self):
+        """A Windows gfx pin whose torch already matches (an AMD per-arch +rocm7.13.0
+        wheel) is left alone -- loop-safe."""
+        mock_pip = self._ensure_known(
+            "https://repo.amd.com/rocm/whl/gfx1151",
+            ("hip", "", "2.11.0+rocm7.13.0"),
+            is_windows = True,
+        )
+        mock_pip.assert_not_called()
 
     def test_pinned_known_family_skips_unknown_family(self):
         """An unknown-family pin is owned by _ensure_verbatim_torch_index, not here."""

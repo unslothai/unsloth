@@ -788,26 +788,41 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "the step-13 final repair must have a Windows/macOS-ARM branch so a custom "
             "pin is repaired/applied there, not only on Linux"
         )
-        # A KNOWN-family cu*/cpu pin also needs a repair on Windows: setup.ps1 applies it
-        # to the main venv before install_python_stack.py, a later dependency step can
-        # clobber it, and _ensure_{cuda,cpu}_torch self-skip on Windows -- so the branch
-        # must also call _ensure_pinned_known_family_torch (the known-family analog of
-        # the verbatim unknown-family repair).
-        win_branch = text[text.find("elif IS_WINDOWS or IS_MAC_ARM:") :][:1800]
+        # A KNOWN-family pin also needs a repair on Windows: setup.ps1 applies it to the
+        # main venv before install_python_stack.py, a later dependency step can clobber
+        # it, and _ensure_{cuda,rocm,cpu}_torch self-skip on Windows -- so the branch must
+        # call _ensure_pinned_known_family_torch (the known-family analog of the verbatim
+        # unknown-family repair).
+        _win_start = text.find("elif IS_WINDOWS or IS_MAC_ARM:")
+        win_branch = text[_win_start : text.find("# 14.", _win_start)]
         assert "_ensure_pinned_known_family_torch()" in win_branch, (
-            "the Windows/macOS-ARM branch must repair a clobbered known-family cu*/cpu pin "
+            "the Windows/macOS-ARM branch must repair a clobbered known-family pin "
             "via _ensure_pinned_known_family_torch (the family helpers no-op on Windows)"
         )
         # An explicit rocm/gfx pin's wheel (installed by setup.ps1 from AMD's per-arch
-        # index) can be clobbered the same way; _ensure_rocm_torch has a Windows path
-        # and no-ops when torch already links HIP (loop-safe), so the branch must run it
-        # gated on IS_WINDOWS + an explicit rocm/gfx pin (item, round 6).
-        assert (
-            "if IS_WINDOWS and _explicit_rocm_torch_index_url() is not None:" in win_branch
-            and "_ensure_rocm_torch()" in win_branch
-        ), (
-            "the Windows branch must repair a clobbered rocm/gfx pin via _ensure_rocm_torch "
-            "gated on IS_WINDOWS and an explicit rocm/gfx pin"
+        # index) can be clobbered the same way. That repair is OWNED by
+        # _ensure_pinned_known_family_torch, which reinstalls from the PINNED url --
+        # NOT by _ensure_rocm_torch's Windows path, which reinstalls from the arch
+        # auto-detected via hipinfo (wrong source for a mismatched/private pin) and
+        # returns early on a headless box (round-7 item 2). So the Windows final branch
+        # must NOT auto-detect the ROCm index via _ensure_rocm_torch.
+        assert "_ensure_rocm_torch()" not in win_branch, (
+            "the Windows/macOS-ARM final branch must not auto-detect the ROCm index via "
+            "_ensure_rocm_torch; an explicit rocm/gfx pin is repaired from the pinned URL "
+            "by _ensure_pinned_known_family_torch"
+        )
+        # _ensure_pinned_known_family_torch must own Windows rocm/gfx pins: gate ROCm on
+        # Windows via the pin leaf and reinstall from the explicit pin (never an
+        # auto-detected index).
+        _pinned_start = text.find("def _ensure_pinned_known_family_torch(")
+        pinned_fn = text[_pinned_start : text.find("\ndef ", _pinned_start + 1)]
+        assert "_is_win_rocm = IS_WINDOWS and _is_pip_rocm_family_leaf(leaf)" in pinned_fn, (
+            "_ensure_pinned_known_family_torch must handle a Windows rocm/gfx pin from the "
+            "explicit pin URL (round-7 item 2), gated on IS_WINDOWS + a pip rocm leaf"
+        )
+        assert '"--index-url",' in pinned_fn and "pin," in pinned_fn, (
+            "_ensure_pinned_known_family_torch must reinstall the trio from the explicit "
+            "pin URL (--index-url pin), not an auto-detected arch index"
         )
 
     def test_setup_ps1_forces_reinstall_when_marker_absent(self):

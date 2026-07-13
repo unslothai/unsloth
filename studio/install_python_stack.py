@@ -1567,24 +1567,30 @@ def _ensure_verbatim_torch_index() -> None:
         return
     _mismatch = _marker_pin_mismatch(pin)
     if _mismatch is False:
-        # Marker already records this exact pin. On the first pass this run,
-        # remember what the applied trio looks like and stop (no per-update
-        # loop). On a LATER pass (the final safety repair), a trio that drifted
-        # from that snapshot means an intermediate dependency install clobbered
-        # the pinned torch -- fall through and reapply.
-        _snap = _installed_trio_snapshot()
-        if _snap is None:
-            # torch is missing or unimportable: a matching marker cannot vouch for
-            # a torch that does not import, so reapply the pin rather than trusting
-            # (or snapshotting) a broken state that the final pass would then see as
-            # "no drift" and skip. After the reinstall the trio imports again, so
-            # the next pass/run snapshots a healthy trio (no loop).
+        # Marker already records this exact pin. First confirm torch actually
+        # IMPORTS: _installed_trio_snapshot reads dist-info metadata, which reports a
+        # removed torch as "torch==absent" (a non-None tuple, not None) and a torch
+        # whose import is broken as its stale on-disk version, so the metadata
+        # snapshot alone cannot tell a healthy trio from a missing/broken one -- the
+        # final pass would read that snapshot as "no drift" and skip the repair. Probe
+        # the import directly instead; a matching marker cannot vouch for a torch that
+        # does not import, so reapply the pin. After the reinstall torch imports again
+        # and the probe succeeds, so the next pass/run stops reapplying (no loop).
+        if _probe_torch_flavor() is None:
             _why = "is not importable and must be reapplied from the recorded index"
-        elif _VERBATIM_TRIO_SNAPSHOT is None or _snap == _VERBATIM_TRIO_SNAPSHOT:
-            if _VERBATIM_TRIO_SNAPSHOT is None:
-                _VERBATIM_TRIO_SNAPSHOT = _snap
-            return
         else:
+            # torch imports. On the first pass this run, remember what the applied
+            # trio looks like and stop (no per-update loop). On a LATER pass (the
+            # final safety repair), a trio that drifted from that snapshot means an
+            # intermediate dependency install clobbered the pinned torch -- fall
+            # through and reapply. A transient snapshot probe failure (_snap None)
+            # leaves drift detection off for the rest of the run, but torch is known
+            # to import, so no false reinstall.
+            _snap = _installed_trio_snapshot()
+            if _VERBATIM_TRIO_SNAPSHOT is None or _snap == _VERBATIM_TRIO_SNAPSHOT:
+                if _VERBATIM_TRIO_SNAPSHOT is None:
+                    _VERBATIM_TRIO_SNAPSHOT = _snap
+                return
             _why = "was clobbered by a later dependency install"
     else:
         _why = (
@@ -1736,18 +1742,25 @@ def _record_torch_index_pin_baseline() -> None:
 
 
 def _ensure_pinned_known_family_torch() -> None:
-    """Reinstall a KNOWN-family (cu*/cpu) EXPLICIT pin's trio when the installed torch
-    has drifted from it, on platforms where the GPU-aware _ensure_{cuda,cpu}_torch
+    """Reinstall a KNOWN-family EXPLICIT pin's trio FROM THE PINNED URL when the installed
+    torch has drifted from it, on platforms where the GPU-aware _ensure_{cuda,rocm,cpu}_torch
     helpers no-op: Windows (the main-venv torch lifecycle is owned by setup.ps1, so the
     Linux helpers return early) and macOS ARM (step 2b is skipped there). setup.ps1 and
     step 2b apply the pin BEFORE the later extras/studio/data-designer installs, which
     can pull torch from PyPI; the matching marker would then mask that clobber. Because
     the pin is EXPLICIT there is no host to probe -- the pinned family is authoritative
     -- so this simply enforces it (unlike the Linux helpers, which gate on GPU
-    detection). Unknown-family pins are owned by _ensure_verbatim_torch_index. ROCm/gfx
-    pins keep their per-arch specs owned by setup.ps1's ROCm block and are NOT reinstalled
-    here with the CPU/CUDA bounded spec. Intel mac / no-torch: nothing to do; a failed
-    probe or a still-matching flavor is left alone (no forced reinstall, no loop).
+    detection). Known families handled: cu*/cpu everywhere this runs, plus a Windows
+    ROCm pin (repo.amd.com per-arch gfx*, or a rocm<d> mirror). The Windows ROCm case is
+    enforced HERE, from the pinned url, rather than via _ensure_rocm_torch's Windows path
+    -- that path reinstalls from the arch AUTO-DETECTED via hipinfo (so a pin to a
+    different gfx family or a private mirror would be restored from the WRONG source) and
+    returns early on a headless box (so an authoritative cross-install pin would be
+    skipped). It uses the same per-arch floor setup.ps1 pins (2.11-line gfx leaves) or a
+    bare trio (older arches / rocm<d>). Unknown-family pins are owned by
+    _ensure_verbatim_torch_index; ROCm makes no sense on macOS ARM, so it stays Windows-
+    only. Intel mac / no-torch: nothing to do; a failed probe or a still-matching flavor
+    is left alone (no forced reinstall, no loop).
     """
     if NO_TORCH or IS_MAC_INTEL:
         return
@@ -1757,15 +1770,30 @@ def _ensure_pinned_known_family_torch() -> None:
     if _explicit_unknown_family_torch_index_url() is not None:
         return  # unknown-family pin -> _ensure_verbatim_torch_index owns it
     leaf = _torch_index_leaf(pin)
-    if not (re.fullmatch(r"cu[0-9]+", leaf) or leaf == "cpu"):
-        return  # rocm/gfx per-arch specs are owned by setup.ps1 on Windows
+    _is_cuda_cpu = bool(re.fullmatch(r"cu[0-9]+", leaf)) or leaf == "cpu"
+    # A Windows ROCm pin (per-arch gfx* index or a rocm<d> mirror) is enforced here too,
+    # from the PINNED url. macOS ARM has no ROCm, so it stays cu*/cpu-only there.
+    _is_win_rocm = IS_WINDOWS and _is_pip_rocm_family_leaf(leaf)
+    if not (_is_cuda_cpu or _is_win_rocm):
+        return  # unknown family (verbatim owns it); non-Windows rocm not handled here
     flavor = _probe_torch_flavor()
     if flavor is None:
         return
     if _torch_flavor_matches_pin(pin, flavor) is not False:
         return  # matches (True) or unknown (None) -> nothing to enforce
+    if _is_win_rocm:
+        # The same per-arch floor setup.ps1 pins for the 2.11-line gfx indexes; other
+        # arches / rocm<d> stay bare (no published floor), matching the PowerShell side
+        # and _ensure_rocm_torch's Windows spec selection.
+        _spec = (
+            _ROCM_TORCH_PKG_SPECS["rocm7.2"]
+            if leaf in _ROCM_GFX_TORCH211_LEAVES
+            else ("torch", "torchvision", "torchaudio")
+        )
+    else:
+        _spec = _CUDA_TORCH_PKG_SPEC
     print(f"   torch drifted from the pinned {leaf} index -- reinstalling from it")
-    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+    _torch_pkg, _vision_pkg, _audio_pkg = _spec
     pip_install(
         "torch (pinned family repair)",
         "--force-reinstall",
@@ -3516,18 +3544,14 @@ def install_python_stack() -> int:
             # here (Windows main-venv torch is owned by setup.ps1; macOS has no CUDA),
             # but an explicit pin applied earlier (setup.ps1 / step 2b) can still be
             # clobbered by a later dependency install while the matching marker masks
-            # it. Enforce a known-family cu*/cpu pin (no host probing needed -- the pin
-            # is authoritative) and run the verbatim owner for unknown-family pins.
+            # it. Enforce a known-family pin FROM THE PINNED url (no host probing --
+            # the pin is authoritative): cu*/cpu everywhere, plus a Windows rocm/gfx
+            # pin, both handled by _ensure_pinned_known_family_torch so the reinstall
+            # source is always the pin (never an auto-detected AMD index, which would
+            # restore a mismatched/private pin from the wrong source or skip a headless
+            # cross-install). Run the verbatim owner for unknown-family pins.
             _progress(_torch_step_label("final"))
             _ensure_pinned_known_family_torch()
-            # On Windows, an explicit rocm/gfx pin's wheel (installed by setup.ps1
-            # from AMD's per-arch index) can be clobbered the same way. _ensure_rocm_torch
-            # has a Windows path (repo.amd.com per-arch) that no-ops when torch already
-            # links HIP, so it only reinstalls a genuinely clobbered ROCm venv (loop-safe).
-            # Gate on an explicit rocm/gfx pin so non-ROCm Windows installs are untouched;
-            # macOS has no ROCm so this stays IS_WINDOWS-only.
-            if IS_WINDOWS and _explicit_rocm_torch_index_url() is not None:
-                _ensure_rocm_torch()
             _ensure_verbatim_torch_index()
             _record_torch_index_pin_baseline()
 
@@ -3559,7 +3583,16 @@ def _torch_pin_needs_apply() -> bool:
     idempotent, and once torch imports again the probe succeeds and the forcing
     stops (self-resolving, not a permanent loop). An unknown-family pin with a
     WORKING torch has no flavor tag to validate (the marker is the only signal), so
-    it keeps the fast path. Pure query (no writes)."""
+    it keeps the fast path. NO_TORCH short-circuits before any probe: torch is absent
+    by design, so there is nothing to (re)apply. Pure query (no writes)."""
+    if NO_TORCH:
+        # UNSLOTH_NO_TORCH: torch is intentionally absent, so there is nothing to
+        # (re)apply and the dependency pass -- which also honors NO_TORCH -- installs
+        # no torch and writes no marker. Without this guard a torch-index env var plus
+        # an absent marker would make the failed-probe branch below force the pass on
+        # EVERY update with no way to stop (the pass never writes a marker to satisfy
+        # the compare). The pin only matters once torch is actually installed.
+        return False
     pin = _explicit_torch_index_url()
     if pin is None:
         return False
