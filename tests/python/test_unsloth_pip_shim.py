@@ -642,3 +642,64 @@ def test_filter_write_failure_clean_file_passes_through(shim, tmp_path, monkeypa
     monkeypatch.setattr(shim.tempfile, "mkstemp", denied)
     path, recorded, dropped = shim._filter_requirements_file(str(req))
     assert path == str(req) and recorded is None and dropped == []
+
+
+# --------------------------------------------------------------------------
+# Item 3567875029 -- uv's --exact performs an exact SYNC (removes packages
+# outside the kept target's closure), so it is stripped like the other
+# resolver-wide destructive switches.
+# --------------------------------------------------------------------------
+def test_uv_exact_flag_stripped(shim):
+    execd, _ = _run(shim, "uv", ["--exact", "peft"])
+    assert execd == ["peft"], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3567875023 -- a local project directory naming a protected package
+# (pip install ./transformers, pip install -e ./unsloth) is filtered like the
+# wheel/sdist/VCS forms: a same-version dev build slips past the constraints
+# file, so the name must come from the project metadata.
+# --------------------------------------------------------------------------
+def _make_local_project(tmp_path, dirname, project_name):
+    proj = tmp_path / dirname
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        f'[project]\nname = "{project_name}"\nversion = "1.0"\n'
+    )
+    return str(proj)
+
+
+def test_local_dir_protected_by_metadata_dropped(shim, tmp_path):
+    # Directory name is innocuous; pyproject names a protected package.
+    path = _make_local_project(tmp_path, "my-checkout", "transformers")
+    execd, _ = _run(shim, "pip", [path, "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_local_dir_protected_editable_dropped(shim, tmp_path):
+    path = _make_local_project(tmp_path, "unsloth", "unsloth")
+    execd, _ = _run(shim, "pip", ["-e", path, "peft"])
+    assert execd == ["peft"], execd
+    assert "-e" not in execd
+
+
+def test_local_dir_basename_fallback_setup_py(shim, tmp_path):
+    # No parseable name in metadata: setup.py + protected basename still drops.
+    proj = tmp_path / "torch"
+    proj.mkdir()
+    (proj / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    execd, _ = _run(shim, "pip", [str(proj), "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_local_dir_unprotected_kept(shim, tmp_path):
+    path = _make_local_project(tmp_path, "my-torch-utils", "my-torch-utils")
+    execd, _ = _run(shim, "pip", [path])
+    assert execd == [path], execd
+
+
+def test_local_dir_without_metadata_passes_through(shim, tmp_path):
+    plain = tmp_path / "datadir"
+    plain.mkdir()
+    execd, _ = _run(shim, "pip", [str(plain)])
+    assert execd == [str(plain)], execd

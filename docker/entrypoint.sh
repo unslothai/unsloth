@@ -231,5 +231,28 @@ if major < 8:
     print("      Unsloth will fall back to fp16. Training works but is slightly slower.")
 PY
 
+# --- arm64 note: baked llama.cpp is a CUDA 13 build -------------------------
+# Upstream publishes no CUDA 12 arm64 llama.cpp bundle (only arm64-cpu and
+# arm64-cuda13), so the arm64 image bakes the cu13 build while the torch stack
+# (cu128) runs fine on a 570-series driver. A CUDA 13 cubin cannot load on a
+# 570-579 driver, so on GH200/GB200-class hosts below 580 GGUF export and
+# Studio chat would fail even though training works -- say so up front instead
+# of letting llama-server fail mysteriously later.
+if [ "$(uname -m)" = "aarch64" ]; then
+    _drv="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
+    _drv_major="${_drv%%.*}"
+    case "$_drv_major" in
+        *[!0-9]* | "") ;;  # unreadable driver version -> no claim to make
+        *)
+            if [ "$_drv_major" -lt 580 ]; then
+                echo "WARNING: this arm64 image bakes a CUDA 13 llama.cpp (upstream ships no CUDA 12 arm64 build)." >&2
+                echo "         Host driver $_drv is < 580, which cannot load CUDA 13 binaries:" >&2
+                echo "         training (torch cu128) works, but GGUF export / Studio chat will fail" >&2
+                echo "         until the host driver is upgraded to >= 580." >&2
+            fi
+            ;;
+    esac
+fi
+
 sync_notebooks
 exec "$@"

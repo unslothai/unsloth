@@ -21,9 +21,25 @@ subprocess, so the shim applies. Safe no-op outside IPython.
 
 import re
 
-# Only the explicit `!python -m pip|uv ...` shell form (the `!` makes it a shell
-# escape). Matched against the line with its trailing newline stripped.
-_PY_M_PIP = re.compile(r"^(\s*)!\s*(?:python[0-9.]*|py)\s+-m\s+(pip|uv)\b(.*)$")
+# Only the explicit `!<python> -m pip|uv ...` shell form (the `!` makes it a
+# shell escape). Matched against the line with its trailing newline stripped.
+# Input transformers see the RAW cell text -- IPython expands `{sys.executable}`
+# later, inside the system() execution path -- so the braced form notebooks use
+# to target the running kernel (`!{sys.executable} -m pip install ...`) and
+# absolute interpreter paths (`!/opt/unsloth-venv/bin/python -m pip ...`),
+# quoted or bare, must be matched here too or module-pip bypasses the PATH shim.
+_PY_M_PIP = re.compile(
+    r"""^(\s*)!\s*
+    (?:
+        (?:python[0-9.]*|py)                        # literal python / py
+      | ["']?\{\s*sys\.executable\s*\}["']?         # {sys.executable}, opt. quoted
+      | "(?:[^"]*[/\\])python[0-9.]*(?:\.exe)?"     # quoted interpreter path
+      | '(?:[^']*[/\\])python[0-9.]*(?:\.exe)?'
+      | \S*[/\\]python[0-9.]*(?:\.exe)?             # bare interpreter path
+    )
+    \s+-m\s+(pip|uv)\b(.*)$""",
+    re.VERBOSE,
+)
 
 
 def _rewrite_python_dash_m(lines):

@@ -119,7 +119,11 @@ _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 # guise of installing an unprotected package. The kept target still installs; its
 # already-satisfied protected deps are left untouched. Per-package selectors
 # (--reinstall-package / -P) are handled through _UPGRADE_PKG_FLAGS instead.
-_REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall"}
+# uv's --exact is destructive the other way around: it performs an exact SYNC,
+# REMOVING every installed package outside the kept target's closure (vLLM,
+# bitsandbytes, the NVIDIA libs, ...), so `uv pip install --exact peft` would
+# strip the baked stack after the argument filter kept it off the command line.
+_REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall", "--exact"}
 # Value-flags whose flag+value pair is dropped outright in shim mode.
 # `--upgrade-strategy eager` makes pip upgrade EVERY dependency of a kept target
 # regardless of whether the installed version already satisfies it, which would
@@ -218,7 +222,25 @@ def _canon(token):
             _seg = _seg.strip().lower().replace("_", "-")
             if _seg:
                 return _seg
-        return None  # plain url / local path -> let it pass through
+        # A local project DIRECTORY (`pip install ./transformers`,
+        # `pip install -e ./unsloth`) installs the project it contains, and a
+        # same-version dev build slips past even the protected constraints file
+        # (constraints only reject a version MISMATCH), silently swapping the
+        # baked, tested wheel for a local build. Resolve the project name from
+        # its metadata so _KEEP applies to this form like every other artifact
+        # form (wheel/sdist/VCS/egg). Non-directories and metadata-less dirs
+        # pass through as before.
+        _local = _local_project_name(token)
+        if _local:
+            return _local
+        return None  # plain url / metadata-less local path -> let it pass through
+    # A local project dir referenced without ./ or / (`pip install subdir/proj`)
+    # is still a path target to pip when it exists on disk; classify it the same
+    # way before the spec parse below mangles the separator.
+    if "/" in token or os.sep in token:
+        _local = _local_project_name(token)
+        if _local:
+            return _local
     # A bare wheel filename (no ./ or / prefix and no scheme) is still a valid
     # pip target from the CWD: `pip install torch-2.11.0-cp312-...-linux.whl`.
     # It reaches here because it starts with neither `.`/`/` nor a scheme, so
@@ -237,6 +259,49 @@ def _canon(token):
     # strip extras and any version/marker tail
     name = re.split(r"[<>=!~\[\s;@]", token, 1)[0].strip()
     return name.lower().replace("_", "-") or None
+
+
+def _local_project_name(token):
+    """Distribution name of a local project directory install target, else None.
+
+    Reads the name pip/uv would build: pyproject.toml [project].name, falling
+    back to setup.cfg [metadata] name, falling back to the directory basename
+    when a setup.py exists (a bare basename guess is used ONLY when the dir is
+    an installable project at all). A directory without any project metadata is
+    not a pip target and returns None so ordinary paths pass through untouched.
+    Names are exact after normalization: a user's own `my-torch-utils` dir never
+    matches the protected `torch`.
+    """
+    path = token.split("#", 1)[0]
+    if not os.path.isdir(path):
+        return None
+    _pyproject = os.path.join(path, "pyproject.toml")
+    if os.path.isfile(_pyproject):
+        try:
+            import tomllib
+
+            with open(_pyproject, "rb") as f:
+                _name = (tomllib.load(f).get("project") or {}).get("name")
+            if _name:
+                return _name.strip().lower().replace("_", "-") or None
+        except Exception:
+            pass  # unparseable metadata -> fall through to the other signals
+    _setup_cfg = os.path.join(path, "setup.cfg")
+    if os.path.isfile(_setup_cfg):
+        try:
+            import configparser
+
+            _cp = configparser.ConfigParser()
+            _cp.read(_setup_cfg)
+            _name = _cp.get("metadata", "name", fallback = None)
+            if _name:
+                return _name.strip().lower().replace("_", "-") or None
+        except Exception:
+            pass
+    if os.path.isfile(os.path.join(path, "setup.py")) or os.path.isfile(_pyproject):
+        _base = os.path.basename(os.path.normpath(path))
+        return _base.strip().lower().replace("_", "-") or None
+    return None
 
 
 def _version_pin(token):
