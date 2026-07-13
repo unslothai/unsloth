@@ -203,6 +203,23 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+# AGENTS.md files are contributor/agent instructions, not Studio runtime data.
+# Do not traverse a linked root because --with-llama-cpp-dir points at a
+# user-owned checkout.
+function Remove-AgentInstructionFiles {
+    param([string[]]$Roots)
+
+    foreach ($root in $Roots) {
+        if (-not $root) { continue }
+        $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+        if (-not $item -or -not $item.PSIsContainer) { continue }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        Get-ChildItem -LiteralPath $root -Filter "AGENTS.md" -File -Recurse -Force `
+            -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -2314,6 +2331,8 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
+Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)
+
 # ==========================================================================
 #  PHASE 3: Python environment + dependencies
 # ==========================================================================
@@ -4022,6 +4041,12 @@ if ($LocalLlamaCppLinked) {
             $script:LlamaCppDegraded = $true
         }
     }
+}
+
+# A managed source build clones the complete llama.cpp repository. Prune its
+# contributor-only instructions, but never mutate a user-provided linked tree.
+if (-not $LocalLlamaCppLinked) {
+    Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
 }
 
 # ─────────────────────────────────────────────

@@ -4385,6 +4385,21 @@ def copy_directory_contents(source_dir: Path, destination: Path) -> None:
             shutil.copy2(item, target)
 
 
+def remove_agent_instruction_files(root: Path) -> int:
+    """Remove contributor-only AGENTS.md files without following linked roots."""
+    if root.is_symlink() or not root.is_dir():
+        return 0
+
+    removed = 0
+    for current_dir, _, filenames in os.walk(root, followlinks = False):
+        if "AGENTS.md" not in filenames:
+            continue
+        candidate = Path(current_dir) / "AGENTS.md"
+        candidate.unlink()
+        removed += 1
+    return removed
+
+
 def hydrate_source_tree(
     source_ref: str,
     install_dir: Path,
@@ -4447,6 +4462,9 @@ def hydrate_source_tree(
                 "upstream source archive was missing required repo files: " + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
+        removed = remove_agent_instruction_files(install_dir)
+        if removed:
+            log(f"removed {removed} contributor-only AGENTS.md file(s) from staged source")
     except PrebuiltFallback:
         raise
     except Exception as exc:
@@ -6838,6 +6856,13 @@ def install_prebuilt(
     choice: AssetChoice | None = None
     try:
         with install_lock(install_lock_path(install_dir)):
+            # Upgrade an existing managed prebuilt in place as well as fresh
+            # staging trees, so installs made before this cleanup do not retain
+            # upstream contributor instructions on a tag-match fast path.
+            if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
+                removed = remove_agent_instruction_files(install_dir)
+                if removed:
+                    log(f"removed {removed} contributor-only AGENTS.md file(s) from install")
             if install_dir.exists():
                 log(
                     f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"

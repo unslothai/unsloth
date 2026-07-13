@@ -30,6 +30,7 @@ AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
 ApprovedArtifactHash = INSTALL_LLAMA_PREBUILT.ApprovedArtifactHash
 ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 hydrate_source_tree = INSTALL_LLAMA_PREBUILT.hydrate_source_tree
+remove_agent_instruction_files = INSTALL_LLAMA_PREBUILT.remove_agent_instruction_files
 validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
@@ -203,6 +204,30 @@ def test_extract_archive_rejects_zip_symlink_entry(tmp_path: Path):
         extract_archive(archive_path, tmp_path / "extract")
 
 
+def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
+    managed = tmp_path / "managed"
+    nested = managed / "nested"
+    external = tmp_path / "external"
+    nested.mkdir(parents = True)
+    external.mkdir()
+    (managed / "AGENTS.md").write_text("managed root", encoding = "utf-8")
+    (nested / "AGENTS.md").write_text("managed nested", encoding = "utf-8")
+    (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
+    try:
+        (managed / "external-link").symlink_to(external, target_is_directory = True)
+        linked_root = tmp_path / "linked-root"
+        linked_root.symlink_to(external, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    assert remove_agent_instruction_files(managed) == 2
+    assert not list(managed.rglob("AGENTS.md"))
+    assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
+
+    assert remove_agent_instruction_files(linked_root) == 0
+    assert (external / "AGENTS.md").exists()
+
+
 def test_hydrate_source_tree_extracts_upstream_archive_contents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -224,6 +249,16 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
             f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py",
             b"__all__ = []\n",
         )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/AGENTS.md",
+            b"upstream contributor instructions\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/examples/AGENTS.md",
+            b"nested contributor instructions\n",
+        )
 
     source_urls = set(INSTALL_LLAMA_PREBUILT.upstream_source_archive_urls(upstream_tag))
 
@@ -244,6 +279,7 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert (install_dir / "convert_hf_to_gguf.py").exists()
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
+    assert not list(install_dir.rglob("AGENTS.md"))
 
 
 def test_release_asset_download_url():
@@ -2007,6 +2043,10 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
         approved_checksums = checksums,
         prebuilt_fallback_used = False,
     )
+    (install_dir / "AGENTS.md").write_text("old root instructions", encoding = "utf-8")
+    nested_agents = install_dir / "examples" / "AGENTS.md"
+    nested_agents.parent.mkdir()
+    nested_agents.write_text("old nested instructions", encoding = "utf-8")
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -2026,6 +2066,20 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    assert not list(install_dir.rglob("AGENTS.md"))
+
+
+def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
+    assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' in setup_sh
+    assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh
+    assert 'if [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ]; then' in setup_sh
+    assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" in setup_ps1
+    assert "if (-not $LocalLlamaCppLinked)" in setup_ps1
+    assert not (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "AGENTS.md").exists()
+    assert (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "README.md").is_file()
 
 
 def test_install_prebuilt_does_not_skip_unhealthy_existing_install(
