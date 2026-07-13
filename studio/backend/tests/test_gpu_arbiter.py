@@ -104,3 +104,75 @@ def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
     arb._evict_chat()
 
     assert unloaded == [True]  # still-loading chat backend was unloaded, not skipped
+
+
+def test_register_runs_under_ownership_and_returns_result(calls):
+    # A register callback runs after ownership transfers (owner already set) and its
+    # return value is forwarded -- the route uses this to register the in-flight load.
+    seen_owner: list = []
+
+    def register():
+        seen_owner.append(arb.current_owner())
+        return "status-dict"
+
+    result = arb.acquire_for(arb.DIFFUSION, register)
+    assert result == "status-dict"
+    assert seen_owner == [arb.DIFFUSION]
+    assert arb.current_owner() == arb.DIFFUSION
+
+
+def test_register_failure_leaves_ownership_in_place(calls):
+    # A failing register (e.g. begin_load reporting a load already in progress) propagates
+    # but must not drop ownership -- the prior handoff (chat already evicted) stands.
+    arb.acquire_for(arb.CHAT)
+
+    def register():
+        raise RuntimeError("A diffusion load is already in progress.")
+
+    with pytest.raises(RuntimeError):
+        arb.acquire_for(arb.DIFFUSION, register)
+    assert calls == ["evict-chat"]
+    assert arb.current_owner() == arb.DIFFUSION
+
+
+def test_competing_acquire_blocks_until_register_completes(monkeypatch):
+    # The window this closes: while DIFFUSION registers its load, a competing VIDEO acquire
+    # must not evict DIFFUSION until the load is marked in-flight. Holding the lock across
+    # register makes the competitor wait, so eviction never races an unregistered load.
+    import threading
+    import time
+
+    monkeypatch.setattr(arb, "_owner", None)
+    evicted: list = []
+    monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: evicted.append("evict-diffusion"))
+    monkeypatch.setitem(arb._EVICTORS, arb.VIDEO, lambda: evicted.append("evict-video"))
+
+    in_register = threading.Event()
+    release_register = threading.Event()
+
+    def register():
+        in_register.set()
+        # Hold the arbiter lock here; a competing acquire_for(VIDEO) must block until we return.
+        assert release_register.wait(2.0)
+        return "loading"
+
+    loader = threading.Thread(target = lambda: arb.acquire_for(arb.DIFFUSION, register))
+    loader.start()
+    assert in_register.wait(2.0)
+
+    competitor_done = threading.Event()
+    threading.Thread(
+        target = lambda: (arb.acquire_for(arb.VIDEO), competitor_done.set()),
+    ).start()
+
+    # The competitor cannot evict DIFFUSION while register still holds the lock.
+    time.sleep(0.1)
+    assert evicted == []
+    assert not competitor_done.is_set()
+
+    # Let register finish; ownership is now safely registered, so the competitor proceeds.
+    release_register.set()
+    loader.join(2.0)
+    assert competitor_done.wait(2.0)
+    assert evicted == ["evict-diffusion"]
+    assert arb.current_owner() == arb.VIDEO

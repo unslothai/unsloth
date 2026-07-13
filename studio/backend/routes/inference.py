@@ -14338,10 +14338,36 @@ async def load_diffusion_model(
         # engine name -- else we'd evict a resident chat model for a load that can't use the GPU.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
+
+        def _begin_load():
+            # Kicks the (slow) load onto a background thread and returns at once (the client
+            # polls images/load-progress); begin_load itself validates network-free.
+            return engine.begin_load(
+                request.model_path,
+                gguf_filename = request.gguf_filename,
+                base_repo = request.base_repo,
+                family_override = request.family_override,
+                hf_token = request.hf_token,
+                cpu_offload = request.cpu_offload,
+                memory_mode = request.memory_mode,
+                speed_mode = request.speed_mode,
+                text_encoder_quant = request.text_encoder_quant,
+                transformer_quant = request.transformer_quant,
+                transformer_quant_fast_accum = request.transformer_quant_fast_accum,
+                transformer_prequant_path = request.transformer_prequant_path,
+                attention_backend = request.attention_backend,
+                transformer_cache = request.transformer_cache,
+                transformer_cache_threshold = request.transformer_cache_threshold,
+                model_kind = kind,
+            )
+
         if needs_gpu:
-            # Then kick the (slow) load onto a background thread and return at once --
-            # the client polls images/load-progress.
-            await asyncio.to_thread(acquire_for, DIFFUSION)
+            # Register the in-flight load UNDER the arbiter lock (not after acquire_for
+            # returns): a competing Video/chat acquire in that gap would otherwise evict
+            # DIFFUSION before begin_load marks a load in-flight, so eviction finds nothing
+            # to cancel and both loaders allocate VRAM at once. begin_load returns at once,
+            # so the lock is held only briefly.
+            status_dict = await asyncio.to_thread(acquire_for, DIFFUSION, _begin_load)
         else:
             # A CPU-only native load never touches the GPU, so it neither acquires nor is
             # tracked by the arbiter. But switching here FROM a previous diffusers/GPU load
@@ -14349,25 +14375,7 @@ async def load_diffusion_model(
             # "evict" this CPU model for no reason. Release that stale ownership -- release()
             # is owner-guarded, so it's a no-op when diffusion never owned the GPU.
             await asyncio.to_thread(release, DIFFUSION)
-        status_dict = await asyncio.to_thread(
-            engine.begin_load,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            base_repo = request.base_repo,
-            family_override = request.family_override,
-            hf_token = request.hf_token,
-            cpu_offload = request.cpu_offload,
-            memory_mode = request.memory_mode,
-            speed_mode = request.speed_mode,
-            text_encoder_quant = request.text_encoder_quant,
-            transformer_quant = request.transformer_quant,
-            transformer_quant_fast_accum = request.transformer_quant_fast_accum,
-            transformer_prequant_path = request.transformer_prequant_path,
-            attention_backend = request.attention_backend,
-            transformer_cache = request.transformer_cache,
-            transformer_cache_threshold = request.transformer_cache_threshold,
-            model_kind = kind,
-        )
+            status_dict = await asyncio.to_thread(_begin_load)
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

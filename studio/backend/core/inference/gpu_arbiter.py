@@ -12,7 +12,7 @@ under the lock, so a transfer is atomic vs other acquires.
 from __future__ import annotations
 
 import threading
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -64,8 +64,17 @@ def _evict_video() -> None:
 _EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
 
 
-def acquire_for(owner: str) -> None:
-    """Make ``owner`` the sole GPU owner, evicting the other if it holds it."""
+def acquire_for(owner: str, register: Optional[Callable[[], Any]] = None) -> Any:
+    """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
+
+    ``register``, if given, runs under the arbiter lock right after ownership transfers,
+    and its return value is returned. Registering the in-flight load HERE -- not after
+    ``acquire_for`` returns -- closes the window where a competing acquire could evict this
+    owner before its load is marked in-flight: eviction would then find nothing to cancel
+    and both loaders would allocate VRAM at once. ``register`` must be quick (it holds the
+    lock) and must not re-enter the arbiter. If it raises, ownership stays with ``owner`` --
+    matching the pre-register behaviour where a failed load left the handoff in place.
+    """
     global _owner
     if owner not in _EVICTORS:
         raise ValueError(f"unknown GPU owner: {owner!r}")
@@ -74,6 +83,7 @@ def acquire_for(owner: str) -> None:
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         _owner = owner
+        return register() if register is not None else None
 
 
 def release(owner: str) -> None:

@@ -764,6 +764,12 @@ class SdCppDiffusionBackend:
                     self._state = None
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
+                # Publish an active (step 0) state now, before the slow pre-generate setup
+                # (LoRA listing/download), so a reload's progress probe doesn't read idle
+                # while this generation already holds _generate_lock and let a second generate
+                # queue behind it. The parsed sd-cli progress lines advance this step count.
+                # Mirrors DiffusionBackend.generate, which publishes _gen before its setup.
+                self._gen = _SdGen(total_steps = int(steps))
             try:
                 if seed is None:
                     seed = int.from_bytes(os.urandom(6), "big") & ((1 << 53) - 1)
@@ -789,7 +795,6 @@ class SdCppDiffusionBackend:
                     lora_resolved = diffusion_lora.resolve_specs(
                         active_loras, hf_token = state.hf_token, cancel_event = cancel
                     )
-                self._gen = _SdGen(total_steps = int(steps))
                 if state.mode == "server" and state.server is not None:
                     images, seeds = self._generate_server(
                         state,

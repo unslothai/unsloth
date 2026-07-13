@@ -112,26 +112,36 @@ async def load_video_model(
         # Take the GPU from chat only for a non-CPU load; a CPU load never touches GPU memory,
         # so key off the device. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+
+        def _begin_load():
+            # Kicks the (slow) load onto a background thread and returns at once;
+            # begin_load itself validates network-free.
+            return backend.begin_load(
+                request.model_path,
+                gguf_filename = request.gguf_filename,
+                base_repo = request.base_repo,
+                family_override = request.family_override,
+                hf_token = request.hf_token,
+                memory_mode = request.memory_mode,
+                speed_mode = request.speed_mode,
+                attention_backend = request.attention_backend,
+                transformer_cache = request.transformer_cache,
+                transformer_cache_threshold = request.transformer_cache_threshold,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+                model_kind = kind,
+            )
+
         if device != "cpu":
-            await asyncio.to_thread(acquire_for, VIDEO)
+            # Register the in-flight load UNDER the arbiter lock (not after acquire_for
+            # returns): a competing Images/chat acquire in that gap would otherwise evict
+            # VIDEO before begin_load marks a load in-flight, so eviction finds nothing to
+            # cancel and both loaders allocate VRAM at once. begin_load returns at once, so
+            # the lock is held only briefly. Mirrors the images/load handoff.
+            status_dict = await asyncio.to_thread(acquire_for, VIDEO, _begin_load)
         else:
             await asyncio.to_thread(release, VIDEO)
-        status_dict = await asyncio.to_thread(
-            backend.begin_load,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            base_repo = request.base_repo,
-            family_override = request.family_override,
-            hf_token = request.hf_token,
-            memory_mode = request.memory_mode,
-            speed_mode = request.speed_mode,
-            attention_backend = request.attention_backend,
-            transformer_cache = request.transformer_cache,
-            transformer_cache_threshold = request.transformer_cache_threshold,
-            transformer_quant = request.transformer_quant,
-            text_encoder_quant = request.text_encoder_quant,
-            model_kind = kind,
-        )
+            status_dict = await asyncio.to_thread(_begin_load)
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))

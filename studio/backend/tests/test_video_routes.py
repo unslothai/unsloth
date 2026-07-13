@@ -263,7 +263,13 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
     )
     acquired: list = []
-    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role: acquired.append(role))
+
+    def _fake_acquire(role, register = None):
+        # Mirror the real arbiter: record the handoff and run the (registered) load under it.
+        acquired.append(role)
+        return register() if register is not None else None
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
 
     resp = client.post(
         "/api/inference/video/load",

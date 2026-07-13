@@ -789,7 +789,13 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
         devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = device)
     )
     acquired: list = []
-    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role: acquired.append(role))
+
+    def _fake_acquire(role, register = None):
+        # Mirror the real arbiter: record the handoff and run the (registered) load under it.
+        acquired.append(role)
+        return register() if register is not None else None
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
     return acquired
 
 

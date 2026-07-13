@@ -117,6 +117,25 @@ def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
     assert row.model_format == "gguf"
 
 
+def test_scan_models_dir_surfaces_diffusers_pipeline_folder(tmp_path):
+    # A standard diffusers PIPELINE folder keeps its weights/configs in component subdirs
+    # (transformer/, vae/, ...) and carries only model_index.json at the root. The Images/Video
+    # load path accepts such a local pipeline dir, so the scan must surface it -- otherwise the
+    # weights-in-subdirs layout is missed and it never reaches task tagging / the On Device
+    # picker. It is not a GGUF, so model_format stays None (task tagging classifies it later).
+    root = tmp_path / "models"
+    pipe = root / "my-pipeline"
+    _touch(pipe / "model_index.json")
+    _touch(pipe / "transformer" / "config.json")
+    _touch(pipe / "transformer" / "diffusion_pytorch_model.safetensors")
+    _touch(pipe / "vae" / "diffusion_pytorch_model.safetensors")
+
+    rows = {Path(m.path).name: m for m in models_route._scan_models_dir(root)}
+
+    assert "my-pipeline" in rows
+    assert rows["my-pipeline"].model_format is None
+
+
 # ── Images picker task tag for local (non-GGUF) diffusers models ──────────────
 from models.models import LocalModelInfo  # noqa: E402
 
