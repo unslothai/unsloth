@@ -598,6 +598,7 @@ def _timed_video(
     # production never runs, and one whose stale engagement would poison later rows in the matrix.
     # The helper rolls back a partial engage so every timed row measures a real configuration.
     if cache_mode == "auto":
+
         def _toggle_cache(view: Any, expert: str) -> Optional[str]:
             return maybe_toggle_step_cache(
                 view,
