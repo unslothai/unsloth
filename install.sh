@@ -469,11 +469,14 @@ _on_install_exit() {
         _restore_studio_venv_replacement
     fi
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
     exit "$_status"
 }
-# Empty so an inherited value can never reach the trap's rm; only a temp dir
-# this script creates below (Apple Silicon, spaced path) is ever removed.
+# Empty so an inherited value can never reach the trap's rm; only temp paths
+# this script creates below (Apple Silicon spaced-path dir, torch-trio
+# overrides file) are ever removed.
 _UV_OVERRIDE_TMPDIR=""
+_UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
@@ -2709,6 +2712,49 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
+
+# Released unsloth wheels can pin an older torch than the one installed (e.g.
+# unsloth 2026.7.2 declares torch<2.11.0), and a with-deps resolve from PyPI
+# then silently DOWNGRADES the whole torch trio -- swapping the pinned
+# +cuXXX/+rocm build for PyPI's default wheel. The flavor guard below cannot
+# catch every such swap (PyPI's torch 2.10 default is itself cu128-flavored,
+# so the cuXXX tag comparison still matches), so freeze the trio via uv's
+# --overrides: overrides REPLACE dependency requirements during resolution,
+# keeping the installed wheels in place while unsloth's other dependencies
+# resolve normally. Sets _UNSLOTH_TORCH_OVERRIDES from the trio installed in
+# the venv at call time; every with-deps unsloth install (migrated and fresh)
+# must call this right before resolving and rm the file after.
+_build_unsloth_torch_overrides() {
+    _UNSLOTH_TORCH_OVERRIDES=""
+    [ "$SKIP_TORCH" = false ] || return 0
+    _torch_trio_pins=$("$_VENV_PY" -c "
+from importlib.metadata import version, PackageNotFoundError
+for _p in ('torch', 'torchvision', 'torchaudio'):
+    try:
+        print(_p + '==' + version(_p))
+    except PackageNotFoundError:
+        pass
+" 2>/dev/null) || _torch_trio_pins=""
+    case "$_torch_trio_pins" in
+        torch==*)
+            _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
+            printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
+            # The CLI --overrides flag REPLACES any UV_OVERRIDE env file (uv
+            # treats them as the same setting; macOS arm64 exports one for
+            # this very install path). Fold those pins into the temp file so
+            # they keep applying alongside the torch trio. awk, not cat: it
+            # drops inherited torch/torchvision/torchaudio lines (uv
+            # intersects duplicate overrides, so a conflicting inherited pin
+            # would make resolution unsatisfiable -- the exact pins above must
+            # win) and newline-terminates the last line so a file without a
+            # trailing newline cannot join two requirements into one.
+            for _ov_file in ${UV_OVERRIDE:-}; do
+                [ -f "$_ov_file" ] && awk '!/^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
+            done
+            ;;
+    esac
+}
+
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
     # in the new venv location, while preserving existing torch/CUDA
@@ -2733,9 +2779,13 @@ if [ "$_MIGRATED" = true ]; then
     else
         # Pin mlx-lm away from 0.31.3 here too: a curl-piped migration has no
         # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
+        _build_unsloth_torch_overrides
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
             "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" ${_MLX_LM_EXCLUDE_ARG:-}
+        [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+        _UNSLOTH_TORCH_OVERRIDES=""
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2931,42 +2981,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 ;;
         esac
     fi
-    # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    # Fresh: Step 2 - install unsloth, preserving the torch Step 1 installed
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
-    # Released unsloth wheels can pin an older torch than Step 1 installed (e.g.
-    # unsloth 2026.7.2 declares torch<2.11.0), and a with-deps resolve from PyPI
-    # then silently DOWNGRADES the whole torch trio -- swapping the pinned
-    # +cuXXX/+rocm build for PyPI's default wheel. The flavor guard below cannot
-    # catch every such swap (PyPI's torch 2.10 default is itself cu128-flavored,
-    # so the cuXXX tag comparison still matches), so freeze the trio via uv's
-    # --overrides: overrides REPLACE dependency requirements during resolution,
-    # keeping the installed wheels in place while unsloth's other dependencies
-    # resolve normally.
-    _UNSLOTH_TORCH_OVERRIDES=""
-    if [ "$SKIP_TORCH" = false ]; then
-        _torch_trio_pins=$("$_VENV_PY" -c "
-from importlib.metadata import version, PackageNotFoundError
-for _p in ('torch', 'torchvision', 'torchaudio'):
-    try:
-        print(_p + '==' + version(_p))
-    except PackageNotFoundError:
-        pass
-" 2>/dev/null) || _torch_trio_pins=""
-        case "$_torch_trio_pins" in
-            torch==*)
-                _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
-                printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
-                # The CLI --overrides flag REPLACES any UV_OVERRIDE env file (uv
-                # treats them as the same setting; macOS arm64 exports one for
-                # this very install path). Fold those pins into the temp file so
-                # they keep applying alongside the torch trio.
-                for _ov_file in ${UV_OVERRIDE:-}; do
-                    [ -f "$_ov_file" ] && cat "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
-                done
-                ;;
-        esac
-    fi
+    _build_unsloth_torch_overrides
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
@@ -3004,6 +3022,7 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
             --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+    _UNSLOTH_TORCH_OVERRIDES=""
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ]; then

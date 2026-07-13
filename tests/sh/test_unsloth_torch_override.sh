@@ -27,8 +27,9 @@ assert_true() {
 
 echo "=== test_unsloth_torch_override ==="
 
-# 1. Both with-deps unsloth installs carry the overrides expansion. The no-torch
-#    path installs --no-deps and needs no guard.
+# 1. Every with-deps unsloth install carries the overrides expansion (fresh
+#    local, fresh generic, and migrated). The no-torch paths install --no-deps
+#    and need no guard.
 _local_block=$(grep -A2 '"install unsloth (local)"' "$INSTALL_SH")
 printf '%s' "$_local_block" | grep -q -- '--overrides "\$_UNSLOTH_TORCH_OVERRIDES"'
 assert_true "local (with-deps) unsloth install passes --overrides" "$?"
@@ -37,9 +38,17 @@ _generic_block=$(grep -A2 '"install unsloth" uv pip install' "$INSTALL_SH")
 printf '%s' "$_generic_block" | grep -q -- '--overrides "\$_UNSLOTH_TORCH_OVERRIDES"'
 assert_true "generic (with-deps) unsloth install passes --overrides" "$?"
 
+_migrated_block=$(grep -A3 '"install unsloth (migrated)"' "$INSTALL_SH")
+printf '%s' "$_migrated_block" | grep -q -- '--overrides "\$_UNSLOTH_TORCH_OVERRIDES"'
+assert_true "migrated (with-deps) unsloth install passes --overrides" "$?"
+
 _no_torch_block=$(grep -A2 '"install unsloth (no-torch)"' "$INSTALL_SH")
 if printf '%s' "$_no_torch_block" | grep -q -- '--overrides'; then _rc=1; else _rc=0; fi
 assert_true "no-torch (--no-deps) unsloth install has no overrides" "$_rc"
+
+_migrated_nt_block=$(grep -A2 '"install unsloth (migrated no-torch)"' "$INSTALL_SH")
+if printf '%s' "$_migrated_nt_block" | grep -q -- '--overrides'; then _rc=1; else _rc=0; fi
+assert_true "migrated no-torch (--no-deps) unsloth install has no overrides" "$_rc"
 
 # 2. The overrides file is only built when SKIP_TORCH=false.
 grep -B2 '_torch_trio_pins=\$(' "$INSTALL_SH" | grep -q 'SKIP_TORCH" = false'
@@ -68,6 +77,58 @@ assert_true "overrides temp file is removed after the unsloth installs" "$?"
 #    darwin overrides on the generic install path).
 grep -q 'for _ov_file in \${UV_OVERRIDE:-}' "$INSTALL_SH"
 assert_true "UV_OVERRIDE env files are merged into the overrides file" "$?"
+
+# 6. The EXIT trap also removes the overrides file, so a failed or interrupted
+#    Step 2 (set -e fires before the normal-path rm) cannot leak it.
+sed -n '/_on_install_exit() {/,/^}/p' "$INSTALL_SH" \
+    | grep -q 'rm -f "\$_UNSLOTH_TORCH_OVERRIDES"'
+assert_true "EXIT trap removes the overrides temp file on failure" "$?"
+
+# 7. The UV_OVERRIDE fold filters inherited files instead of cat-ing them (run
+#    the extracted awk program against sample files): (a) inherited torch-trio
+#    lines are dropped -- uv intersects duplicate overrides, so a conflicting
+#    inherited pin makes resolution unsatisfiable and the generated exact pins
+#    must win; (b) every line is newline-terminated, so a file without a
+#    trailing newline cannot join two requirements into one.
+_awk_prog=$(sed -n "s/.*awk '\(.*\)' \"\$_ov_file\".*/\1/p" "$INSTALL_SH")
+[ -n "$_awk_prog" ]
+assert_true "UV_OVERRIDE fold uses the trio-filtering awk program" "$?"
+
+_ov_dir=$(mktemp -d)
+printf '%s' 'transformers>=4.57.6' > "$_ov_dir/ov1.txt" # no trailing newline
+cat > "$_ov_dir/ov2.txt" <<'EOF'
+# comment survives
+torch<2.11.0
+torchvision==0.25.0
+torchaudio!=2.11.0
+torchmetrics==1.0
+anyio<4.14.0
+EOF
+_merged="$_ov_dir/merged.txt"
+printf '%s\n' 'torch==2.11.0+cu128' > "$_merged"
+for _f in "$_ov_dir/ov1.txt" "$_ov_dir/ov2.txt"; do
+    awk "$_awk_prog" "$_f" >> "$_merged"
+done
+
+grep -qx 'transformers>=4.57.6' "$_merged"
+assert_true "no-trailing-newline override stays a separate requirement line" "$?"
+
+if grep -qx 'torchmetrics==1.0' "$_merged" && grep -qx 'anyio<4.14.0' "$_merged"; then
+    _rc=0
+else
+    _rc=1
+fi
+assert_true "unrelated inherited overrides are preserved" "$_rc"
+
+if grep -qE '^(torch|torchvision|torchaudio)([[:space:]<>=!~;@[]|$)' "$_merged" \
+    && [ "$(grep -cE '^(torch|torchvision|torchaudio)([[:space:]<>=!~;@[]|$)' "$_merged")" != "1" ]; then
+    _rc=1
+else
+    _rc=0
+fi
+grep -qx 'torch==2.11.0+cu128' "$_merged" || _rc=1
+assert_true "inherited torch-trio lines are dropped; generated pin wins" "$_rc"
+rm -rf "$_ov_dir"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
