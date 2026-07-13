@@ -109,9 +109,11 @@ def _torchao_export_supported():
     Linux, and macOS are unaffected (torchao is real)."""
     try:
         from core._torchao_stub import is_win32_rocm
+
         if is_win32_rocm():
             return False
         import unsloth.save as _us
+
         return hasattr(_us, "_normalize_torchao_method")
     except Exception:
         return False
@@ -121,7 +123,6 @@ def _torchao_runtime_unavailable():
     """True where portable torchao export cannot run (Windows ROCm): torchao is import-stubbed
     (its config classes return None) or torch.distributed is absent. False everywhere else."""
     import sys
-
     try:
         from core._torchao_stub import is_win32_rocm, _STUB_SENTINEL
         if is_win32_rocm():

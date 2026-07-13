@@ -173,17 +173,15 @@ def _exec_func(rel, name):
 @pytest.mark.parametrize(
     ("platform", "hip", "version", "expected"),
     [
-        ("win32", "6.4.0", "2.10.0+rocm6.4", True),   # ROCm via torch.version.hip
-        ("win32", None, "2.10.0+rocm6.4", True),      # ROCm via __version__ tag only
-        ("win32", None, "2.10.0+cu128", False),       # Windows CUDA -> real torchao
+        ("win32", "6.4.0", "2.10.0+rocm6.4", True),  # ROCm via torch.version.hip
+        ("win32", None, "2.10.0+rocm6.4", True),  # ROCm via __version__ tag only
+        ("win32", None, "2.10.0+cu128", False),  # Windows CUDA -> real torchao
         ("linux", "6.4.0", "2.10.0+rocm6.4", False),  # Linux ROCm -> real torchao
-        ("darwin", None, "2.10.0", False),            # macOS
+        ("darwin", None, "2.10.0", False),  # macOS
     ],
 )
 def test_is_win32_rocm(monkeypatch, platform, hip, version, expected):
-    fake_torch = types.SimpleNamespace(
-        version = types.SimpleNamespace(hip = hip), __version__ = version
-    )
+    fake_torch = types.SimpleNamespace(version = types.SimpleNamespace(hip = hip), __version__ = version)
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     assert _stub.is_win32_rocm() is expected
