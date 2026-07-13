@@ -37,7 +37,11 @@ def stub_audio_decoder(monkeypatch):
 class _CaptureInference:
     """Stand-in for the model inference step; records how it was called."""
 
-    def __init__(self, text = "hello", mutate = None) -> None:
+    def __init__(
+        self,
+        text = "hello",
+        mutate = None,
+    ) -> None:
         self.text = text
         self.mutate = mutate
         self.generate_kwargs = None

@@ -138,6 +138,7 @@ def _pick_device():
     """
     try:
         import torch
+
         if torch.cuda.is_available():
             return "cuda", torch.float16
         if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
