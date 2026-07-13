@@ -2911,6 +2911,51 @@ class TestRecoverStrandedSidecar:
         assert live.is_dir()
 
 
+class TestCachedLatestMappingRevalidated:
+    """A cached 'latest' mapping is dropped and re-resolved when the sidecar since broke
+    in-process, so routing self-heals instead of trusting a mapping parsed from a sidecar
+    that no longer exists (which would keep routing latest-only models to a broken tier)."""
+
+    def test_broken_sidecar_drops_cached_latest_mapping(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
+        monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: False)
+        seen = {"n": 0}
+
+        def _fake_overlay(tier):
+            seen["n"] += 1
+            return None  # broken/unavailable -> empty, uncached
+
+        monkeypatch.setattr(tv, "_overlay_transformers_dir", _fake_overlay)
+        assert tv._config_model_types("latest") == frozenset()
+        assert seen["n"] == 1  # re-resolved, not served from the stale cache
+        assert "latest" not in tv._config_mapping_cache
+
+    def test_intact_sidecar_serves_cached_latest_mapping(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
+        monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: True)
+        monkeypatch.setattr(
+            tv,
+            "_overlay_transformers_dir",
+            lambda tier: pytest.fail("intact sidecar must serve the cache without re-resolving"),
+        )
+        assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+    def test_non_latest_cache_not_revalidated(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"530": frozenset({"gemma3"})})
+        monkeypatch.setattr(
+            tv,
+            "_latest_sidecar_intact",
+            lambda: pytest.fail("non-latest tiers must not pay the sidecar-intact check"),
+        )
+        assert tv._config_model_types("530") == frozenset({"gemma3"})
+
+
 class TestOverlayRepairsIncompleteSidecar:
     """Routing self-heals a pinned latest sidecar that is present but incomplete,
     not only one whose transformers/ dir vanished: workers refuse parent-only

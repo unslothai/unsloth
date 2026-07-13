@@ -461,7 +461,16 @@ class ExportOrchestrator:
                     raise SidecarSwapInProgress(op_message)
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
-                    self._shutdown_subprocess()
+                    if self._shutdown_subprocess() is False:
+                        # Survivor still holds GPU memory (a wedged CUDA syscall outliving
+                        # SIGKILL); its handle is kept so is_worker_alive() and the pre-swap
+                        # guard still see it. Do not spawn a second worker over it -- fail so
+                        # the load can retry once it exits.
+                        op_message = (
+                            "The current export worker did not exit and still holds GPU "
+                            "memory; not starting a new checkpoint load over it. Retry shortly."
+                        )
+                        return False, op_message
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
 

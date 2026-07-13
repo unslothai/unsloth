@@ -1083,7 +1083,13 @@ def _config_model_types(tier: str) -> frozenset[str]:
         return frozenset()
     cached = _config_mapping_cache.get(tier)
     if cached is not None:
-        return cached
+        # A cached 'latest' mapping can outlive the sidecar it was parsed from: if the
+        # pinned sidecar was since deleted or lost a package in this process, drop the
+        # cache so routing re-resolves through _overlay_transformers_dir (which self-heals)
+        # instead of routing latest-only models to a broken tier until restart.
+        if tier != "latest" or _latest_sidecar_intact():
+            return cached
+        _config_mapping_cache.pop("latest", None)
     tdir = _overlay_transformers_dir(tier)
     if tdir is None:
         return frozenset()  # overlay not provisioned yet; do not cache so a later call re-reads

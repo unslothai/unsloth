@@ -113,3 +113,33 @@ class TestExportShutdownReturn:
         assert o._shutdown_subprocess(timeout = 0.01) is False
         assert o._proc is not None
         assert o.is_worker_alive() is True
+
+
+class TestSpawnPathsHonorFailedShutdown:
+    """A fresh-load path must not spawn a second worker over one that outlived
+    terminate/kill: the survivor still holds GPU memory and its handle would be lost."""
+
+    def test_export_load_checkpoint_aborts_when_worker_survives(self, monkeypatch):
+        import threading
+
+        import utils.transformers_version as tv
+
+        o = ExportOrchestrator.__new__(ExportOrchestrator)
+        o._lock = threading.RLock()
+        o._proc = _FakeProc(dies_on = None)  # survivor
+        o.clear_logs = lambda: None
+        o._cancel_requested = False
+        o._active_op_kind = None
+        o._export_active = False
+        o._ensure_subprocess_alive = lambda: True
+        o._shutdown_subprocess = lambda *a, **k: False
+        o._spawn_subprocess = lambda cfg: pytest.fail("must not spawn over a live survivor")
+        o._record_op_finished = lambda *a, **k: None
+        monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: False)
+
+        ok, msg = o.load_checkpoint(checkpoint_path = "ckpt")
+
+        assert ok is False
+        assert "did not exit" in msg
+        # The finally cleared the op flags even though we returned early.
+        assert o._export_active is False
