@@ -407,6 +407,10 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     "sort": frozenset({"-o", "--output", "--compress-program"}),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
+    # GNU time -o/--output FILE (and -a/--append) truncate or append to FILE
+    # with timing output; time is also a wrapper, so the flag is checked before
+    # the wrapped command like env -C.
+    "time": frozenset({"-o", "--output", "-a", "--append"}),
     # rg runs an arbitrary program per file with --pre/--hostname-bin.
     "rg": frozenset({"--pre", "--hostname-bin"}),
     # env -C/--chdir escapes the session workdir; -S/--split-string can build
@@ -1465,6 +1469,45 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Archive constructors imported bare (from zipfile import ZipFile), so
     # ZipFile(name, "w") is gated like the zipfile.ZipFile attribute call.
     archive_ctor_aliases: "set[str]" = set()
+    # operator.methodcaller builds a callable that invokes a named method, a
+    # dynamic-dispatch vector like getattr/partial (methodcaller("write_text")).
+    operator_aliases = {"operator"}
+    methodcaller_aliases: "set[str]" = set()
+    # logging.basicConfig(filename=...) opens a log file for writing; tracked as
+    # an attribute call and as a bare import (from logging import basicConfig).
+    basicconfig_aliases: "set[str]" = set()
+    # fileinput module aliases: fileinput.input(..., inplace=True) rewrites a
+    # file in place, unlike the default (read-only) fileinput.input(...).
+    fileinput_aliases = {"fileinput"}
+
+    def _methodcaller_writes(call) -> bool:
+        # operator.methodcaller("write_text", ...) / methodcaller(name): unsafe
+        # when the method name is a known writer/mutator, or non-constant (cannot
+        # be proven read-only).
+        if not call.args:
+            return False
+        first = call.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            return True
+        return first.value in _AUTO_UNSAFE_PY_ATTRS or first.value in _AUTO_UNSAFE_PY_WRITE_METHODS
+
+    def _fileinput_inplace(call) -> bool:
+        # fileinput.input(..., inplace=True) opens each file for in-place rewrite.
+        if _has_kwarg_splat(call):
+            return True
+        for kw in call.keywords or []:
+            if kw.arg == "inplace":
+                v = kw.value
+                if isinstance(v, ast.Constant):
+                    return bool(v.value)
+                return True  # dynamic inplace flag: cannot prove read-only
+        return False
+
+    def _basicconfig_writes(call) -> bool:
+        # logging.basicConfig(filename=...) creates/opens a log file for writing.
+        if _has_kwarg_splat(call):
+            return True
+        return any(kw.arg == "filename" for kw in call.keywords or [])
 
     def _wraps_write_callable(arg) -> bool:
         # The callable a partial wraps (partial(open, ...)); True when calling it
@@ -1514,7 +1557,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     os_aliases.add(alias.asname or alias.name)
                 elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name == "operator":
+                    operator_aliases.add(alias.asname or "operator")
+                elif alias.name == "fileinput":
+                    fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
+            if node.module == "operator":
+                for alias in node.names:
+                    if alias.name == "methodcaller":
+                        methodcaller_aliases.add(alias.asname or "methodcaller")
+            if node.module == "logging":
+                for alias in node.names:
+                    if alias.name == "basicConfig":
+                        basicconfig_aliases.add(alias.asname or "basicConfig")
             if node.module == "builtins":
                 for alias in node.names:
                     if alias.name == "open":
@@ -1613,6 +1668,20 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and _wraps_write_callable(value.args[0])
             ):
                 dynamic_aliases.update(targets)  # w = partial(open, mode="w")
+            elif (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Name) and value.func.id in methodcaller_aliases)
+                    or (
+                        isinstance(value.func, ast.Attribute)
+                        and value.func.attr == "methodcaller"
+                        and isinstance(value.func.value, ast.Name)
+                        and value.func.value.id in operator_aliases
+                    )
+                )
+                and _methodcaller_writes(value)
+            ):
+                dynamic_aliases.update(targets)  # w = methodcaller("write_text", ...)
             elif isinstance(value, ast.Constant) and isinstance(value.value, str):
                 # base = '/etc' -> resolve base in a later folded path. A name
                 # bound more than once is poisoned (\x02) so it fails closed.
@@ -1772,11 +1841,27 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # writes but ZipFile(x) reads.
                     if func.id in archive_ctor_aliases and _builtin_open_writes(node):
                         return True
+                    # A bare-imported logging.basicConfig(filename=...) opens a
+                    # log file for writing (from logging import basicConfig).
+                    if func.id in basicconfig_aliases and _basicconfig_writes(node):
+                        return True
                 elif isinstance(func, ast.Attribute):
                     # Writer methods persist to disk without open() (np.save,
                     # img.save, plt.savefig, df.to_csv, json.dump); ask before
                     # they mutate the workdir in auto mode.
                     if func.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                        return True
+                    # logging.basicConfig(filename=...) opens a log file for write.
+                    if func.attr == "basicConfig" and _basicconfig_writes(node):
+                        return True
+                    # fileinput.input(..., inplace=True) rewrites a file in place;
+                    # the default fileinput.input(...) only reads, so gate inplace.
+                    if (
+                        func.attr == "input"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in fileinput_aliases
+                        and _fileinput_inplace(node)
+                    ):
                         return True
                     # os.open() always creates/writes a file descriptor
                     # (tracked through import aliases: import os as o; o.open()).
@@ -1833,13 +1918,25 @@ _SQL_DDL_OBJECTS = (
 _SQL_DDL_MODIFIERS = (
     r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
 )
+# A SQL identifier: bare, "double-quoted", `backtick-quoted`, or [bracketed],
+# optionally schema-qualified (public.users), so UPDATE "users" / UPDATE
+# public.users / UPDATE ONLY public.users / UPDATE [users] SET all reach the
+# guard instead of only bare UPDATE <word> SET.
+_SQL_IDENT = r'(?:\w+|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]+\])'
+_SQL_UPDATE_TARGET = r"(?:only\s+)?" + _SQL_IDENT + r"(?:\s*\.\s*" + _SQL_IDENT + r")*"
 # A read-named MCP tool (query_database, run_query) can still carry a mutating
 # SQL statement; match DML/DDL as whole statements (DELETE FROM, DROP TABLE) so
 # a natural-language query that merely contains the word "delete" stays safe.
 _MCP_ARG_MUTATION_RE = re.compile(
     r"\b(?:delete\s+from|"
     r"drop\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
-    r"truncate\s+(?:table\s+)?\w|update\s+\w+\s+set|insert\s+into|replace\s+into|"
+    r"truncate\s+(?:table\s+)?\w|"
+    r"update\s+" + _SQL_UPDATE_TARGET + r"\s+set\b|"
+    r"insert\s+into|replace\s+into|"
+    # SELECT ... INTO OUTFILE/DUMPFILE writes a server-side file (MySQL); the
+    # bare SELECT ... INTO <table> form is left out because PL/pgSQL uses it to
+    # assign into a variable (a read).
+    r"select\s+[^;]*?\binto\s+(?:outfile|dumpfile)\b|"
     r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     # CREATE DDL, allowing the shared modifiers and object set, so CREATE OR
     # REPLACE VIEW and CREATE UNIQUE INDEX are caught too.
@@ -1871,6 +1968,15 @@ _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
     r"|\bload_extension\s*\(",
     re.IGNORECASE,
 )
+# State-changing SQL functions that mutate server state or write files even when
+# wrapped in a read-shaped SELECT (SELECT pg_terminate_backend(pid),
+# SELECT setval('s', 1), SELECT pg_write_file('/tmp/x', ...), lo_export(...)).
+# The trailing "(" is required, so a column named setval_count stays safe.
+_MCP_ARG_SQL_FUNCTION_RE = re.compile(
+    r"\b(?:pg_terminate_backend|pg_cancel_backend|pg_write_file|lo_export|"
+    r"lo_import|setval|dblink_exec|pg_reload_conf|pg_rotate_logfile)\s*\(",
+    re.IGNORECASE,
+)
 # SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
 # UPDATE/**/users evade the \s+ in the mutation regex; collapse comments to a
 # space before matching.
@@ -1899,6 +2005,7 @@ def _mcp_arguments_mutate(arguments) -> bool:
             return (
                 bool(_MCP_ARG_MUTATION_RE.search(_sql))
                 or bool(_MCP_ARG_SQLITE_MUTATION_RE.search(_sql))
+                or bool(_MCP_ARG_SQL_FUNCTION_RE.search(_sql))
                 or bool(_GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value)))
             )
         if isinstance(value, dict):

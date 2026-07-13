@@ -69,6 +69,12 @@ def _clear_pending():
         ("./ls -la", True),
         ("env /tmp/cat x", True),  # path-qualified target after a wrapper
         ("tree -o out.txt", True),  # -o writes a file
+        ("time -o /tmp/r ls", True),  # GNU time -o truncates a file
+        ("time --output=/tmp/r ls", True),  # GNU time long output flag
+        ("command time -o/tmp/result cat /dev/null", True),  # attached, behind command
+        ("time -a log.txt ls", True),  # GNU time append flag
+        ("time ls", False),  # plain time wrapper stays safe
+        ("time -p ls", False),  # POSIX time -p (no file) stays safe
         ("xxd -r dump.hex out.bin", True),  # -r can write
         ("awk '{print}' file", True),  # awk can system()/write
         ("grep -o x file", False),  # grep -o is stdout only
@@ -473,6 +479,38 @@ def test_terminal_classifier(command, unsafe):
             "base = get_dir()\nopen(base + 'data/file.txt').read()",
             False,
         ),  # dynamic prefix + benign suffix stays safe
+        (
+            "import logging\nlogging.basicConfig(filename='o.log', filemode='w')",
+            True,
+        ),  # basicConfig opens a log file for write
+        (
+            "from logging import basicConfig\nbasicConfig(filename='o.log')",
+            True,
+        ),  # bare-imported basicConfig write
+        (
+            "import logging\nlogging.basicConfig(level=logging.INFO)",
+            False,
+        ),  # basicConfig without filename stays safe
+        (
+            "from operator import methodcaller\nw = methodcaller('write_text', 'x')\nw(Path('f'))",
+            True,
+        ),  # methodcaller hides a writer method
+        (
+            "import operator\nw = operator.methodcaller('unlink')\nw(Path('f'))",
+            True,
+        ),  # operator.methodcaller unlink
+        (
+            "from operator import methodcaller\nu = methodcaller('upper')\nu('x')",
+            False,
+        ),  # methodcaller of a read-only method stays safe
+        (
+            "import fileinput\nfor line in fileinput.input('v.txt', inplace=True):\n    pass",
+            True,
+        ),  # fileinput in-place rewrite
+        (
+            "import fileinput\nfor line in fileinput.input('v.txt'):\n    pass",
+            False,
+        ),  # fileinput read stays safe
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -740,6 +778,20 @@ def test_mcp_sensitive_arguments(args, unsafe):
             {"query": "query Q @cached { issue(id: 1) { title } }"},
             False,
         ),  # directive GraphQL read stays safe
+        ({"query": 'UPDATE "users" SET admin=1'}, True),  # double-quoted UPDATE target
+        ({"query": "UPDATE public.users SET admin=1"}, True),  # schema-qualified UPDATE
+        ({"query": "UPDATE ONLY public.users SET admin=1"}, True),  # ONLY-qualified UPDATE
+        ({"query": "UPDATE `users` SET admin=1"}, True),  # backtick-quoted UPDATE
+        ({"query": "UPDATE [users] SET admin=1"}, True),  # bracket-quoted UPDATE
+        ({"query": "please update the documentation set"}, False),  # NL 'update ... set' stays safe
+        ({"query": "SELECT pg_terminate_backend(123)"}, True),  # state-changing SQL function
+        ({"query": "SELECT setval('s', 1)"}, True),  # sequence mutation function
+        ({"query": "SELECT pg_write_file('/tmp/p', 'x')"}, True),  # server-side file write
+        ({"query": "SELECT lo_export(123, '/tmp/p')"}, True),  # large-object export to a file
+        ({"query": "SELECT setval_col FROM t"}, False),  # 'setval' column prefix stays safe
+        ({"query": "SELECT secret INTO OUTFILE '/tmp/leak' FROM users"}, True),  # INTO OUTFILE write
+        ({"query": "SELECT x INTO DUMPFILE '/tmp/d' FROM t"}, True),  # INTO DUMPFILE write
+        ({"query": "SELECT count(*) INTO cnt FROM t"}, False),  # PL/pgSQL SELECT INTO var stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):
