@@ -56,6 +56,8 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
   };
 
 export const MAX_IMPORTED_FONTS = 3;
+/** Imported-font family name cap; must match the backend name max_length (100). */
+export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
 /** ~1.5 MB file → ~2 MB base64; must stay in sync with the backend cap. */
 export const MAX_IMPORTED_FONT_DATA_URL_LENGTH = 2_200_000;
 /**
@@ -172,7 +174,9 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
   for (const entry of value) {
     if (fonts.length >= MAX_IMPORTED_FONTS) break;
     const source = (entry ?? {}) as Partial<ImportedFont>;
-    const name = sanitizeFont(source.name);
+    // Cap to the backend name length so an over-long name can't fail the PUT.
+    const rawName = sanitizeFont(source.name);
+    const name = rawName ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH) : null;
     if (!name || seen.has(name)) continue;
     const dataUrl = source.dataUrl;
     if (
@@ -395,7 +399,11 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
       document.fonts.add(face);
       face.load().catch(() => {
         document.fonts.delete(face);
-        registeredFontFaces.delete(name);
+        // Only drop the entry if it still points at THIS face; a same-name
+        // re-import may have replaced it while this load was pending.
+        if (registeredFontFaces.get(name)?.face === face) {
+          registeredFontFaces.delete(name);
+        }
       });
     } catch {
       registeredFontFaces.delete(name);

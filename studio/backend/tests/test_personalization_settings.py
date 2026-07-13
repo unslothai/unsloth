@@ -451,3 +451,42 @@ def test_personalization_put_preserves_absent_fields(monkeypatch):
     assert body["paletteSaved"] is False
     assert body["customizationSaved"] is False
     assert body["greetingSlothSaved"] is False
+
+
+def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatch):
+    # A stale client that omits palette/customization must not clobber values a
+    # newer client already stored; the merge keeps them and only updates theme.
+    store: dict = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "version": 1,
+            "profile": {"displayName": "Mike", "showGreetingSloth": False},
+            "appearance": {
+                "theme": "light",
+                "palette": "classic",
+                "customization": {"uiFont": "Georgia"},
+            },
+        }
+    }
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    client = TestClient(app)
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"version": 1, "profile": {"displayName": "Mike"}, "appearance": {"theme": "dark"}},
+    )
+    assert put.status_code == 200
+
+    stored_appearance = store[pers.PERSONALIZATION_SETTING_KEY]["appearance"]
+    assert stored_appearance["theme"] == "dark"
+    assert stored_appearance["palette"] == "classic"
+    assert stored_appearance["customization"]["uiFont"] == "Georgia"
+
+    body = client.get("/api/settings/personalization").json()
+    assert body["paletteSaved"] is True
+    assert body["customizationSaved"] is True
+    assert body["greetingSlothSaved"] is True
