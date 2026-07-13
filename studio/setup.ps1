@@ -433,11 +433,12 @@ function Get-TorchIndexLeaf {
     return ($path.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
 }
 
-# Remove userinfo (user:password@) from a wheel index URL. An authenticated pin
-# like https://user:token@mirror.local/simple must not persist its credentials in
-# the marker file or leak them through logged output. Only the authority's
-# userinfo goes (up to the LAST @ before the first path slash); path, query, and
-# fragment stay so the comparison identity is otherwise exact. Mirrors
+# Remove credentials from a wheel index URL. An authenticated pin like
+# https://user:token@mirror.local/simple or https://mirror.local/simple?token=SECRET
+# must not persist its secret in the marker file or leak it through logged output.
+# Both userinfo (up to the LAST @ before the first path slash) AND a query/fragment
+# (which some private feeds use to carry an auth token) are dropped; scheme, host,
+# and path stay so the comparison identity is otherwise exact. Mirrors
 # _strip_index_url_credentials in install.sh / install_python_stack.py.
 function Remove-IndexUrlCredentials {
     param([string]$Url)
@@ -445,11 +446,13 @@ function Remove-IndexUrlCredentials {
     if ($sep -lt 0) { return $Url }
     $scheme = $Url.Substring(0, $sep)
     $rest = $Url.Substring($sep + 3)
+    # Drop query / fragment (may hold auth tokens; not part of index identity).
+    $q = $rest.IndexOfAny([char[]]('?', '#'))
+    if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
     $slash = $rest.IndexOf('/')
     $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
     $at = $authority.LastIndexOf('@')
-    if ($at -lt 0) { return $Url }
-    $host_ = $authority.Substring($at + 1)
+    $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
     if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
     return "${scheme}://${host_}"
 }

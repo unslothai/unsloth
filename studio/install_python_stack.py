@@ -156,23 +156,25 @@ def _normalize_family_leaf(leaf: str) -> str:
 
 
 def _strip_index_url_credentials(url: str) -> str:
-    """Remove userinfo (user:password@) from a wheel index URL.
+    """Remove secrets and non-identity parts from a wheel index URL: userinfo
+    (user:password@) AND the query string / fragment.
 
-    An authenticated pin like https://user:token@mirror.local/simple must not
-    persist its credentials in the marker file (mode 0644 under a default umask
-    on POSIX) or leak them through printed repair messages. Only the authority's
-    userinfo is removed (everything up to the LAST "@" before the first path
-    slash); path, query, and fragment are untouched so the comparison identity
-    stays exact otherwise. MUST match install.sh / setup.ps1 / install.ps1.
+    An authenticated pin like https://user:token@mirror.local/simple OR
+    https://mirror.local/cu128?token=SECRET must not persist its credentials in the
+    marker file (mode 0644 under a default umask on POSIX) or leak them through
+    printed repair messages. The query and fragment are dropped entirely: they can
+    carry auth tokens and are not part of a PEP 503 wheel index's identity, so
+    dropping them also stops a rotated token from spuriously mismatching the marker
+    and forcing a needless reinstall. Host and path are preserved so the comparison
+    identity is otherwise exact. MUST match install.sh / setup.ps1 / install.ps1.
     Pure function.
     """
     scheme, sep, rest = url.partition("://")
     if not sep:
         return url
+    rest = rest.split("?", 1)[0].split("#", 1)[0]  # drop query / fragment (may hold tokens)
     authority, slash, tail = rest.partition("/")
-    if "@" not in authority:
-        return url
-    host = authority.rpartition("@")[2]
+    host = authority.rpartition("@")[2]  # drop user:pass@ userinfo if present
     return f"{scheme}://{host}{slash}{tail}"
 
 
@@ -1571,11 +1573,13 @@ def _ensure_verbatim_torch_index() -> None:
     _VERBATIM_TRIO_SNAPSHOT = _installed_trio_snapshot()
 
 
-def _probe_torch_flavor() -> "tuple[str, str] | None":
-    """Probe the installed torch's flavor: ("hip"|"cuda"|"cpu", "+cuXXX tag or '').
+def _probe_torch_flavor() -> "tuple[str, str, str] | None":
+    """Probe the installed torch: ("hip"|"cuda"|"cpu", "+cuXXX tag or ''", version).
 
     Same subprocess probe as _ensure_cuda_torch (dist state on disk, not this
-    process's import cache). None when torch is missing, broken, or the probe
+    process's import cache). The third field is the full torch.__version__ string
+    (e.g. "2.11.0+rocm7.13.0"), so a ROCm pin can be checked with the same per-arch
+    predicate the repair uses. None when torch is missing, broken, or the probe
     fails -- callers must treat that as "cannot confirm anything".
     """
     try:
@@ -1590,7 +1594,7 @@ def _probe_torch_flavor() -> "tuple[str, str] | None":
                     "ver = getattr(torch, '__version__', '').lower(); "
                     "m = re.search(r'\\+(cu\\d+)', ver); "
                     "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
-                    "print(marker + '|' + (m.group(1) if m else ''))"
+                    "print(marker + '|' + (m.group(1) if m else '') + '|' + ver)"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1604,36 +1608,48 @@ def _probe_torch_flavor() -> "tuple[str, str] | None":
     lines = [
         line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
     ]
-    if not lines or "|" not in lines[-1]:
+    if not lines:
         return None
-    marker, _, cutag = lines[-1].partition("|")
+    _parts = lines[-1].split("|")
+    if len(_parts) < 3:
+        return None
+    marker, cutag, version = _parts[0], _parts[1], _parts[2]
     if marker not in ("hip", "cuda", "cpu"):
         return None
-    return marker, cutag
+    return marker, cutag, version
 
 
-def _torch_flavor_matches_pin(leaf: str, flavor: "tuple[str, str]") -> "bool | None":
-    """Whether the installed torch flavor matches a KNOWN-family pin leaf.
+def _torch_flavor_matches_pin(pin: str, flavor: "tuple[str, str, str]") -> "bool | None":
+    """Whether the installed torch matches a KNOWN-family pin, consistent with the repair.
 
-    True  = matches the pinned family; False = a DIFFERENT known family is installed
-    (the pin was clobbered -- e.g. a cpu wheel under a cuXXX pin, or cu126 under a
-    cu128 pin); None = cannot tell -- an unknown-family leaf (the verbatim path owns
-    it) or an untagged CUDA build under a cuXXX pin (ambiguous; do not force a
-    reinstall on that alone). flavor is (marker, cutag) from _probe_torch_flavor.
-    Shared by the pin baseline (records only on True) and the update probe (forces
-    the repair pass only on False), so the two never drift. Pure function.
+    True  = matches the pinned family; False = the pin was clobbered and the repair
+    path WOULD reinstall (a different family, an untagged CUDA build under a specific
+    cuXXX pin -- _ensure_cuda_torch reinstalls that -- or a ROCm build whose per-arch
+    or version signature does not match the pin per _rocm_pin_family_mismatch); None =
+    cannot tell (an unknown-family leaf -- the verbatim path owns it). flavor is
+    (marker, cutag, version) from _probe_torch_flavor. Shared by the pin baseline
+    (records only on True) and the update probe (forces the repair pass on False), so
+    neither reports "applied" for a state the _ensure_* helpers would still reinstall.
+    Pure w.r.t. its args (the ROCm branch reads only the passed version string).
     """
-    marker, cutag = flavor
+    marker, cutag, version = flavor
+    leaf = _torch_index_leaf(pin)
     if re.match(r"^cu[0-9]", leaf):
         if marker != "cuda":
             return False
-        if not cutag:
-            return None
+        # An untagged CUDA build (empty cutag) cannot be confirmed to match the
+        # pinned family; _ensure_cuda_torch reinstalls it to enforce the pin, so
+        # report a mismatch here too (cutag "" != leaf).
         return cutag == leaf
     if leaf == "cpu":
         return marker == "cpu"
     if re.match(r"^rocm\d", leaf) or leaf.startswith("gfx"):
-        return marker == "hip"
+        if marker != "hip":
+            return False
+        # Reuse the exact per-arch/version predicate _ensure_rocm_torch uses, so a
+        # generic +rocm wheel under a gfx per-arch pin (or a wrong rocm version)
+        # reports needs-apply instead of being accepted as any HIP build.
+        return not _rocm_pin_family_mismatch(pin, version)
     return None
 
 
@@ -1677,8 +1693,53 @@ def _record_torch_index_pin_baseline() -> None:
     # Record only when the installed flavor DEFINITELY matches the pinned family:
     # a mismatch (clobbered), an ambiguous untagged CUDA build, or an unknown family
     # (owned by the verbatim path) must all keep the pass running on future updates.
-    if _torch_flavor_matches_pin(_torch_index_leaf(pin), flavor) is not True:
+    if _torch_flavor_matches_pin(pin, flavor) is not True:
         return
+    _write_torch_index_marker(pin)
+
+
+def _ensure_pinned_known_family_torch() -> None:
+    """Reinstall a KNOWN-family (cu*/cpu) EXPLICIT pin's trio when the installed torch
+    has drifted from it, on platforms where the GPU-aware _ensure_{cuda,cpu}_torch
+    helpers no-op: Windows (the main-venv torch lifecycle is owned by setup.ps1, so the
+    Linux helpers return early) and macOS ARM (step 2b is skipped there). setup.ps1 and
+    step 2b apply the pin BEFORE the later extras/studio/data-designer installs, which
+    can pull torch from PyPI; the matching marker would then mask that clobber. Because
+    the pin is EXPLICIT there is no host to probe -- the pinned family is authoritative
+    -- so this simply enforces it (unlike the Linux helpers, which gate on GPU
+    detection). Unknown-family pins are owned by _ensure_verbatim_torch_index. ROCm/gfx
+    pins keep their per-arch specs owned by setup.ps1's ROCm block and are NOT reinstalled
+    here with the CPU/CUDA bounded spec. Intel mac / no-torch: nothing to do; a failed
+    probe or a still-matching flavor is left alone (no forced reinstall, no loop).
+    """
+    if NO_TORCH or IS_MAC_INTEL:
+        return
+    pin = _explicit_torch_index_url()
+    if pin is None:
+        return
+    if _explicit_unknown_family_torch_index_url() is not None:
+        return  # unknown-family pin -> _ensure_verbatim_torch_index owns it
+    leaf = _torch_index_leaf(pin)
+    if not (re.match(r"^cu[0-9]", leaf) or leaf == "cpu"):
+        return  # rocm/gfx per-arch specs are owned by setup.ps1 on Windows
+    flavor = _probe_torch_flavor()
+    if flavor is None:
+        return
+    if _torch_flavor_matches_pin(pin, flavor) is not False:
+        return  # matches (True) or unknown (None) -> nothing to enforce
+    print(f"   torch drifted from the pinned {leaf} index -- reinstalling from it")
+    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+    pip_install(
+        "torch (pinned family repair)",
+        "--force-reinstall",
+        "--no-cache-dir",
+        _torch_pkg,
+        _vision_pkg,
+        _audio_pkg,
+        "--index-url",
+        pin,
+        constrain = False,
+    )
     _write_torch_index_marker(pin)
 
 
@@ -3402,14 +3463,15 @@ def install_python_stack() -> int:
             _ensure_verbatim_torch_index()
             _record_torch_index_pin_baseline()
         elif IS_WINDOWS or IS_MAC_ARM:
-            # Windows / macOS ARM: the cuda/rocm/cpu family repair is owned by
-            # setup.ps1 (Windows) or not applicable (macOS), but an explicit custom
-            # (unknown-family) pin still needs its final pass here. On Windows the
-            # early ensure block (step 2b) applied it and a later dependency step can
-            # clobber torch while the matching marker masks it; on macOS ARM step 2b
-            # is skipped, so this is where the pin is first applied. Run only the
-            # verbatim pin owner (marker/snapshot-driven) + baseline.
+            # Windows / macOS ARM: the GPU-aware cuda/rocm/cpu family repair no-ops
+            # here (Windows main-venv torch is owned by setup.ps1; macOS has no CUDA),
+            # but an explicit pin applied earlier (setup.ps1 / step 2b) can still be
+            # clobbered by a later dependency install while the matching marker masks
+            # it. Enforce a known-family cu*/cpu pin (no host probing needed -- the pin
+            # is authoritative) and run the verbatim owner for unknown-family pins;
+            # rocm/gfx per-arch repair stays with setup.ps1.
             _progress(_torch_step_label("final"))
+            _ensure_pinned_known_family_torch()
             _ensure_verbatim_torch_index()
             _record_torch_index_pin_baseline()
 
@@ -3446,7 +3508,7 @@ def _torch_pin_needs_apply() -> bool:
     flavor = _probe_torch_flavor()
     if flavor is None:
         return False
-    return _torch_flavor_matches_pin(_torch_index_leaf(pin), flavor) is False
+    return _torch_flavor_matches_pin(pin, flavor) is False
 
 
 if __name__ == "__main__":

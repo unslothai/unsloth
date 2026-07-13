@@ -59,6 +59,16 @@ Check "credential-free url unchanged" `
     ((Remove-IndexUrlCredentials "https://mirror.local/simple") -ceq "https://mirror.local/simple")
 Check "@ in path preserved" `
     ((Remove-IndexUrlCredentials "https://u:p@h/pa@th") -ceq "https://h/pa@th")
+# A token can also ride in the query string / fragment of a private feed URL;
+# both are dropped so the secret never lands in the marker or logged output.
+Check "query token stripped" `
+    ((Remove-IndexUrlCredentials "https://mirror.local/simple?token=SECRET") -ceq "https://mirror.local/simple")
+Check "fragment stripped" `
+    ((Remove-IndexUrlCredentials "https://mirror.local/simple#tok") -ceq "https://mirror.local/simple")
+Check "userinfo and query both stripped" `
+    ((Remove-IndexUrlCredentials "https://u:p@mirror.local/simple?token=SECRET") -ceq "https://mirror.local/simple")
+Check "query stripped on host-only url" `
+    ((Remove-IndexUrlCredentials "https://mirror.local?token=SECRET") -ceq "https://mirror.local")
 # Backward compatibility: an OLD marker that recorded credentials must compare
 # equal to the same pin with or without them (normalization strips both sides).
 Check "normalize: creds on either side compare equal" `
@@ -92,6 +102,11 @@ try {
     $markerBody = Read-TorchIndexMarker -VenvDir $venv
     Check "marker stores credential-free url" ($markerBody -ceq "https://mirror.local/simple")
     Check "marker body has no secret" (-not ($markerBody -like "*sekrit*"))
+    # A query-carried token must not persist in the marker either.
+    Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://mirror.local/simple?token=sekrit2"
+    $markerBody2 = Read-TorchIndexMarker -VenvDir $venv
+    Check "marker drops query token" ($markerBody2 -ceq "https://mirror.local/simple")
+    Check "marker body has no query secret" (-not ($markerBody2 -like "*sekrit2*"))
     # A cred-bearing pin still matches the stripped marker (no reinstall loop).
     Check "cred pin vs stripped marker -> no mismatch" `
         ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://user:sekrit@mirror.local/simple") -eq $false)

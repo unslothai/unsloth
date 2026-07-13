@@ -71,6 +71,20 @@ assert_eq "credential-free url unchanged" \
 assert_eq "@ in path preserved" \
     "https://h/pa@th" \
     "$(_strip_index_url_credentials 'https://u:p@h/pa@th')"
+# A token can also ride in the query string / fragment of a private feed URL;
+# both are dropped so the secret never lands in the marker or logged output.
+assert_eq "query token stripped" \
+    "https://mirror.local/simple" \
+    "$(_strip_index_url_credentials 'https://mirror.local/simple?token=SECRET')"
+assert_eq "fragment stripped" \
+    "https://mirror.local/simple" \
+    "$(_strip_index_url_credentials 'https://mirror.local/simple#tok')"
+assert_eq "userinfo and query both stripped" \
+    "https://mirror.local/simple" \
+    "$(_strip_index_url_credentials 'https://u:p@mirror.local/simple?token=SECRET')"
+assert_eq "query stripped on host-only url" \
+    "https://mirror.local" \
+    "$(_strip_index_url_credentials 'https://mirror.local?token=SECRET')"
 # Backward compatibility: an OLD marker that recorded credentials must compare
 # equal to the same pin with or without them (normalization strips both sides).
 assert_eq "normalize: creds on either side compare equal" \
@@ -115,6 +129,14 @@ assert_eq "marker stores credential-free url" \
     "$(cat "$_VD/$_TORCH_INDEX_MARKER_NAME" 2>/dev/null)"
 assert_eq "marker body has no secret" \
     "0" "$(grep -c sekrit "$_VD/$_TORCH_INDEX_MARKER_NAME" 2>/dev/null)"
+
+# A query-carried token must not persist in the marker either.
+_write_torch_index_marker "$_VD" "https://mirror.local/simple?token=sekrit2"
+assert_eq "marker drops query token" \
+    "https://mirror.local/simple" \
+    "$(cat "$_VD/$_TORCH_INDEX_MARKER_NAME" 2>/dev/null)"
+assert_eq "marker body has no query secret" \
+    "0" "$(grep -c sekrit2 "$_VD/$_TORCH_INDEX_MARKER_NAME" 2>/dev/null)"
 
 # Missing venv dir -> no-op, no error, no file created.
 _MISSING="$_VD/does_not_exist_dir"

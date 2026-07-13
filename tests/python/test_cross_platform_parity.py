@@ -455,6 +455,26 @@ class TestTorchIndexMarkerParity:
             "url = _strip_index_url_credentials(url)" in stack
         ), "install_python_stack.py _normalize_index_url must strip credentials"
 
+    def test_all_credential_strippers_drop_query_and_fragment(self):
+        """The credential stripper feeding the marker writer and the logged repair
+        messages must drop a query/fragment token, not just user:pass@ userinfo: a
+        private feed can carry its auth token as .../simple?token=SECRET, which would
+        otherwise persist in the world-readable marker and print in substep output.
+        All four implementations drop it before building the sanitized URL."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            '_sic_rest="${_sic_rest%%\\?*}"' in sh and '_sic_rest="${_sic_rest%%#*}"' in sh
+        ), "install.sh _strip_index_url_credentials must drop query/fragment"
+        for path in (INSTALL_PS1, SETUP_PS1):
+            text = path.read_text(encoding = "utf-8")
+            assert (
+                "$rest.IndexOfAny([char[]]('?', '#'))" in text
+            ), f"{path.name} Remove-IndexUrlCredentials must drop query/fragment"
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            'rest = rest.split("?", 1)[0].split("#", 1)[0]' in stack
+        ), "install_python_stack.py _strip_index_url_credentials must drop query/fragment"
+
     def test_all_installers_drop_query_before_leaf_classification(self):
         """A token-authenticated index URL (.../cu128?token=x) must classify as the
         cu128 family in every installer: the raw last-path-segment leaf keeps the
@@ -693,7 +713,7 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "the probe must report 'needs apply' when the marker differs (True) or is absent "
             "(None), and only reach the flavor check when it already matches (False)"
         )
-        assert "_torch_flavor_matches_pin(_torch_index_leaf(pin), flavor) is False" in text, (
+        assert "_torch_flavor_matches_pin(pin, flavor) is False" in text, (
             "the probe must also force the pass when a known-family pin's installed flavor "
             "drifted (clobbered), which the marker (last install source) cannot detect"
         )
@@ -743,6 +763,16 @@ class TestFirstCustomPinAppliedWithoutMarker:
         assert "elif IS_WINDOWS or IS_MAC_ARM:" in text, (
             "the step-13 final repair must have a Windows/macOS-ARM branch so a custom "
             "pin is repaired/applied there, not only on Linux"
+        )
+        # A KNOWN-family cu*/cpu pin also needs a repair on Windows: setup.ps1 applies it
+        # to the main venv before install_python_stack.py, a later dependency step can
+        # clobber it, and _ensure_{cuda,cpu}_torch self-skip on Windows -- so the branch
+        # must also call _ensure_pinned_known_family_torch (the known-family analog of
+        # the verbatim unknown-family repair).
+        win_branch = text[text.find("elif IS_WINDOWS or IS_MAC_ARM:") :][:1200]
+        assert "_ensure_pinned_known_family_torch()" in win_branch, (
+            "the Windows/macOS-ARM branch must repair a clobbered known-family cu*/cpu pin "
+            "via _ensure_pinned_known_family_torch (the family helpers no-op on Windows)"
         )
 
     def test_setup_ps1_forces_reinstall_when_marker_absent(self):

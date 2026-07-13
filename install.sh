@@ -2281,11 +2281,12 @@ _torch_index_repairable() {
 #   <venv_dir>/.unsloth-torch-index   (single line = the resolved index URL)
 _TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
 
-# Remove userinfo (user:password@) from a wheel index URL ($1). An authenticated
-# pin like https://user:token@mirror.local/simple must not persist its credentials
-# in the marker (mode 0644 under a default umask) or leak them through substep
-# output. Only the authority's userinfo goes (up to the LAST @ before the first
-# path slash); path, query, and fragment stay so the comparison identity is
+# Remove credentials from a wheel index URL ($1). An authenticated pin like
+# https://user:token@mirror.local/simple or https://mirror.local/simple?token=SECRET
+# must not persist its secret in the marker (mode 0644 under a default umask) or
+# leak it through substep output. Both userinfo (up to the LAST @ before the first
+# path slash) AND a query/fragment (which some private feeds use to carry an auth
+# token) are dropped; scheme, host, and path stay so the comparison identity is
 # otherwise exact. Mirrors _strip_index_url_credentials in
 # install_python_stack.py / Remove-IndexUrlCredentials in setup.ps1 / install.ps1.
 _strip_index_url_credentials() {
@@ -2296,12 +2297,15 @@ _strip_index_url_credentials() {
     esac
     _sic_scheme="${_sic_url%%://*}"
     _sic_rest="${_sic_url#*://}"
+    # Drop query / fragment (may hold auth tokens; not part of the index identity).
+    _sic_rest="${_sic_rest%%\?*}"
+    _sic_rest="${_sic_rest%%#*}"
     _sic_auth="${_sic_rest%%/*}"
+    # Drop user:pass@ userinfo from the authority if present.
     case "$_sic_auth" in
-        *@*) ;;
-        *) printf '%s' "$_sic_url"; return ;;
+        *@*) _sic_host="${_sic_auth##*@}" ;;
+        *)   _sic_host="$_sic_auth" ;;
     esac
-    _sic_host="${_sic_auth##*@}"
     if [ "$_sic_auth" = "$_sic_rest" ]; then
         printf '%s://%s' "$_sic_scheme" "$_sic_host"
     else

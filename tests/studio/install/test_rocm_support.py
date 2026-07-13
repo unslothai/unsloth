@@ -1148,10 +1148,16 @@ class TestTorchIndexMarkerHelpers:
 
     def test_strip_index_url_credentials(self):
         f = stack_mod._strip_index_url_credentials
-        # Userinfo goes; path/query/fragment stay.
+        # Userinfo goes; scheme/host/path stay.
         assert f("https://user:tok@mirror.local/simple") == "https://mirror.local/simple"
         assert f("https://user@mirror.local/simple") == "https://mirror.local/simple"
-        assert f("https://u:p@m.local/cu128?token=q#f") == "https://m.local/cu128?token=q#f"
+        # A token can also ride in the query string / fragment: both are dropped so
+        # the secret never lands in the marker (mode 0644) or logged output.
+        assert f("https://u:p@m.local/cu128?token=q#f") == "https://m.local/cu128"
+        assert f("https://mirror.local/simple?token=SECRET") == "https://mirror.local/simple"
+        assert f("https://mirror.local/simple#tok") == "https://mirror.local/simple"
+        # Query stripped even without userinfo and with no path segment.
+        assert f("https://mirror.local?token=SECRET") == "https://mirror.local"
         # Credential-free URLs are unchanged.
         assert f("https://mirror.local/simple") == "https://mirror.local/simple"
         # An @ in the PATH is not userinfo (host is after the LAST @ in the authority).
@@ -1170,6 +1176,11 @@ class TestTorchIndexMarkerHelpers:
             assert (
                 stack_mod._marker_pin_mismatch("https://user:sekrit@mirror.local/simple") is False
             )
+            # A query-carried token must not persist in the marker either.
+            stack_mod._write_torch_index_marker("https://mirror.local/simple?token=sekrit2")
+            body2 = marker.read_text()
+            assert "sekrit2" not in body2
+            assert body2.strip() == "https://mirror.local/simple"
 
     def test_normalize_strips_credentials_backward_compatible(self):
         # An OLD marker that recorded credentials must compare equal to the same
@@ -1455,14 +1466,14 @@ class TestEnsureRocmTorchMarker:
         records the resolved pin so `studio update` stops re-entering the dependency pass
         and a later genuine change is detected. No marker seeded by the autouse fixture."""
         assert not self._marker_path.exists()
-        self._baseline("https://mirror.local/cu128", ("cuda", "cu128"))
+        self._baseline("https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128"))
         assert "https://mirror.local/cu128" in self._marker_path.read_text()
 
     def test_baseline_leaves_present_marker_untouched(self):
         """A present marker (a real install source, or one a reinstall just wrote) is
         never overwritten by the baseline record."""
         self._seed("https://download.pytorch.org/whl/cu128")
-        self._baseline("https://mirror.local/cu128", ("cuda", "cu128"))
+        self._baseline("https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128"))
         assert self._marker_path.read_text().strip() == "https://download.pytorch.org/whl/cu128"
 
     def test_baseline_noop_without_pin(self):
@@ -1487,28 +1498,31 @@ class TestEnsureRocmTorchMarker:
         as that pin: a CPU build under a cu128 pin (or an untagged CUDA build whose
         cuXXX cannot be confirmed) still needs the pass to run and repair."""
         # CPU build under a CUDA pin.
-        self._baseline("https://mirror.local/cu128", ("cpu", ""))
+        self._baseline("https://mirror.local/cu128", ("cpu", "", "2.10.0"))
         assert not self._marker_path.exists()
         # Untagged CUDA build: the pinned cu128 cannot be confirmed.
-        self._baseline("https://mirror.local/cu128", ("cuda", ""))
+        self._baseline("https://mirror.local/cu128", ("cuda", "", "2.10.0"))
         assert not self._marker_path.exists()
         # CUDA build under a ROCm pin.
-        self._baseline("https://mirror.local/rocm7.2", ("cuda", "cu128"))
+        self._baseline("https://mirror.local/rocm7.2", ("cuda", "cu128", "2.10.0+cu128"))
+        assert not self._marker_path.exists()
+        # A ROCm build whose family differs from the rocm pin (old +rocm6.4 under rocm7.2).
+        self._baseline("https://mirror.local/rocm7.2", ("hip", "", "2.10.0+rocm6.4"))
         assert not self._marker_path.exists()
 
     def test_baseline_records_matching_rocm_and_cpu(self):
-        """Matching flavors DO record: hip build under a rocm/gfx pin, cpu build
-        under a cpu pin."""
-        self._baseline("https://mirror.local/rocm7.2", ("hip", ""))
+        """Matching flavors DO record: hip build (matching rocm version) under a
+        rocm/gfx pin, cpu build under a cpu pin."""
+        self._baseline("https://mirror.local/rocm7.2", ("hip", "", "2.11.0+rocm7.2"))
         assert "rocm7.2" in self._marker_path.read_text()
         self._marker_path.unlink()
-        self._baseline("https://mirror.local/cpu", ("cpu", ""))
+        self._baseline("https://mirror.local/cpu", ("cpu", "", "2.10.0"))
         assert "cpu" in self._marker_path.read_text()
 
     def test_baseline_leaves_unknown_family_to_verbatim(self):
         """An unknown-family pin gets NO baseline: _ensure_verbatim_torch_index owns
         that marker (it reinstalls and writes it itself)."""
-        self._baseline("https://mirror.local/simple", ("cuda", "cu128"))
+        self._baseline("https://mirror.local/simple", ("cuda", "cu128", "2.10.0+cu128"))
         assert not self._marker_path.exists()
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
@@ -1559,21 +1573,30 @@ class TestEnsureRocmTorchMarker:
     # --- _torch_flavor_matches_pin (shared by baseline + probe) ---------------
     def test_flavor_matches_pin_tristate(self):
         f = stack_mod._torch_flavor_matches_pin
-        # cuXXX pin: exact tag matches; different family/tag is a definite mismatch;
-        # an untagged CUDA build is ambiguous (None -- never force on that alone).
-        assert f("cu128", ("cuda", "cu128")) is True
-        assert f("cu128", ("cuda", "cu126")) is False
-        assert f("cu128", ("cpu", "")) is False
-        assert f("cu128", ("hip", "")) is False
-        assert f("cu128", ("cuda", "")) is None
-        # cpu / rocm / gfx pins.
-        assert f("cpu", ("cpu", "")) is True
-        assert f("cpu", ("cuda", "cu128")) is False
-        assert f("rocm7.2", ("hip", "")) is True
-        assert f("rocm7.2", ("cpu", "")) is False
-        assert f("gfx1151", ("hip", "")) is True
+        # flavor is (marker, cutag, version). cuXXX pin: exact +cuXXX tag matches; a
+        # different family/tag is a definite mismatch. An UNTAGGED cuda build is NOT
+        # accepted (False, not None): _ensure_cuda_torch reinstalls it to enforce the
+        # pin, so the probe must force the pass too rather than trust it.
+        assert f("cu128", ("cuda", "cu128", "2.10.0+cu128")) is True
+        assert f("cu128", ("cuda", "cu126", "2.10.0+cu126")) is False
+        assert f("cu128", ("cpu", "", "2.10.0")) is False
+        assert f("cu128", ("hip", "", "2.10.0+rocm7.2")) is False
+        assert f("cu128", ("cuda", "", "2.10.0")) is False
+        # cpu pin.
+        assert f("cpu", ("cpu", "", "2.10.0")) is True
+        assert f("cpu", ("cuda", "cu128", "2.10.0+cu128")) is False
+        # rocm pin reuses _rocm_pin_family_mismatch, so the probe is as strict as
+        # _ensure_rocm_torch's reinstall test: a matching rocm version is True, a wrong
+        # ROCm family is False (an old +rocm6.4 wheel under a rocm7.2 pin).
+        assert f("rocm7.2", ("hip", "", "2.11.0+rocm7.2")) is True
+        assert f("rocm7.2", ("cpu", "", "2.10.0")) is False
+        assert f("rocm7.2", ("hip", "", "2.10.0+rocm6.4")) is False
+        # gfx per-arch pin: only the AMD three-part +rocmA.B.C wheel matches; a generic
+        # two-part +rocm7.2 build under the same per-arch pin is a mismatch.
+        assert f("gfx1151", ("hip", "", "2.11.0+rocm7.13.0")) is True
+        assert f("gfx1151", ("hip", "", "2.11.0+rocm7.2")) is False
         # Unknown family: no flavor tag to judge -> None (verbatim path owns it).
-        assert f("simple", ("cuda", "cu128")) is None
+        assert f("simple", ("cuda", "cu128", "2.10.0+cu128")) is None
 
     # --- _torch_pin_needs_apply (the fast-path probe decision) ----------------
     def _needs_apply(
@@ -1597,12 +1620,16 @@ class TestEnsureRocmTorchMarker:
 
     def test_probe_absent_marker_forces_pass(self):
         # No marker seeded -> mismatch is None -> apply (the round-2 behavior).
-        assert self._needs_apply("https://mirror.local/cu128", ("cuda", "cu128")) is True
+        assert (
+            self._needs_apply("https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128")) is True
+        )
 
     def test_probe_matching_marker_and_flavor_keeps_fast_path(self):
         assert (
             self._needs_apply(
-                "https://mirror.local/cu128", ("cuda", "cu128"), marker = "https://mirror.local/cu128"
+                "https://mirror.local/cu128",
+                ("cuda", "cu128", "2.10.0+cu128"),
+                marker = "https://mirror.local/cu128",
             )
             is False
         )
@@ -1612,7 +1639,31 @@ class TestEnsureRocmTorchMarker:
         # wheel: the probe must force the repair pass the marker alone would skip.
         assert (
             self._needs_apply(
-                "https://mirror.local/cu128", ("cpu", ""), marker = "https://mirror.local/cu128"
+                "https://mirror.local/cu128", ("cpu", "", "2.10.0"), marker = "https://mirror.local/cu128"
+            )
+            is True
+        )
+
+    def test_probe_untagged_cuda_under_pin_forces_pass(self):
+        # An untagged CUDA build under a cuXXX pin: the marker matches but the family
+        # cannot be confirmed and _ensure_cuda_torch would reinstall it, so the probe
+        # must force the pass (round-3 returned None here and skipped it -- item 2).
+        assert (
+            self._needs_apply(
+                "https://mirror.local/cu128", ("cuda", "", "2.10.0"), marker = "https://mirror.local/cu128"
+            )
+            is True
+        )
+
+    def test_probe_generic_rocm_under_gfx_pin_forces_pass(self):
+        # A generic two-part +rocm7.2 wheel under a per-arch gfx pin: _ensure_rocm_torch
+        # reinstalls it (per-arch mismatch), so the probe must force the pass instead of
+        # accepting any HIP build (round-3 accepted it -- item 3).
+        assert (
+            self._needs_apply(
+                "https://repo.amd.com/rocm/whl/gfx1151",
+                ("hip", "", "2.11.0+rocm7.2"),
+                marker = "https://repo.amd.com/rocm/whl/gfx1151",
             )
             is True
         )
@@ -1623,7 +1674,7 @@ class TestEnsureRocmTorchMarker:
         assert (
             self._needs_apply(
                 "https://mirror.local/simple",
-                ("cuda", "cu128"),
+                ("cuda", "cu128", "2.10.0+cu128"),
                 marker = "https://mirror.local/simple",
             )
             is False
@@ -1678,11 +1729,87 @@ class TestEnsureRocmTorchMarker:
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MAC_INTEL", False):
                 with patch.object(stack_mod, "IS_MAC_ARM", True):
-                    with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "")):
+                    with patch.object(
+                        stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
+                    ):
                         with patch.dict(stack_mod.os.environ, env, clear = False):
                             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                             stack_mod._record_torch_index_pin_baseline()
         assert "https://mirror.local/cpu" in self._marker_path.read_text()
+
+    # --- _ensure_pinned_known_family_torch (Windows/macOS-ARM cu*/cpu repair) ----
+    def _ensure_known(self, url, flavor):
+        """Run _ensure_pinned_known_family_torch with a pin + mocked flavor probe,
+        returning the pip_install mock so callers can assert on the reinstall."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": url}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MAC_INTEL", False):
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
+                    with patch.object(stack_mod, "pip_install") as mock_pip:
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._ensure_pinned_known_family_torch()
+                        return mock_pip
+
+    def test_pinned_known_family_repairs_clobbered_cuda(self):
+        """A cu128 pin whose main-venv torch was clobbered to a CPU wheel (Windows: a
+        later dependency step after setup.ps1 applied the pin; the family helpers no-op
+        there) is reinstalled from the pin, and the marker is rewritten."""
+        mock_pip = self._ensure_known("https://mirror.local/cu128", ("cpu", "", "2.10.0"))
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/cu128" in str(mock_pip.call_args)
+        assert "https://mirror.local/cu128" in self._marker_path.read_text()
+
+    def test_pinned_known_family_untagged_cuda_reinstalls(self):
+        """An untagged CUDA build under a cu128 pin cannot be confirmed -> reinstall."""
+        mock_pip = self._ensure_known("https://mirror.local/cu128", ("cuda", "", "2.10.0"))
+        assert mock_pip.call_count == 1
+
+    def test_pinned_known_family_matching_no_reinstall(self):
+        """A cu128 build already matching the cu128 pin is left alone (no loop)."""
+        mock_pip = self._ensure_known(
+            "https://mirror.local/cu128", ("cuda", "cu128", "2.10.0+cu128")
+        )
+        mock_pip.assert_not_called()
+
+    def test_pinned_known_family_cpu_pin_repairs(self):
+        """A cpu pin whose torch drifted to a CUDA build is reinstalled from the pin."""
+        mock_pip = self._ensure_known(
+            "https://mirror.local/cpu", ("cuda", "cu128", "2.10.0+cu128")
+        )
+        assert mock_pip.call_count == 1
+
+    def test_pinned_known_family_skips_rocm_and_gfx(self):
+        """ROCm/gfx per-arch pins are owned by setup.ps1's ROCm block, so this helper
+        must not reinstall them with the CPU/CUDA bounded spec even on a drift."""
+        for url in ("https://mirror.local/rocm7.2", "https://repo.amd.com/rocm/whl/gfx1151"):
+            mock_pip = self._ensure_known(url, ("cpu", "", "2.10.0"))
+            mock_pip.assert_not_called()
+
+    def test_pinned_known_family_skips_unknown_family(self):
+        """An unknown-family pin is owned by _ensure_verbatim_torch_index, not here."""
+        mock_pip = self._ensure_known("https://mirror.local/simple", ("cpu", "", "2.10.0"))
+        mock_pip.assert_not_called()
+
+    def test_pinned_known_family_skips_failed_probe(self):
+        """A broken/missing torch probe -> no forced reinstall (no loop)."""
+        mock_pip = self._ensure_known("https://mirror.local/cu128", None)
+        mock_pip.assert_not_called()
+
+    def test_pinned_known_family_skips_no_torch_and_intel_mac(self):
+        """NO_TORCH (headless no-torch) and Intel mac (already NO_TORCH) do nothing."""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cu128"}
+        for no_torch, mac_intel in ((True, False), (False, True)):
+            with patch.object(stack_mod, "NO_TORCH", no_torch):
+                with patch.object(stack_mod, "IS_MAC_INTEL", mac_intel):
+                    with patch.object(
+                        stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
+                    ):
+                        with patch.object(stack_mod, "pip_install") as mock_pip:
+                            with patch.dict(stack_mod.os.environ, env, clear = False):
+                                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                                stack_mod._ensure_pinned_known_family_torch()
+                            mock_pip.assert_not_called()
 
 
 # TEST: install_python_stack.py -- _has_rocm_gpu KFD sysfs vendor_id guard

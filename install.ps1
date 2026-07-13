@@ -2012,21 +2012,25 @@ exit 0
     # install.sh, studio/setup.ps1 and install_python_stack.py:
     #   <VenvDir>\.unsloth-torch-index   (single line = the resolved index URL)
     # install.ps1 only WRITES the marker; setup.ps1 reads it during stale detection.
-    # Remove userinfo (user:password@) from a wheel index URL before it is
-    # persisted or printed: an authenticated pin must not leave its credentials
-    # in the marker file or in logged output. Mirrors _strip_index_url_credentials
-    # in install.sh / install_python_stack.py and setup.ps1's helper.
+    # Remove credentials from a wheel index URL before it is persisted or printed:
+    # an authenticated pin must not leave its secret in the marker file or in
+    # logged output. Both userinfo (user:password@) AND a query/fragment (which
+    # some private feeds use to carry an auth token) are dropped. Mirrors
+    # _strip_index_url_credentials in install.sh / install_python_stack.py and
+    # setup.ps1's helper.
     function Remove-IndexUrlCredentials {
         param([string]$Url)
         $sep = $Url.IndexOf('://')
         if ($sep -lt 0) { return $Url }
         $scheme = $Url.Substring(0, $sep)
         $rest = $Url.Substring($sep + 3)
+        # Drop query / fragment (may hold auth tokens; not part of index identity).
+        $q = $rest.IndexOfAny([char[]]('?', '#'))
+        if ($q -ge 0) { $rest = $rest.Substring(0, $q) }
         $slash = $rest.IndexOf('/')
         $authority = if ($slash -ge 0) { $rest.Substring(0, $slash) } else { $rest }
         $at = $authority.LastIndexOf('@')
-        if ($at -lt 0) { return $Url }
-        $host_ = $authority.Substring($at + 1)
+        $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
         if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
         return "${scheme}://${host_}"
     }
