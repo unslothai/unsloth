@@ -18,6 +18,7 @@ const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
 /** STT model ids, mirrored from the backend allowlist (stt_sidecar.py). */
 export const STT_MODELS = [
+  "tiny",
   "base",
   "small",
   "distil-large-v3",

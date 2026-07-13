@@ -14,15 +14,9 @@ import {
   isMissingDeviceError,
 } from "./studio-web-speech-dictation-adapter";
 
-// Dictation is recorded in short, independent clips. Each clip is transcribed
-// once and appended, so text appears while speaking without re-transcribing a
-// growing buffer (which gets slower and slower and can stall the backend).
-// The first clip is shorter so the first words show up sooner.
-const SEGMENT_MS = 4000;
-const FIRST_SEGMENT_MS = 2000;
-// Safety net: stop always ends the session within this window, even if a
-// transcription stalls, so the stop button can never get stuck.
-const STOP_TIMEOUT_MS = 6000;
+// MediaRecorder emits a chunk this often so the buffer is ready to send the
+// moment the user stops.
+const RECORD_TIMESLICE_MS = 1000;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser
 // records. The backend decodes any of these with PyAV.
@@ -121,9 +115,10 @@ export async function loadSttModel(model: string): Promise<void> {
 }
 
 /**
- * Dictation via a loaded STT model. Records the microphone, then transcribes
- * the whole clip through the backend when the user stops. Works in any browser
- * with MediaRecorder, including Firefox, which has no Web Speech recognition.
+ * Dictation via a loaded STT model. Records the microphone the whole time and
+ * transcribes the clip once when the user stops, like the ChatGPT dictation
+ * flow. Stopping releases the mic immediately. Works in any browser with
+ * MediaRecorder, including Firefox, which has no Web Speech recognition.
  */
 export class StudioModelDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
@@ -151,16 +146,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
 
     let stream: MediaStream | null = null;
     let recorder: MediaRecorder | null = null;
-    let segmentTimer: ReturnType<typeof setTimeout> | null = null;
-    let stopTimer: ReturnType<typeof setTimeout> | null = null;
-    let segmentCount = 0;
-    const queue: Blob[] = [];
-    let transcribing = false;
-    // Full dictation so far, for Recent dictations.
-    let committed = "";
+    const chunks: Blob[] = [];
     let ended = false;
     let cancelled = false;
     let finalizing = false;
+    let transcribed = false;
     const abortController = new AbortController();
     const mimeType = pickMimeType();
     let resolveEnded: (() => void) | null = null;
@@ -168,98 +158,54 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       resolveEnded = resolve;
     });
 
-    const clearTimers = () => {
-      if (segmentTimer) clearTimeout(segmentTimer);
-      if (stopTimer) clearTimeout(stopTimer);
-      segmentTimer = null;
-      stopTimer = null;
-    };
-
-    const finishSession = (reason: "stopped" | "cancelled" | "error") => {
+    const finishSession = (
+      reason: "stopped" | "cancelled" | "error",
+      transcript?: string,
+    ) => {
       if (ended) return;
       ended = true;
-      clearTimers();
       session.status = { type: "ended", reason };
       stopStream(stream);
       stream = null;
-      if (reason !== "cancelled") {
-        for (const callback of speechEndCallbacks) {
-          callback({ transcript: committed });
+      const corrected = transcript ? applyDictationDictionary(transcript) : "";
+      if (reason !== "cancelled" && corrected) {
+        for (const callback of speechCallbacks) {
+          callback({ transcript: corrected, isFinal: true });
         }
-        if (committed) recordRecentDictation(committed);
+        recordRecentDictation(corrected);
+      }
+      for (const callback of speechEndCallbacks) {
+        callback({ transcript: corrected });
       }
       for (const callback of endCallbacks) callback();
       resolveEnded?.();
     };
 
-    // Finish once the last recorded segment has been transcribed.
-    const maybeFinish = () => {
-      if (
-        finalizing &&
-        !ended &&
-        !transcribing &&
-        queue.length === 0 &&
-        (!recorder || recorder.state === "inactive")
-      ) {
+    // Transcribe the whole recording once, then end the session.
+    const transcribeAndFinish = () => {
+      if (transcribed || cancelled || ended) return;
+      transcribed = true;
+      const blob = new Blob(chunks, {
+        type: recorder?.mimeType || "audio/webm",
+      });
+      if (blob.size === 0) {
         finishSession("stopped");
-      }
-    };
-
-    // Transcribe queued segments one at a time and append each result. One in
-    // flight at a time keeps the backend from being flooded.
-    const processQueue = () => {
-      if (transcribing || ended) return;
-      const blob = queue.shift();
-      if (!blob) {
-        maybeFinish();
         return;
       }
-      transcribing = true;
       void (async () => {
         try {
           const text = await transcribeAudioBlob(blob, abortController.signal);
-          if (!cancelled && text) {
-            const corrected = applyDictationDictionary(text);
-            committed = committed ? `${committed} ${corrected}` : corrected;
-            for (const callback of speechCallbacks) {
-              callback({ transcript: corrected, isFinal: true });
-            }
-          }
-        } catch {
-          // Drop a failed segment rather than stalling the whole session.
-        } finally {
-          transcribing = false;
-          processQueue();
+          if (cancelled) return;
+          finishSession("stopped", text);
+        } catch (error) {
+          if (cancelled || abortController.signal.aborted) return;
+          const message =
+            error instanceof Error ? error.message : "Transcription failed.";
+          console.error("STT transcription error:", error);
+          toast.error(message);
+          finishSession("error");
         }
       })();
-    };
-
-    // Record one clip, then chain the next until the user stops.
-    const startSegment = () => {
-      if (ended || cancelled || finalizing || !stream) return;
-      const parts: Blob[] = [];
-      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      recorder = rec;
-      rec.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) parts.push(event.data);
-      });
-      rec.addEventListener("stop", () => {
-        if (parts.length > 0) {
-          queue.push(new Blob(parts, { type: rec.mimeType || "audio/webm" }));
-          processQueue();
-        }
-        if (!ended && !cancelled && !finalizing && stream) {
-          startSegment();
-        } else {
-          maybeFinish();
-        }
-      });
-      rec.start();
-      const duration = segmentCount === 0 ? FIRST_SEGMENT_MS : SEGMENT_MS;
-      segmentCount += 1;
-      segmentTimer = setTimeout(() => {
-        if (rec.state !== "inactive") rec.stop();
-      }, duration);
     };
 
     const session: StudioDictationSession = {
@@ -267,15 +213,21 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       stop: async () => {
         if (!ended && !finalizing) {
           finalizing = true;
-          if (segmentTimer) clearTimeout(segmentTimer);
-          segmentTimer = null;
-          // Never let stop hang: end the session even if a segment stalls.
-          stopTimer = setTimeout(() => finishSession("stopped"), STOP_TIMEOUT_MS);
-          if (recorder && recorder.state !== "inactive") {
-            recorder.stop();
+          const rec = recorder;
+          // Flush the recording, then release the mic immediately so recording
+          // visibly stops on the first click. The buffered audio survives.
+          if (rec && rec.state !== "inactive") {
+            rec.addEventListener("stop", transcribeAndFinish, { once: true });
+            try {
+              rec.stop();
+            } catch {
+              transcribeAndFinish();
+            }
           } else {
-            maybeFinish();
+            transcribeAndFinish();
           }
+          stopStream(stream);
+          stream = null;
         }
         await endedPromise;
       },
@@ -348,9 +300,13 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stream = null;
           return;
         }
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        recorder.addEventListener("dataavailable", (event) => {
+          if (event.data.size > 0) chunks.push(event.data);
+        });
+        recorder.start(RECORD_TIMESLICE_MS);
         session.status = { type: "running" };
         for (const callback of speechStartCallbacks) callback();
-        startSegment();
       } catch (error) {
         const message = isMissingDeviceError(error)
           ? "No microphone was found for dictation."

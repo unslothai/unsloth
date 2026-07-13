@@ -66,6 +66,7 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 // Approximate download sizes, shown in the STT model picker so users know
 // what a first-time selection will fetch.
 const STT_MODEL_SIZES: Record<string, string> = {
+  tiny: "~75 MB, fastest",
   base: "~150 MB",
   small: "~500 MB",
   "distil-large-v3": "~1.5 GB",

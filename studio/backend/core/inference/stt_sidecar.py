@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 # Curated, fast, accurate models. Keys are the ids the API/UI use; values are
 # the faster-whisper model names (auto-downloaded from the HF hub, then cached).
 STT_MODELS: dict[str, str] = {
+    "tiny": "tiny",
     "base": "base",
     "small": "small",
     "distil-large-v3": "distil-large-v3",
