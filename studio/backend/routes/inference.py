@@ -11570,13 +11570,16 @@ async def anthropic_messages(
 
     # Reject an unsupported confirm-gated permission mode for Studio's own
     # ("server") Anthropic tools before the switch, mirroring the malformed- and
-    # mixed-tool checks above: ask/auto (and an omitted mode that selects a
-    # gate-needing terminal/python tool) have no confirmation channel on this
-    # passthrough, so an invalid request must 400 without first evicting the
-    # resident model. It is determined from the requested tools alone (backend
-    # tool support is only known post-switch); an image request can never take
-    # the server-tool path, so it is excluded here as it is in the server_tools
-    # gate below. off/full and an explicit confirm_tool_calls=False opt-out pass.
+    # mixed-tool checks above. ask always wants a per-call pause this passthrough
+    # cannot offer, so it 400s whenever server tools are selected. auto only needs
+    # the gate for an unsafe call, so (like the omitted default) it runs for a
+    # safe-only selection (web_search/RAG/render) and 400s only when a gate-needing
+    # local terminal/python tool is selected. Rejecting must happen before the
+    # switch so an invalid request never evicts the resident model; it is
+    # determined from the requested tools alone (backend tool support is only known
+    # post-switch); an image request can never take the server-tool path, so it is
+    # excluded as in the server_tools gate below. off/full and an explicit
+    # confirm_tool_calls=False opt-out always pass.
     _enable_pre = _effective_enable_tools(payload)
     _server_tools_requested_pre = (
         _enable_pre or (_enable_pre is None and bool(requested_studio_tools))
@@ -11593,15 +11596,17 @@ async def anthropic_messages(
             tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
             for tool in _selected_pre
         )
-        if _perm_mode_pre in ("ask", "auto") or (
-            _perm_mode_pre is None and not _confirm_opt_out_pre and _gated_tool_selected_pre
+        if _perm_mode_pre == "ask" or (
+            _perm_mode_pre in ("auto", None)
+            and not _confirm_opt_out_pre
+            and _gated_tool_selected_pre
         ):
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
-                    "permission_mode 'ask'/'auto' (the default when omitted) is not supported "
-                    "for local ('terminal'/'python') Anthropic Messages server tools; "
-                    "set 'off' or 'full'.",
+                    "permission_mode 'ask' has no confirmation channel for Anthropic "
+                    "Messages server tools, and 'auto' (or the omitted default) cannot "
+                    "gate a local 'terminal'/'python' tool here; set 'off' or 'full'.",
                     status = 400,
                     err_type = "invalid_request_error",
                 ),

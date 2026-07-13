@@ -1479,6 +1479,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 getattr_aliases.update(targets)  # g = getattr
             elif isinstance(value, ast.Name) and value.id in partial_aliases:
                 partial_aliases.update(targets)  # p = partial
+            elif isinstance(value, ast.Name) and value.id in writer_aliases:
+                writer_aliases.update(targets)  # s = save (numpy save alias)
+            elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
+                archive_ctor_aliases.update(targets)  # z = ZipFile
             elif (
                 isinstance(value, ast.Attribute)
                 and value.attr == "open"
@@ -1543,6 +1547,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                 getattr_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
                                 partial_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in writer_aliases:
+                                writer_aliases.add(tid)  # s, _ = (save, 1)
+                            elif isinstance(val_el, ast.Name) and val_el.id in archive_ctor_aliases:
+                                archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
                             elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
                                 literal_str_vars[tid] = (
                                     "\x02" if tid in multi_assigned_names else val_el.value
@@ -1699,15 +1707,22 @@ _MCP_ARG_MUTATION_RE = re.compile(
 # UPDATE/**/users evade the \s+ in the mutation regex; collapse comments to a
 # space before matching.
 _SQL_COMMENT_RE = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
+# A GraphQL mutation operation (mutation { ... } / mutation Name(...) { ... })
+# changes external state on a read-named graphql tool. GraphQL uses # comments,
+# not SQL's, so this matches the raw payload before the SQL comment strip.
+_GRAPHQL_MUTATION_RE = re.compile(r"\bmutation\b\s*\w*\s*[({]", re.IGNORECASE)
 
 
 def _mcp_arguments_mutate(arguments) -> bool:
     """True if an MCP call's arguments carry a mutating command, so a read-named
-    but write-capable tool (query_database {"query": "DELETE FROM runs"}) asks."""
+    but write-capable tool (query_database {"query": "DELETE FROM runs"},
+    query_graphql {"query": "mutation { deleteIssue(id: 1) }"}) asks."""
 
     def walk(value) -> bool:
         if isinstance(value, str):
-            return bool(_MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value)))
+            return bool(
+                _MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value))
+            ) or bool(_GRAPHQL_MUTATION_RE.search(value))
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())
         if isinstance(value, (list, tuple)):

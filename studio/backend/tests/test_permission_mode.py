@@ -376,6 +376,10 @@ def test_terminal_classifier(command, unsafe):
             True,
         ),  # rotating log file writer
         ("import logging\nlogging.getLogger('x').info('hi')", False),  # logging read stays safe
+        ("from numpy import save\ns = save\ns('out.npy', arr)", True),  # writer aliased to a name
+        ("from zipfile import ZipFile\nz = ZipFile\nz('a.zip', 'w')", True),  # archive ctor aliased
+        ("from numpy import save\ns, _ = (save, 1)\ns('o.npy', a)", True),  # writer destructured
+        ("x = len\nx('hi')", False),  # a benign builtin alias stays safe
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -591,6 +595,10 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "COPY users (id, name)\nFROM STDIN"}, True),  # multiline COPY FROM
         ({"query": "COPY (SELECT 1) TO '/tmp/o.csv'"}, True),  # COPY TO writes a server file
         ({"query": "SELECT copy_count FROM t"}, False),  # 'copy' substring column stays safe
+        ({"query": "mutation { deleteIssue(id: 1) }"}, True),  # GraphQL mutation
+        ({"query": "mutation DelIssue { deleteIssue(id: 1) }"}, True),  # named GraphQL mutation
+        ({"query": "query { issue(id: 1) { title } }"}, False),  # GraphQL read query stays safe
+        ({"query": "{ issue(id: 1) { title } }"}, False),  # shorthand GraphQL query stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

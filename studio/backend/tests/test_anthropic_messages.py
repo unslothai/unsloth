@@ -1764,30 +1764,31 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls == []
 
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
-        # An explicit ask/auto is a clear request for a per-call pause this channel
-        # cannot honor, so it is always rejected (even for a safe server tool).
+        # ask is a request for a per-call pause this channel cannot honor, so it is
+        # always rejected, even for a safe-only server tool (web_search).
         safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
-        for mode in ("ask", "auto"):
-            backend = _mock_backend(monkeypatch)
-            payload = _basic_payload(tools = safe_tools, permission_mode = mode)
-            with pytest.raises(HTTPException) as exc:
-                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-            assert exc.value.status_code == 400
-            assert "not supported" in exc.value.detail["error"]["message"]
-            assert backend.calls == []
-
-        # An omitted mode keeps running for safe server tools (web_search), so
-        # existing Anthropic callers are not broken.
         backend = _mock_backend(monkeypatch)
-        payload = _basic_payload(tools = safe_tools)
-        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
-        assert backend.calls[0][0] == "tools"
+        payload = _basic_payload(tools = safe_tools, permission_mode = "ask")
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "no confirmation channel" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
 
-        # But an omitted mode that would run a local tool (terminal/python, via a
-        # bare Anthropic tool type or enabled_tools) is rejected, since that tool
-        # could need the gate this channel lacks.
+        # auto only gates unsafe calls, so a safe-only selection runs (nothing to
+        # gate), like the omitted default. Both keep existing callers working.
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(tools = safe_tools, **extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+        # But auto or an omitted mode that would run a local tool (terminal/python,
+        # via a bare Anthropic tool type or enabled_tools) is rejected, since that
+        # tool could need the gate this channel lacks.
         for local_payload in (
             _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
+            _basic_payload(tools = [{"type": "terminal", "name": "terminal"}], permission_mode = "auto"),
             _basic_payload(tools = safe_tools, enable_tools = True, enabled_tools = ["python"]),
         ):
             backend = _mock_backend(monkeypatch)
@@ -1822,13 +1823,14 @@ class TestAnthropicMessagesToolRouting:
 
         monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _rec_switch)
         safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        local_tools = [{"type": "terminal", "name": "terminal"}]
 
-        # ask/auto (any server tool) and an omitted mode selecting a local tool are
-        # rejected up front, before the switch runs.
+        # ask (any server tool), auto with a local tool, and an omitted mode
+        # selecting a local tool are all rejected up front, before the switch runs.
         for payload in (
             _basic_payload(tools = safe_tools, permission_mode = "ask"),
-            _basic_payload(tools = safe_tools, permission_mode = "auto"),
-            _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
+            _basic_payload(tools = local_tools, permission_mode = "auto"),
+            _basic_payload(tools = local_tools),
         ):
             switch_calls.clear()
             _mock_backend(monkeypatch)
