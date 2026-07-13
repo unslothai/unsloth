@@ -4966,9 +4966,7 @@ async def install_latest_transformers_route(
         if result.get("latest_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
-            return InstallLatestTransformersResponse(
-                **result, model_unloaded = unloaded_chat["v"]
-            )
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
         if unloaded_chat["v"]:
             # The chat model is already gone even though the swap failed; return a
             # structured failure (not a bare 400) so the client can restore its

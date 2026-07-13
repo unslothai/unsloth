@@ -2091,14 +2091,12 @@ def _workers_active_for_repair() -> bool:
     raises; unavailable backends (worker subprocess, early startup) count idle."""
     try:
         from core.training import get_training_backend
-
         if get_training_backend().is_training_active():
             return True
     except Exception:
         pass
     try:
         from core.export import get_export_backend
-
         _alive = getattr(get_export_backend(), "is_worker_alive", None)
         if callable(_alive) and _alive():
             return True
