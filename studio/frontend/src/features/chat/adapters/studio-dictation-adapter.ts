@@ -35,8 +35,10 @@ export class StudioDictationAdapter implements DictationAdapter {
       .dictationEngine,
   ): boolean {
     return dictationEngine === "model"
-      ? StudioModelDictationAdapter.isSupported()
-      : StudioWebSpeechDictationAdapter.isSupported();
+      ? StudioModelDictationAdapter.isSupported() ||
+          StudioWebSpeechDictationAdapter.isSupported()
+      : StudioWebSpeechDictationAdapter.isSupported() ||
+          StudioModelDictationAdapter.isSupported();
   }
 
   listen(): StudioDictationSession {
@@ -59,12 +61,21 @@ export class StudioDictationAdapter implements DictationAdapter {
       if (StudioModelDictationAdapter.isSupported()) {
         return new StudioModelDictationAdapter().listen();
       }
-      throw new Error("Local transcription is not supported in this browser.");
+      if (StudioWebSpeechDictationAdapter.isSupported()) {
+        return new StudioWebSpeechDictationAdapter().listen();
+      }
+      throw new Error("Dictation is not supported in this browser.");
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
       return new StudioWebSpeechDictationAdapter().listen();
     }
-    // Never download a local model as a hidden browser-engine fallback.
+    // Firefox normally lacks the Web Speech recognition API. Preserve the
+    // working microphone experience there by using local STT. The model
+    // adapter starts loading only after this user action and mic permission,
+    // so capability fallback never downloads weights during app startup.
+    if (StudioModelDictationAdapter.isSupported()) {
+      return new StudioModelDictationAdapter().listen();
+    }
     throw new Error("Dictation is not supported in this browser.");
   }
 }
