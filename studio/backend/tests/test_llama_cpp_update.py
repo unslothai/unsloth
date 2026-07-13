@@ -677,6 +677,13 @@ def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):
     assert cmd[cmd.index("--published-release-tag") + 1] == "b9601-mix-a0e2906"
 
 
+def test_install_cmd_pins_on_windows(monkeypatch, tmp_path):
+    # The darwin exemption must not leak to other platforms.
+    monkeypatch.setattr(sys, "platform", "win32")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path)
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9518"
+
+
 def test_install_cmd_does_not_pin_on_macos(monkeypatch, tmp_path):
     # A pinned tag disables the installer's older-release walk-back, which macOS
     # needs to skip prebuilts built for a newer macOS than the host.

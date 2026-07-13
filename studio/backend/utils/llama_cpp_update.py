@@ -669,6 +669,9 @@ def start_update() -> dict:
         # ordered, can lag the published_at pick above -- reinstalling the
         # current build in a loop). Not on macOS: a pinned tag disables the
         # older-release walk-back that skips prebuilts built for a newer macOS.
+        # Elsewhere losing the walk-back is accepted: a latest release that is
+        # unusable for this host fails the job loudly (retryable) rather than
+        # silently installing a release other than the one offered.
         pin_release_tag = None if sys.platform == "darwin" else status.get("latest_tag")
     else:
         # Source build / custom path: only proceed when the same detection logic
