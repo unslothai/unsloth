@@ -1831,8 +1831,7 @@ _SQL_DDL_OBJECTS = (
 # Modifiers that can sit between the DDL verb and the object (CREATE OR REPLACE
 # VIEW, DROP MATERIALIZED VIEW, CREATE UNIQUE INDEX).
 _SQL_DDL_MODIFIERS = (
-    r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|"
-    r"recursive)\s+)*"
+    r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
 )
 # A read-named MCP tool (query_database, run_query) can still carry a mutating
 # SQL statement; match DML/DDL as whole statements (DELETE FROM, DROP TABLE) so
