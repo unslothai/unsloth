@@ -120,10 +120,8 @@ def test_structured_content_fallback_still_used():
 
 
 def test_call_tool_sync_passes_raise_on_error_false_and_keeps_error_images(monkeypatch):
-    # Guards the real call path: FastMCP client.call_tool raises ToolError by
-    # default on an is_error result, which would bypass _flatten_result and drop
-    # the images. call_tool_sync must pass raise_on_error=False so the error
-    # result (with image content) reaches _flatten_result.
+    # Guards that call_tool_sync passes raise_on_error=False, so an is_error result
+    # with image content reaches _flatten_result instead of FastMCP raising ToolError.
     seen = {}
 
     class _FakeClient:
