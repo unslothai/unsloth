@@ -70,6 +70,7 @@ class _RestoreTtyOnSignals:
 
 
 def _read_masked_posix(prompt: str, out: TextIO) -> str:
+    import codecs
     import termios
     import tty
 
@@ -88,29 +89,41 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            while True:
-                ch = sys.stdin.read(1)
-                if ch == "":  # stream ended mid-line: abort, don't submit
+            # Decode byte-at-a-time with errors="replace" (mirrors
+            # terminal_prompt.py): text-mode sys.stdin.read(1) raises
+            # UnicodeDecodeError on a pasted non-UTF-8 password (e.g. Latin-1),
+            # or yields a lone surrogate under PYTHONUTF8 that later crashes the
+            # pbkdf2 encode -- either aborts the launch. os.read + an incremental
+            # decoder maps invalid bytes to U+FFFD and keeps going.
+            decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
+            submitted = False
+            while not submitted:
+                raw = os.read(fd, 1)
+                if not raw:  # stream ended mid-line: abort, don't submit
                     raise EOFError
-                if ch in _SUBMIT_CHARS:
-                    break
-                if ch == "\x03":  # Ctrl-C (ISIG off: surfaces as a char)
-                    raise KeyboardInterrupt
-                if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
-                    if not chars:
-                        raise EOFError
-                    continue
-                if ch in _BACKSPACE_CHARS:
-                    if chars:
-                        chars.pop()
-                        out.write("\b \b")
-                        out.flush()
-                    continue
-                if ch < " ":  # other control characters
-                    continue
-                chars.append(ch)
-                out.write("*")
-                out.flush()
+                # One byte can complete >1 char (a replacement U+FFFD plus the
+                # next valid char), so iterate over everything the decoder emits.
+                for ch in decoder.decode(raw):
+                    if ch in _SUBMIT_CHARS:
+                        submitted = True
+                        break
+                    if ch == "\x03":  # Ctrl-C (ISIG off: surfaces as a char)
+                        raise KeyboardInterrupt
+                    if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
+                        if not chars:
+                            raise EOFError
+                        continue
+                    if ch in _BACKSPACE_CHARS:
+                        if chars:
+                            chars.pop()
+                            out.write("\b \b")
+                            out.flush()
+                        continue
+                    if ch < " ":  # other control characters
+                        continue
+                    chars.append(ch)
+                    out.write("*")
+                    out.flush()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
         out.write("\n")
