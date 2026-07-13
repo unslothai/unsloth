@@ -749,3 +749,38 @@ def test_quantize_partial_cast_failure_fails_load(monkeypatch):
     pipe = types.SimpleNamespace(text_encoder = _PartiallyCastEncoder())
     with pytest.raises(RuntimeError, match = "partially quantized"):
         quantize_text_encoders(pipe, _target(), mode = "fp8")
+
+
+# ── layerwise fp8 partial mutation on the text encoder (F7, mirrors the VAE path) ──
+class _LayerwiseCastEncoder:
+    """A text encoder an apply_layerwise_casting pass mutated (installed an fp8-storage upcast hook)
+    before raising. No torchao params, so the torchao detector is blind to the partial state."""
+
+    def __init__(self):
+        registry = types.SimpleNamespace(
+            get_hook = lambda name: object() if name == "layerwise_casting" else None
+        )
+        self._sub = types.SimpleNamespace(_diffusers_hook = registry)
+
+    def modules(self):
+        return [self, self._sub]
+
+    def named_parameters(self):
+        return iter(())
+
+
+def test_quantize_te_layerwise_partial_cast_fails_load(monkeypatch):
+    _stub_torch(monkeypatch)
+    hooks = types.ModuleType("diffusers.hooks")
+    casting = types.ModuleType("diffusers.hooks.layerwise_casting")
+    casting.DEFAULT_SKIP_MODULES_PATTERN = ("norm",)
+
+    def _boom(module, **kwargs):
+        raise RuntimeError("encoder layerwise cast failed mid-pass")
+
+    hooks.apply_layerwise_casting = _boom
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+    monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
+    pipe = types.SimpleNamespace(text_encoder = _LayerwiseCastEncoder())
+    with pytest.raises(RuntimeError, match = "leftover fp8 hooks"):
+        quantize_text_encoders(pipe, _target(), mode = "fp8")

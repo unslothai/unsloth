@@ -594,3 +594,142 @@ def test_teardown_restores_pipe_and_guider(monkeypatch):
 
 def test_teardown_tolerates_foreign_object():
     teardown_cfg_parallel(types.SimpleNamespace(transformer = None), object())
+
+
+# ── secondary picker: viability before identity ───────────────────────────────────
+def test_pick_secondary_prefers_viable_over_unusable_match(monkeypatch):
+    # A matching GPU too small for the replica must NOT beat a viable heterogeneous GPU: the
+    # min_free_bytes filter ranks first, so explicit "on" still engages the usable device
+    # instead of failing the memory gate while a usable card sits idle.
+    _stub_torch(
+        monkeypatch,
+        device_count = 3,
+        free = {1: (10 << 30, 80 << 30), 2: (60 << 30, 80 << 30)},
+        names = {0: "NVIDIA B200", 1: "NVIDIA B200", 2: "NVIDIA H100"},
+    )
+    idx, free, match = _pick_secondary_device(0, min_free_bytes = 40 << 30)
+    assert idx == 2 and free == 60 << 30 and match is False
+
+
+def test_pick_secondary_still_prefers_match_when_both_viable(monkeypatch):
+    # When BOTH fit the replica, the identity match still wins (bit-identity beats headroom).
+    _stub_torch(
+        monkeypatch,
+        device_count = 3,
+        free = {1: (50 << 30, 80 << 30), 2: (60 << 30, 80 << 30)},
+        names = {0: "NVIDIA B200", 1: "NVIDIA B200", 2: "NVIDIA H100"},
+    )
+    idx, _free, match = _pick_secondary_device(0, min_free_bytes = 40 << 30)
+    assert idx == 1 and match is True
+
+
+# ── replica lever mirroring (F3 attention arch guard, F4 max tier) ────────────────
+class _LoadableFuseDiT(_FakeDiT):
+    """A DiT whose class can build a replica and record a direct QKV fuse."""
+
+    @classmethod
+    def from_pretrained(cls, *a, **k):
+        return cls(device_index = 1)
+
+    def to(self, *a, **k):
+        return self
+
+    def eval(self):
+        return self
+
+    def fuse_qkv_projections(self):
+        self.fused = getattr(self, "fused", 0) + 1
+
+
+def _engage_stubs(monkeypatch):
+    import core.inference.diffusion_cache as cache_mod
+    import core.inference.diffusion_cfg_parallel as cp
+    import core.inference.diffusion_speed as speed
+
+    monkeypatch.setattr(cp, "_install_threadsafe_cudnn_attention", lambda logger = None: True)
+    monkeypatch.setattr(cp, "_restore_threadsafe_cudnn_attention", lambda: None)
+    monkeypatch.setattr(cache_mod, "_ensure_block_metadata_registered", lambda *a, **k: None)
+    return speed
+
+
+def test_replica_mirrors_max_tier_compile_and_fusion(monkeypatch):
+    # Under speed_mode="max" the replica must compile max-autotune AND fuse QKV directly, or it
+    # becomes the slower branch and throttles the whole parallel run.
+    _stub_torch(monkeypatch)
+    speed = _engage_stubs(monkeypatch)
+    compile_kwargs: list = []
+    monkeypatch.setattr(
+        speed, "_compile_repeated_blocks",
+        lambda view, logger, **kw: compile_kwargs.append(kw) or True,
+    )
+    pipe = _CtxPipe(_LoadableFuseDiT())
+    proxy, reason = _gate(
+        monkeypatch, pipe, _fam(), requested = "on", compiled = True,
+        speed_mode = "max", attention_backend = None,
+    )
+    assert proxy is not None, reason
+    try:
+        assert compile_kwargs and compile_kwargs[0].get("max_autotune") is True
+        assert getattr(proxy._replica, "fused", 0) == 1
+    finally:
+        teardown_cfg_parallel(pipe, proxy)
+
+
+def test_replica_default_tier_no_max_autotune_no_fuse(monkeypatch):
+    # speed_mode="default": the replica compiles dynamic (max_autotune False) and is NOT fused,
+    # mirroring the primary's default tier.
+    _stub_torch(monkeypatch)
+    speed = _engage_stubs(monkeypatch)
+    compile_kwargs: list = []
+    monkeypatch.setattr(
+        speed, "_compile_repeated_blocks",
+        lambda view, logger, **kw: compile_kwargs.append(kw) or True,
+    )
+    pipe = _CtxPipe(_LoadableFuseDiT())
+    proxy, reason = _gate(
+        monkeypatch, pipe, _fam(), requested = "on", compiled = True,
+        speed_mode = "default", attention_backend = None,
+    )
+    assert proxy is not None, reason
+    try:
+        assert compile_kwargs and compile_kwargs[0].get("max_autotune") is False
+        assert getattr(proxy._replica, "fused", 0) == 0
+    finally:
+        teardown_cfg_parallel(pipe, proxy)
+
+
+def test_replica_pins_native_when_backend_unsupported_on_secondary(monkeypatch):
+    # The primary-resolved attention backend is arch-gated against the PRIMARY; on a heterogeneous
+    # replica it must be re-validated and, when unsupported, downgraded to native there rather than
+    # installed to crash on the replica's first attention kernel.
+    import core.inference.diffusion_attention as attn
+
+    _stub_torch(monkeypatch)
+    _engage_stubs(monkeypatch)
+    monkeypatch.setattr(attn, "attention_backend_supported_on_device", lambda backend, idx: False)
+    applied: list = []
+    monkeypatch.setattr(
+        attn, "apply_attention_backend",
+        lambda view, backend, logger = None: applied.append(backend) or backend,
+    )
+    pipe = _CtxPipe(_LoadableFuseDiT())
+    proxy, reason = _gate(
+        monkeypatch, pipe, _fam(), requested = "on", attention_backend = "_flash_3_hub",
+    )
+    assert proxy is not None, reason
+    try:
+        assert applied == [None]  # native pinned on the replica, not the unsupported FA3
+    finally:
+        teardown_cfg_parallel(pipe, proxy)
+
+
+def test_const_cache_cleared_each_plan_generation(monkeypatch):
+    # Prompt/conditioning constants are reusable only within one generation; plan_generation must
+    # release the previous generation's replica-side copies up front (no cross-generation VRAM pin).
+    proxy, _primary, _replica, guider = _make_proxy(monkeypatch)
+    guider.num_conditions = 2
+    proxy._const_cache[123] = ("v", "moved")
+    assert proxy._const_cache
+    proxy.plan_generation(cache_engaged = True, steps = 20, width = 512, height = 512, frames = 17)
+    assert proxy._const_cache == {}
+    proxy.shutdown()

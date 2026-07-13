@@ -146,6 +146,32 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
+def attention_backend_supported_on_device(backend: Optional[str], device_index: int) -> bool:
+    """Whether an already-resolved dispatcher backend can actually RUN on CUDA ``device_index``.
+
+    ``select_attention_backend`` arch-gates a backend against the ACTIVE device, but a CFG-parallel
+    replica lives on a possibly HETEROGENEOUS second GPU (FA3 is Hopper-SM90 only, FA4 needs
+    Blackwell-SM100, cuDNN needs Ampere+). Installing the primary-resolved backend there without
+    re-checking would set fine then crash on the replica's first attention kernel. Re-applies the
+    same arch gate to a specific device index. None (native) is always fine; an unqueryable
+    capability returns True (best-effort, matching ``_backend_arch_supported``)."""
+    if backend is None:
+        return True
+    try:
+        import torch
+        have = tuple(torch.cuda.get_device_capability(device_index))  # type: ignore[assignment]
+    except Exception:  # noqa: BLE001 -- unqueryable device: don't block on a guess
+        return True
+    bounds = _ARCH_CAPABILITY.get(backend)
+    if bounds is not None:
+        low, high = bounds
+        if not (have >= low and (high is None or have < high)):
+            return False
+    if backend == "_native_cudnn" and have < (8, 0):
+        return False
+    return True
+
+
 # Optional-kernel backends installable on demand: dispatcher name -> (probe module, pip
 # package). Wheels only (--only-binary=:all:): a source build needs a CUDA toolchain a Studio
 # host may lack; no wheel means a native fallback. cuDNN/native ship with torch.
@@ -398,6 +424,16 @@ _NULL_ATTN_FLAG = "_unsloth_null_attn_mask"
 _NULL_PROCESSOR_CACHE: dict = {}
 
 
+def _set_hunyuan_null_mask(module: Any, enabled: bool) -> None:
+    """Set the null-mask flag on every block's attention of ``module``. The flag is valid ONLY for
+    the forward whose pre-hook removed the padding, so a post-hook clears it back to False after
+    each call (see the module note and _hunyuan_trim_post_hook)."""
+    for blk in getattr(module, "transformer_blocks", []):
+        attn = getattr(blk, "attn", None)
+        if attn is not None:
+            setattr(attn, _NULL_ATTN_FLAG, enabled)
+
+
 def _null_mask_processor_cls():
     """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` runs
     attn_mask=None when the DiT is flagged (padding already removed by the pre-hook); otherwise it
@@ -572,22 +608,24 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
             kwargs.update(original)
             null_ok = False
 
-        for blk in getattr(module, "transformer_blocks", []):
-            attn = getattr(blk, "attn", None)
-            if attn is not None:
-                setattr(attn, _NULL_ATTN_FLAG, null_ok)
-
+        _set_hunyuan_null_mask(module, null_ok)
         return args, kwargs
     except Exception:  # noqa: BLE001 — optimisation only; never break the forward
         # We may have trimmed some kwargs before failing. Restore the caller's untrimmed inputs so
         # the stock dense-mask path (flag False) runs on exactly what it expects.
         kwargs.clear()
         kwargs.update(original)
-        for blk in getattr(module, "transformer_blocks", []):
-            attn = getattr(blk, "attn", None)
-            if attn is not None:
-                setattr(attn, _NULL_ATTN_FLAG, False)
+        _set_hunyuan_null_mask(module, False)
         return args, kwargs
+
+
+def _hunyuan_trim_post_hook(module, _args, output):
+    """Clear the null-mask flag after each hooked forward, scoping the authorisation to exactly the
+    call whose pre-hook removed the padding. Registered with ``always_call=True`` so the flag is
+    also cleared when the forward raises -- otherwise a latched True would null the mask over
+    un-trimmed padding on any later direct ``module.forward(...)``. Returns the output unchanged."""
+    _set_hunyuan_null_mask(module, False)
+    return output
 
 
 def _install_null_processors(dit: Any, logger: Any) -> bool:
@@ -643,11 +681,25 @@ def install_hunyuan_attention_trim(
             continue
         if not _install_null_processors(dit, logger):
             continue
+        # Installation (and every idle period between generations) starts in the conservative
+        # state: the flag is only ever True inside the exact forward its pre-hook trimmed.
+        _set_hunyuan_null_mask(dit, False)
         if getattr(dit, "_unsloth_trim_hook", None) is None:
+            pre_handle = None
             try:
-                handle = dit.register_forward_pre_hook(_hunyuan_trim_pre_hook, with_kwargs = True)
-                dit._unsloth_trim_hook = handle
+                pre_handle = dit.register_forward_pre_hook(
+                    _hunyuan_trim_pre_hook, with_kwargs = True
+                )
+                # always_call: clear the flag even when the forward raises, so an exception can
+                # never leave the null-mask authorisation latched for a later direct forward.
+                post_handle = dit.register_forward_hook(
+                    _hunyuan_trim_post_hook, always_call = True
+                )
+                dit._unsloth_trim_hook = (pre_handle, post_handle)
             except Exception as exc:  # noqa: BLE001 — optimisation only
+                if pre_handle is not None:
+                    pre_handle.remove()
+                _set_hunyuan_null_mask(dit, False)
                 _warn(logger, "hunyuan_attn_trim", exc)
                 continue
         engaged = True

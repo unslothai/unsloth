@@ -572,3 +572,56 @@ def test_quantize_vae_partial_cast_failure_fails_load(monkeypatch):
     pipe = types.SimpleNamespace(vae = _PartiallyQuantizedVae())
     with pytest.raises(RuntimeError, match = "partially quantized"):
         quantize_vae(pipe, _target(), mode = "fp8")
+
+
+# ── layerwise fp8 partial mutation (torchao detector is blind to diffusers hooks) ──
+class _LayerwiseCastVae:
+    """A VAE an apply_layerwise_casting pass mutated (installed an fp8-storage upcast hook on a
+    submodule) before the caster raised. It carries NO torchao params, so raise_if_partially_
+    quantized would miss the partial state -- _has_layerwise_casting must catch it."""
+
+    def __init__(self):
+        registry = types.SimpleNamespace(
+            get_hook = lambda name: object() if name == "layerwise_casting" else None
+        )
+        self._sub = types.SimpleNamespace(_diffusers_hook = registry)
+
+    def modules(self):
+        return [self, self._sub]
+
+    def named_parameters(self):
+        return iter(())
+
+
+def test_quantize_vae_layerwise_partial_cast_fails_load(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8})
+
+    def _boom(v, t):
+        raise RuntimeError("layerwise casting failed mid-pass")
+
+    monkeypatch.setattr(vq, "_cast_vae_fp8", _boom)
+    pipe = types.SimpleNamespace(vae = _LayerwiseCastVae())
+    with pytest.raises(RuntimeError, match = "leftover fp8 hooks"):
+        quantize_vae(pipe, _target(), mode = "fp8")
+
+
+def test_quantize_vae_clean_layerwise_failure_stays_dense(monkeypatch):
+    # A failure with NO leftover hook (raised before mutating anything) still falls back to dense,
+    # preserving the storage-only fp8 contract -- the fail-closed path is scoped to real mutation.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow_vae(monkeypatch, {VAE_QUANT_FP8})
+
+    class _CleanVae:
+        def modules(self):
+            return [self]
+
+        def named_parameters(self):
+            return iter(())
+
+    def _boom(v, t):
+        raise RuntimeError("fp8 unsupported before any mutation")
+
+    monkeypatch.setattr(vq, "_cast_vae_fp8", _boom)
+    pipe = types.SimpleNamespace(vae = _CleanVae())
+    assert quantize_vae(pipe, _target(), mode = "fp8") is None

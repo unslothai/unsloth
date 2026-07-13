@@ -514,3 +514,51 @@ def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
     # Undeterminable hub -> keep the previous (permissive) behaviour.
     monkeypatch.setattr(importlib.metadata, "version", _boom)
     assert att._kernels_hub_compatible() is True
+
+
+# ── per-device backend guard (CFG-parallel heterogeneous replica) ─────────────────
+def _stub_cuda_capability(monkeypatch, caps):
+    """Stub torch.cuda.get_device_capability(idx) from a {idx: (major, minor)} map."""
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        get_device_capability = lambda idx: caps[idx],
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", torch)
+
+
+def test_backend_supported_on_device_none_is_always_ok(monkeypatch):
+    # None = native: nothing to arch-gate, so any device is fine (even unqueryable).
+    assert att.attention_backend_supported_on_device(None, 0) is True
+
+
+def test_backend_supported_on_device_flash3_hopper_only(monkeypatch):
+    # FA3 is SM90 (Hopper) only: supported on the Hopper primary, NOT on a Blackwell replica.
+    _stub_cuda_capability(monkeypatch, {0: (9, 0), 1: (10, 0)})
+    assert att.attention_backend_supported_on_device("_flash_3_hub", 0) is True
+    assert att.attention_backend_supported_on_device("_flash_3_hub", 1) is False
+
+
+def test_backend_supported_on_device_flash4_blackwell_only(monkeypatch):
+    # FA4 needs SM100 (Blackwell): rejected on a Hopper replica.
+    _stub_cuda_capability(monkeypatch, {0: (10, 0), 1: (9, 0)})
+    assert att.attention_backend_supported_on_device("flash_4_hub", 0) is True
+    assert att.attention_backend_supported_on_device("flash_4_hub", 1) is False
+
+
+def test_backend_supported_on_device_cudnn_needs_ampere(monkeypatch):
+    # cuDNN fused SDPA needs Ampere+ (SM80): rejected on a pre-Ampere (T4/SM75) replica.
+    _stub_cuda_capability(monkeypatch, {0: (9, 0), 1: (7, 5)})
+    assert att.attention_backend_supported_on_device("_native_cudnn", 0) is True
+    assert att.attention_backend_supported_on_device("_native_cudnn", 1) is False
+
+
+def test_backend_supported_on_device_unqueryable_is_permissive(monkeypatch):
+    # An unqueryable device must not block on a guess (best-effort, like _backend_arch_supported).
+    torch = types.ModuleType("torch")
+
+    def _boom(_idx):
+        raise RuntimeError("no device props")
+
+    torch.cuda = types.SimpleNamespace(get_device_capability = _boom)
+    monkeypatch.setitem(__import__("sys").modules, "torch", torch)
+    assert att.attention_backend_supported_on_device("_flash_3_hub", 3) is True

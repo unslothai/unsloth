@@ -204,3 +204,49 @@ def test_install_trim_noop_when_transformer_class_mismatch():
     fam = types.SimpleNamespace(transformer_class = "HunyuanVideo15Transformer3DModel")
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())  # class name mismatch
     assert att.install_hunyuan_attention_trim(pipe, fam) is False
+
+
+# ── null-mask flag lifecycle (scoped to one hooked forward) ───────────────────────
+def test_set_and_post_hook_clear_null_mask_flag():
+    # _set_hunyuan_null_mask flips every block's flag; the post-hook clears it and returns
+    # the output unchanged.
+    dit = _fake_dit()
+    att._set_hunyuan_null_mask(dit, True)
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
+    sentinel = object()
+    returned = att._hunyuan_trim_post_hook(dit, (), sentinel)
+    assert returned is sentinel
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
+
+
+def test_post_hook_always_clears_flag_after_forward_and_on_exception():
+    # Wire the pre+post hooks the way install_hunyuan_attention_trim does on a real module: the
+    # flag is only ever True DURING the forward its pre-hook set up. After the call it is False,
+    # so a later direct dit.forward(...) can never run unmasked over untrimmed padding -- and the
+    # always_call post-hook clears it even when the forward raises (no latch across exceptions).
+    class _DiT(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.transformer_blocks = [
+                types.SimpleNamespace(attn = types.SimpleNamespace()) for _ in range(2)
+            ]
+            self.boom = False
+
+        def forward(self):
+            # The processor would read a True flag here (padding removed by the pre-hook).
+            assert all(getattr(b.attn, att._NULL_ATTN_FLAG) for b in self.transformer_blocks)
+            if self.boom:
+                raise RuntimeError("mid-forward boom")
+            return "ok"
+
+    dit = _DiT()
+    dit.register_forward_pre_hook(lambda m, _a: att._set_hunyuan_null_mask(m, True))
+    dit.register_forward_hook(att._hunyuan_trim_post_hook, always_call = True)
+
+    assert dit() == "ok"
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
+
+    dit.boom = True
+    with pytest.raises(RuntimeError):
+        dit()
+    assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)

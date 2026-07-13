@@ -457,11 +457,22 @@ def _step_cache_all_or_none(
     engaged = [(view, name, mode) for view, name, mode in results if mode is not None]
     if engaged and len(engaged) < len(results):
         missing = ", ".join(name for _, name, mode in results if mode is None)
+        # Roll the engaged expert(s) back; a rollback that ALSO fails leaves one expert cached
+        # while state/status would report the whole pipeline uncached -- a silent inconsistency,
+        # so surface it as a hard reload-required error instead of returning a false "uncached".
+        rollback_failed: list[str] = []
         for view, name, _mode in engaged:
-            _disengage_step_cache(
+            if not _disengage_step_cache(
                 getattr(view, "transformer", None),
                 reason = f"all-or-none rollback: cache did not engage on {missing}",
                 logger = logger,
+            ):
+                rollback_failed.append(name)
+        if rollback_failed:
+            raise RuntimeError(
+                "step cache engagement was partial and rollback failed for "
+                + ", ".join(rollback_failed)
+                + "; reload the video model before generating"
             )
         return None, (
             f"step cache engaged on only {len(engaged)}/{len(results)} experts "
@@ -1534,6 +1545,7 @@ class VideoBackend:
                 compiled = "compiled" in speed_optims,
                 attention_backend = attention_engaged,
                 speed_active = effective_speed != SPEED_OFF,
+                speed_mode = effective_speed,
                 logger = logger,
             )
             if cfg_parallel_proxy is not None:
@@ -2174,20 +2186,27 @@ class VideoBackend:
                     # CONFIGURED step count: a clip at a different step count re-engages
                     # (marker carries "#s{steps}") to keep skips aligned. This only
                     # re-sizes the already-engaged cache; the on choice is preserved.
-                    for view, expert_name in zip(
-                        _views_for(pipe, fam), _transformer_names(pipe, fam)
-                    ):
+                    # Transactional across MoE experts (like the load / AUTO paths): refuse to
+                    # stack a fresh cache over one whose removal failed, and roll back a mixed
+                    # resize so status never reports MagCache over an asymmetric pair.
+                    def _resize_explicit_magcache(
+                        view: Any, expert_name: str
+                    ) -> Optional[str]:
                         transformer = getattr(view, "transformer", None)
                         marker = getattr(transformer, "_unsloth_step_cache", None)
                         # endswith, not substring: "#s5" would match inside "#s50".
                         if not marker or str(marker).endswith(f"#s{int(steps)}"):
-                            continue
-                        _disengage_step_cache(
+                            return TC_MAGCACHE  # already sized for these steps
+                        if not _disengage_step_cache(
                             transformer,
                             reason = f"explicit magcache re-interpolating for {steps} steps",
                             logger = logger,
-                        )
-                        apply_step_cache(
+                        ):
+                            raise RuntimeError(
+                                "could not disable the existing MagCache before resizing it "
+                                f"for {steps} steps; reload the video model before generating"
+                            )
+                        return apply_step_cache(
                             view,
                             mode = TC_MAGCACHE,
                             threshold = state.cache_threshold,
@@ -2197,6 +2216,19 @@ class VideoBackend:
                             quality = state.cache_quality,
                             expert = expert_name,
                             logger = logger,
+                        )
+
+                    resized, resize_reason = _step_cache_all_or_none(
+                        pipe, fam, _resize_explicit_magcache, logger = logger
+                    )
+                    object.__setattr__(state, "transformer_cache", resized)
+                    entry = (state.resolved or {}).get("transformer_cache")
+                    if isinstance(entry, dict):
+                        entry["value"] = resized or "off"
+                        entry["reason"] = resize_reason or (
+                            f"explicit MagCache resized for {steps} steps"
+                            if resized
+                            else f"MagCache could not be resized for {steps} steps"
                         )
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)

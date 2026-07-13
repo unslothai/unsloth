@@ -402,6 +402,7 @@ def _apply_levers(
         normalize_cache_quality,
         FBCACHE_MIN_STEPS,
     )
+    from core.inference.video import _step_cache_all_or_none
 
     tgt = _target()
     engaged = {
@@ -488,11 +489,14 @@ def _apply_levers(
             cache_request = cfg["cache"]
         if cache_request is not None:
             # Quality preset like the loader: an unset request takes the family's auto default.
-            # Expert names zip with the views so a dual-expert MoE resolves per-expert curves.
             quality = normalize_cache_quality(cache_quality) or auto_cache_quality(fam_name)
-            experts = ("transformer", "transformer_2")
-            for v, expert in zip(views, experts):
-                engaged["cache"] = apply_step_cache(
+
+            # All-or-none across MoE experts, exactly like the loader: overwriting engaged["cache"]
+            # per expert would leave one expert cached and one dense on a partial engage while the
+            # row reports the cache off -- a config that never runs in production. The shared helper
+            # rolls the engaged expert(s) back so the row measures a real configuration.
+            def _engage_cache(v: Any, expert: str) -> Optional[str]:
+                return apply_step_cache(
                     v,
                     mode = cache_request,
                     threshold = cache_threshold,
@@ -503,6 +507,12 @@ def _apply_levers(
                     expert = expert,
                     logger = logger,
                 )
+
+            engaged["cache"], cache_partial_reason = _step_cache_all_or_none(
+                pipe, fam_obj, _engage_cache, logger = logger
+            )
+            if cache_partial_reason and logger is not None:
+                logger.warning("benchmark cache disabled: %s", cache_partial_reason)
             cache_active = engaged["cache"] not in (None, "off")
 
     # HunyuanVideo-1.5 joint-attention trim (per expert), BEFORE the backend set like the loader.

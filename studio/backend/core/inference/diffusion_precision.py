@@ -335,7 +335,17 @@ def quantize_text_encoders(
         except Exception as exc:  # noqa: BLE001 — leave this encoder dense
             # A mid-pass caster failure may have left the encoder PARTIALLY quantized (can't
             # run as dense), so fail the load for that; a clean miss stays best-effort dense.
+            # raise_if_partially_quantized only recognises torchao parameter subclasses, so it
+            # cannot see a partial layerwise fp8 mutation (diffusers apply_layerwise_casting installs
+            # upcast hooks + fp8 storage in place, leaving no torchao params). Detect a leftover
+            # layerwise hook directly and fail closed there too; a clean failure stays dense.
             from .diffusion_transformer_quant import raise_if_partially_quantized
+            if mode == TE_QUANT_FP8 and _has_layerwise_casting(encoder):
+                raise RuntimeError(
+                    f"text_encoder_quant fp8:{attr} failed after partially installing layerwise "
+                    "casting (leftover fp8 hooks); reload the model instead of a dense fallback "
+                    f"(original error: {exc})"
+                ) from exc
             raise_if_partially_quantized(encoder, what = f"text_encoder_quant {mode}:{attr}", exc = exc)
             _warn(logger, f"{mode}:{attr}", exc)
     return mode if cast else None
@@ -488,6 +498,29 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
     quantize_(encoder, NVFP4WeightOnlyConfig(), filter_fn = filter_fn)
+
+
+def _has_layerwise_casting(module: Any) -> bool:
+    """True when any submodule still carries a diffusers layerwise-casting hook -- i.e. an
+    ``apply_layerwise_casting`` pass installed an fp8-storage upcast hook before failing. torchao's
+    partial-quant detector cannot see these, so a mid-pass layerwise failure would otherwise report
+    a dense fallback over a half-cast encoder. Best-effort: a module without ``.modules()`` or a
+    moved diffusers internal returns False (defer to the torchao check)."""
+    try:
+        hook_name = "layerwise_casting"
+        try:
+            from diffusers.hooks.layerwise_casting import _LAYERWISE_CASTING_HOOK
+            hook_name = _LAYERWISE_CASTING_HOOK
+        except Exception:  # noqa: BLE001 -- const moved: fall back to the stable literal
+            pass
+        for sub in module.modules():
+            registry = getattr(sub, "_diffusers_hook", None)
+            get_hook = getattr(registry, "get_hook", None)
+            if callable(get_hook) and get_hook(hook_name) is not None:
+                return True
+    except Exception:  # noqa: BLE001 -- unqueryable module: defer to the torchao check
+        return False
+    return False
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

@@ -2138,3 +2138,46 @@ def test_step_cache_all_or_none_single_dit(monkeypatch):
 
     assert video._step_cache_all_or_none(pipe, fam, engage, logger = None) == ("magcache", None)
     assert calls == [(pipe, "transformer")]
+
+
+def test_step_cache_all_or_none_raises_when_rollback_fails(monkeypatch):
+    # Partial engagement AND a failed rollback of the engaged expert leaves it cached while state
+    # would report the pipeline uncached -- a silent inconsistency, so raise a hard reload-required
+    # error instead of a false "uncached".
+    import core.inference.video as video
+
+    pipe, fam, _t1, _t2 = _moe_pipe_and_fam()
+    monkeypatch.setattr(
+        video, "_disengage_step_cache",
+        lambda transformer, *, reason, logger = None: False,  # rollback fails
+    )
+    with pytest.raises(RuntimeError, match = "rollback failed"):
+        video._step_cache_all_or_none(
+            pipe, fam,
+            lambda view, expert_name: "fbcache" if expert_name == "transformer" else None,
+            logger = None,
+        )
+
+
+def test_explicit_magcache_hard_errors_when_disable_fails(fake_runtime, monkeypatch):
+    # An explicit MagCache resize must be transactional: if the existing cache cannot be disabled,
+    # refuse to stack a fresh cache over it (which would double-hook) and hard-error instead of
+    # silently re-applying while status still reports MagCache.
+    import core.inference.video as video
+
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        model_kind = "pipeline",
+        transformer_cache = "magcache",
+    )
+    reapplied: list = []
+    monkeypatch.setattr(video, "_disengage_step_cache", lambda *a, **k: False)
+    monkeypatch.setattr(
+        video, "apply_step_cache",
+        lambda *a, **k: reapplied.append(k.get("steps")) or "magcache",
+    )
+    with pytest.raises(RuntimeError, match = "reload the video model"):
+        backend.generate(prompt = "a sloth", steps = 30)
+    assert reapplied == []  # never stacked a new cache over the un-removable one
+    backend.unload()

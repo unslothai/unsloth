@@ -268,6 +268,12 @@ class CFGParallelProxy:
     ) -> dict:
         """Resolve routing + dispatch for the next generation (call AFTER the cache toggle
         so the engaged state is current). Returns the plan for logging."""
+        # Prompt/conditioning constants are reusable only WITHIN one generation (the same tensor
+        # objects flow through every denoise step); a new generation brings new ids. Clearing here
+        # releases the previous generation's replica-side copies (text embeds ~200 MiB each, held on
+        # BOTH GPUs) up front instead of pinning them until the 16-entry churn cap or teardown, and
+        # also cleans up after a cancelled/failed run that never reached note_generation_done().
+        self._const_cache.clear()
         # The engaged-cache marker may live on the proxy (post-install toggle) or the
         # primary (pre-install engage); the delegating getattr covers both.
         marker = getattr(self, "_unsloth_step_cache", None)
@@ -445,18 +451,26 @@ def _device_identity(idx: int) -> Optional[tuple]:
         return None
 
 
-def _pick_secondary_device(primary_index: int) -> tuple[Optional[int], int, bool]:
+def _pick_secondary_device(
+    primary_index: int, *, min_free_bytes: int = 0
+) -> tuple[Optional[int], int, bool]:
     """(secondary CUDA device != primary, its free bytes, identity-match flag).
 
     Bit-identity needs the SAME kernels on both branches, and eager kernel selection is
-    arch-dependent, so the picker prefers the most-free device whose (name, capability)
-    MATCH the primary's; only if none matches does it fall back to the most-free mismatched
-    one (so explicit ``on`` can still engage, lossy). An unqueryable identity counts as a
-    match (best-effort)."""
+    arch-dependent, so the picker prefers a device whose (name, capability) MATCH the primary's;
+    only if none matches does it fall back to a mismatched one (so explicit ``on`` can still
+    engage, lossy). An unqueryable identity counts as a match (best-effort).
+
+    But a MATCHING device that cannot actually hold the replica is useless: rank a device that
+    fits ``min_free_bytes`` above one that does not FIRST, so a viable heterogeneous GPU wins over
+    an identical GPU too small for the replica (explicit ``on`` would otherwise fail with an
+    insufficient-memory gate while a usable device sat idle). Among devices in the same viability
+    tier, prefer the identity match, then the most free."""
     import torch
 
     primary_id = _device_identity(primary_index)
     best, best_free, best_match = None, -1, False
+    best_key: tuple = (False, False, -1)
     for idx in range(torch.cuda.device_count()):
         if idx == primary_index:
             continue
@@ -466,8 +480,9 @@ def _pick_secondary_device(primary_index: int) -> tuple[Optional[int], int, bool
             continue
         candidate_id = _device_identity(idx)
         match = primary_id is None or candidate_id is None or candidate_id == primary_id
-        if (match, free) > (best_match, best_free):
-            best, best_free, best_match = idx, free, match
+        key = (free >= min_free_bytes, match, free)
+        if best is None or key > best_key:
+            best, best_free, best_match, best_key = idx, free, match, key
     return best, best_free, best_match
 
 
@@ -485,6 +500,7 @@ def maybe_enable_cfg_parallel(
     compiled: bool,
     attention_backend: Optional[str],
     speed_active: bool,
+    speed_mode: Optional[str] = None,
     logger: Any = None,
 ) -> tuple[Optional[CFGParallelProxy], str]:
     """Gate, build and install the CFG-parallel proxy on ``pipe``. Returns
@@ -539,8 +555,12 @@ def maybe_enable_cfg_parallel(
             return None, f"primary DiT is on {p_dev.type}, not cuda"
         weight_bytes = sum(p.numel() * p.element_size() for p in primary.parameters())
         primary_index = p_dev.index or 0
-        secondary, free, device_match = _pick_secondary_device(primary_index)
         need = weight_bytes + _REPLICA_HEADROOM_BYTES
+        # Filter by the replica's memory need FIRST so a viable heterogeneous GPU is preferred
+        # over an identical GPU too small to hold the replica.
+        secondary, free, device_match = _pick_secondary_device(
+            primary_index, min_free_bytes = need
+        )
         if secondary is None:
             return None, "no queryable secondary CUDA device"
         if not device_match:
@@ -591,19 +611,53 @@ def maybe_enable_cfg_parallel(
         _warn(logger, "cfg-parallel replica load", exc)
         return None, "replica load failed"
     try:
-        from .diffusion_attention import apply_attention_backend, install_hunyuan_attention_trim
+        from .diffusion_attention import (
+            apply_attention_backend,
+            attention_backend_supported_on_device,
+            install_hunyuan_attention_trim,
+        )
 
         view = _ReplicaView(pipe, replica)
         if speed_active:
             install_hunyuan_attention_trim(view, fam, logger = logger)
         if attention_backend is not None:
-            apply_attention_backend(view, attention_backend, logger = logger)
+            # The backend was arch-gated against the PRIMARY device; re-validate it on the
+            # replica's (possibly heterogeneous) GPU before installing it -- FA3 is SM90-only,
+            # FA4 needs SM100, cuDNN needs Ampere+, so a mismatched replica would set fine then
+            # crash on its first attention kernel. Unsupported -> pin native on the replica.
+            replica_backend = attention_backend
+            if not attention_backend_supported_on_device(replica_backend, secondary):
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.cfg_parallel: attention backend %r resolved for the primary "
+                        "is unsupported on the replica cuda:%d (different arch); pinning native "
+                        "there",
+                        replica_backend,
+                        secondary,
+                    )
+                replica_backend = None
+            apply_attention_backend(view, replica_backend, logger = logger)
         if compiled:
-            from .diffusion_speed import _compile_repeated_blocks
+            from .diffusion_speed import SPEED_MAX, _compile_repeated_blocks
 
-            # Same tier the primary got; a cache may engage/toggle on this DiT, so
-            # fullgraph stays off like the loader.
-            _compile_repeated_blocks(view, logger, cache_active = True)
+            # Mirror the primary's tier: under speed=max the primary compiles max-autotune +
+            # fuses QKV, so the replica must too or it becomes the slower branch and throttles
+            # the whole parallel run. A cache may engage/toggle on this DiT, so fullgraph stays
+            # off like the loader.
+            max_speed = str(speed_mode) == SPEED_MAX
+            _compile_repeated_blocks(
+                view, logger, max_autotune = max_speed, cache_active = True
+            )
+            if max_speed:
+                # Fuse the REPLICA's QKV projections directly: _fuse_qkv(view) would resolve the
+                # pipe-level fuse_qkv_projections through _ReplicaView delegation and re-fuse the
+                # PRIMARY instead, leaving the replica unfused.
+                fuse = getattr(replica, "fuse_qkv_projections", None)
+                if callable(fuse):
+                    try:
+                        fuse()
+                    except Exception as exc:  # noqa: BLE001 -- optimisation only
+                        _warn(logger, "cfg-parallel replica fuse_qkv", exc)
         if not _install_threadsafe_cudnn_attention(logger):
             raise RuntimeError("thread-safe attention patch failed")
         # The proxy's class name hides the transformer's from the metadata probe, so

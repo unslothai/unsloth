@@ -310,10 +310,19 @@ def quantize_vae(
         return mode
     except Exception as exc:  # noqa: BLE001 — leave the VAE dense
         # fp8_dynamic's quantize_ swaps weights module-by-module, so a mid-pass failure may
-        # leave the VAE PARTIALLY quantized -- fail the load for that instead of a dense
-        # fallback. A clean miss (e.g. layerwise fp8) stays best-effort dense.
+        # leave the VAE PARTIALLY quantized -- fail the load for that instead of a dense fallback.
+        # raise_if_partially_quantized only recognises torchao parameter subclasses, so it CANNOT
+        # see a partial layerwise fp8 mutation (diffusers apply_layerwise_casting installs upcast
+        # hooks + fp8 storage in place, leaving no torchao params). Detect a leftover layerwise
+        # hook directly and fail closed there too; a clean failure (no hook installed) still falls
+        # back to dense (best-effort), matching the fp8 storage-only contract.
         from .diffusion_transformer_quant import raise_if_partially_quantized
 
+        if mode == VAE_QUANT_FP8 and _has_layerwise_casting(vae):
+            raise RuntimeError(
+                "vae_quant fp8 failed after partially installing layerwise casting (leftover "
+                f"fp8 hooks); reload the model instead of a dense fallback (original error: {exc})"
+            ) from exc
         raise_if_partially_quantized(vae, what = f"vae_quant {mode}", exc = exc)
         _warn(logger, mode, exc)
         return None
@@ -370,6 +379,30 @@ def _cast_vae_fp8(vae: Any, target: Any) -> None:
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
     )
+
+
+def _has_layerwise_casting(module: Any) -> bool:
+    """True when any submodule still carries a diffusers layerwise-casting hook -- i.e. an
+    ``apply_layerwise_casting`` pass mutated the module (installed an fp8-storage upcast hook)
+    before failing. torchao's partial-quant detector cannot see these, so a mid-pass layerwise
+    failure would otherwise report a dense fallback over a half-cast module. Best-effort: a module
+    without ``.modules()`` or a moved diffusers internal returns False (defer to the torchao check).
+    """
+    try:
+        hook_name = "layerwise_casting"
+        try:
+            from diffusers.hooks.layerwise_casting import _LAYERWISE_CASTING_HOOK
+            hook_name = _LAYERWISE_CASTING_HOOK
+        except Exception:  # noqa: BLE001 -- const moved: fall back to the stable literal
+            pass
+        for sub in module.modules():
+            registry = getattr(sub, "_diffusers_hook", None)
+            get_hook = getattr(registry, "get_hook", None)
+            if callable(get_hook) and get_hook(hook_name) is not None:
+                return True
+    except Exception:  # noqa: BLE001 -- unqueryable module: defer to the torchao check
+        return False
+    return False
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
