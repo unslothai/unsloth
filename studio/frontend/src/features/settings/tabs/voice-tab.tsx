@@ -391,23 +391,33 @@ export function VoiceTab() {
   // the current speechSynthesis utterance; read-aloud shares the global
   // synthesizer and must not be cancelled by merely closing settings.
   const previewingRef = useRef(false);
+  // Only a system-voice preview owns the shared speechSynthesis channel; a
+  // studio (Audio) preview must not cancel an unrelated chat read-aloud.
+  const ownsSystemPreviewRef = useRef(false);
   const markPreviewing = useCallback((value: boolean) => {
     previewingRef.current = value;
     setPreviewing(value);
   }, []);
 
-  const stopPreview = useCallback(() => {
-    if (!previewingRef.current) return;
-    window.speechSynthesis?.cancel();
-    previewAbortRef.current?.abort();
-    previewAbortRef.current = null;
+  const releasePreviewAudio = useCallback(() => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       previewAudioRef.current.src = "";
       previewAudioRef.current = null;
     }
+  }, []);
+
+  const stopPreview = useCallback(() => {
+    if (!previewingRef.current) return;
+    if (ownsSystemPreviewRef.current) {
+      window.speechSynthesis?.cancel();
+      ownsSystemPreviewRef.current = false;
+    }
+    previewAbortRef.current?.abort();
+    previewAbortRef.current = null;
+    releasePreviewAudio();
     markPreviewing(false);
-  }, [markPreviewing]);
+  }, [markPreviewing, releasePreviewAudio]);
 
   const previewTts = async () => {
     if (!ttsSupported) return;
@@ -420,6 +430,7 @@ export function VoiceTab() {
     if (ttsEngine === "studio") {
       const controller = new AbortController();
       previewAbortRef.current = controller;
+      ownsSystemPreviewRef.current = false;
       markPreviewing(true);
       try {
         const url = await generateStudioTtsAudio(
@@ -430,8 +441,14 @@ export function VoiceTab() {
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
         audio.volume = ttsVolume;
-        audio.addEventListener("ended", () => markPreviewing(false));
-        audio.addEventListener("error", () => markPreviewing(false));
+        audio.addEventListener("ended", () => {
+          releasePreviewAudio();
+          markPreviewing(false);
+        });
+        audio.addEventListener("error", () => {
+          releasePreviewAudio();
+          markPreviewing(false);
+        });
         previewAudioRef.current = audio;
         await audio.play();
       } catch (error) {
@@ -449,8 +466,15 @@ export function VoiceTab() {
       return;
     }
     const utterance = createConfiguredUtterance(TTS_PREVIEW_TEXT);
-    utterance.addEventListener("end", () => markPreviewing(false));
-    utterance.addEventListener("error", () => markPreviewing(false));
+    utterance.addEventListener("end", () => {
+      ownsSystemPreviewRef.current = false;
+      markPreviewing(false);
+    });
+    utterance.addEventListener("error", () => {
+      ownsSystemPreviewRef.current = false;
+      markPreviewing(false);
+    });
+    ownsSystemPreviewRef.current = true;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
     markPreviewing(true);

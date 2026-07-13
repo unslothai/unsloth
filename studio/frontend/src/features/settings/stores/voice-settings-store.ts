@@ -152,10 +152,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 .slice(0, MAX_DICTIONARY_ENTRIES)
             : [],
           recentDictations: Array.isArray(saved?.recentDictations)
-            ? saved.recentDictations.filter(
-                (v): v is RecentDictation =>
-                  typeof v?.text === "string" && typeof v?.at === "number",
-              )
+            ? saved.recentDictations
+                .filter(
+                  (v): v is RecentDictation =>
+                    typeof v?.text === "string" && typeof v?.at === "number",
+                )
+                .slice(0, MAX_RECENT_DICTATIONS)
             : [],
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,

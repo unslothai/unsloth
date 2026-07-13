@@ -279,13 +279,15 @@ function useDictation(
     recognition.lang = resolveDictationLanguage();
     let sessionTranscript = "";
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const last = event.resultIndex;
-      const result = event.results[last];
-      if (!result?.isFinal) return;
-      const transcript = applyDictationDictionary(
-        result[0]?.transcript?.trim() ?? "",
-      );
-      if (transcript) {
+      // Iterate every result from resultIndex; a single event can carry more
+      // than one finalized phrase and dropping the rest loses dictated words.
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (!result?.isFinal) continue;
+        const transcript = applyDictationDictionary(
+          result[0]?.transcript?.trim() ?? "",
+        );
+        if (!transcript) continue;
         sessionTranscript = sessionTranscript
           ? `${sessionTranscript} ${transcript}`
           : transcript;
