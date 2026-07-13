@@ -746,6 +746,10 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
 
+        # Throttled training-status logging to the server log (not one line/step).
+        self._last_progress_log_ts: float = 0.0
+        self._last_progress_log_step: int = -1
+
         # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
@@ -1530,6 +1534,38 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        if etype == "progress":
+            self._log_training_progress()
+
+    def _log_training_progress(self) -> None:
+        """One throttled training-status line to the server log so a run's progress
+        is visible there (the per-step stream still goes to the UI via SSE). Logs
+        the first step, then at most every 30s, plus the final step; resyncs when a
+        new run restarts the step counter. Runs on the single pump thread."""
+        p = self._progress
+        step = int(p.step or 0)
+        if step <= 0:
+            return
+        total = int(p.total_steps or 0)
+        is_final = total > 0 and step >= total
+        prev = self._last_progress_log_step
+        if step == prev:
+            return
+        now = time.monotonic()
+        if prev >= 0 and step > prev and not is_final and (now - self._last_progress_log_ts) < 30.0:
+            return
+        self._last_progress_log_ts = now
+        self._last_progress_log_step = step
+        logger.info(
+            "training_progress",
+            step = step,
+            total_steps = total or None,
+            percent = int(step * 100 / total) if total > 0 else None,
+            loss = round(p.loss, 4) if p.loss is not None else None,
+            epoch = round(p.epoch, 2) if p.epoch is not None else None,
+            eta_s = int(p.eta_seconds) if p.eta_seconds else None,
+        )
 
     def _ensure_db_run_created(self) -> None:
         """Create the DB row if it doesn't exist yet. Called outside the lock."""
