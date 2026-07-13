@@ -238,3 +238,48 @@ def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
     assert calls["unload"] == 0
     assert r.active_engine_name() == ENGINE_DIFFUSERS
     assert r.active_status()["fallback_reason"] == "still diffusers"
+
+
+def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
+    # Regression: without the transition lock a second _activate during the slow unload() reads the
+    # not-yet-updated active engine and returns it. Assert the query is blocked until the switch ends.
+    import threading
+
+    r._active_engine_name = ENGINE_DIFFUSERS
+    r._fallback_reason = None
+
+    release_unload = threading.Event()
+    unload_started = threading.Event()
+
+    def _slow_unload():
+        unload_started.set()
+        release_unload.wait(2.0)
+
+    engine = SimpleNamespace(status = lambda: {"loaded": False, "repo_id": None}, unload = _slow_unload)
+    monkeypatch.setattr(r, "get_active_diffusion_engine", lambda: engine)
+
+    switch_done = threading.Event()
+
+    def _switch():
+        r._activate(ENGINE_SD_CPP, None)  # diffusers -> sd_cpp: unloads the old engine (blocks)
+        switch_done.set()
+
+    t = threading.Thread(target = _switch)
+    t.start()
+    assert unload_started.wait(2.0)  # switch is mid-unload, holding the transition lock
+
+    query_done = threading.Event()
+
+    def _query():
+        r._activate(ENGINE_DIFFUSERS, None)  # would hit the "no change" branch pre-fix
+        query_done.set()
+
+    q = threading.Thread(target = _query)
+    q.start()
+    # Serialized: the query cannot complete while the switch holds the transition lock.
+    assert not query_done.wait(0.4)
+
+    release_unload.set()
+    t.join(2.0)
+    q.join(2.0)
+    assert switch_done.is_set() and query_done.is_set()

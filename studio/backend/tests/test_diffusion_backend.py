@@ -483,11 +483,8 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
 
 
 def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypatch):
-    # A generation must report active from the moment it holds the lock, BEFORE the slow
-    # pre-denoise setup (deferred compile / LoRA resolution / ControlNet build) runs.
-    # Otherwise a reload's mount probe sees idle while the lock is held and lets a second
-    # generate queue behind the first. _apply_loras runs inside that setup window, so probing
-    # generate_progress() from there exercises the gap the reviewer flagged.
+    # A generation must report active from the moment it holds the lock, before the slow pre-denoise
+    # setup. _apply_loras runs inside that window, so probe generate_progress() from there.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -3071,3 +3068,57 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
     )
     assert _FakePipeline.last["base"] == str(tmp_path)
     backend.unload()
+
+
+def test_unload_waits_for_in_flight_denoise_before_teardown():
+    # Regression: unload() must wait for a running denoise to exit (acquire _generate_lock) before
+    # _unload_locked() tears down process-wide state the denoise still depends on.
+    import threading
+
+    backend = DiffusionBackend()
+
+    denoise_active = {"v": False}
+    teardown_saw = []  # records denoise_active at the moment _unload_locked runs
+
+    cancel = threading.Event()
+    backend._active_generate_cancel = cancel
+    started = threading.Event()
+    finish = threading.Event()
+
+    # _generate_lock is the only lock a real denoise holds for its whole body.
+    def _denoise():
+        with backend._generate_lock:
+            denoise_active["v"] = True
+            started.set()
+            cancel.wait(2.0)  # unload signals this
+            finish.wait(2.0)  # the test lets us finish
+            denoise_active["v"] = False  # about to release _generate_lock
+
+    def _fake_unload_locked():
+        teardown_saw.append(denoise_active["v"])
+
+    backend._unload_locked = _fake_unload_locked  # instance attr shadows the method
+
+    d = threading.Thread(target = _denoise)
+    d.start()
+    assert started.wait(2.0)  # denoise holds _generate_lock
+
+    unloaded = threading.Event()
+
+    def _unload():
+        backend.unload()
+        unloaded.set()
+
+    u = threading.Thread(target = _unload)
+    u.start()
+    assert cancel.wait(2.0)  # unload has signalled the denoise and is now waiting on _generate_lock
+    # unload must NOT have torn down yet -- it is blocked on the denoise's _generate_lock.
+    assert teardown_saw == []
+    assert not unloaded.wait(0.3)
+
+    finish.set()  # let the denoise release _generate_lock
+    d.join(2.0)
+    u.join(2.0)
+    assert unloaded.is_set()
+    # Teardown ran exactly once, and only AFTER the denoise had exited (denoise_active was False).
+    assert teardown_saw == [False]

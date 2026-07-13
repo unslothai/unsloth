@@ -279,6 +279,37 @@ def test_generate_progress_tracks_parsed_steps():
     assert b.generate_progress()["step"] == 4
 
 
+def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
+    # Native LoRA resolution (listing/downloading a not-yet-cached adapter) happens during the
+    # pre-generate setup while _generate_lock is already held. A reload/progress probe in that
+    # window must read ACTIVE, not idle, or the UI queues a second generate behind the first.
+    # So _gen is published before LoRA resolution, mirroring the diffusers path.
+    from core.inference import diffusion_lora
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    monkeypatch.setattr(diffusion_lora, "supports_lora", lambda **_k: True)
+
+    seen: dict = {}
+
+    def _resolve(
+        active,
+        *,
+        hf_token = None,
+        cancel_event = None,
+    ):
+        # Mid-setup: the in-flight generation must already be reported as active.
+        seen["progress"] = b.generate_progress()
+        return []
+
+    monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
+
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    assert out["images"]
+    assert seen["progress"]["active"] is True
+    assert seen["progress"]["total_steps"] == 8
+
+
 # ── load validation + binary install ──────────────────────────────────────────
 
 

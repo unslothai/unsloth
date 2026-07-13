@@ -1443,13 +1443,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
   }, [dismissLoadToast, refreshStatus]);
 
-  // Re-enter the per-step generation poll for a run already in flight on the backend --
-  // one this page did not start (another client called /images/generate, or this browser
-  // reloaded mid-generate). The backend runs generations under a serialising lock and keeps
-  // reporting progress, so track it here instead of showing a stale idle view. The images
-  // generate-progress carries only per-step progress (no terminal record), so on completion
-  // refresh the gallery to merge any image saved after the mount fetch. Kept separate from
-  // handleGenerate's own loop, which prepends its synchronous results directly.
+  // Re-enter the per-step poll for a generation already in flight on the backend that this page
+  // did not start (another client, or a reload mid-generate), instead of showing a stale idle
+  // view. generate-progress carries no terminal record, so refresh the gallery on completion to
+  // merge any image saved after the mount fetch. Separate from handleGenerate's own loop.
   const resumeGeneratePoll = useCallback(() => {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
     if (genVisibilityListener.current)
@@ -1470,8 +1467,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           if (!isMounted.current) return;
           setBusy(null);
           setGenStep(null);
-          // The finished run saved its image(s) to the backend gallery; re-fetch the first
-          // page to merge them (a full replace, so deduped) and resync status.
+          // Re-fetch the first page to merge images the finished run saved, and resync status.
           void loadGallery();
           void refreshStatus();
           return;
@@ -1511,11 +1507,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
-      // A generation started elsewhere -- another client, or this browser before a reload --
-      // keeps running on the backend under a serialising lock. Resume tracking it so the page
-      // reflects the in-flight run (progress bar + disabled Generate) instead of a stale idle
-      // view, then refreshes the gallery when it finishes to pick up an image saved after the
-      // mount fetch. Mirrors the video page's mount resume.
+      // Resume tracking a generation started elsewhere (another client, or before a reload) so the
+      // page shows the in-flight run instead of a stale idle view. Mirrors the video page.
       try {
         const g = await getGenerateProgress();
         if (g.active) {
@@ -1554,11 +1547,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (lastLoad.current) return;
     if (seededResident.current === repoId) return;
     seededResident.current = repoId;
-    // Seed from the resolved base_repo, not repo_id: a GGUF/single_file resident (or one
-    // loaded from a bare local path like /models/checkpoint.safetensors) carries a repo_id
-    // with no family substring, so defaultsFor(repoId) would fall back to the distilled
-    // few-step/no-CFG recipe and the first resident generation would run with wrong defaults.
-    // base_repo is the resolved diffusers base (it holds the family), so prefer it when set.
+    // Seed from base_repo (the resolved diffusers base, holding the family), not repo_id: a
+    // GGUF/single_file/local-path resident has a repo_id with no family substring, so
+    // defaultsFor(repoId) would fall back to the wrong distilled few-step/no-CFG recipe.
     const d = defaultsFor(status?.base_repo ?? repoId);
     setSteps(d.steps);
     setGuidance(d.guidance);

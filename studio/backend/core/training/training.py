@@ -1141,12 +1141,10 @@ class TrainingBackend:
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
         with self._lock:
-            # A start reserved via the compare-and-set guard in start_training but not yet
-            # spawned (before_spawn frees residents, then GPU auto-selection, then proc.start())
-            # is already "active": the load/start guards read this to refuse a concurrent
-            # /images/load, /video/load, or /diffusion/start, so treating the pre-spawn window
-            # as idle would let another pipeline race the reserved run for VRAM. Mirrors the
-            # diffusion training service's reserve()/is_active().
+            # A run reserved in start_training but not yet spawned (before_spawn frees residents,
+            # then GPU auto-selection, then proc.start()) is already active: the load/start guards
+            # read this to refuse a concurrent /images/load, /video/load, or /diffusion/start, so an
+            # idle reading here would let another pipeline race the reserved run for VRAM.
             if self._start_in_progress:
                 return True
 

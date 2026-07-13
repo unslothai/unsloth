@@ -180,8 +180,15 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(gallery_module, "save", _save)
     monkeypatch.setattr(gallery_module, "image_b64", lambda i: "QUJD" if i in store else None)
 
-    def _list_images(limit = None, offset = 0):
+    def _list_images(
+        limit = None,
+        offset = 0,
+        *,
+        valid = None,
+    ):
         ordered = sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True)
+        if valid is not None:
+            ordered = [r for r in ordered if valid(r)]
         return ordered[offset:] if limit is None else ordered[offset : offset + limit]
 
     monkeypatch.setattr(gallery_module, "list_images", _list_images)
@@ -330,6 +337,25 @@ def test_generate_rejects_non_multiple_of_16(client):
         assert resp.status_code == 422, bad
     # A multiple of 16 is accepted.
     ok = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": 1024})
+    assert ok.status_code == 200
+
+
+def test_generate_rejects_batch_seed_past_json_safe_range(client):
+    client.post(
+        "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
+    )
+    # A seed at the cap with a batch derives per-image seeds (seed+1 ...) past the JSON-safe range,
+    # so the request is rejected.
+    over = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "seed": 2**53 - 1, "batch_size": 2},
+    )
+    assert over.status_code == 422
+    # The top-of-batch seed lands exactly on the cap: still JSON-safe, so accepted.
+    ok = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "seed": 2**53 - 2, "batch_size": 2},
+    )
     assert ok.status_code == 200
 
 
@@ -762,7 +788,13 @@ def _force_engine(monkeypatch, backend, *, engine_name, device):
         devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = device)
     )
     acquired: list = []
-    monkeypatch.setattr(gpu_arbiter, "acquire_for", lambda role: acquired.append(role))
+
+    def _fake_acquire(role, register = None):
+        # Mirror the real arbiter: record the handoff and run the (registered) load under it.
+        acquired.append(role)
+        return register() if register is not None else None
+
+    monkeypatch.setattr(gpu_arbiter, "acquire_for", _fake_acquire)
     return acquired
 
 

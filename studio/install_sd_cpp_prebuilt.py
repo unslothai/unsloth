@@ -401,6 +401,30 @@ def install(
     has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
+    # Only claim ownership of ``target`` (marking it for the uninstaller's recursive delete) when
+    # this install created it or it was empty, or it already carries our marker -- never adopt a
+    # pre-existing non-empty dir, else a later uninstall could wipe a user's own checkout.
+    marker = target / ".unsloth-studio-owned"
+    _may_own = True
+    if target.exists():
+        if not target.is_dir():
+            raise RuntimeError(f"sd.cpp install target is not a directory: {target}")
+        try:
+            _pre_existing_entries = any(target.iterdir())
+        except OSError:
+            _pre_existing_entries = True
+        # Empty dir, or one we already own, may be (re)claimed; a non-empty unowned dir may not.
+        _may_own = (not _pre_existing_entries) or marker.is_file()
+    # Refuse to extract into a pre-existing, non-empty directory we do not own: merging the release
+    # in would overwrite or mix our binaries into the user's own files. Fail so they point us at a
+    # fresh/empty location.
+    if not _may_own:
+        raise RuntimeError(
+            f"sd.cpp install target already exists and is not a Studio-managed directory: {target}. "
+            f"Refusing to extract prebuilt binaries into it to avoid overwriting or mixing them "
+            f"into your files. Remove or move that directory, or install into a different, empty "
+            f"location (pass a different --install-dir / set the Studio sd.cpp install dir)."
+        )
     used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
 
     if release is None or not chosen:
@@ -441,13 +465,13 @@ def install(
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
-    # Ownership marker (the same one setup.sh/_is_studio_root use, and setup.ps1 writes into the
-    # Node sibling dir) so the uninstaller can tell a Studio-installed sd.cpp from a user's own
-    # stable-diffusion.cpp checkout beside a custom Studio root, and delete only ours.
-    try:
-        (target / ".unsloth-studio-owned").touch()
-    except OSError:
-        pass
+    # Ownership marker (the same one setup.sh/_is_studio_root use) so the uninstaller deletes only
+    # Studio-installed sd.cpp, not a user's own checkout. Written only when _may_own (see above).
+    if _may_own:
+        try:
+            marker.touch()
+        except OSError:
+            pass
     return sd_cli
 
 

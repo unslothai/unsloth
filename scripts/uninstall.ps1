@@ -364,9 +364,27 @@ function Uninstall-UnslothStudio {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
+    # Only stop the default sd.cpp dir when it carries our owner marker, so stop matches the
+    # marker-gated delete and a user's own sd-server at this default path is left running.
+    $defaultSdCppToStop = $null
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        $defaultSdCppToStop = $defaultSdCpp
+    }
+    # Custom/env-mode sd.cpp builds sit BESIDE each custom root at <parent>\stable-diffusion.cpp
+    # (find_sd_cpp_binary resolves from UNSLOTH_STUDIO_HOME.parent), so a running owned sd-server
+    # there is outside every root above ($knownRoots holds the custom root, not its sibling). We
+    # delete those marker-owned dirs below, so add them to the handle scan too -- gated on the same
+    # owner marker as the delete, matching the default-root handling.
+    $customSdCppToStop = @()
+    foreach ($r in $customRoots) {
+        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
+            $customSdCppToStop += $sdc
+        }
+    }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultSdCpp, $defaultCache, $defaultNode))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."

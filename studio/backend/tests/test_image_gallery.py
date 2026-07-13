@@ -145,3 +145,47 @@ def test_list_skips_recipe_missing_required_fields(tmp_path):
     gallery.save(_img(), _meta(prompt = "ours"))
     listed = gallery.list_images()
     assert [r["prompt"] for r in listed] == ["ours"]
+
+
+def test_valid_callback_paginates_over_accepted_records():
+    # ``valid`` must filter before pagination, so offset/limit/has_more count over the accepted
+    # domain; else a leading bad record returns a short page with more remaining and stalls scroll.
+    _save_with_mtime("BAD", 300.0)  # newest, sorts first
+    _save_with_mtime("g1", 200.0)
+    _save_with_mtime("g2", 100.0)
+
+    def _valid(rec):
+        return rec.get("prompt") != "BAD"
+
+    # First page of 2 returns both good records, not [g1] or [].
+    page = gallery.list_images(limit = 2, offset = 0, valid = _valid)
+    assert [r["prompt"] for r in page] == ["g1", "g2"]
+    # The has_more probe (limit + 1) sees no extra VALID record beyond the two returned.
+    assert len(gallery.list_images(limit = 3, offset = 0, valid = _valid)) == 2
+
+
+def test_valid_callback_leading_bad_record_does_not_stall_at_offset_zero():
+    # Every record in the first window is invalid; without in-pager filtering the route stalled.
+    for i in range(3):
+        _save_with_mtime(f"BAD{i}", 300.0 - i)  # newest three are all invalid
+    _save_with_mtime("good", 10.0)
+
+    def _valid(rec):
+        return not str(rec.get("prompt", "")).startswith("BAD")
+
+    # The pager must look past the invalid leaders and return the one good record.
+    records = gallery.list_images(limit = 2, offset = 0, valid = _valid)
+    assert [r["prompt"] for r in records] == ["good"]
+
+
+def test_save_is_atomic_no_partial_png_on_publish_failure(monkeypatch):
+    # A crash before publishing must leave neither a truncated {id}.png nor a leftover temp.
+    def _boom(*a, **k):
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr(gallery.os, "replace", _boom)
+    with pytest.raises(OSError, match = "simulated rename failure"):
+        gallery.save(_img(), _meta())
+    # No final PNG surfaced, and the hidden temp was cleaned up.
+    assert list(gallery.gallery_dir().glob("*.png")) == []
+    assert list(gallery.gallery_dir().iterdir()) == []

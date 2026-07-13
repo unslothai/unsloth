@@ -2084,6 +2084,19 @@ class DiffusionGenerateRequest(BaseModel):
             raise ValueError("must be a multiple of 16")
         return value
 
+    @model_validator(mode = "after")
+    def _batch_seeds_json_safe(self) -> "DiffusionGenerateRequest":
+        # A batch derives per-image seeds as seed .. seed+batch_size-1. The base seed is capped at
+        # 2**53-1 to round-trip through the JSON recipe, but a derived top-of-batch seed near the cap
+        # can exceed it, where the frontend rounds it and a restored recipe replays a different
+        # image. Reject at the boundary so an API client can't persist an unreplayable seed.
+        if self.seed is not None and self.seed + self.batch_size - 1 > 2**53 - 1:
+            raise ValueError(
+                "seed + batch_size - 1 must not exceed 2**53 - 1 so every per-image seed "
+                "stays JSON-safe (lower the seed or the batch_size)"
+            )
+        return self
+
 
 class GalleryImage(BaseModel):
     """A persisted image's full generation recipe (embedded in the PNG too)."""

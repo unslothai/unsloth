@@ -85,15 +85,12 @@ async def load_video_model(
 
     backend = get_video_backend()
     try:
-        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the
-        # load agree; a bad explicit kind raises here -> 400.
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load
+        # agree; a bad explicit kind raises here -> 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
-        # A local On-Device pick can be a bare single-file .safetensors directory (no
-        # model_index.json): the scanner advertises it as a text-to-video model, but the
-        # local picker starts it as a pipeline with no filename, so a pipeline load would
-        # 400 on the missing model_index.json and the advertised model is unusable. If the
-        # directory holds exactly one checkpoint, reinterpret the pick as a single_file load
-        # of it, so validation and the load agree. Mirrors the image load route.
+        # A local On-Device pick can be a bare single-file .safetensors dir (no model_index.json)
+        # that the picker starts as a pipeline with no filename, which would 400 on the missing
+        # index. If the dir holds exactly one checkpoint, load it as a single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
             if sole is not None:
@@ -116,29 +113,39 @@ async def load_video_model(
         # Take the GPU from chat only for a non-CPU load; a CPU load never touches GPU memory,
         # so key off the device. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+
+        def _begin_load():
+            # Kicks the (slow) load onto a background thread and returns at once;
+            # begin_load itself validates network-free.
+            return backend.begin_load(
+                request.model_path,
+                gguf_filename = request.gguf_filename,
+                base_repo = request.base_repo,
+                family_override = request.family_override,
+                hf_token = request.hf_token,
+                memory_mode = request.memory_mode,
+                speed_mode = request.speed_mode,
+                attention_backend = request.attention_backend,
+                transformer_cache = request.transformer_cache,
+                transformer_cache_threshold = request.transformer_cache_threshold,
+                transformer_cache_quality = request.transformer_cache_quality,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+                vae_quant = request.vae_quant,
+                cfg_parallel = request.cfg_parallel,
+                model_kind = kind,
+            )
+
         if device != "cpu":
-            await asyncio.to_thread(acquire_for, VIDEO)
+            # Register the in-flight load UNDER the arbiter lock (not after acquire_for
+            # returns): a competing Images/chat acquire in that gap would otherwise evict
+            # VIDEO before begin_load marks a load in-flight, so eviction finds nothing to
+            # cancel and both loaders allocate VRAM at once. begin_load returns at once, so
+            # the lock is held only briefly. Mirrors the images/load handoff.
+            status_dict = await asyncio.to_thread(acquire_for, VIDEO, _begin_load)
         else:
             await asyncio.to_thread(release, VIDEO)
-        status_dict = await asyncio.to_thread(
-            backend.begin_load,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            base_repo = request.base_repo,
-            family_override = request.family_override,
-            hf_token = request.hf_token,
-            memory_mode = request.memory_mode,
-            speed_mode = request.speed_mode,
-            attention_backend = request.attention_backend,
-            transformer_cache = request.transformer_cache,
-            transformer_cache_threshold = request.transformer_cache_threshold,
-            transformer_cache_quality = request.transformer_cache_quality,
-            transformer_quant = request.transformer_quant,
-            text_encoder_quant = request.text_encoder_quant,
-            vae_quant = request.vae_quant,
-            cfg_parallel = request.cfg_parallel,
-            model_kind = kind,
-        )
+            status_dict = await asyncio.to_thread(_begin_load)
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -239,17 +246,24 @@ async def list_gallery_videos(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    # Fetch one extra to learn whether more remain, without a second scan.
-    records = await asyncio.to_thread(video_gallery.list_videos, limit + 1, offset)
-    has_more = len(records) > limit
-    # Build per record, dropping any that fail schema validation, so one bad sidecar
-    # (wrong value type) doesn't 500 the whole listing.
-    videos = []
-    for r in records[:limit]:
+
+    # Validate inside the pager so offset / limit / has_more all count over the accepted domain. A
+    # sidecar that parses as JSON but has a wrong value type passes the read yet fails
+    # GalleryVideo(**r); dropping it only after slicing let a leading bad record return an empty
+    # page with has_more=True, stalling infinite scroll at offset 0.
+    def _valid_gallery_video(record: dict) -> bool:
         try:
-            videos.append(GalleryVideo(**r))
+            GalleryVideo(**record)
         except ValidationError:
-            continue
+            return False
+        return True
+
+    # Fetch one extra to learn whether more remain, without a second scan.
+    records = await asyncio.to_thread(
+        video_gallery.list_videos, limit + 1, offset, valid = _valid_gallery_video
+    )
+    has_more = len(records) > limit
+    videos = [GalleryVideo(**r) for r in records[:limit]]
     return VideoGalleryListResponse(videos = videos, has_more = has_more)
 
 

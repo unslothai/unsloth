@@ -262,6 +262,50 @@ def test_install_downloads_verifies_extracts(tmp_path, monkeypatch):
     assert (tmp_path / ".unsloth-studio-owned").is_file()
 
 
+def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
+    # An empty (or freshly created) target may be adopted: the marker is written so the uninstaller
+    # can later remove the Studio-installed tree.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    empty = tmp_path / "sdcpp"
+    empty.mkdir()  # exists but empty
+    install(install_dir = empty)
+    assert (empty / ".unsloth-studio-owned").is_file()
+
+
+def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
+    # A pre-existing, non-empty directory Studio did not create (e.g. a user's own checkout) must
+    # not be extracted into; install() refuses up front and leaves it untouched.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "stable-diffusion.cpp"
+    target.mkdir()
+    user_file = target / "USER_WORK"
+    user_file.write_text("keep", encoding = "utf-8")
+
+    with pytest.raises(RuntimeError, match = "not a Studio-managed directory"):
+        install(install_dir = target)
+
+    # The user's directory is left exactly as it was: file intact, no marker, nothing extracted.
+    assert user_file.read_text(encoding = "utf-8") == "keep"
+    assert not (target / ".unsloth-studio-owned").exists()
+    assert list(target.iterdir()) == [user_file]
+
+
+def test_reinstall_into_owned_dir_keeps_ownership(tmp_path, monkeypatch):
+    # A directory that already carries our marker (a prior Studio install / upgrade) stays owned
+    # even though it is now non-empty.
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "stable-diffusion.cpp"
+    target.mkdir()
+    (target / ".unsloth-studio-owned").touch()
+    (target / "old-junk").write_text("x", encoding = "utf-8")
+
+    install(install_dir = target)
+    assert (target / ".unsloth-studio-owned").is_file()
+
+
 def test_install_sha256_mismatch_raises_and_cleans_up(tmp_path, monkeypatch):
     zb = _zip_with_sd_cli()
     name = _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + "0" * 64)

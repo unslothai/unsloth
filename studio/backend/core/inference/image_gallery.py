@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
@@ -65,7 +67,20 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
 def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist a PIL image with its recipe embedded; return the gallery record."""
     image_id = uuid.uuid4().hex
-    (gallery_dir() / f"{image_id}.png").write_bytes(_png_bytes(image, meta))
+    directory = gallery_dir()
+    final_path = directory / f"{image_id}.png"
+    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write
+    # never leaves a truncated {id}.png that the listing would surface as a corrupt record.
+    tmp_path = directory / f".{image_id}.png.tmp"
+    try:
+        tmp_path.write_bytes(_png_bytes(image, meta))
+        os.replace(tmp_path, final_path)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok = True)
+        except OSError:
+            pass
+        raise
     return _record(image_id, meta)
 
 
@@ -128,12 +143,22 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, Any]]:
+def list_images(
+    limit: Optional[int] = None,
+    offset: int = 0,
+    *,
+    valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+) -> list[dict[str, Any]]:
     """A newest-first window of images for infinite scroll.
 
     Ordered by file mtime (a cheap stat ~= generation order), so a large gallery isn't opened in
     full just to sort; only the window's recipes are read. limit=None returns everything from
-    ``offset`` on."""
+    ``offset`` on.
+
+    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
+    all count over the accepted-record domain. Pass the route's schema validator: a record with
+    every required key (so ``_read_meta`` accepts it) but a wrong value type would otherwise be
+    counted here yet dropped after slicing, stalling infinite scroll at offset 0."""
     try:
         paths = list(gallery_dir().glob("*.png"))
     except OSError:
@@ -150,7 +175,10 @@ def list_images(limit: Optional[int] = None, offset: int = 0) -> list[dict[str, 
         meta = _read_meta(path)
         if meta is None:  # not one of ours (no recipe chunk)
             continue
-        records.append(_record(path.stem, meta))
+        record = _record(path.stem, meta)
+        if valid is not None and not valid(record):  # present but schema-invalid
+            continue
+        records.append(record)
         if want is not None and len(records) >= want:
             break
     return records[offset:] if limit is None else records[offset : offset + limit]
