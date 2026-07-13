@@ -787,6 +787,60 @@ def test_update_display_name_keeps_tool_cache(tmp_path, monkeypatch):
     assert mcp_client.get_cached_tools("s1") == cached
 
 
+def test_update_rename_keeps_stdio_session(tmp_path, monkeypatch):
+    """The edit dialog resends url/headers/oauth unchanged on a rename, so gating
+    the close on field presence would drop the live stdio session. Only a real
+    endpoint/auth change may close it."""
+    import asyncio
+    import json
+
+    _reset_db(tmp_path, monkeypatch)
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    closed: list = []
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "npx demo-server",
+        headers_json = json.dumps({"API_KEY": "x"}), is_enabled = True,
+    )
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1",
+            McpServerUpdate(
+                display_name = "B", url = "npx demo-server",
+                headers = {"API_KEY": "x"}, use_oauth = False,
+            ),
+            current_subject = "u",
+        )
+    )
+    assert closed == []
+    assert mcp_servers_db.get_server("s1")["display_name"] == "B"
+
+
+def test_update_stdio_command_change_closes_session(tmp_path, monkeypatch):
+    """A real command change must still close the old stdio session."""
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    from models.mcp_servers import McpServerUpdate
+    import routes.mcp_servers as routes_mcp
+
+    closed: list = []
+    monkeypatch.setattr(routes_mcp, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(routes_mcp, "close_stdio_sessions", lambda *a, **k: closed.append(a))
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "A", url = "npx demo-server", is_enabled = True,
+    )
+    asyncio.run(
+        routes_mcp.update_mcp_server(
+            "s1", McpServerUpdate(url = "npx other-server"), current_subject = "u"
+        )
+    )
+    assert len(closed) == 1
+
+
 def test_update_disable_evicts_tool_cache(tmp_path, monkeypatch):
     """Disabling a server must drop its cached tools, not leave them unread."""
     import asyncio

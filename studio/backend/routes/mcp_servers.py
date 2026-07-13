@@ -211,7 +211,9 @@ async def update_mcp_server(
     # A new endpoint/auth makes cached tools wrong and disabling makes them
     # unreachable, so drop them and let the next send re-probe; a rename
     # leaves them valid. Live stdio sessions for the old endpoint close too.
-    if changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS:
+    # Gate on a real value change, not mere presence: the edit dialog resends
+    # url/headers/oauth unchanged on a rename, which must not drop the session.
+    if any(changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS):
         invalidate_tool_cache(server_id)
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
