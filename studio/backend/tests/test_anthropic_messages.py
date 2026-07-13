@@ -1801,11 +1801,19 @@ class TestAnthropicMessagesToolRouting:
             assert backend.calls == []
 
         # off, full, and a legacy confirm_tool_calls=False opt-out all run, even
-        # with a local tool selected.
+        # with a local tool selected. The explicit opt-out wins over the mode
+        # (mirrors _permission_mode_confirm and the GGUF path), so it runs even
+        # under ask, which otherwise always rejects.
         for extra in (
             {"tools": safe_tools, "permission_mode": "off"},
             {"tools": safe_tools, "permission_mode": "full"},
             {"tools": safe_tools, "enabled_tools": ["python"], "confirm_tool_calls": False},
+            {"tools": safe_tools, "permission_mode": "ask", "confirm_tool_calls": False},
+            {
+                "tools": [{"type": "terminal", "name": "terminal"}],
+                "permission_mode": "ask",
+                "confirm_tool_calls": False,
+            },
         ):
             backend = _mock_backend(monkeypatch)
             payload = _basic_payload(**extra)

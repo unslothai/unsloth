@@ -435,6 +435,9 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # date -s/--set STRING writes the system clock (date --help); the display
     # forms (+FORMAT, -d/-u/-R/-r) stay read-only.
     "date": frozenset({"-s", "--set"}),
+    # file -C/--compile writes a compiled .mgc magic database (file --help); the
+    # default identification forms only read.
+    "file": frozenset({"-C", "--compile"}),
     # hostname -F/--file FILE and -b/--boot set the hostname from a file/config;
     # the display flags (-f/-d/-i/-I/-s/-A) only read (hostname --help).
     "hostname": frozenset({"-F", "--file", "-b", "--boot"}),
@@ -589,6 +592,14 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "create_subprocess_shell",
         "subprocess_exec",
         "subprocess_shell",
+        # asyncio networking opens outbound connections / listeners the sandbox
+        # does not namespace off (asyncio.open_connection, loop.create_connection/
+        # create_server and their unix variants), like socket.connect.
+        "open_connection",
+        "create_connection",
+        "create_server",
+        "create_unix_connection",
+        "create_unix_server",
         # os.chdir escapes the workdir; runpy helpers run arbitrary code.
         "chdir",
         "fchdir",
@@ -644,6 +655,12 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "WatchedFileHandler",
         "RotatingFileHandler",
         "TimedRotatingFileHandler",
+        # numpy.memmap(..., mode="w+") and pandas writers create/truncate a file
+        # on construction, like open(..., "w").
+        "memmap",
+        "open_memmap",
+        "ExcelWriter",
+        "HDFStore",
     }
 )
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
@@ -1752,8 +1769,20 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
 _MCP_ARG_MUTATION_RE = re.compile(
     r"\b(?:delete\s+from|drop\s+(?:table|database|schema|index|view)|"
     r"truncate\s+(?:table\s+)?\w|update\s+\w+\s+set|insert\s+into|replace\s+into|"
-    r"alter\s+(?:table|database|schema)|create\s+(?:table|database|schema|index|view)|"
+    r"alter\s+(?:table|database|schema)|"
+    # CREATE DDL, allowing modifiers (OR REPLACE / UNIQUE / TEMP[ORARY] /
+    # MATERIALIZED / GLOBAL / LOCAL / RECURSIVE) and the broader object set
+    # (function/trigger/sequence/...), so CREATE OR REPLACE VIEW and CREATE
+    # UNIQUE INDEX are caught too.
+    r"create\s+(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|"
+    r"recursive)\s+)*(?:table|database|schema|index|view|function|procedure|trigger|"
+    r"sequence|role|user|extension|type|domain|aggregate)|"
     r"grant\s+\w|revoke\s+\w|merge\s+into|"
+    # Stored-procedure invocation (CALL proc(...), EXEC/EXECUTE name) and VACUUM
+    # (rewrites the database file) also mutate external state. CALL requires the
+    # name to be followed by "(", ";", or end so a natural-language "call me back"
+    # stays safe.
+    r"call\s+\w+(?=\s*[(;]|\s*$)|exec(?:ute)?\s+\w+|vacuum|"
     # COPY ... FROM bulk-loads a table and COPY ... TO writes a server-side file
     # ([^;] keeps the match inside one statement, spanning the table/column list).
     r"copy\s+[^;]*?\b(?:from|to)\b)\b",
@@ -1764,9 +1793,12 @@ _MCP_ARG_MUTATION_RE = re.compile(
 # space before matching.
 _SQL_COMMENT_RE = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
 # A GraphQL mutation operation (mutation { ... } / mutation Name(...) { ... })
-# changes external state on a read-named graphql tool. GraphQL uses # comments,
-# not SQL's, so this matches the raw payload before the SQL comment strip.
+# changes external state on a read-named graphql tool.
 _GRAPHQL_MUTATION_RE = re.compile(r"\bmutation\b\s*\w*\s*[({]", re.IGNORECASE)
+# GraphQL # comments run to end-of-line and count as whitespace, so a comment
+# between `mutation` and the body (mutation # note\n { ... }) would otherwise
+# hide it; collapse them to a space before matching.
+_GRAPHQL_COMMENT_RE = re.compile(r"#[^\n]*")
 
 
 def _mcp_arguments_mutate(arguments) -> bool:
@@ -1777,7 +1809,7 @@ def _mcp_arguments_mutate(arguments) -> bool:
     def walk(value) -> bool:
         if isinstance(value, str):
             return bool(_MCP_ARG_MUTATION_RE.search(_SQL_COMMENT_RE.sub(" ", value))) or bool(
-                _GRAPHQL_MUTATION_RE.search(value)
+                _GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value))
             )
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())

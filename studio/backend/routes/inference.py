@@ -6398,6 +6398,11 @@ async def openai_chat_completions(
             bool(payload.tools)
             or bool(payload.openai_code_exec_container_id)
             or bool(payload.anthropic_code_exec_container_id)
+            # A JSON-schema response_format is guided-decoding structured output the
+            # router forwards to the llama-server passthrough, not Studio's tool
+            # loop, so a --enable-tools policy must not 400 it as a local-confirm
+            # request under ask/auto.
+            or bool(_extract_response_format(payload))
         )
         # permission_mode only implies the confirm gate for that local loop.
         # Client-tool passthrough forwards to the provider branch and the validator
@@ -11635,10 +11640,12 @@ async def anthropic_messages(
             tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
             for tool in _selected_pre
         )
-        if _perm_mode_pre == "ask" or (
-            _perm_mode_pre in ("auto", None)
-            and not _confirm_opt_out_pre
-            and _gated_tool_selected_pre
+        # An explicit confirm_tool_calls=False opts out of the gate entirely (it
+        # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
+        # so it never rejects -- not even under ask.
+        if not _confirm_opt_out_pre and (
+            _perm_mode_pre == "ask"
+            or (_perm_mode_pre in ("auto", None) and _gated_tool_selected_pre)
         ):
             raise HTTPException(
                 status_code = 400,

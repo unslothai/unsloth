@@ -209,6 +209,9 @@ def _clear_pending():
         ("date -d tomorrow", False),  # -d STRING only displays the given date
         ("date -d yesterday +%Y", False),  # -d value skipped, +FORMAT display stays safe
         ("date -r file.txt", False),  # -r FILE displays a file's mtime, read-only
+        ("file -C -m mymagic", True),  # file -C compiles a magic database (writes .mgc)
+        ("file --compile -m mymagic", True),  # long form of the compile flag
+        ("file report.txt", False),  # plain file identification stays read-only
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -397,6 +400,12 @@ def test_terminal_classifier(command, unsafe):
         ("from pathlib import Path\np = Path('out').open\np('w')", True),  # bound .open aliased
         ("import zipfile\nz = zipfile.ZipFile\nz('a.zip', 'w')", True),  # attribute archive ctor
         ("import numpy as np\nx = np.mean\nx(a)", False),  # a benign attribute alias stays safe
+        ("import numpy as np\nnp.memmap('o', dtype='u1', mode='w+', shape=(1,))", True),  # memmap w+
+        ("import pandas as pd\npd.ExcelWriter('o.xlsx')", True),  # pandas ExcelWriter creates a file
+        ("import pandas as pd\npd.HDFStore('o.h5')", True),  # pandas HDFStore creates a file
+        ("import asyncio\nasyncio.open_connection('h', 80)", True),  # asyncio outbound connection
+        ("import asyncio\nl = asyncio.get_event_loop()\nl.create_server(P, 'h', 80)", True),  # listener
+        ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -614,8 +623,22 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "SELECT copy_count FROM t"}, False),  # 'copy' substring column stays safe
         ({"query": "mutation { deleteIssue(id: 1) }"}, True),  # GraphQL mutation
         ({"query": "mutation DelIssue { deleteIssue(id: 1) }"}, True),  # named GraphQL mutation
+        ({"query": "mutation # note\n { deleteIssue(id: 1) }"}, True),  # comment before body
+        ({"query": "mutation # c\n Del { deleteIssue(id: 1) }"}, True),  # comment before name
         ({"query": "query { issue(id: 1) { title } }"}, False),  # GraphQL read query stays safe
         ({"query": "{ issue(id: 1) { title } }"}, False),  # shorthand GraphQL query stays safe
+        ({"query": "query # note\n { issue(id: 1) }"}, False),  # commented read query stays safe
+        ({"query": "CREATE OR REPLACE VIEW v AS SELECT 1"}, True),  # DDL with a modifier
+        ({"query": "CREATE UNIQUE INDEX idx ON t(x)"}, True),  # DDL with UNIQUE
+        ({"query": "CREATE TEMP TABLE t (id int)"}, True),  # DDL with TEMP
+        ({"query": "CREATE MATERIALIZED VIEW mv AS SELECT 1"}, True),  # materialized view DDL
+        ({"query": "CREATE FUNCTION f() RETURNS int AS $$ $$"}, True),  # function DDL
+        ({"query": "SELECT * FROM created_view"}, False),  # 'create' substring stays safe
+        ({"query": "CALL delete_all_users()"}, True),  # stored procedure invocation
+        ({"query": "EXEC purge_queue"}, True),  # EXEC procedure
+        ({"query": "EXECUTE sp_drop"}, True),  # EXECUTE procedure
+        ({"query": "VACUUM INTO 'backup.db'"}, True),  # VACUUM rewrites the database
+        ({"query": "please call me back later"}, False),  # NL 'call' stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

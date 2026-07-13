@@ -774,6 +774,26 @@ class TestChatCompletionRequestToolFields:
                 assert resp.status_code == 200, resp.text
                 assert resp.json()["ok"] is True
 
+        # A JSON-schema response_format is guided-decoding passthrough, not a local
+        # tool loop, so a --enable-tools policy must not 400 a non-streaming ask/auto
+        # structured-output request under the confirm guard.
+        for mode in ("ask", "auto"):
+            client = _setup(True)
+            resp = client.post(
+                "/v1/chat/completions",
+                json = {
+                    "messages": [{"role": "user", "content": "give me json"}],
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {"name": "s", "schema": {"type": "object"}},
+                    },
+                    "permission_mode": mode,
+                    "stream": False,
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["ok"] is True
+
         # An explicit confirm_tool_calls=True with client tools and no stream is
         # still a confirm-without-stream request and must be rejected up front.
         client = _setup()
