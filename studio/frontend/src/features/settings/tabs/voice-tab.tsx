@@ -25,6 +25,7 @@ import {
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { MicIcon } from "@/lib/mic-icon";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
   Copy01Icon,
   Delete02Icon,
@@ -457,6 +458,7 @@ export function VoiceTab() {
             error instanceof Error ? error.message : "TTS preview failed",
           );
         }
+        releasePreviewAudio();
         markPreviewing(false);
       }
       return;
@@ -660,10 +662,11 @@ export function VoiceTab() {
                   className="size-8 shrink-0 text-muted-foreground"
                   aria-label="Copy dictation"
                   onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(item.text);
+                    // Helper falls back to execCommand where navigator.clipboard
+                    // is unavailable (Safari, insecure http LAN contexts).
+                    if (await copyToClipboard(item.text)) {
                       toast.success(t("settings.voice.recents.copied"));
-                    } catch {
+                    } else {
                       toast.error(t("settings.voice.recents.copyFailed"));
                     }
                   }}
