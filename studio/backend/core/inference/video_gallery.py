@@ -39,11 +39,9 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     mp4_tmp = directory / f".{video_id}.mp4.tmp"
     sidecar = directory / f"{video_id}.json"
     sidecar_tmp = directory / f".{video_id}.json.tmp"
-    # Stage BOTH files, then publish. The sidecar is the pair's commit marker (list_videos scans
-    # mp4s but skips any without a readable sidecar), so writing the MP4 straight to its final name
-    # before the sidecar meant a sidecar write/replace failure left an invisible, undeletable orphan
-    # MP4 (gallery delete resolves by id, but the record never appears to be deleted). Rename the MP4
-    # in first, then the sidecar; on ANY failure remove every artifact so nothing is stranded.
+    # Stage both files, rename the MP4 in, then the sidecar (the pair's commit marker: list_videos
+    # skips an mp4 without a readable sidecar). On any failure remove every artifact, else a sidecar
+    # failure would leave an invisible, undeletable orphan MP4.
     try:
         mp4_tmp.write_bytes(mp4_bytes)
         sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
@@ -204,11 +202,10 @@ def list_videos(
     Ordered by MP4 mtime (a cheap stat ~= generation order); only the window's sidecars are read.
     limit=None returns everything from ``offset`` on. A file without its pair is skipped.
 
-    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and the
-    caller's has_more all count over the same accepted-record domain. Passing the route's schema
-    validator here keeps a sidecar that parses as JSON but fails the response schema from being
-    counted in this window yet dropped by the route after slicing -- which would otherwise return a
-    short or empty page with more remaining and stall infinite scroll."""
+    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
+    all count over the accepted-record domain. Pass the route's schema validator: a sidecar that
+    parses as JSON but fails the response schema would otherwise be counted here yet dropped after
+    slicing, stalling infinite scroll."""
     try:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:

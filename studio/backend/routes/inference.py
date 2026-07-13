@@ -14512,11 +14512,10 @@ async def list_gallery_images(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    # Validate against the response schema INSIDE the pager so offset / limit / has_more all count
-    # over the same accepted-record domain. A PNG whose recipe chunk has all keys but a wrong value
-    # type passes the presence-only read yet fails GalleryImage(**r); dropping such records only
-    # after pagination made a leading bad record return an empty page with has_more=True, stalling
-    # infinite scroll at offset 0. Filtering here keeps the window and has_more consistent.
+    # Validate inside the pager so offset / limit / has_more all count over the accepted domain. A
+    # recipe with all keys but a wrong value type passes the presence-only read yet fails
+    # GalleryImage(**r); dropping it only after slicing let a leading bad record return an empty
+    # page with has_more=True, stalling infinite scroll at offset 0.
     def _valid_gallery_image(record: dict) -> bool:
         try:
             GalleryImage(**record)

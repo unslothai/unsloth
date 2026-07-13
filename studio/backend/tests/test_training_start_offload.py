@@ -116,11 +116,8 @@ def test_backend_start_guard_blocks_overlapping_starts():
 
 
 def test_is_training_active_true_during_start_reservation():
-    # While start_training holds the compare-and-set reservation but has not yet spawned
-    # (before_spawn frees residents, then GPU auto-selection, then proc.start()), the LLM
-    # training run must already read as active: /images/load, /video/load, and
-    # /diffusion/start all gate on is_training_active(), so an idle reading in this window
-    # would let another pipeline race the reserved run for the just-freed VRAM.
+    # A run reserved in start_training but not yet spawned must already read as active, else the
+    # load/start guards would let another pipeline race it for the just-freed VRAM.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()

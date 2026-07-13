@@ -85,15 +85,12 @@ async def load_video_model(
 
     backend = get_video_backend()
     try:
-        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the
-        # load agree; a bad explicit kind raises here -> 400.
+        # Resolve the load kind once (gguf / single_file / pipeline) so validation and the load
+        # agree; a bad explicit kind raises here -> 400.
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
-        # A local On-Device pick can be a bare single-file .safetensors directory (no
-        # model_index.json): the scanner advertises it as a text-to-video model, but the
-        # local picker starts it as a pipeline with no filename, so a pipeline load would
-        # 400 on the missing model_index.json and the advertised model is unusable. If the
-        # directory holds exactly one checkpoint, reinterpret the pick as a single_file load
-        # of it, so validation and the load agree. Mirrors the image load route.
+        # A local On-Device pick can be a bare single-file .safetensors dir (no model_index.json)
+        # that the picker starts as a pipeline with no filename, which would 400 on the missing
+        # index. If the dir holds exactly one checkpoint, load it as a single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
             sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
             if sole is not None:
@@ -236,11 +233,10 @@ async def list_gallery_videos(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
-    # Validate against the response schema INSIDE the pager so offset / limit / has_more all count
-    # over the same accepted-record domain. A sidecar that parses as JSON but has a wrong value type
-    # passes the read yet fails GalleryVideo(**r); dropping such records only after pagination made a
-    # leading bad record return an empty page with has_more=True, stalling infinite scroll at offset
-    # 0. Filtering here keeps the window and has_more consistent.
+    # Validate inside the pager so offset / limit / has_more all count over the accepted domain. A
+    # sidecar that parses as JSON but has a wrong value type passes the read yet fails
+    # GalleryVideo(**r); dropping it only after slicing let a leading bad record return an empty
+    # page with has_more=True, stalling infinite scroll at offset 0.
     def _valid_gallery_video(record: dict) -> bool:
         try:
             GalleryVideo(**record)

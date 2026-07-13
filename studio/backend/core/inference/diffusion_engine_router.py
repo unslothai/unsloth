@@ -59,9 +59,8 @@ def _install_accelerator_for(backend: str) -> str:
 # The engine the current load committed to, and why a non-native choice was made. Mutated only
 # under _lock during selection.
 _lock = threading.Lock()
-# Serializes a WHOLE engine switch (check -> unload -> publish). _lock alone is released during the
-# slow unload(), so two overlapping selections could interleave: one observes the not-yet-updated
-# active engine, returns it, and loads onto the very engine the other is concurrently unloading.
+# Serializes a whole engine switch (check -> unload -> publish); _lock alone is released during the
+# slow unload(), letting two overlapping selections load onto the engine the other is unloading.
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
@@ -90,12 +89,9 @@ def active_engine_name() -> str:
 
 def _activate(name: str, reason: Optional[str]) -> Any:
     global _active_engine_name, _fallback_reason
-    # Serialize the ENTIRE check -> unload -> publish transition. _lock is released during the slow
-    # unload() below (holding it across the unload would block every status/selection reader), which
-    # opens a window where a second _activate could read the still-old active engine, take the "no
-    # change" branch, and return that engine -- then load onto it while this call is unloading it.
-    # _transition_lock closes the window without holding _lock across the unload; the final
-    # get_active_diffusion_engine() now reflects the committed state.
+    # Serialize the whole check -> unload -> publish transition without holding _lock across the
+    # slow unload(), closing the window where a second _activate reads the still-old active engine,
+    # takes the "no change" branch, and loads onto the engine this call is unloading.
     with _transition_lock:
         # Switching engines: unload the deactivated one first, else its model stays resident but
         # unreachable (the evictor only targets the active engine), leaking 10+ GB. The unload is
@@ -112,9 +108,8 @@ def _activate(name: str, reason: Optional[str]) -> Any:
         if engine_to_unload is not None:
             # Publish the new engine only AFTER the old one unloads. The evictor unloads
             # get_active_diffusion_engine(), so flipping the name first would let a concurrent
-            # acquire_for evict the new (empty) engine and take the GPU while the old model is still
-            # freeing VRAM -- two large models briefly resident. Keeping the OLD engine as the evict
-            # target serializes a concurrent evict on its unload(), granting the GPU only once freed.
+            # acquire_for evict the new (empty) engine while the old model is still freeing VRAM.
+            # Keeping the OLD engine as the evict target grants the GPU only once it is freed.
             try:
                 engine_to_unload.unload()
             except Exception as exc:  # noqa: BLE001 -- best-effort; never block the switch

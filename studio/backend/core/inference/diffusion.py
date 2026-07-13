@@ -2216,14 +2216,10 @@ class DiffusionBackend:
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Register under _lock so unload()/a load can signal THIS generation.
                 self._active_generate_cancel = cancel
-                # Publish an active (step 0) progress state the moment the lock is held, BEFORE
-                # the slow pre-denoise setup (deferred compile, LoRA resolution/application,
-                # ControlNet download/build). Without this generate_progress() reports inactive
-                # across that window, so a reload's mount probe shows idle even though this
-                # generation holds _generate_lock; the user then starts a second generate that
-                # merely blocks behind this one (and can duplicate the result). The per-step
-                # callback swaps in its own _GenState at denoise start; this is the queued phase.
-                # Mirrors the video backend's queued state and the training start guard.
+                # Publish an active (step 0) state now, before the slow pre-denoise setup (deferred
+                # compile, LoRA resolution, ControlNet build), so a reload's mount probe doesn't read
+                # idle while this generation holds _generate_lock and let a second generate queue
+                # behind it. The per-step callback swaps in its own _GenState at denoise start.
                 self._gen = _GenState(total_steps = steps)
             try:
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state.
@@ -2559,10 +2555,8 @@ class DiffusionBackend:
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
-                    # Drop the published progress state. The normal path already nulled it after
-                    # the denoise; this also covers a setup-time error that skips that inner
-                    # finally. Safe under _generate_lock: no other generation can have installed
-                    # its own _gen while this one runs.
+                    # Drop the published progress state, covering a setup-time error that skips
+                    # the inner finally. Safe under _generate_lock.
                     self._gen = None
 
     def generate_progress(self) -> dict[str, Any]:
@@ -2594,13 +2588,10 @@ class DiffusionBackend:
             # Cancel any in-flight load (its worker checks this token) and drop the marker.
             self._load_token += 1
             self._loading = None
-        # WAIT for the signalled denoise to exit BEFORE tearing down (mirrors begin_load's
-        # pre-teardown barrier at the top of the locked load path). _unload_locked uninstalls
-        # PROCESS-WIDE state the running denoise still depends on -- the eager/arch attention
-        # patches, the GGUF compile hooks, the flipped backend flags and the compile cache -- none
-        # of which the denoise's own pipe ref pins. Uninstalling them before the denoise exits would
-        # corrupt or crash its in-flight forward passes. The denoise holds _generate_lock for its
-        # whole body, so acquiring it here blocks until it has finished; only then do we tear down.
+        # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls
+        # process-wide state (attention patches, GGUF compile hooks, backend flags, compile cache)
+        # the denoise still depends on but its pipe ref doesn't pin. The denoise holds _generate_lock
+        # for its whole body, so acquiring it here blocks until it has finished. Mirrors begin_load.
         with self._generate_lock:
             with self._lock:
                 self._unload_locked()
@@ -2622,10 +2613,9 @@ class DiffusionBackend:
 
             uninstall_patches()
             uninstall_arch_patches()
-        # NOTE: deliberately NOT unload_lora_weights() here. Both callers (unload() and begin_load's
-        # locked path) now hold _generate_lock across this teardown, so no denoise is in flight; the
-        # whole pipe is dropped below, freeing any LoRA adapters with it, so a separate adapter unload
-        # would be redundant work.
+        # Deliberately NOT unload_lora_weights() here: the whole pipe is dropped below, freeing any
+        # LoRA adapters with it. Both callers hold _generate_lock across this teardown, so no denoise
+        # is in flight.
         # Drop the workflow pipes so they don't pin the freed pipeline's modules past unload.
         self._aux_pipes.clear()
         # Drop any ControlNet models + pipelines so the freed load carries no extra modules.

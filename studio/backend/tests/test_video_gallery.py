@@ -200,10 +200,8 @@ def test_list_skips_corrupt_sidecar():
 
 
 def test_valid_callback_paginates_over_accepted_records():
-    # A sidecar that parses as JSON (so the read accepts it) but fails the caller's stricter schema
-    # check must be filtered BEFORE pagination, so offset/limit/has_more count over accepted records
-    # only. Otherwise a leading bad record returns a short/empty page with more remaining and stalls
-    # infinite scroll at offset 0.
+    # ``valid`` must filter before pagination, so offset/limit/has_more count over accepted records;
+    # else a leading bad record returns a short page with more remaining and stalls scroll.
     _save_with_mtime("BAD", 300.0)  # newest, sorts first
     _save_with_mtime("g1", 200.0)
     _save_with_mtime("g2", 100.0)
@@ -231,10 +229,8 @@ def test_valid_callback_leading_bad_records_do_not_stall_at_offset_zero():
 
 
 def test_save_leaves_no_orphan_mp4_when_sidecar_publish_fails(monkeypatch):
-    # The sidecar is the pair's commit marker. If it fails to publish, the MP4 must NOT be left
-    # behind as an invisible orphan (list_videos would skip it and gallery delete could never reach
-    # it). Fail the SECOND os.replace (the sidecar) after the mp4 is renamed in, and assert nothing
-    # is stranded.
+    # If the sidecar (the pair's commit marker) fails to publish, the MP4 must not be left as an
+    # invisible orphan. Fail the second os.replace and assert nothing is stranded.
     real_replace = gallery.os.replace
     calls = {"n": 0}
 

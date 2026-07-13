@@ -69,9 +69,8 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
     image_id = uuid.uuid4().hex
     directory = gallery_dir()
     final_path = directory / f"{image_id}.png"
-    # Write to a hidden temp then atomically rename into place: a crash / disk-full mid-write must
-    # never leave a truncated {id}.png that the listing would surface as a corrupt record. The temp
-    # name is dotted so an interrupted write is skipped by the *.png glob, and cleaned on failure.
+    # Write to a dotted temp (skipped by the *.png glob) then atomically rename, so a crash mid-write
+    # never leaves a truncated {id}.png that the listing would surface as a corrupt record.
     tmp_path = directory / f".{image_id}.png.tmp"
     try:
         tmp_path.write_bytes(_png_bytes(image, meta))
@@ -156,12 +155,10 @@ def list_images(
     full just to sort; only the window's recipes are read. limit=None returns everything from
     ``offset`` on.
 
-    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and the
-    caller's has_more all count over the same accepted-record domain. Passing the route's schema
-    validator here is essential: a record that has every required key (so ``_read_meta`` accepts
-    it) but a wrong value type would otherwise be counted in this window yet dropped by the route
-    after slicing -- a leading bad record then returns an empty page with more remaining, which
-    stalls infinite scroll at offset 0."""
+    ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
+    all count over the accepted-record domain. Pass the route's schema validator: a record with
+    every required key (so ``_read_meta`` accepts it) but a wrong value type would otherwise be
+    counted here yet dropped after slicing, stalling infinite scroll at offset 0."""
     try:
         paths = list(gallery_dir().glob("*.png"))
     except OSError:

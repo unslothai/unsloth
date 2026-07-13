@@ -1616,11 +1616,8 @@ async def upload_diffusion_dataset(
     from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
 
     cleaned = _clean_diffusion_dataset_name(name)
-    # Reject a symlinked dataset directory BEFORE any write. A bare mkdir(exist_ok=True) succeeds
-    # through an existing name -> external-directory symlink, and the staged upload would then
-    # write/replace files outside the Studio datasets root through that link. The read/caption/
-    # delete endpoints already enforce this containment via _resolve_dataset_folder; the upload
-    # path must run the same symlink + root-containment check first so writes can never escape.
+    # Run the same symlink + root-containment check as the read/caption/delete endpoints before any
+    # write, so a name -> external-directory symlink can't make the staged upload write outside root.
     folder = _resolve_dataset_folder(name, must_exist = False)
     folder.mkdir(parents = True, exist_ok = True)
 
@@ -1736,13 +1733,10 @@ async def upload_diffusion_dataset(
                         )
                     out.write(chunk)
             uploaded += 1
-        # Commit every staged file as one transaction. A plain replace loop is NOT atomic across
-        # files: if the second-or-later tmp.replace(dest) fails (disk/quota error, a Windows file
-        # lock, antivirus, a destination that became a directory), an earlier destination has
-        # already been overwritten while the request returns an error -- the user's original file
-        # is gone. Back up each pre-existing destination before overwriting it, then on ANY failure
-        # remove the versions this request installed and restore every displaced original, so the
-        # dataset is left exactly as it was before the upload.
+        # Commit every staged file as one transaction. A plain replace loop is not atomic across
+        # files: a mid-loop tmp.replace(dest) failure leaves earlier destinations already overwritten
+        # while the request errors. Back up each pre-existing destination first, then on any failure
+        # drop the versions this request installed and restore every displaced original.
         backups: list[tuple[Path, Optional[Path]]] = []  # (dest, backup path or None)
         installed: list[Path] = []
         try:
@@ -1809,11 +1803,9 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     cleaned = _clean_diffusion_dataset_name(name)
     root = datasets_root().resolve()
     folder = root / cleaned
-    # Reject a symlinked dataset directory. _safe_dataset_image_path only proves each image path
-    # stays under folder.resolve(); it never proves the folder itself stays under the datasets
-    # root. A dataset dir that is a symlink to an external directory would therefore let image
-    # read / caption / delete operate on files outside Studio (a reproduced delete removed an
-    # external file through such a link). Prove the resolved folder is contained in the root too.
+    # Reject a symlinked dataset directory and prove the resolved folder stays under root:
+    # _safe_dataset_image_path only checks each image path, so a folder symlinked to an external
+    # directory would let read / caption / delete operate on files outside Studio.
     if folder.is_symlink():
         raise HTTPException(
             status_code = 400,
@@ -2063,9 +2055,8 @@ async def delete_diffusion_dataset_image(
         if thumbs_dir.is_dir():
             # Thumbs are keyed on the full filename (stem + extension), so match that here too;
             # a stem-only glob would strand this image's thumbs or delete a same-stem sibling's.
-            # Escape the filename first: an uploaded name may legally contain glob metacharacters
-            # ('[', ']', '*', '?'), and interpolating those raw would make e.g. "[ab].png" match
-            # "a.png_*.jpg"/"b.png_*.jpg" -- deleting siblings' thumbs while leaving its own behind.
+            # Escape the name: a raw glob metacharacter (e.g. "[ab].png") would match siblings'
+            # thumbs while leaving its own behind.
             for t in thumbs_dir.glob(f"{_glob.escape(image_path.name)}_*.jpg"):
                 t.unlink(missing_ok = True)
         return {"deleted": image_path.name}

@@ -705,27 +705,22 @@ def discover_image_caption_pairs(
         caption: Optional[str] = None
         sidecar_present = False
         # 1. per-image sidecar caption file (the user's explicit edit; wins over metadata).
-        #    An EMPTY sidecar is a deliberate tombstone (the labeling grid writes one when a user
-        #    clears a metadata caption): it suppresses the metadata caption but leaves the image
-        #    UNCAPTIONED so the dreambooth instance_prompt fallback below still applies. Treating
-        #    "" as a present caption here would skip the instance prompt AND drop the image, so
-        #    clearing every metadata caption in the grid would make a dreambooth run fail with
-        #    "No captioned images found".
+        #    An EMPTY sidecar is a deliberate tombstone (written when a user clears a caption): it
+        #    suppresses the metadata caption but leaves the image uncaptioned so the instance_prompt
+        #    fallback below still applies, rather than dropping the image.
         for ext in _CAPTION_EXTS:
             sidecar = img.with_suffix(ext)
             if sidecar.is_file():
                 sidecar_present = True
                 caption = sidecar.read_text(encoding = "utf-8").strip()
                 break
-        # 2. metadata row keyed by file name (basename or the relative path; as_posix so a
-        #    Windows backslash path still matches the jsonl's forward-slash keys). Skipped when a
-        #    sidecar tombstone is present (the sidecar, even empty, is authoritative).
+        # 2. metadata row keyed by file name (basename or relative path; as_posix so a Windows
+        #    backslash path matches the jsonl's forward-slash keys). A sidecar, even empty, wins.
         if not sidecar_present:
             caption = meta_caption.get(img.name) or meta_caption.get(
                 img.relative_to(root).as_posix()
             )
-        # 3. dreambooth instance prompt for any image still without a caption (no sidecar text and
-        #    no metadata row, or an empty tombstone).
+        # 3. dreambooth instance prompt for any image still without a caption.
         if not caption and instance_prompt:
             caption = instance_prompt
         if caption:

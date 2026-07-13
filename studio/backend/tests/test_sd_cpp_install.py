@@ -274,11 +274,8 @@ def test_install_into_empty_dir_claims_ownership(tmp_path, monkeypatch):
 
 
 def test_install_into_nonempty_unowned_dir_is_refused(tmp_path, monkeypatch):
-    # A pre-existing, non-empty directory that Studio did not create (e.g. a user's own
-    # stable-diffusion.cpp checkout) must NOT be extracted into. Merging the release into it would
-    # overwrite or mix our binaries into the user's working tree, and leaving it unowned only stops
-    # the uninstaller from deleting it later. install() refuses up front and leaves the dir untouched
-    # so the user can point us at a fresh/empty location.
+    # A pre-existing, non-empty directory Studio did not create (e.g. a user's own checkout) must
+    # not be extracted into; install() refuses up front and leaves it untouched.
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     target = tmp_path / "stable-diffusion.cpp"

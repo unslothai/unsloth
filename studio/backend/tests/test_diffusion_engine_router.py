@@ -241,11 +241,8 @@ def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
 
 
 def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
-    # Regression for the check->unload->publish race: _activate releases _lock during the slow
-    # unload(), so without the transition lock a second _activate could observe the not-yet-updated
-    # active engine, take the "no change" branch, and return the engine the first call is
-    # concurrently unloading. Drive both paths on threads and assert the concurrent query is blocked
-    # until the switch completes (i.e. the whole transition is serialized).
+    # Regression: without the transition lock a second _activate during the slow unload() reads the
+    # not-yet-updated active engine and returns it. Assert the query is blocked until the switch ends.
     import threading
 
     r._active_engine_name = ENGINE_DIFFUSERS
@@ -279,8 +276,7 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
 
     q = threading.Thread(target = _query)
     q.start()
-    # Serialized: while the switch holds the transition lock the query cannot complete. Pre-fix it
-    # would return immediately (active is still diffusers), setting query_done at once.
+    # Serialized: the query cannot complete while the switch holds the transition lock.
     assert not query_done.wait(0.4)
 
     release_unload.set()

@@ -496,12 +496,8 @@ def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypa
 
 
 def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
-    # Re-uploading a.txt and b.txt (an allowed overwrite of two files already on disk) stages both,
-    # then commits them. A plain replace loop is NOT atomic: if the SECOND commit fails after the
-    # first destination was already overwritten, the live dataset is left partially updated with the
-    # request returning an error -- the user's original a.txt is gone. The transactional commit must
-    # back up each displaced original and, on any failure, restore every one so the dataset is left
-    # exactly as it was, with no stray temp/backup files.
+    # Re-uploading a.txt and b.txt where the SECOND commit fails must roll back the first overwrite,
+    # so both originals survive and no stray temp/backup files remain.
     from pathlib import Path
 
     app = FastAPI()
@@ -518,8 +514,7 @@ def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
     state = {"failed": False}
 
     def flaky_replace(self, target, *a, **k):
-        # Fail exactly once, on the tmp -> b.txt promotion (source is the staged .upload-* part, NOT
-        # a .upload-backup-* part), so the subsequent backup -> b.txt restore still succeeds.
+        # Fail once on the tmp -> b.txt promotion only (not the backup restore), so rollback works.
         if (
             not state["failed"]
             and str(target).endswith("b.txt")
@@ -548,9 +543,8 @@ def test_upload_rolls_back_when_a_later_promotion_fails(ds_root, monkeypatch):
 
 
 def test_resolve_dataset_folder_rejects_symlink(ds_root, tmp_path):
-    # A dataset directory that is a symlink pointing OUTSIDE the datasets root must be rejected: the
-    # per-image containment check only proves paths stay under folder.resolve(), so without this a
-    # delete/caption/read could operate on external files through the link.
+    # A dataset dir that is a symlink outside the datasets root must be rejected, else delete /
+    # caption / read could operate on external files through the link.
     from routes.training import _resolve_dataset_folder
 
     external = tmp_path / "external"
@@ -564,9 +558,8 @@ def test_resolve_dataset_folder_rejects_symlink(ds_root, tmp_path):
 
 
 def test_upload_through_symlinked_dataset_cannot_escape_root(client, ds_root, tmp_path):
-    # End to end: an upload targeting a dataset name that already exists as a symlink to an
-    # external directory must be refused (400) BEFORE any bytes are written, so the upload can
-    # never create/replace files outside the datasets root through the link.
+    # An upload to a dataset name that is a symlink to an external directory must be refused (400)
+    # before any bytes are written.
     external = tmp_path / "external"
     external.mkdir()
     (ds_root / "linked").symlink_to(external, target_is_directory = True)
@@ -580,8 +573,7 @@ def test_upload_through_symlinked_dataset_cannot_escape_root(client, ds_root, tm
 
 
 def test_delete_through_symlinked_dataset_cannot_escape_root(client, ds_root, tmp_path):
-    # End to end: a DELETE against an image inside a symlinked dataset dir is refused (400) and the
-    # external file it points at is NOT removed.
+    # A DELETE inside a symlinked dataset dir is refused (400) and the external file survives.
     external = tmp_path / "external"
     external.mkdir()
     victim = external / "victim.png"
@@ -594,10 +586,8 @@ def test_delete_through_symlinked_dataset_cannot_escape_root(client, ds_root, tm
 
 
 def test_delete_image_with_glob_chars_only_removes_own_thumbs(client, ds_root):
-    # A legal uploaded filename may contain glob metacharacters ('[', ']', '*', '?'). Deleting it
-    # must remove ONLY its own thumbnails; interpolating the raw name into Path.glob would make
-    # "[ab].png" match "a.png_*.jpg"/"b.png_*.jpg" -- deleting a sibling's thumbs while leaving its
-    # own (literally "[ab].png_32.jpg") behind.
+    # Deleting a filename with glob metacharacters (e.g. "[ab].png") must remove only its own
+    # thumbnails, not a sibling's that the raw glob would spuriously match.
     from urllib.parse import quote
 
     folder = ds_root / "d"

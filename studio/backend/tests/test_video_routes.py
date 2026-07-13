@@ -111,8 +111,7 @@ class _FakeBackend(video_module.VideoBackend):
         kind = (model_kind or ("gguf" if gguf_filename else "pipeline")).lower()
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
-        # Non-GGUF loads are gated to unsloth/* repos, the official bases, and local paths
-        # (the real backend trusts an existing local path via _is_trusted_video_repo).
+        # Non-GGUF loads are gated to unsloth/* repos, the official bases, and existing local paths.
         trusted = model_path.lower().startswith(("unsloth/", "lightricks/")) or (
             Path(model_path).expanduser().exists()
         )
@@ -386,10 +385,8 @@ def test_load_progress_route(client):
 
 
 def test_load_local_single_file_dir_routes_through_single_file(client, tmp_path):
-    # An On-Device pick of a local directory named for a video family that holds exactly one
-    # .safetensors and no model_index.json arrives as a pipeline with no filename. The route
-    # reinterprets it as a single_file load of the sole checkpoint (mirrors the image route),
-    # so it is loadable instead of 400ing on the missing model_index.json.
+    # A local video-family dir with one .safetensors and no model_index.json arrives as a pipeline
+    # with no filename; the route reinterprets it as a single_file load of the sole checkpoint.
     d = tmp_path / "ltx-2.3-local"
     d.mkdir()
     (d / "ltx-dit.safetensors").write_bytes(b"0")
@@ -404,8 +401,7 @@ def test_load_local_single_file_dir_routes_through_single_file(client, tmp_path)
 
 
 def test_load_local_pipeline_dir_stays_pipeline(client, tmp_path):
-    # A real diffusers directory (has model_index.json) is left as a pipeline load:
-    # resolve_local_single_file returns None for it, so the pick is not rewritten.
+    # A real diffusers directory (has model_index.json) is left as a pipeline load.
     d = tmp_path / "ltx-2.3-pipeline"
     d.mkdir()
     (d / "model_index.json").write_text("{}")

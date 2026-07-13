@@ -344,9 +344,8 @@ def test_generate_rejects_batch_seed_past_json_safe_range(client):
     client.post(
         "/api/inference/images/load", json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"}
     )
-    # An explicit seed at the JS-safe cap with a batch derives per-image seeds
-    # (seed+1 ...) that exceed Number.MAX_SAFE_INTEGER and no longer round-trip
-    # through the gallery JSON recipe, so the request is rejected at the boundary.
+    # A seed at the cap with a batch derives per-image seeds (seed+1 ...) past the JSON-safe range,
+    # so the request is rejected.
     over = client.post(
         "/api/inference/images/generate",
         json = {"prompt": "p", "seed": 2**53 - 1, "batch_size": 2},

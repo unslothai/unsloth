@@ -483,11 +483,8 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
 
 
 def test_generate_progress_active_during_setup(fake_runtime, tmp_path, monkeypatch):
-    # A generation must report active from the moment it holds the lock, BEFORE the slow
-    # pre-denoise setup (deferred compile / LoRA resolution / ControlNet build) runs.
-    # Otherwise a reload's mount probe sees idle while the lock is held and lets a second
-    # generate queue behind the first. _apply_loras runs inside that setup window, so probing
-    # generate_progress() from there exercises the gap the reviewer flagged.
+    # A generation must report active from the moment it holds the lock, before the slow pre-denoise
+    # setup. _apply_loras runs inside that window, so probe generate_progress() from there.
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
     backend.load_pipeline(
@@ -3009,10 +3006,8 @@ def test_pipeline_load_uses_predownloaded_dir(fake_runtime, tmp_path):
 
 
 def test_unload_waits_for_in_flight_denoise_before_teardown():
-    # Regression for the unload/denoise teardown race: unload() must WAIT for a running denoise to
-    # exit (acquire _generate_lock) BEFORE _unload_locked() tears down PROCESS-WIDE state (eager /
-    # arch attention patches, gguf compile hooks, backend flags, compile cache) that the denoise
-    # still depends on. Mirror the load path, which already waits on _generate_lock before teardown.
+    # Regression: unload() must wait for a running denoise to exit (acquire _generate_lock) before
+    # _unload_locked() tears down process-wide state the denoise still depends on.
     import threading
 
     backend = DiffusionBackend()

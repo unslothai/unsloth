@@ -148,10 +148,8 @@ def test_list_skips_recipe_missing_required_fields(tmp_path):
 
 
 def test_valid_callback_paginates_over_accepted_records():
-    # A record that passes _read_meta (every required key present) but fails the caller's stricter
-    # schema check must be filtered BEFORE pagination, so offset/limit/has_more all count over the
-    # accepted domain. Otherwise a leading bad record returns an empty/short page with more still
-    # remaining, and the frontend (which advances by valid records) stalls at offset 0.
+    # ``valid`` must filter before pagination, so offset/limit/has_more count over the accepted
+    # domain; else a leading bad record returns a short page with more remaining and stalls scroll.
     _save_with_mtime("BAD", 300.0)  # newest, sorts first
     _save_with_mtime("g1", 200.0)
     _save_with_mtime("g2", 100.0)
@@ -159,8 +157,7 @@ def test_valid_callback_paginates_over_accepted_records():
     def _valid(rec):
         return rec.get("prompt") != "BAD"
 
-    # First page of 2 over VALID records returns both good ones -- not [g1] (bad eating a slot)
-    # and not [] (bad filling the whole window).
+    # First page of 2 returns both good records, not [g1] or [].
     page = gallery.list_images(limit = 2, offset = 0, valid = _valid)
     assert [r["prompt"] for r in page] == ["g1", "g2"]
     # The has_more probe (limit + 1) sees no extra VALID record beyond the two returned.
@@ -168,8 +165,7 @@ def test_valid_callback_paginates_over_accepted_records():
 
 
 def test_valid_callback_leading_bad_record_does_not_stall_at_offset_zero():
-    # Reproduces the exact stall: every record in the first window is schema-invalid. Without
-    # in-pager filtering the route returned images=[] with has_more=True at offset 0 forever.
+    # Every record in the first window is invalid; without in-pager filtering the route stalled.
     for i in range(3):
         _save_with_mtime(f"BAD{i}", 300.0 - i)  # newest three are all invalid
     _save_with_mtime("good", 10.0)
@@ -177,15 +173,13 @@ def test_valid_callback_leading_bad_record_does_not_stall_at_offset_zero():
     def _valid(rec):
         return not str(rec.get("prompt", "")).startswith("BAD")
 
-    # limit+1 = 3: the pager must look PAST the invalid leaders and return the one good record,
-    # so has_more (len > limit) is False and the client advances off offset 0.
+    # The pager must look past the invalid leaders and return the one good record.
     records = gallery.list_images(limit = 2, offset = 0, valid = _valid)
     assert [r["prompt"] for r in records] == ["good"]
 
 
 def test_save_is_atomic_no_partial_png_on_publish_failure(monkeypatch):
-    # A crash between writing the bytes and publishing the file must leave neither a truncated
-    # {id}.png nor a leftover temp: the listing only ever sees fully-written records.
+    # A crash before publishing must leave neither a truncated {id}.png nor a leftover temp.
     def _boom(*a, **k):
         raise OSError("simulated rename failure")
 
