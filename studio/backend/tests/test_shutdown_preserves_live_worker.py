@@ -18,14 +18,14 @@ from core.inference.orchestrator import InferenceOrchestrator
 class _FakeProc:
     """A subprocess handle that dies only on the requested step (or never)."""
 
-    def __init__(self, dies_on=None):
+    def __init__(self, dies_on = None):
         self._alive = True
         self._dies_on = dies_on  # None | "join" | "terminate" | "kill"
 
     def is_alive(self):
         return self._alive
 
-    def join(self, timeout=None):
+    def join(self, timeout = None):
         if self._dies_on == "join":
             self._alive = False
 
@@ -68,49 +68,48 @@ def _bare_export():
     return o
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _no_sleep(monkeypatch):
     # _shutdown_subprocess sleeps 0.5s after cancelling; keep the tests instant.
     import core.inference.orchestrator as inf_mod
-
     monkeypatch.setattr(inf_mod.time, "sleep", lambda *_a, **_k: None)
 
 
 class TestInferenceShutdownReturn:
     def test_worker_that_dies_returns_true_and_clears_handle(self):
         o = _bare_inference()
-        o._proc = _FakeProc(dies_on="terminate")
-        assert o._shutdown_subprocess(timeout=0.01) is True
+        o._proc = _FakeProc(dies_on = "terminate")
+        assert o._shutdown_subprocess(timeout = 0.01) is True
         assert o._proc is None
         assert o.is_worker_alive() is False
 
     def test_survivor_returns_false_and_keeps_handle(self):
         o = _bare_inference()
-        o._proc = _FakeProc(dies_on=None)  # outlives terminate AND kill
-        assert o._shutdown_subprocess(timeout=0.01) is False
+        o._proc = _FakeProc(dies_on = None)  # outlives terminate AND kill
+        assert o._shutdown_subprocess(timeout = 0.01) is False
         assert o._proc is not None
         # is_worker_alive stays truthful, so the pre-swap guard can refuse the swap.
         assert o.is_worker_alive() is True
 
     def test_already_dead_returns_true(self):
         o = _bare_inference()
-        o._proc = _FakeProc(dies_on="join")
+        o._proc = _FakeProc(dies_on = "join")
         o._proc._alive = False
-        assert o._shutdown_subprocess(timeout=0.01) is True
+        assert o._shutdown_subprocess(timeout = 0.01) is True
         assert o._proc is None
 
 
 class TestExportShutdownReturn:
     def test_worker_that_dies_returns_true_and_clears_handle(self):
         o = _bare_export()
-        o._proc = _FakeProc(dies_on="terminate")
-        assert o._shutdown_subprocess(timeout=0.01) is True
+        o._proc = _FakeProc(dies_on = "terminate")
+        assert o._shutdown_subprocess(timeout = 0.01) is True
         assert o._proc is None
         assert o.is_worker_alive() is False
 
     def test_survivor_returns_false_and_keeps_handle(self):
         o = _bare_export()
-        o._proc = _FakeProc(dies_on=None)
-        assert o._shutdown_subprocess(timeout=0.01) is False
+        o._proc = _FakeProc(dies_on = None)
+        assert o._shutdown_subprocess(timeout = 0.01) is False
         assert o._proc is not None
         assert o.is_worker_alive() is True

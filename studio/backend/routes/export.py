@@ -93,9 +93,8 @@ async def load_checkpoint(
         # Otherwise a latest-tier checkpoint could never repair. latest_tier_active_for
         # early-returns on hosts with no sidecar pin, so this is a cheap no-op normally.
         from utils.transformers_version import latest_tier_active_for
-        await asyncio.to_thread(
-            latest_tier_active_for, request.checkpoint_path, request.hf_token
-        )
+
+        await asyncio.to_thread(latest_tier_active_for, request.checkpoint_path, request.hf_token)
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
         success, message = await asyncio.to_thread(

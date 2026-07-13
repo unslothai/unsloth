@@ -358,6 +358,7 @@ async def start_training(
         # latest-tier model unable to repair. Sidecar integrity and quantization are
         # independent, so the repair must not ride on the quantization branch.
         from utils.transformers_version import latest_tier_active_for
+
         latest_active = await asyncio.to_thread(
             latest_tier_active_for,
             training_kwargs["model_name"],
