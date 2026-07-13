@@ -1242,6 +1242,26 @@
 		@apply flex w-full flex-wrap items-center gap-0.5 px-1;
 	}
 
+	/* Recording is a dedicated one-line mode. Active tool pills must not force
+	   the composer back into the normal two-row layout. */
+	.unsloth-composer-line[data-dictating="true"] {
+		@apply flex-nowrap;
+	}
+
+	/* Dotted center line beneath the recent live samples, matching ChatGPT's
+	   recording bar while remaining color-correct in light and dark themes. */
+	.unsloth-dictation-baseline {
+		background-image: radial-gradient(
+			circle,
+			currentColor 1.4px,
+			transparent 1.6px
+		);
+		background-position: left center;
+		background-repeat: repeat-x;
+		background-size: 11px 4px;
+		opacity: 0.28;
+	}
+
 	.unsloth-composer-left {
 		@apply flex shrink-0 items-center gap-0.5;
 		order: 1;

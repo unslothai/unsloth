@@ -125,6 +125,10 @@ class TranscribeRequest(BaseModel):
     language: Optional[str] = Field(
         None, description = "BCP-47 language, or 'auto'/None to detect"
     )
+    fast: bool = Field(
+        False,
+        description = "Use low-latency single-candidate decoding for dictation",
+    )
 
 
 class SttLoadRequest(BaseModel):

@@ -1843,16 +1843,21 @@ const Composer: FC<{
 
   const composerContent = (
     <>
-      <ComposerAttachments />
-      <PendingAudioChip />
-      <ThreadDocumentsBar
-        threadId={referenceThreadId}
-        onIndexingChange={handleIndexingChange}
-      />
-      <ToolStatusDisplay />
+      {!isDictating ? (
+        <>
+          <ComposerAttachments />
+          <PendingAudioChip />
+          <ThreadDocumentsBar
+            threadId={referenceThreadId}
+            onIndexingChange={handleIndexingChange}
+          />
+          <ToolStatusDisplay />
+        </>
+      ) : null}
       <div
         className="unsloth-composer-line"
-        data-expanded={composerExpanded ? "true" : "false"}
+        data-expanded={!isDictating && composerExpanded ? "true" : "false"}
+        data-dictating={isDictating ? "true" : undefined}
       >
         <div
           className="unsloth-composer-left"
@@ -1861,7 +1866,7 @@ const Composer: FC<{
           <ComposerToolsMenu side={effectiveMenuSide} />
           {/* While dictating, show only the "+" like ChatGPT; hide the mode
               badge and tool toggles so just the waveform reads. */}
-          {!isDictating && (
+          {!isDictating ? (
             <>
               {/* Active-mode badge: always visible when bypass is on, even
                   while the pill row is collapsed (returns null when off). */}
@@ -1879,11 +1884,11 @@ const Composer: FC<{
                 </>
               ) : null}
             </>
-          )}
+          ) : null}
         </div>
         {isDictating ? (
           // ChatGPT-style recording UI replaces the input + send controls while
-          // dictating; the left tools above stay put.
+          // dictating; only the left plus stays visible alongside it.
           <ChatDictationBar />
         ) : (
           <>

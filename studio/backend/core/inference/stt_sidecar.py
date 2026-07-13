@@ -155,6 +155,7 @@ class WhisperSttSidecar:
         audio: bytes,
         model: Optional[str] = None,
         language: Optional[str] = None,
+        fast: bool = False,
     ) -> dict:
         """Transcribe encoded audio bytes to text.
 
@@ -165,17 +166,27 @@ class WhisperSttSidecar:
         # A specific language is faster and more accurate than auto-detect;
         # "auto" (or unset) lets Whisper detect it.
         lang = language if language and language != "auto" else None
+        decode_options = {
+            "beam_size": 5,
+            "vad_filter": True,
+            "condition_on_previous_text": False,
+        }
+        if fast:
+            # Composer dictation is already split into short voiced clips. A
+            # single greedy candidate avoids five-way beam search and all
+            # temperature fallback passes, and timestamp tokens are needless
+            # when the caller only consumes text.
+            decode_options.update(
+                beam_size = 1,
+                best_of = 1,
+                temperature = 0.0,
+                without_timestamps = True,
+            )
         try:
             segments, info = whisper_model.transcribe(
                 io.BytesIO(audio),
                 language=lang,
-                # Greedy decoding (beam_size=1) is several times faster on CPU
-                # than a beam search, with negligible accuracy loss on the short,
-                # clean clips dictation produces. Speed is what dictation needs.
-                beam_size=1,
-                # Trim leading/trailing silence so short clips decode fast.
-                vad_filter=True,
-                condition_on_previous_text=False,
+                **decode_options,
             )
         except (ValueError, RuntimeError) as exc:
             # PyAV raises on undecodable input (e.g. truncated or non-audio).

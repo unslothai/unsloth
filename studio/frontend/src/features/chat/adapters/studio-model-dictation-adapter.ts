@@ -20,9 +20,9 @@ const SEGMENT_TIMESLICE_MS = 250;
 // Segment sizing for the background transcription pipeline. Segments are cut at
 // natural pauses so word boundaries are preserved, but bounded so no single
 // clip is too short to be accurate or too long to keep the tick snappy.
-const MIN_SEGMENT_MS = 2500;
-const MAX_SEGMENT_MS = 6000;
-const SILENCE_CUT_MS = 350;
+const MIN_SEGMENT_MS = 1400;
+const MAX_SEGMENT_MS = 5000;
+const SILENCE_CUT_MS = 280;
 // Raw RMS (0..1) above which a frame counts as speech. Noise suppression keeps
 // the room floor well below this.
 const VOICE_RMS = 0.015;
@@ -91,6 +91,9 @@ export async function transcribeAudioBlob(
       audio,
       model: sttModel,
       language: dictationLanguage,
+      // Dictation values response time over multi-candidate decoding. The
+      // server keeps its accurate default for other callers.
+      fast: true,
     }),
     signal,
   });
@@ -421,6 +424,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       stop: async () => {
         if (!ended && !finalizing) {
           finalizing = true;
+          // Stop publishing zero-valued analyser frames as soon as recording
+          // ends. The UI can switch immediately to its transcription shimmer.
+          stopLevelMeter();
           const seg = currentSeg;
           // Cut the final segment (its buffer survives) so only the short tail
           // is left to transcribe, then release the mic immediately.
