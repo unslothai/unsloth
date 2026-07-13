@@ -860,9 +860,9 @@ class TestPinnedIndexClearsUvEnvParity:
             "setup.ps1 Fast-Install pinned scrub must point PIP_CONFIG_FILE at nul "
             "(Windows devnull) so the pip fallback ignores user/site pip config"
         )
-        assert "'PIP_CONFIG_FILE'" in setup, (
-            "setup.ps1 must save/restore PIP_CONFIG_FILE around the pinned scrub"
-        )
+        assert (
+            "'PIP_CONFIG_FILE'" in setup
+        ), "setup.ps1 must save/restore PIP_CONFIG_FILE around the pinned scrub"
 
     def test_setup_ps1_bounds_unknown_leaf_pinned_torch(self):
         """A first-time/changed unknown-leaf custom pin routes through setup.ps1's
@@ -871,15 +871,15 @@ class TestPinnedIndexClearsUvEnvParity:
         serving newer torch must not lift the venv above the supported range."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert (
-            'if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) '
+            "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) "
             '{ $cudaTorchSpec = "torch>=2.4,<2.11.0" }'
         ) in text, (
             "setup.ps1 must bound torch for a pinned unknown-leaf install "
             "(parity with install.ps1's fresh pinned install)"
         )
-        assert "Fast-Install $cudaTorchSpec torchvision torchaudio" in text, (
-            "setup.ps1's CUDA branch must install via the bounded spec variable"
-        )
+        assert (
+            "Fast-Install $cudaTorchSpec torchvision torchaudio" in text
+        ), "setup.ps1's CUDA branch must install via the bounded spec variable"
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The marker stale check must use the same rocm+digit gate as the

@@ -1547,7 +1547,9 @@ def _ensure_verbatim_torch_index() -> None:
             return
         _why = "was clobbered by a later dependency install"
     else:
-        _why = "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
+        _why = (
+            "differs from the recorded index" if _mismatch is True else "has no recorded index yet"
+        )
     _pin_display = _strip_index_url_credentials(pin)
     print(
         f"   explicit torch index pin ({_pin_display}) {_why} -- reinstalling torch verbatim from it"

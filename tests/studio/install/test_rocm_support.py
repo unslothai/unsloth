@@ -1521,16 +1521,14 @@ class TestEnsureRocmTorchMarker:
         so the repair cannot loop."""
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
         snapshots = [
-            ("torch==2.10.0",),   # after the first-pass reinstall
-            ("torch==2.13.0",),   # final pass: a dependency step swapped torch
-            ("torch==2.10.0",),   # after the repair reinstall
-            ("torch==2.10.0",),   # any later pass: matches -> no loop
+            ("torch==2.10.0",),  # after the first-pass reinstall
+            ("torch==2.13.0",),  # final pass: a dependency step swapped torch
+            ("torch==2.10.0",),  # after the repair reinstall
+            ("torch==2.10.0",),  # any later pass: matches -> no loop
         ]
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                with patch.object(
-                    stack_mod, "_installed_trio_snapshot", side_effect = snapshots
-                ):
+                with patch.object(stack_mod, "_installed_trio_snapshot", side_effect = snapshots):
                     with patch.dict(stack_mod.os.environ, env, clear = False):
                         stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                         stack_mod._ensure_verbatim_torch_index()  # pass 1: applies pin
