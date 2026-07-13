@@ -796,14 +796,20 @@ def _enforce_password_change_before_exposure(
             bootstrap_file = STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE
             try:
                 bootstrap_file.unlink(missing_ok = True)
-            except OSError:
+            except OSError as exc:
+                # Removal IS the protection here; if it fails (locked file,
+                # read-only auth dir) an older child could still serve the
+                # credential. Fail closed rather than publish it.
                 typer.echo(
-                    "Warning: could not remove the seeded bootstrap password file "
-                    f"({bootstrap_file}); the public Studio page may auto-fill the "
-                    "default credential. Delete that file manually, or change the "
-                    "admin password immediately.",
+                    "Error: refusing to publish Studio on a public Cloudflare URL: "
+                    f"could not remove the seeded bootstrap password file ({exc}), so "
+                    "an older Studio child could still serve the default credential. "
+                    "Delete it manually or change the admin password (run `unsloth "
+                    "studio` locally with a terminal attached, or `unsloth studio "
+                    "reset-password`), then retry.",
                     err = True,
                 )
+                raise typer.Exit(1)
             typer.echo(
                 "Warning: Studio is being exposed publicly while the admin account "
                 "still uses its auto-generated bootstrap password. The seeded password "

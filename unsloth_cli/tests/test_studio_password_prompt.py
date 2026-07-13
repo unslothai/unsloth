@@ -300,6 +300,39 @@ def test_studio_default_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch,
     assert kinds == ["exec"], events
 
 
+def test_studio_default_non_tty_fails_closed_when_bootstrap_removal_fails(monkeypatch, tmp_path):
+    # Removing .bootstrap_password IS the protection on this path. If unlink
+    # fails (locked file / read-only auth dir) the credential is still on disk
+    # for an old child to inject, so the launch must fail closed, not publish.
+    import pathlib
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.exists()
+
+    _real_unlink = pathlib.Path.unlink
+
+    def _boom_unlink(self, *a, **k):
+        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
+            raise OSError("locked")
+        return _real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
+
+    result = _invoke_studio_default(monkeypatch, events, ["--secure"])
+
+    kinds = [kind for kind, _ in events]
+    assert "exec" not in kinds, events
+    assert result.exit_code == 1, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "refusing to publish" in combined.lower()
+    # The file remains (removal failed) and the DB flag is untouched.
+    assert bootstrap_file.exists()
+    assert _auth_state(studio_mod)["must_change_password"] == 1
+
+
 def test_studio_default_loopback_cloudflare_never_prompts(monkeypatch, tmp_path):
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
