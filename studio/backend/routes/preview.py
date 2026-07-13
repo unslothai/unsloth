@@ -42,6 +42,7 @@ _PREVIEW_MAX_OUTPUT_TOKENS = 1024
 # under outputs_root. One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
 
+
 def _extract_token(request: Request) -> str | None:
     token = request.query_params.get("k")
     if token:
