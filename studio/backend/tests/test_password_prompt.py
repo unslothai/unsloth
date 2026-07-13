@@ -107,6 +107,37 @@ def test_reader_windows_key_prefix_is_ignored(monkeypatch):
     assert value == "w"
 
 
+def test_reader_holds_raw_mode_once_for_whole_line(monkeypatch):
+    # Regression: cbreak/no-echo must be held for the ENTIRE line, not toggled
+    # per keystroke. Re-enabling echo between reads opens a window where a
+    # keystroke arriving in the gap echoes the password in cleartext. Assert the
+    # raw-mode context wraps the whole read exactly once and every keystroke is
+    # read while it is active.
+    events = []
+
+    class _SpyRawMode:
+        def __enter__(self):
+            events.append("enter")
+            return self
+
+        def __exit__(self, *exc):
+            events.append("exit")
+            return False
+
+    monkeypatch.setattr(tp, "_prompt_raw_mode", _SpyRawMode)
+
+    src = _fake_getch(list("s3cr3t!!") + ["\r"])
+
+    def _getch_recording():
+        assert events and events[-1] == "enter", "keystroke read outside raw mode"
+        return src()
+
+    monkeypatch.setattr(tp, "_getch", _getch_recording)
+    value = tp._read_password("P: ", out = io.StringIO())
+    assert value == "s3cr3t!!"
+    assert events == ["enter", "exit"]
+
+
 # ── prompt_for_password_change ───────────────────────────────────────
 
 
