@@ -12,7 +12,7 @@ const DEFAULT_AGENT = "claude";
 
 // URL.hostname brackets IPv6 literals (`new URL("http://[::1]:8888").hostname` is
 // "[::1]"), so strip the brackets before matching the bare "::1" loopback rules below.
-function normalizeHost(host: string): string {
+export function normalizeHost(host: string): string {
   const lower = host.toLowerCase();
   return lower.startsWith("[") && lower.endsWith("]") ? lower.slice(1, -1) : lower;
 }
@@ -26,7 +26,7 @@ function isDefaultLocalHost(host: string): boolean {
 }
 
 // Match the CLI auto-mint rule (is_loopback_url): localhost, ::1, and all of 127.0.0.0/8.
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") return true;
   const octets = host.split(".");
   return (

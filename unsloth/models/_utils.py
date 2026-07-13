@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.7.1"
+__version__ = "2026.7.2"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -86,6 +86,8 @@ __all__ = [
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "get_moe_target_parameters",
+    "get_moe_target_modules",
+    "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "make_fast_generate_wrapper",
     "_mark_unsloth_disable_data_parallel",
@@ -422,7 +424,7 @@ def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_len
 # access on some GPU architectures (B200). Falls back to eager safely.
 _FLEX_EXCLUDED_MODELS = ("gpt_oss", "mllama", "nemotron_h", "modernbert")
 _FLEX_PREFERRED_MODELS = ("gemma3", "gemma3_text", "shieldgemma2")
-_SDPA_EXCLUDED_MODELS = ("gpt_oss",)
+_SDPA_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
 # The loader (loader.py) forces supports_sdpa=False for these because their bundled
 # SDPA modules are wrong. Kept here, not in loader.py, so _is_sdpa_excluded can honor
 # them without a loader -> _utils import cycle (loader.py already imports from _utils
@@ -435,8 +437,10 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
     "gpt_oss",
 ]
-_FLASH_EXCLUDED_MODELS = ("gpt_oss",)
-_EAGER_ONLY_PREFIXES = ("gemma3n",)
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+# deepseek_v4's custom attention is sdpa/flash-incompatible; force eager, and
+# excluded above so an explicit sdpa/flash request cannot re-enable the crash.
+_EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
 
@@ -4060,13 +4064,17 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         alternate_name = "experts.down_proj",
     )
 
-    # gate_up_proj combines both gate_proj and up_proj in MoE
-    # Also match "gate_up_proj" directly since users may specify the fused name
+    # gate_up_proj combines gate_proj and up_proj; also match the fused name directly.
+    # Only target a fused expert Parameter that exists: per-expert Linear layouts
+    # (e.g. gpt-oss bnb-4bit) have no fused Parameter and are handled by
+    # get_moe_target_modules, so skip them rather than pass PEFT a dead path.
     if "gate_proj" in target_set or "up_proj" in target_set or "gate_up_proj" in target_set:
-        moe_params.append(gate_up_name)
+        if _moe_parameter_exists(model, gate_up_name):
+            moe_params.append(gate_up_name)
 
     if "down_proj" in target_set:
-        moe_params.append(down_name)
+        if _moe_parameter_exists(model, down_name):
+            moe_params.append(down_name)
 
     if moe_params:
         print(
@@ -4075,6 +4083,111 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
         return moe_params
 
     return None
+
+
+def _moe_parameter_exists(model, name: str) -> bool:
+    """True if ``name`` is an exact suffix of some parameter path on the model."""
+    if not hasattr(model, "named_parameters"):
+        return False
+    try:
+        for parameter_name, _ in model.named_parameters():
+            if parameter_name == name or parameter_name.endswith("." + name):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def get_moe_target_modules(model, target_modules = None) -> List[str]:
+    """Per-expert ``target_modules`` suffixes for MoE models whose experts are stored
+    as per-expert ``nn.Linear`` ModuleLists rather than fused nn.Parameters.
+
+    gpt-oss bnb-4bit is the canonical case (mlp.experts.gate_up_projs.<i> /
+    down_projs.<i> as Linear4bit): no fused Parameter, and the plain
+    gate/up/down_proj leaves do not match, so LoRA skips them. Returning the
+    per-expert suffixes makes PEFT attach via ordinary suffix matching (the
+    module-LoRA counterpart of get_moe_target_parameters). Returns [] for non-MoE,
+    fused-parameter MoEs, an absent per-expert layout, or a request that omits the
+    MLP experts (so an attention-only run does not train experts).
+    """
+    if not is_moe_model(model):
+        return []
+    if target_modules is None:
+        return []
+    if isinstance(target_modules, str):
+        target_set = _moe_target_set_from_string(target_modules)
+    else:
+        target_set = {
+            target
+            for target in target_modules or ()
+            if (isinstance(target, str) and "." not in target and target in _MOE_BROAD_MLP_TARGETS)
+        }
+    if not (target_set & _MOE_BROAD_MLP_TARGETS):
+        return []
+
+    if not hasattr(model, "named_modules"):
+        return []
+
+    # Scope the returned suffixes to the requested projection leaves, matching
+    # get_moe_target_parameters: gate_proj/up_proj/gate_up_proj map to the fused
+    # gate_up ModuleList (e.g. gate_up_projs); down_proj maps to the down ModuleList
+    # (e.g. down_projs). A down-only (or gate/up-only) request must not pull in the
+    # other projection.
+    want_gate_up = bool(target_set & {"gate_proj", "up_proj", "gate_up_proj"})
+    want_down = "down_proj" in target_set
+
+    targets = set()
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.ModuleList) or len(module) == 0:
+            continue
+        parent, _, leaf = name.rpartition(".")
+        # ModuleList directly under an ``experts`` container, holding only Linear
+        # leaves (bnb Linear4bit / Linear8bitLt subclass nn.Linear). After PEFT has
+        # wrapped the experts the child is a LoRA layer whose ``base_layer`` is the
+        # Linear, so accept that too (keeps this idempotent across a re-wrapped model).
+        if not parent.endswith("experts"):
+            continue
+        if not all(
+            isinstance(child, torch.nn.Linear)
+            or isinstance(getattr(child, "base_layer", None), torch.nn.Linear)
+            for child in module
+        ):
+            continue
+        # Honor the requested subset: classify the ModuleList by projection role.
+        leaf_lower = leaf.lower()
+        is_down = "down" in leaf_lower
+        is_gate_up = (not is_down) and ("gate" in leaf_lower or "up" in leaf_lower)
+        if is_down and not want_down:
+            continue
+        if is_gate_up and not want_gate_up:
+            continue
+        # One entry per expert index; ``leaf.<i>`` matches expert i in every layer.
+        for expert_index in range(len(module)):
+            targets.add(f"{leaf}.{expert_index}")
+
+    return sorted(targets)
+
+
+def warn_if_zoo_cannot_merge_moe_experts():
+    """Warn once when the installed unsloth_zoo cannot fold per-expert Linear MoE LoRA
+    into a merged_16bit checkpoint. Older zoo releases keep the fused gate_up_proj /
+    down_proj tensors and drop the per-expert gate_up_projs.<i> / down_projs.<i> deltas,
+    so save_pretrained_merged("merged_16bit") would silently lose the expert training
+    (the LoRA adapter itself still saves and reloads correctly)."""
+    try:
+        from unsloth_zoo import saving_utils as _saving_utils
+
+        # _fold_perexpert_lora_into_fused is the helper that folds these experts.
+        if hasattr(_saving_utils, "_fold_perexpert_lora_into_fused"):
+            return
+    except Exception:
+        return  # cannot introspect zoo -> stay quiet rather than false-alarm
+    logger.warning_once(
+        "Unsloth: the installed unsloth_zoo will not fold these per-expert experts into "
+        "a merged_16bit checkpoint, so save_pretrained_merged('merged_16bit') would drop "
+        "the expert LoRA. Upgrade unsloth_zoo to merge them; saving the LoRA adapter is "
+        "unaffected."
+    )
 
 
 def _select_moe_detection_targets(
