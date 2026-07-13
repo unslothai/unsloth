@@ -680,6 +680,44 @@ def test_borrowed_studio_model_stays_studio_owned(fake_slot):
     assert fake_slot["ident"] == "/outputs/run/ckpt-a"
 
 
+def test_studio_noop_load_reclaims_preview_marker(slot_state, monkeypatch):
+    # A Studio /load that returns already_loaded must still claim a preview-owned
+    # checkpoint, or a later preview could swap out the model Studio just loaded.
+    inference._set_preview_resident("mymodel")
+    backend = SimpleNamespace(active_model_name = "mymodel", models = {})
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(
+        inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    monkeypatch.setattr(
+        inference,
+        "_resolve_model_identifier_for_request",
+        lambda req, operation: ("mymodel", "mymodel", False),
+    )
+    monkeypatch.setattr(inference, "resolve_effective_chat_template_override", lambda **kw: None)
+    monkeypatch.setattr(inference, "load_inference_config", lambda name: {})
+    monkeypatch.setattr(
+        inference,
+        "_detect_safetensors_features",
+        lambda backend, tpl: {
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+            "supports_tools": False,
+        },
+    )
+    monkeypatch.setattr(inference, "_resolve_loaded_trust_remote_code", lambda *a: False)
+
+    resp = asyncio.run(
+        inference._load_model_impl(
+            LoadRequest(model_path = "mymodel"), SimpleNamespace(app = None), "admin"
+        )
+    )
+    assert resp.status == "already_loaded"
+    assert not inference._is_preview_resident("mymodel")
+
+
 def test_failed_load_preserves_preview_marker(slot_state):
     # A real load that fails validation before touching the backend must not
     # clear the resident marker: the old preview-owned checkpoint is still

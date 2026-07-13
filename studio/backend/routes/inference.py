@@ -3980,6 +3980,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
                 )
+                # A no-op Studio load of a preview-owned checkpoint still claims it.
+                _set_preview_resident(None)
                 inference_config = load_inference_config(llama_backend.model_identifier)
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
@@ -4022,6 +4024,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 and backend.active_model_name.lower() == model_identifier.lower()
             ):
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
+                # A no-op Studio load of a preview-owned checkpoint still claims it.
+                _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
                 _chat_template = None
