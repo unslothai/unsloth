@@ -215,7 +215,13 @@ def _install():
     def _mkdir(path, *args, **kwargs):
         return original_mkdir(_remap(path), *args, **kwargs)
 
-    def _os_open(path, flags, mode = 0o777, *, dir_fd = None):
+    def _os_open(
+        path,
+        flags,
+        mode = 0o777,
+        *,
+        dir_fd = None,
+    ):
         # Path.touch() and other low-level callers go through os.open, not
         # builtins.open, so patch it with the same policy or a
         # Path('/mnt/data/x').touch() would still raise FileNotFoundError.

@@ -661,19 +661,14 @@ def test_missing_path_hint_respects_project_workdir():
     # prefix substring, so only the workdir judgement decides.
     workdir = "/srv/projroot/session_area"
     missing = "/srv/projroot/session_area/data/missing.csv"
-    output = (
-        "FileNotFoundError: [Errno 2] No such file or directory: "
-        f"'{missing}'"
-    )
+    output = f"FileNotFoundError: [Errno 2] No such file or directory: '{missing}'"
     # Judged against the static sandbox root (no workdir) it is an external
     # absolute path and wrongly earns the flatten hint.
     assert "working directory is writable" in _missing_path_hint(output)
     # Judged against the real project workdir it is local -> no hint.
     assert _missing_path_hint(output, workdir) == ""
     # A path genuinely outside the project workdir still earns the hint.
-    outside_err = (
-        "FileNotFoundError: [Errno 2] No such file or directory: '/srv/other/x.html'"
-    )
+    outside_err = "FileNotFoundError: [Errno 2] No such file or directory: '/srv/other/x.html'"
     assert "working directory is writable" in _missing_path_hint(outside_err, workdir)
 
 
