@@ -124,6 +124,7 @@ def _torchao_runtime_unavailable():
     import sys
     try:
         from core._torchao_stub import is_win32_rocm, _STUB_SENTINEL
+
         if is_win32_rocm():
             return True
         _tao = sys.modules.get("torchao")

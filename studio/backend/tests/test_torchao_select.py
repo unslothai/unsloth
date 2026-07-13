@@ -356,5 +356,9 @@ def test_installer_registers_finder_once(monkeypatch):
         assert len(finders) == 1
     finally:
         sys.meta_path[:] = meta_before
-        for k in [k for k in sys.modules if (k == "torchao" or k.startswith("torchao.")) and k not in tao_before]:
+        for k in [
+            k
+            for k in sys.modules
+            if (k == "torchao" or k.startswith("torchao.")) and k not in tao_before
+        ]:
             del sys.modules[k]
