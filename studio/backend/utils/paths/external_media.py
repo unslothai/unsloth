@@ -9,6 +9,7 @@ import getpass
 import os
 import platform
 import string
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -107,10 +108,13 @@ def _active_windows_drive_bitmask() -> int:
     or ``0`` when the call is unavailable.
 
     This is a fast, non-blocking OS call. It lets :func:`windows_drive_roots`
-    skip the ``os.path.isdir`` probe on inactive drive letters — probing a
-    drive letter mapped to a disconnected network share can otherwise block the
-    caller for tens of seconds each. Returns ``0`` (probe every letter) when
-    ctypes/``windll`` is unavailable, so the helper degrades gracefully.
+    skip the ``os.path.isdir`` probe on drive letters with no mapping at all.
+    A letter mapped to a *disconnected* network share stays set in this bitmask
+    (``GetLogicalDrives`` includes mapped network drives), so it does not guard
+    against the reconnect stall on its own — :func:`windows_drive_roots` bounds
+    each surviving probe as well (see :func:`_readable_dir_within`). Returns
+    ``0`` (probe every letter) when ctypes/``windll`` is unavailable, so the
+    helper degrades gracefully.
     """
     try:
         import ctypes
@@ -119,18 +123,51 @@ def _active_windows_drive_bitmask() -> int:
         return 0
 
 
+# A disconnected but still-mapped network drive stays set in the
+# GetLogicalDrives bitmask, so ``os.path.isdir`` on it can block for tens of
+# seconds while Windows tries to reconnect. Bound each drive probe with this
+# timeout so one stale mapping cannot stall a whole folder-browser request.
+_DRIVE_PROBE_TIMEOUT_S = 2.0
+
+
+def _readable_dir_within(path: str, timeout: float) -> bool:
+    """``os.path.isdir(path) and os.access(path, R_OK)``, bounded by *timeout*
+    seconds.
+
+    Runs the probe in a daemon thread and reports ``False`` if it does not
+    answer in time, so a hung drive (e.g. a disconnected-but-mapped network
+    share) is skipped instead of blocking the caller. The thread is never
+    joined past the timeout and is a daemon, so the stuck OS call cannot delay
+    interpreter exit. ``os.path.isdir`` releases the GIL during the syscall, so
+    the still-running probe does not block the caller after the timeout either.
+    """
+    result: dict[str, bool] = {}
+
+    def _probe() -> None:
+        try:
+            result["ok"] = os.path.isdir(path) and os.access(path, os.R_OK)
+        except OSError:
+            result["ok"] = False
+
+    thread = threading.Thread(target = _probe, daemon = True)
+    thread.start()
+    thread.join(timeout)
+    return result.get("ok", False)
+
+
 def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -> list[Path]:
     """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser.
 
     The Windows analog of :func:`linux_run_media_mount_roots`. Without it the
     browser's allowlist and suggestion chips only reach roots on the home drive,
     so a user cannot navigate from ``C:`` to ``D:``/``E:`` to pick a model
-    directory. Active drives are resolved from ``GetLogicalDrives`` first so
-    disconnected/unmapped letters are never probed (a stray ``os.path.isdir`` on
-    a dead network drive can hang for tens of seconds); each surviving candidate
-    is then included only if it resolves to a readable directory, so absent or
-    empty drives never show as dead entries. Returns ``[]`` off Windows, so
-    callers on Linux/macOS are unaffected.
+    directory. ``GetLogicalDrives`` first drops letters with no mapping; each
+    remaining candidate is then probed under a short timeout and included only
+    if it resolves to a readable directory in time. The timeout matters because
+    a mapped-but-disconnected network drive stays active in the bitmask and its
+    ``os.path.isdir`` can otherwise hang for tens of seconds, stalling every
+    folder-browser request. Returns ``[]`` off Windows, so callers on
+    Linux/macOS are unaffected.
     """
     if platform.system() != "Windows":
         return []
@@ -145,12 +182,9 @@ def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -
         if active_mask and not active_mask & (1 << (ord(letter) - ord("A"))):
             continue
         root_text = f"{letter}:\\"
-        try:
-            if not os.path.isdir(root_text):
-                continue
-        except OSError:
-            continue
-        if not os.access(root_text, os.R_OK):
+        # Bounded probe: an active bitmask bit can still be a disconnected
+        # network mapping, whose os.path.isdir blocks for tens of seconds.
+        if not _readable_dir_within(root_text, _DRIVE_PROBE_TIMEOUT_S):
             continue
         key = os.path.normcase(root_text)
         if key in seen:

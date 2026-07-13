@@ -88,6 +88,58 @@ def test_windows_drive_roots_ignores_bad_letters_and_dedupes(monkeypatch):
     assert roots == [Path("C:\\"), Path("D:\\")]
 
 
+def test_readable_dir_within_times_out(monkeypatch):
+    # A probe that outlives the timeout is reported not-readable, so a hung
+    # (disconnected mapped network) drive is skipped instead of blocking.
+    import time
+
+    monkeypatch.setattr(external_media.os.path, "isdir", lambda p: time.sleep(5) or True)
+    monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
+    start = time.monotonic()
+    ok = external_media._readable_dir_within("Z:\\", timeout = 0.2)
+    elapsed = time.monotonic() - start
+    assert ok is False
+    assert elapsed < 3.0  # returned on the timeout, did not wait out the 5s stall
+
+
+def test_readable_dir_within_reports_fast_probe(monkeypatch):
+    monkeypatch.setattr(external_media.os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
+    assert external_media._readable_dir_within("C:\\", timeout = 2.0) is True
+
+
+def test_windows_drive_roots_skips_hung_drive(monkeypatch):
+    # A disconnected-but-mapped network drive stays set in the GetLogicalDrives
+    # bitmask; its os.path.isdir stalls. It must be skipped without stalling the
+    # whole enumeration -- C answers, D hangs, so only C is listed and the call
+    # returns bounded by the per-drive timeout, not the stall.
+    import time
+
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        external_media,
+        "_active_windows_drive_bitmask",
+        lambda: sum(1 << (ord(d) - ord("A")) for d in "CD"),
+    )
+    monkeypatch.setattr(external_media, "_DRIVE_PROBE_TIMEOUT_S", 0.2)
+
+    def _isdir(p):
+        if str(p) == "D:\\":
+            time.sleep(5)  # simulate the reconnect stall
+            return True
+        return str(p) == "C:\\"
+
+    monkeypatch.setattr(external_media.os.path, "isdir", _isdir)
+    monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
+
+    start = time.monotonic()
+    roots = external_media.windows_drive_roots(drive_letters = "CD")
+    elapsed = time.monotonic() - start
+
+    assert roots == [Path("C:\\")]
+    assert elapsed < 3.0  # bounded by the per-drive timeout, not the 5s stall
+
+
 def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     # End-to-end wiring: prove windows_drive_roots() output actually flows into
     # the browse allowlist built by routes/models.py, mirroring the Linux side's
