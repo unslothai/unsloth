@@ -140,8 +140,7 @@ _FORGET_EVIDENCE_RE = re.compile(
 )
 _COMMAND_RE = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$", re.I)
 _FORGET_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
-    r"forget(?:\s+that)?\s+(.+?)\??\s*$",
+    r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?forget(?:\s+that)?\s+(.+?)\??\s*$",
     re.I,
 )
 _MEMORY_DELETE_RE = re.compile(
