@@ -1652,19 +1652,26 @@ class ExternalProviderClient:
         """
         import json as _json
 
-        # Extract system prompt; translate image_url parts to Anthropic format
-        system: Optional[str] = None
+        # Extract system prompts; Anthropic accepts a single top-level system value.
+        system_parts: list[str] = []
         filtered: list[dict[str, Any]] = []
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
-                system = (
+                system_part = (
                     content
                     if isinstance(content, str)
                     else "\n".join(p["text"] for p in content if p.get("type") == "text")
                 )
+                if system_part:
+                    system_parts.append(system_part)
                 continue
 
+        system: Optional[str] = "\n\n".join(system_parts) or None
+
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue
             content = msg.get("content")
             # OpenAI role="tool" with list content -> Anthropic native
             # tool_result block on a user message. Translating only in the

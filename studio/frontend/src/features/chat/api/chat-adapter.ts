@@ -2570,6 +2570,7 @@ export function createOpenAIStreamAdapter(
               min_p: params.minP,
               repetition_penalty: params.repetitionPenalty,
               presence_penalty: params.presencePenalty,
+              ...(memoryScope ? { memory_scope: memoryScope } : {}),
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
             abortSignal,
