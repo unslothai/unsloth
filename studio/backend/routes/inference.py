@@ -2083,6 +2083,33 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
+def _confirm_gate_needs_stream(payload) -> bool:
+    """Whether Studio's local tool-loop confirm gate still requires stream=true.
+
+    The gate can only prompt while streaming, so a non-streaming request that will
+    prompt must 400 up front. auto ("Approve for me") only prompts for a call the
+    classifier flags, so an auto request whose confirm is derived from the mode
+    (not an explicit confirm_tool_calls=true) and whose selectable tools are all
+    always-safe (web_search / RAG / render) never prompts and needs no stream. ask,
+    an explicit confirm flag, MCP tools, and an unrestricted or unsafe selection
+    still require streaming.
+    """
+    if not _permission_mode_confirm(payload):
+        return False
+    if getattr(payload, "permission_mode", None) != "auto":
+        return True
+    if payload.confirm_tool_calls is True:
+        return True
+    if getattr(payload, "mcp_enabled", False):
+        return True
+    enabled = getattr(payload, "enabled_tools", None)
+    if not enabled:
+        return True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
+    from core.inference.tools import is_always_safe_tool
+
+    return not all(is_always_safe_tool(t) for t in enabled)
+
+
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts so
 # is_disconnected() never fires. POST /inference/cancel looks up in-flight
 # cancel_events here by cancel_id (per-run) or session_id / completion_id
@@ -6383,7 +6410,7 @@ async def openai_chat_completions(
             not payload.bypass_permissions
             and not payload.stream
             and (
-                (_permission_mode_confirm(payload) and _studio_local_tool_loop)
+                (_confirm_gate_needs_stream(payload) and _studio_local_tool_loop)
                 or (payload.confirm_tool_calls is True and _client_tool_passthrough)
             )
         ):
@@ -6908,8 +6935,14 @@ async def openai_chat_completions(
             # unprompted). off/full never prompt, so they are excluded.
             _effective_confirm = _permission_mode_confirm(payload)
             # Bypass Permissions suppresses confirm, so the stream requirement
-            # (the gate needs streaming to prompt) no longer applies.
-            if _effective_confirm and not payload.bypass_permissions and not payload.stream:
+            # (the gate needs streaming to prompt) no longer applies. auto with an
+            # always-safe-only selection never prompts, so it needs no stream even
+            # though _effective_confirm stays true for the loop's per-call gate.
+            if (
+                _confirm_gate_needs_stream(payload)
+                and not payload.bypass_permissions
+                and not payload.stream
+            ):
                 raise _reject(
                     400,
                     openai_error_body(
@@ -8207,8 +8240,14 @@ async def openai_chat_completions(
         # the call (matching the GGUF path). off/full never prompt.
         _sf_effective_confirm = _permission_mode_confirm(payload)
         # Bypass Permissions suppresses confirm, so the stream requirement
-        # (the gate needs streaming to prompt) no longer applies.
-        if _sf_effective_confirm and not payload.bypass_permissions and not payload.stream:
+        # (the gate needs streaming to prompt) no longer applies. auto with an
+        # always-safe-only selection never prompts, so it needs no stream even
+        # though _sf_effective_confirm stays true for the loop's per-call gate.
+        if (
+            _confirm_gate_needs_stream(payload)
+            and not payload.bypass_permissions
+            and not payload.stream
+        ):
             raise _reject(
                 400,
                 openai_error_body(

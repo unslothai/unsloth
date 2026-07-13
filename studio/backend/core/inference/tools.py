@@ -506,6 +506,14 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "smtplib",
         "telnetlib",
         "paramiko",
+        # mail / news / rpc / browser stdlib clients open outbound connections
+        # (imaplib.IMAP4, poplib.POP3, xmlrpc.client.ServerProxy, webbrowser.open)
+        # that the sandbox does not namespace off.
+        "imaplib",
+        "poplib",
+        "nntplib",
+        "xmlrpc",
+        "webbrowser",
         "tempfile",
         # deserialization that can execute arbitrary code on load.
         "pickle",
@@ -574,6 +582,13 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "utime",
         "import_module",
         "FileIO",
+        # asyncio process spawners run an arbitrary program without the terminal
+        # blocklist (asyncio.create_subprocess_exec/shell, loop.subprocess_exec/
+        # shell), like os.system/subprocess.
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+        "subprocess_exec",
+        "subprocess_shell",
         # os.chdir escapes the workdir; runpy helpers run arbitrary code.
         "chdir",
         "fchdir",
@@ -1567,6 +1582,38 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                     literal_str_vars[tid] = (
                                         "\x02" if tid in multi_assigned_names else folded
                                     )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # A callable captured as a parameter default (def f(o=open): o('x','w'))
+            # binds that parameter to the same alias set, so a later call through
+            # the parameter is still gated. defaults align to the tail of
+            # posonlyargs+args; kw_defaults align 1:1 with kwonlyargs (None = none).
+            _a = node.args
+            _defaulted = list(
+                zip(
+                    (_a.posonlyargs + _a.args)[
+                        len(_a.posonlyargs) + len(_a.args) - len(_a.defaults) :
+                    ],
+                    _a.defaults,
+                )
+            ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
+            for _param, _default in _defaulted:
+                if not isinstance(_default, ast.Name):
+                    continue
+                _did = _default.id
+                if _did in open_aliases:
+                    open_aliases.add(_param.arg)
+                elif _did in writer_aliases:
+                    writer_aliases.add(_param.arg)
+                elif _did in archive_ctor_aliases:
+                    archive_ctor_aliases.add(_param.arg)
+                elif _did in getattr_aliases:
+                    getattr_aliases.add(_param.arg)
+                elif _did in partial_aliases:
+                    partial_aliases.add(_param.arg)
+                elif _did in code_exec_aliases:
+                    code_exec_aliases.add(_param.arg)
+                elif _did in dynamic_aliases:
+                    dynamic_aliases.add(_param.arg)
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):

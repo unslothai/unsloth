@@ -380,6 +380,16 @@ def test_terminal_classifier(command, unsafe):
         ("from zipfile import ZipFile\nz = ZipFile\nz('a.zip', 'w')", True),  # archive ctor aliased
         ("from numpy import save\ns, _ = (save, 1)\ns('o.npy', a)", True),  # writer destructured
         ("x = len\nx('hi')", False),  # a benign builtin alias stays safe
+        ("import asyncio\nasyncio.create_subprocess_shell('rm -rf /')", True),  # asyncio spawn
+        ("import asyncio\nasyncio.create_subprocess_exec('rm', '-rf', '/')", True),  # asyncio spawn
+        ("import asyncio\nasyncio.sleep(1)", False),  # benign asyncio helper stays safe
+        ("import imaplib\nimaplib.IMAP4('host')", True),  # stdlib mail client opens a connection
+        ("import poplib\npoplib.POP3('host')", True),  # stdlib mail client
+        ("import xmlrpc.client\nxmlrpc.client.ServerProxy('http://x')", True),  # rpc client
+        ("import math\nmath.sqrt(2)", False),  # benign stdlib import stays safe
+        ("def f(o=open):\n    o('out', 'w').write('x')\nf()", True),  # open captured in a default
+        ("g = lambda o=open: o('out', 'w')\ng()", True),  # open captured in a lambda default
+        ("def f(o=len):\n    return o('x')\nf()", False),  # a benign default stays safe
         (
             "from pathlib import Path\nPath('/etc').joinpath('passwd').read_text()",
             True,
@@ -866,3 +876,46 @@ def test_permission_mode_confirm_derivation():
     # a non-streaming unset request keeps the legacy run-without-gate behavior.
     assert _permission_mode_confirm(req(stream = True)) is True
     assert _permission_mode_confirm(req(stream = False)) is False
+
+
+def test_confirm_gate_needs_stream():
+    # auto only prompts for a classifier-flagged call, so an auto request that can
+    # only select always-safe tools (web_search / RAG / render) needs no stream and
+    # must not be rejected by the confirm-without-stream guard.
+    from routes.inference import _confirm_gate_needs_stream
+
+    def req(**kw):
+        return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **kw)
+
+    safe = ["web_search", "search_knowledge_base", "render_html"]
+    # auto + a safe-only selection never prompts -> no stream needed.
+    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe)) is False
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
+        is False
+    )
+    # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
+    # explicit confirm flag all still require streaming under auto.
+    assert (
+        _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["terminal"]))
+        is True
+    )
+    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enable_tools = True)) is True
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search"], mcp_enabled = True)
+        )
+        is True
+    )
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search"], confirm_tool_calls = True)
+        )
+        is True
+    )
+    # ask prompts for every call, so even a safe-only selection needs streaming.
+    assert _confirm_gate_needs_stream(req(permission_mode = "ask", enabled_tools = safe)) is True
+    # off/full never prompt; unset non-streaming keeps the legacy run-without-gate.
+    assert _confirm_gate_needs_stream(req(permission_mode = "off", enabled_tools = safe)) is False
+    assert _confirm_gate_needs_stream(req(permission_mode = "full", enabled_tools = safe)) is False
+    assert _confirm_gate_needs_stream(req(enabled_tools = safe, stream = False)) is False
