@@ -1635,14 +1635,36 @@ def _fetch_url_raw(
 # because centered-logo READMEs legitimately begin with ``<p align=...>`` /
 # ``<div align=...>`` / ``<h1 align=...>`` and must stay Markdown.
 _HTML_LEADING_TAGS = (
-    "html", "head", "body", "title", "meta", "link", "script", "style",
-    "article", "section", "main", "header", "footer", "nav", "aside",
-    "figure", "table", "thead", "tbody", "tr", "td", "th", "form",
-    "ul", "ol", "dl", "pre", "blockquote",
+    "html",
+    "head",
+    "body",
+    "title",
+    "meta",
+    "link",
+    "script",
+    "style",
+    "article",
+    "section",
+    "main",
+    "header",
+    "footer",
+    "nav",
+    "aside",
+    "figure",
+    "table",
+    "thead",
+    "tbody",
+    "tr",
+    "td",
+    "th",
+    "form",
+    "ul",
+    "ol",
+    "dl",
+    "pre",
+    "blockquote",
 )
-_HTML_LEADING_RE = re.compile(
-    r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)"
-)
+_HTML_LEADING_RE = re.compile(r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)")
 
 
 def _looks_like_html(body: str) -> bool:

@@ -551,7 +551,9 @@ def test_looks_like_html_markdown_with_leading_fenced_example_stays_markdown():
     # A Markdown README that OPENS with a fenced HTML example must not be
     # sniffed as HTML just because a doctype/tag appears in the first 256 chars;
     # converting it through html_to_markdown would corrupt the fences and prose.
-    fenced = "```html\n<!DOCTYPE html>\n<html><body><div>hi</div></body></html>\n```\n\n# Real README\n"
+    fenced = (
+        "```html\n<!DOCTYPE html>\n<html><body><div>hi</div></body></html>\n```\n\n# Real README\n"
+    )
     assert not _looks_like_html(fenced)
     # Prose that mentions a tag inline, and a centered-logo README that opens
     # with <p align>/<div align>/<h1 align>, also stay Markdown.
