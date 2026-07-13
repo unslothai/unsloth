@@ -411,8 +411,10 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
     "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
 )
-def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch):
+def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch, tmp_path):
     captured = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
@@ -440,6 +442,8 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
     assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
+    assert captured["env"]["PWD"] == str(tmp_path)
+    assert "PWD/p" in captured["env"]["WSLENV"].split(":")
     for name in (
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
@@ -455,7 +459,11 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
     "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
 )
-def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
+def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
+    fake_studio, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PWD", "/stale/outer/repo")
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
         start.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
@@ -467,6 +475,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studi
     assert "export ANTHROPIC_API_KEY=" in result.output
     assert "export CLAUDE_CODE_OAUTH_TOKEN=" in result.output
     assert "export WSLENV=" in result.output
+    assert f"export PWD={tmp_path}" in result.output
+    assert "PWD/p" in result.output
     assert "ANTHROPIC_AUTH_TOKEN" in result.output
     assert "CLAUDE_CODE_OAUTH_TOKEN" in result.output
 
