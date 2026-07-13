@@ -108,6 +108,14 @@ _SENSITIVE_RE = re.compile(
     re.I,
 )
 
+_SENSITIVE_ATTRIBUTE_RE = re.compile(
+    r"\b(?:i|we)\s+(?:have|had|suffer from)\b|"
+    r"\b(?:i\s+am|i'm|we\s+are|we're)\s+allergic to\b|"
+    r"\b(?:i\s+am|i'm|we\s+are|we're)\s+(?:an?\s+)?(?:"
+    r"hiv[- ]positive|muslim|christian|jewish|hindu|buddhist|sikh|atheist)\b",
+    re.I,
+)
+
 _STRUCTURED_IDENTIFIER_RE = re.compile(r"\b\d{3}-\d{2}-\d{4}\b|(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 
 _STREET_ADDRESS_RE = re.compile(
@@ -272,6 +280,7 @@ def _validate_content(content: str, automatic: bool) -> str:
         or _is_profile_equivalent(normalized)
         or _SECRET_RE.search(normalized)
         or _SENSITIVE_RE.search(normalized)
+        or _SENSITIVE_ATTRIBUTE_RE.search(normalized)
         or _CONTACT_PII_RE.search(normalized)
         or _STRUCTURED_IDENTIFIER_RE.search(normalized)
         or _STREET_ADDRESS_RE.search(normalized)

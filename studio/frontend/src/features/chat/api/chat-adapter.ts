@@ -4022,7 +4022,8 @@ export function createOpenAIStreamAdapter(
                 memory_scope: {
                   thread_id: memoryScope.thread_id,
                   source_message_id: memoryScope.source_message_id,
-                  recall: memoryScope.recall,
+                  recall:
+                    useChatRuntimeStore.getState().referenceMemories,
                   allow_explicit_commands: false,
                   auto_capture: false,
                 },

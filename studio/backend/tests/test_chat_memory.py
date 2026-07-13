@@ -437,6 +437,22 @@ def test_recall_ignores_first_person_filler_overlap(tmp_path, monkeypatch, saved
     assert memory.recall_context("thread", "message") is None
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "I am HIV positive",
+        "I am Muslim",
+        "I have diabetes",
+        "I'm allergic to latex",
+    ),
+)
+def test_automatic_capture_rejects_concrete_sensitive_attributes(tmp_path, monkeypatch, content):
+    _setup_source(tmp_path, monkeypatch)
+
+    with pytest.raises(memory.MemoryValidationError):
+        memory.create_memory(content = content, scope = "global", source_type = "model")
+
+
 def test_memory_settings_are_global(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
     settings = studio_db.upsert_chat_settings_merge(

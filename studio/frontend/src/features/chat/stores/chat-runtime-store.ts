@@ -272,6 +272,15 @@ async function flushSettingsPatch(keepalive = false): Promise<void> {
   }
 }
 
+function flushPendingSettingsPatch(): void {
+  if (pendingTimer !== null) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  inflightFlush = inflightFlush
+    .catch(() => undefined)
+    .then(() => flushSettingsPatch());
+}
 function saveSettingsPatch(patch: SettingsPatch): void {
   mergePatch(pendingPatch, patch);
   if (pendingTimer !== null) clearTimeout(pendingTimer);
@@ -1266,6 +1275,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         referenceMemories,
         state.referenceMemories,
       );
+      flushPendingSettingsPatch();
       return { referenceMemories };
     }),
   setAutoSaveMemories: (autoSaveMemories) =>
@@ -1275,6 +1285,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         autoSaveMemories,
         state.autoSaveMemories,
       );
+      flushPendingSettingsPatch();
       return { autoSaveMemories };
     }),
   setHfToken: (hfToken) => {
