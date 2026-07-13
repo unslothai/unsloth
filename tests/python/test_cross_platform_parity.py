@@ -260,9 +260,7 @@ class TestTorchIndexOverrideParity:
         )
         # The custom-index spec must cap torch below 2.11 to mirror install.sh's
         # default TORCH_CONSTRAINT for an unknown leaf.
-        spec = re.search(
-            r"_CUSTOM_INDEX_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", text, re.DOTALL
-        )
+        spec = re.search(r"_CUSTOM_INDEX_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", text, re.DOTALL)
         assert spec and '"torch>=2.4,<2.11.0"' in spec.group(1), (
             "_CUSTOM_INDEX_TORCH_PKG_SPEC must pin torch>=2.4,<2.11.0 (the fresh "
             "unknown-leaf ceiling)"
