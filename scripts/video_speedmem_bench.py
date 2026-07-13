@@ -529,19 +529,22 @@ def _apply_levers(
     for v in views:
         engaged["attn"] = apply_attention_backend(v, backend, logger = logger)
 
-    # Speed profile (per expert; compiles each denoiser).
+    # Speed profile: apply_speed_optims fans out over EVERY denoiser DiT internally
+    # (transformer + transformer_2), so ONE pipe-level call covers a dual-expert MoE --
+    # exactly like the production loader. Looping over the second-expert view would compile
+    # and fuse transformer_2 a second time, so the warmup/compiled state these rows measure
+    # would no longer match the loader this script mirrors.
     if speed != "off":
-        for v in views:
-            engaged["speed_optims"] = apply_speed_optims(
-                v,
-                tgt,
-                is_gguf = False,
-                family = fam_obj,
-                speed_mode = speed,
-                cache_active = cache_active,
-                offload_active = False,
-                logger = logger,
-            )
+        engaged["speed_optims"] = apply_speed_optims(
+            pipe,
+            tgt,
+            is_gguf = False,
+            family = fam_obj,
+            speed_mode = speed,
+            cache_active = cache_active,
+            offload_active = False,
+            logger = logger,
+        )
     engaged["_effective_speed"] = speed
     # emulate_precision_casts A/B: the speed layer sets it True; compile is lazy, so flipping
     # it back off here gives the pre-round-2 inductor numerics for the run ("epc_off" config).
@@ -571,6 +574,7 @@ def _timed_video(
     cache_threshold = None,
     cache_quality = None,
     family = None,
+    fam_obj = None,
     logger = None,
 ):
     """One clip generation. Re-checks the step cache per generation (maybe_toggle_step_cache)
@@ -585,56 +589,57 @@ def _timed_video(
         maybe_toggle_step_cache,
         normalize_cache_quality,
     )
+    from core.inference.video import _step_cache_all_or_none
 
-    # Toggle on EVERY expert view like the loader's per-view recheck: toggling only the
-    # primary pipe would leave transformer_2 cached, a mixed state the MoE never runs.
-    views = [pipe]
-    if getattr(pipe, "transformer_2", None) is not None:
-        views.append(_SecondExpertView(pipe))
+    # Re-check the step cache per generation exactly like the loader, and route it through the
+    # SAME transactional helper (_step_cache_all_or_none) the load path uses. Toggling each expert
+    # view independently (swallowing per-expert results/exceptions) can engage one expert while
+    # transformer_2 fails, so the row would time a mixed cached/uncached MoE state -- a config
+    # production never runs, and one whose stale engagement would poison later rows in the matrix.
+    # The helper rolls back a partial engage so every timed row measures a real configuration.
     if cache_mode == "auto":
-        for v, expert in zip(views, ("transformer", "transformer_2")):
-            try:
-                maybe_toggle_step_cache(
-                    v,
-                    steps = steps,
-                    quant_active = dit_quant_active,
-                    threshold = cache_threshold,
-                    mode = auto_cache_mode(family),
-                    family = family,
-                    quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
-                    expert = expert,
-                    logger = logger,
-                )
-            except Exception:
-                pass
+        def _toggle_cache(view: Any, expert: str) -> Optional[str]:
+            return maybe_toggle_step_cache(
+                view,
+                steps = steps,
+                quant_active = dit_quant_active,
+                threshold = cache_threshold,
+                mode = auto_cache_mode(family),
+                family = family,
+                quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
+                expert = expert,
+                logger = logger,
+            )
+
+        _step_cache_all_or_none(pipe, fam_obj, _toggle_cache, logger = logger)
     elif cache_mode == "magcache":
         # An explicit magcache never toggles off, but production re-engages it when the step
         # count differs (marker carries "#s{steps}"; endswith, not substring). _apply_levers
-        # installed at default_steps, so a --steps override would else time a stale curve.
-        for v, expert in zip(views, ("transformer", "transformer_2")):
-            transformer = getattr(v, "transformer", None)
+        # installed at default_steps, so a --steps override would else time a stale curve. Wrapped
+        # in the all-or-none helper so a mixed resize rolls back instead of timing a split pair.
+        def _resize_magcache(view: Any, expert: str) -> Optional[str]:
+            transformer = getattr(view, "transformer", None)
             marker = getattr(transformer, "_unsloth_step_cache", None)
             if not marker or str(marker).endswith(f"#s{int(steps)}"):
-                continue
-            try:
-                _disengage_step_cache(
-                    transformer,
-                    reason = f"explicit magcache re-interpolating for {steps} steps",
-                    logger = logger,
-                )
-                apply_step_cache(
-                    v,
-                    mode = "magcache",
-                    threshold = cache_threshold,
-                    quant_active = dit_quant_active,
-                    family = family,
-                    steps = steps,
-                    quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
-                    expert = expert,
-                    logger = logger,
-                )
-            except Exception:
-                pass
+                return "magcache"  # already sized for these steps
+            _disengage_step_cache(
+                transformer,
+                reason = f"explicit magcache re-interpolating for {steps} steps",
+                logger = logger,
+            )
+            return apply_step_cache(
+                view,
+                mode = "magcache",
+                threshold = cache_threshold,
+                quant_active = dit_quant_active,
+                family = family,
+                steps = steps,
+                quality = normalize_cache_quality(cache_quality) or auto_cache_quality(family),
+                expert = expert,
+                logger = logger,
+            )
+
+        _step_cache_all_or_none(pipe, fam_obj, _resize_magcache, logger = logger)
 
     # Clear step-cache residuals before EVERY generation, like production: diffusers keys
     # them on the long-lived transformer, so measured iterations would otherwise start
@@ -787,6 +792,7 @@ def _run_config(
         cache_threshold = cache_threshold,
         cache_quality = cache_quality,
         family = family,
+        fam_obj = fam_obj,
         logger = logger,
     )
     warmup_s = time.perf_counter() - warmup_t0
@@ -809,6 +815,7 @@ def _run_config(
             cache_threshold = cache_threshold,
             cache_quality = cache_quality,
             family = family,
+            fam_obj = fam_obj,
             logger = logger,
         )
         dts.append(dt)
