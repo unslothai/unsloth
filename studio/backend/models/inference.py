@@ -1063,12 +1063,16 @@ class ChatCompletionRequest(BaseModel):
             self.confirm_tool_calls = False
         elif (
             self.permission_mode == "ask"
+            and self.confirm_tool_calls is None
             and not (self.provider_id or self.provider_type)
             and (self.enable_tools is True or bool(self.mcp_enabled))
         ):
             # "Ask" gates every call, so a direct API caller that omits the legacy
             # confirm flag must still hit the confirmation gate for Studio's own
-            # tool loop. Only self-enable when that loop is actually requested
+            # tool loop. An explicit confirm_tool_calls=False wins over the mode
+            # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
+            # so only self-enable when the flag is unset. Only self-enable when that
+            # loop is actually requested
             # (enable_tools / mcp_enabled) -- the router enters the loop on those
             # signals, not on enabled_tools alone (which merely filters which tools
             # run). A plain client-tool passthrough (client-supplied `tools` that

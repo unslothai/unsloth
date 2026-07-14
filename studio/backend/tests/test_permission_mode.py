@@ -93,6 +93,12 @@ def _clear_pending():
         ("cat /home/a/.azure/msal_token_cache.json", True),  # azure token store
         ("cat ~/.config/gh/hosts.yml", True),  # gh cli credentials
         ("cat ~/.config/app/settings.json", False),  # ordinary config stays safe
+        ("cat /home/alice/.cache/huggingface/token", True),  # HF login token
+        ("cat ~/.cache/huggingface/stored_tokens", True),  # HF multi-token store
+        (
+            "cat /home/alice/.cache/huggingface/hub/models--x/config.json",
+            False,
+        ),  # HF model cache is not a credential
         ("cat /run/secrets/hf_token", True),  # docker secret mount
         ("cat /var/run/secrets/kubernetes.io/serviceaccount/token", True),  # k8s mount
         ("cat /run/app.pid", False),  # ordinary /run file stays safe
@@ -561,6 +567,27 @@ def test_terminal_classifier(command, unsafe):
             "import itertools\nlist(itertools.chain(xs, ys))",
             False,
         ),  # non-invoker itertools helper stays safe
+        ("spec.loader.exec_module(module)", True),  # runs a module's code
+        ("spec.loader.get_data('x')", False),  # loader read stays safe
+        (
+            "import zipfile\nzipfile.ZipFile('a.zip').extractall('out')",
+            True,
+        ),  # extractall writes arbitrary files
+        (
+            "import zipfile\nzipfile.ZipFile('a.zip').namelist()",
+            False,
+        ),  # archive read stays safe
+        ("import ensurepip\nensurepip.bootstrap()", True),  # installs pip
+        ("import venv\nvenv.create('env')", True),  # builds an environment
+        ("import pydoc\npydoc.writedoc('math')", True),  # writes name.html
+        (
+            "print(open('/home/alice/.cache/huggingface/token').read())",
+            True,
+        ),  # reads the Hugging Face login token
+        (
+            "open('/home/alice/.cache/huggingface/hub/models--x/config.json').read()",
+            False,
+        ),  # HF model cache is not a credential
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -751,8 +778,11 @@ def test_is_always_safe_tool():
         ("get_and_mark_read", True),  # mark/subscribe change external state
         ("get_and_subscribe", True),
         ("list_and_unsubscribe", True),
+        ("get_and_reply_email", True),  # reply/notify send/change external state
+        ("list_and_notify_users", True),
         ("read_report", False),  # plain read stays safe
         ("list_bookmarks", False),  # 'mark' substring in a token stays safe
+        ("list_notifications", False),  # 'notify' is a different token than 'notifications'
     ],
 )
 def test_mcp_classifier(tool, unsafe):
@@ -857,6 +887,17 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "REINDEX TABLE t"}, True),  # table reindex
         ({"query": "SELECT refresh_count FROM t"}, False),  # 'refresh' column stays safe
         ({"query": "please refresh the page"}, False),  # NL 'refresh' stays safe
+        ({"query": "COMMENT ON TABLE users IS 'owned'"}, True),  # catalog metadata write
+        ({"query": "LOCK TABLE users IN ACCESS EXCLUSIVE MODE"}, True),  # explicit lock
+        ({"query": "SECURITY LABEL FOR x ON TABLE t IS 'z'"}, True),  # security label write
+        ({"query": "CREATE POLICY p ON accounts USING (true)"}, True),  # row-security policy DDL
+        ({"query": "SELECT comment FROM t"}, False),  # 'comment' column stays safe
+        ({"query": "SELECT * FROM locks"}, False),  # 'locks' table stays safe
+        ({"query": "SELECT nextval('billing_seq')"}, True),  # sequence advance mutates
+        ({"query": "SELECT pg_advisory_lock(42)"}, True),  # advisory lock changes state
+        ({"query": "SELECT pg_notify('jobs', 'wake')"}, True),  # server-side notification
+        ({"query": "SELECT set_config('x', 'y', false)"}, True),  # session config write
+        ({"query": "SELECT nextval_col FROM t"}, False),  # 'nextval' column prefix stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):
@@ -1068,14 +1109,17 @@ def test_ask_auto_self_enable_confirm_on_chat_request():
             tools = [{"type": "function", "function": {"name": "f"}}],
         )
         assert req.confirm_tool_calls is None
-    # A contradictory confirm=False is overridden by the explicit mode.
+    # An explicit confirm_tool_calls=False wins over the ask mode (opts out of the
+    # gate), matching _permission_mode_confirm and the Anthropic pre-switch guard;
+    # the fold only self-enables when the flag is unset, so a caller cannot get a
+    # different answer on the chat path than the Anthropic path for the same body.
     req = ChatCompletionRequest(
         messages = [{"role": "user", "content": "hi"}],
         permission_mode = "ask",
         enable_tools = True,
         confirm_tool_calls = False,
     )
-    assert req.confirm_tool_calls is True
+    assert req.confirm_tool_calls is False
     # A plain client-tool passthrough (client-supplied tools that Studio does not
     # execute) must NOT self-enable confirm, or the route rejects the passthrough.
     req = ChatCompletionRequest(

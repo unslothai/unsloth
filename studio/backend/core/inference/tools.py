@@ -474,7 +474,7 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"save|archive|submit|commit|push|sync|register|"
     r"clone|checkout|comment|fork|tag|invite|share|append|prepend|"
     r"copy|duplicate|import|export|download|backup|restore|snapshot|mirror|"
-    r"upsert|assign|mark|subscribe|unsubscribe)(?:[_\-]|$)",
+    r"upsert|assign|mark|subscribe|unsubscribe|reply|notify)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -522,6 +522,10 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "sqlite3",
         # runpy runs a script/module as code.
         "runpy",
+        # ensurepip.bootstrap installs pip and venv.create builds an environment;
+        # both write to disk and can fetch/install packages.
+        "ensurepip",
+        "venv",
     }
 )
 # Attribute calls that mutate the filesystem / spawn processes (os.remove,
@@ -581,6 +585,10 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "setxattr",
         "removexattr",
         "import_module",
+        # loader.exec_module runs a module's code like import_module; archive
+        # extractall writes arbitrary files (zip-slip).
+        "exec_module",
+        "extractall",
         "FileIO",
         # asyncio subprocess spawners run a program past the terminal blocklist.
         "create_subprocess_exec",
@@ -660,6 +668,8 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "open_memmap",
         "ExcelWriter",
         "HDFStore",
+        # pydoc.writedoc(name) writes name.html to the workdir.
+        "writedoc",
     }
 )
 # Archive / compressed-file constructors taking the mode as their 2nd arg like
@@ -693,6 +703,10 @@ _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    # Hugging Face stores the login token at ~/.cache/huggingface/token (and the
+    # multi-token store stored_tokens); the rest of that cache is model data, so
+    # only the credential files match, not the whole huggingface dir.
+    r"|(?:^|[/\\])huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys (ssh_host_*_key); the whole dir is
     # sensitive, not just passwd/shadow/sudoers.
     r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$))"
@@ -1945,7 +1959,7 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
 # mutate just like CREATE INDEX).
 _SQL_DDL_OBJECTS = (
     r"table|database|schema|index|view|function|procedure|trigger|"
-    r"sequence|role|user|extension|type|domain|aggregate"
+    r"sequence|role|user|extension|type|domain|aggregate|policy"
 )
 # Modifiers between the DDL verb and object (CREATE OR REPLACE VIEW, DROP
 # MATERIALIZED VIEW, CREATE UNIQUE INDEX).
@@ -1971,6 +1985,10 @@ _MCP_ARG_MUTATION_RE = re.compile(
     r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"grant\s+\w|revoke\s+\w|merge\s+into|"
+    # Catalog mutations: COMMENT ON <obj>, SECURITY LABEL, and LOCK TABLE change
+    # metadata or take a lock. Each needs a following keyword, so a "comment"
+    # column (SELECT comment FROM t) or "locks" table stays safe.
+    r"comment\s+on\b|security\s+label\b|lock\s+table\b|"
     # PostgreSQL maintenance writes: REFRESH MATERIALIZED VIEW rewrites the view,
     # REINDEX rebuilds an index. Both need a following object keyword/name, so a
     # column or word "refresh"/"reindex" in prose stays safe.
@@ -1999,7 +2017,12 @@ _MCP_ARG_SQLITE_MUTATION_RE = re.compile(
 # trailing "(" is required, so a column named setval_count stays safe.
 _MCP_ARG_SQL_FUNCTION_RE = re.compile(
     r"\b(?:pg_terminate_backend|pg_cancel_backend|pg_write_file|lo_export|"
-    r"lo_import|setval|dblink_exec|pg_reload_conf|pg_rotate_logfile)\s*\(",
+    r"lo_import|setval|nextval|set_config|pg_notify|dblink_exec|pg_reload_conf|"
+    r"pg_rotate_logfile|"
+    # advisory locks change session/transaction lock state (read-shaped SELECT).
+    r"pg_advisory_(?:lock|lock_shared|unlock|unlock_shared|unlock_all|"
+    r"xact_lock|xact_lock_shared)|"
+    r"pg_try_advisory_(?:lock|lock_shared|xact_lock|xact_lock_shared))\s*\(",
     re.IGNORECASE,
 )
 # SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
