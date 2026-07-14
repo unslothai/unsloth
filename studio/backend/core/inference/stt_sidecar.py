@@ -321,9 +321,7 @@ class WhisperSttSidecar:
     @staticmethod
     def _raise_if_load_cancelled(event: threading.Event) -> None:
         if event.is_set():
-            raise SttLoadCancelledError(
-                "STT model loading was cancelled so training could start."
-            )
+            raise SttLoadCancelledError("STT model loading was cancelled so training could start.")
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -367,13 +365,7 @@ class WhisperSttSidecar:
         del engine
         _clear_device_cache(device)
 
-    def _build_model(
-        self,
-        repo: str,
-        device: str,
-        dtype,
-        cancel_event: threading.Event,
-    ):
+    def _build_model(self, repo: str, device: str, dtype, cancel_event: threading.Event):
         """Load a Whisper model + processor from the local Hub cache.
 
         local_files_only keeps the Model Hub the only download path; a cache
