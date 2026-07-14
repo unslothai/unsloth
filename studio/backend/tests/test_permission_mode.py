@@ -76,7 +76,17 @@ def _clear_pending():
         ("echo hi > out.txt", True),  # write redirection
         ("rm -rf /", True),
         ("ls; rm x", True),  # unsafe after separator
-        ("xargs rm", True),  # wrapper forwards to unsafe target
+        ("xargs rm", True),  # xargs is not a safe wrapper: it injects stdin args
+        ("xargs sort", True),  # forwards to sort with unscanned stdin arguments
+        ("echo -o out x | xargs sort", True),  # hidden write via stdin-supplied args
+        ("find . -name '*.py' | xargs grep foo", True),  # xargs run stays gated
+        ("ionice -c 3 -p 1234", True),  # -p changes a running process's IO priority
+        ("ionice -p 1", True),
+        ("ionice -P 999", True),  # -P targets a process group
+        ("ionice -u 1000", True),  # -u targets a user's processes
+        ("ionice -c3 -p1234", True),  # attached short flags still target a process
+        ("ionice -c 3 ls", False),  # a real wrapped command stays safe
+        ("ionice -n 5 grep x .", False),  # class-data flag then wrapped read stays safe
         ("sudo ls", True),
         ("git push origin main", True),
         ("pip install requests", True),
@@ -828,15 +838,33 @@ def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("render_html", {}) is False
 
 
+def test_render_html_gated_only_when_networked():
+    # A static canvas auto-runs; one whose HTML/JS reaches the network asks.
+    def rh(code):
+        return is_potentially_unsafe_tool_call("render_html", {"code": code})
+
+    assert rh("<h1>Report</h1><p>Summary</p>") is False
+    assert rh("<div id=c></div><script>document.getElementById('c').textContent='x'</script>") is False
+    assert rh("<svg xmlns='http://www.w3.org/2000/svg'><circle r=4/></svg>") is False
+    assert rh("<img src='./local.png'>") is False
+    assert rh("<img src=x onerror='fetch(1)'>") is True
+    assert rh("<script>new WebSocket('wss://x')</script>") is True
+    assert rh("<script src='https://cdn/x.js'></script>") is True
+    assert rh("<script>new XMLHttpRequest().open('GET','/x')</script>") is True
+    assert rh("<img src='https://evil/pixel.png'>") is True
+
+
 def test_unknown_tools_fail_closed():
     assert is_potentially_unsafe_tool_call("mystery_tool", {}) is True
 
 
 def test_is_always_safe_tool():
     from core.inference.tools import is_always_safe_tool
-    for name in ("web_search", "search_knowledge_base", "render_html"):
+    for name in ("web_search", "search_knowledge_base"):
         assert is_always_safe_tool(name) is True
-    for name in ("python", "terminal", "mystery_tool", "mcp__srv__read"):
+    # render_html is no longer unconditionally safe: a networked canvas can prompt,
+    # which cannot be judged before its arguments stream.
+    for name in ("python", "terminal", "mystery_tool", "mcp__srv__read", "render_html"):
         assert is_always_safe_tool(name) is False
 
 
@@ -873,7 +901,16 @@ def test_is_always_safe_tool():
         ("list_and_unsubscribe", True),
         ("get_and_reply_email", True),  # reply/notify send/change external state
         ("list_and_notify_users", True),
+        ("read_secret", True),  # credential noun: a read that discloses a secret
+        ("list_tokens", True),
+        ("get_credentials", True),
+        ("fetch_api_key", True),  # scoped *_key noun
+        ("read_access_key", True),
+        ("get_password", True),
+        ("read_passphrase", True),
         ("read_report", False),  # plain read stays safe
+        ("get_primary_key", False),  # a schema key is not a credential
+        ("search_keyboard_shortcuts", False),  # 'key' inside another word stays safe
         ("list_bookmarks", False),  # 'mark' substring in a token stays safe
         ("list_notifications", False),  # 'notify' is a different token than 'notifications'
     ],
@@ -928,6 +965,9 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "CREATE TEMP TABLE t (id int)"}, True),  # DDL with TEMP
         ({"query": "CREATE MATERIALIZED VIEW mv AS SELECT 1"}, True),  # materialized view DDL
         ({"query": "CREATE FUNCTION f() RETURNS int AS $$ $$"}, True),  # function DDL
+        ({"query": "ALTER SYSTEM SET work_mem = '1GB'"}, True),  # persists server config
+        ({"query": "alter system reset all"}, True),  # ALTER SYSTEM RESET
+        ({"query": "SELECT * FROM system_logs"}, False),  # 'system' as a table name stays safe
         ({"query": "SELECT * FROM created_view"}, False),  # 'create' substring stays safe
         ({"query": "CALL delete_all_users()"}, True),  # stored procedure invocation
         ({"query": "EXEC purge_queue"}, True),  # EXEC procedure
@@ -1326,19 +1366,27 @@ def test_permission_mode_confirm_derivation():
 
 def test_confirm_gate_needs_stream():
     # auto only prompts for a classifier-flagged call, so an auto request that can
-    # only select always-safe tools (web_search / RAG / render) needs no stream and
-    # must not be rejected by the confirm-without-stream guard.
+    # only select always-safe tools (web_search / RAG) needs no stream and must not
+    # be rejected by the confirm-without-stream guard.
     from routes.inference import _confirm_gate_needs_stream
 
     def req(**kw):
         return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **kw)
 
-    safe = ["web_search", "search_knowledge_base", "render_html"]
+    safe = ["web_search", "search_knowledge_base"]
     # auto + a safe-only selection never prompts -> no stream needed.
     assert _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe)) is False
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
         is False
+    )
+    # render_html can prompt when its canvas reaches the network, so a selection
+    # that includes it needs a stream to deliver that prompt.
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search", "render_html"])
+        )
+        is True
     )
     # But a selectable unsafe tool, an unrestricted (omitted) selection, MCP, or an
     # explicit confirm flag all still require streaming under auto.

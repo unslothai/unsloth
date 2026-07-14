@@ -2592,10 +2592,11 @@ class TestLoopBasic:
         assert tool_starts[0]["arguments"] == {}
         assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
 
-    def test_render_html_auto_mode_keeps_early_provisional(self):
-        """permission_mode="auto" ships confirm_tool_calls=true, but render_html is
-        always safe and never prompts, so its early provisional canvas card must
-        still surface (mirrors the GGUF path's is_always_safe_tool exemption)."""
+    def test_render_html_auto_mode_static_runs_without_prompt(self):
+        """permission_mode="auto" ships confirm_tool_calls=true. render_html is no
+        longer unconditionally safe (a networked canvas must ask), so its early
+        provisional card is suppressed under the confirm gate; a static canvas is
+        still classified safe and runs without an approval prompt."""
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
             [
@@ -2628,12 +2629,12 @@ class TestLoopBasic:
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
-        assert len(tool_starts) == 2
-        assert tool_starts[0]["arguments"] == {}
+        # No early provisional card under the auto confirm gate; just the real call.
+        assert len(tool_starts) == 1
         assert tool_starts[0]["tool_name"] == "render_html"
-        assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
-        # A safe auto-mode tool runs without an approval gate.
-        assert tool_starts[1].get("awaiting_confirmation") in (False, None)
+        assert "<!doctype html>" in tool_starts[0]["arguments"]["code"]
+        # A static canvas is classified safe, so it runs without an approval gate.
+        assert tool_starts[0].get("awaiting_confirmation") in (False, None)
 
     def test_render_html_provisional_card_closed_on_generator_exception(self):
         """If the model generator raises mid-stream after a provisional render_html

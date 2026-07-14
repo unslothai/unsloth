@@ -414,6 +414,11 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     "rg": frozenset({"--pre", "--hostname-bin"}),
     # env -C/--chdir escapes the workdir; -S/--split-string builds a command.
     "env": frozenset({"-C", "--chdir", "-S", "--split-string"}),
+    # ionice -p/-P/-u change the I/O priority of an already running process /
+    # group / user instead of forwarding to a wrapped read-only command, so a
+    # bare `ionice -c 3 -p <pid>` mutates another process. ionice stays a safe
+    # wrapper for `ionice -c 3 <cmd>`; only the process-target flags ask.
+    "ionice": frozenset({"-p", "-P", "-u"}),
     # printf -v NAME assigns to a shell var, so `printf -v PATH %s .; ls` runs
     # ./ls from the workdir.
     "printf": frozenset({"-v"}),
@@ -472,9 +477,12 @@ _AUTO_RECURSIVE_SEARCH = frozenset({"grep", "egrep", "fgrep", "rg", "ug", "find"
 # with -R/--recursive, so it is gated separately when that flag is present.
 _AUTO_RECURSIVE_LISTERS = frozenset({"tree", "du"})
 # Benign wrappers: safe AND forward command position to their target (checked in
-# turn). sudo/su/chroot/etc. are absent, so they classify as unsafe.
+# turn). sudo/su/chroot/etc. are absent, so they classify as unsafe. xargs is
+# absent too: it appends arguments read from stdin that this scan never sees, so
+# `echo -o out /etc/passwd | xargs sort` forwards to `sort -o out /etc/passwd`
+# (a write + sensitive read) while only the allow-listed literals are visible.
 _AUTO_SAFE_WRAPPERS = frozenset(
-    {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup", "xargs"}
+    {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup"}
 )
 
 # MCP tools whose names look read-only auto-run; anything else asks.
@@ -495,6 +503,18 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"clone|checkout|comment|fork|tag|invite|share|append|prepend|"
     r"copy|duplicate|import|export|download|backup|restore|snapshot|mirror|"
     r"upsert|assign|mark|subscribe|unsubscribe|reply|notify)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# A read-named MCP tool that returns a secret is still a sensitive read, so a
+# credential noun anywhere in the name (read_secret, list_tokens,
+# get_credentials, fetch_api_key) asks even without a mutating verb or a path/SQL
+# argument. Scoped nouns (api/access/private/... _key) avoid flagging benign
+# keys like a primary_key or keyboard lookup.
+_AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"secret|token|credential|password|passwd|passphrase|apikey|"
+    r"(?:api|access|private|secret|signing|encryption|auth|session)[_\-]?keys?"
+    r")s?(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -2067,6 +2087,9 @@ _MCP_ARG_MUTATION_RE = re.compile(
     # SELECT ... INTO OUTFILE/DUMPFILE writes a file (MySQL); bare SELECT INTO
     # <table> is left out (PL/pgSQL uses it to read into a variable).
     r"select\s+[^;]*?\binto\s+(?:outfile|dumpfile)\b|"
+    # ALTER SYSTEM persists PostgreSQL server configuration; SYSTEM is not one of
+    # the DDL objects above, so match it explicitly.
+    r"alter\s+system\b|"
     r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"grant\s+\w+|revoke\s+\w+|merge\s+into|"
@@ -2150,13 +2173,46 @@ def _mcp_arguments_mutate(arguments) -> bool:
 
 # Tools that are read-only / non state-mutating regardless of their arguments,
 # so auto mode never has to pause them (their safety needs no argument scan).
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "render_html"})
+# render_html is NOT unconditionally safe: it runs arbitrary HTML/JS in the
+# canvas preview frame. A static canvas (charts, layout, inline SVG) never
+# reaches the network, but code that calls out (fetch/XHR/WebSocket/EventSource/
+# sendBeacon or a remote <script src>) can exfiltrate or fetch under the
+# preview's CSP when artifact network access is enabled, so those ask; a canvas
+# with no network construct still auto-runs. The w3.org SVG/XHTML namespace URL
+# lives in xmlns=, not src=/href=, so it is not matched.
+_RENDER_HTML_NETWORK_RE = re.compile(
+    r"\bfetch\s*\(|"
+    r"XMLHttpRequest|"
+    r"\bWebSocket\b|"
+    r"\bEventSource\b|"
+    r"\bsendBeacon\b|"
+    r"\bimportScripts\b|"
+    r"navigator\s*\.\s*serviceWorker|"
+    r"<script[^>]*\bsrc\s*=|"
+    r"\b(?:src|href)\s*=\s*[\"']?\s*(?:https?:|//)|"
+    r"\bwss?://",
+    re.IGNORECASE,
+)
+
+
+def _render_html_reaches_network(arguments: dict) -> bool:
+    code = arguments.get("code")
+    if not isinstance(code, str):
+        return False
+    return bool(_RENDER_HTML_NETWORK_RE.search(code))
+
+
+# Tools that are read-only regardless of their arguments, so auto mode never has
+# to pause them and their safety needs no argument scan. render_html is handled
+# separately above because a networked canvas does need approval.
+_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
 
 
 def is_always_safe_tool(name: str) -> bool:
     """True for tools that never need an auto-mode prompt on any arguments, so a
     caller (e.g. the streaming provisional card) can allow them before the full
-    arguments are known."""
+    arguments are known. render_html is intentionally excluded: a networked
+    canvas needs approval, which cannot be judged before its arguments stream."""
     return name in _ALWAYS_SAFE_TOOLS
 
 
@@ -2169,11 +2225,20 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """
     if name in _ALWAYS_SAFE_TOOLS:
         return False
+    # render_html auto-runs a static canvas but asks once its HTML/JS reaches the
+    # network (fetch/WebSocket/remote script), which can egress under the canvas
+    # CSP when artifact network access is enabled.
+    if name == "render_html":
+        return _render_html_reaches_network(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
         tool_name = name.split("__", 2)[-1]
         # A mutating verb anywhere (get_or_create_issue, read_and_delete)
         # overrides a read-only prefix.
         if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
+            return True
+        # A credential noun (read_secret, list_tokens, get_credentials) makes a
+        # read-named tool a sensitive disclosure, so it asks too.
+        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
             return True
         # A read-named fs tool pointed at a credential path is still a
         # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).

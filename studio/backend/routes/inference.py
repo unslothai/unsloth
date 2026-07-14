@@ -2090,7 +2090,7 @@ def _confirm_gate_needs_stream(payload) -> bool:
     prompt must 400 up front. auto ("Approve for me") only prompts for a call the
     classifier flags, so an auto request whose confirm is derived from the mode
     (not an explicit confirm_tool_calls=true) and whose selectable tools are all
-    always-safe (web_search / RAG / render) never prompts and needs no stream. ask,
+    always-safe (web_search / RAG) never prompts and needs no stream. ask,
     an explicit confirm flag, MCP tools, and an unrestricted or unsafe selection
     still require streaming.
     """

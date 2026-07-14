@@ -1826,10 +1826,11 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
 
 
-def test_auto_mode_render_html_streams_provisional_card_despite_confirm(monkeypatch):
-    """render_html never needs an auto-mode prompt, so its early provisional card
-    must still stream when confirm_tool_calls is set with permission_mode="auto";
-    the raw confirm flag no longer suppresses always-safe tools here."""
+def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
+    """render_html is no longer unconditionally safe (a networked canvas asks), so
+    with confirm_tool_calls set under permission_mode="auto" its early provisional
+    card is suppressed; the real full-argument tool_start still fires and a static
+    canvas runs without a prompt."""
     args = {"code": "<html>" + "x" * 80 + "</html>"}
     first_stream = _streamed_structured_tool_call("render_html", args, "call_rh")
     final_stream = [_sse({"content": "Done."}), _done()]
@@ -1850,10 +1851,12 @@ def test_auto_mode_render_html_streams_provisional_card_despite_confirm(monkeypa
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     provisional = [e for e in tool_starts if not e.get("arguments")]
-    assert len(provisional) == 1, tool_starts
-    assert provisional[0]["tool_name"] == "render_html"
-    assert provisional[0]["tool_call_id"] == "call_rh"
-    assert provisional[0]["provenance"].get("provisional") is True
+    # The confirm gate now suppresses the early provisional card for render_html.
+    assert provisional == [], tool_starts
+    real = [e for e in tool_starts if e.get("arguments")]
+    assert real and real[0]["tool_name"] == "render_html"
+    # A static canvas is classified safe, so it still runs without an approval gate.
+    assert real[0].get("awaiting_confirmation") in (False, None)
 
 
 def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
