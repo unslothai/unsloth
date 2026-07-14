@@ -8655,10 +8655,8 @@ class LlamaCppBackend:
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
                         try:
-                            # A read blocked in recv() only wakes when the socket
-                            # is shut down; response.close() can't do it. So shut
-                            # down first (pre-header and mid-stream alike), then
-                            # r.close() just releases the response.
+                            # response.close() can't wake a read already blocked in
+                            # recv(); only a socket shutdown does, so shut down first.
                             LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             if r is not None:
                                 r.close()

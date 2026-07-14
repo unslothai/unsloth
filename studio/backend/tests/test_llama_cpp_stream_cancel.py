@@ -148,8 +148,7 @@ class _StallUpstream:
             )
             chunk = b"data: hello\n\n"
             conn.sendall(b"%x\r\n%s\r\n" % (len(chunk), chunk))
-            # Stall: hold the connection open and silent until the client (the
-            # cancel watcher) shuts its side down.
+            # Stall: stay open and silent until the client shuts its side down.
             while not self._stop.wait(timeout = 0.05):
                 try:
                     conn.settimeout(0.05)
@@ -162,11 +161,9 @@ class _StallUpstream:
 
 
 def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall():
-    # Stop during a mid-stream stall: the reader is parked in recv() with a long
-    # bound read timeout (the ~20 min first-token budget), so response.close()
-    # alone can't wake it — the watcher must shut the socket down. Assert the
-    # cancel lands in seconds, not at the far-off read deadline. Pre-fix this
-    # would hang until first_token_deadline (~30 s here) and blow the bound.
+    # Mid-stream stall: the reader is parked in recv() on a long bound read timeout,
+    # so response.close() alone can't wake it; the watcher must shut the socket down.
+    # Assert cancel lands in seconds, not at the far-off deadline (pre-fix: hung ~30s).
     with _StallUpstream() as server:
         cancel_event = threading.Event()
 
