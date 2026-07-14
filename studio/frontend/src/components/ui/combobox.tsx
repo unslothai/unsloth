@@ -100,13 +100,19 @@ function ComboboxInput({
   disabled = false,
   showTrigger = true,
   showClear = false,
+  startAddon,
   ...props
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean;
   showClear?: boolean;
+  /** Optional leading content (e.g. a search icon) rendered before the input. */
+  startAddon?: React.ReactNode;
 }): React.ReactElement {
   return (
     <InputGroup className={cn("w-auto", className)}>
+      {startAddon && (
+        <InputGroupAddon align="inline-start">{startAddon}</InputGroupAddon>
+      )}
       <ComboboxPrimitive.Input
         render={<InputGroupInput disabled={disabled} />}
         {...props}
@@ -176,8 +182,46 @@ function ComboboxList({
   className,
   ...props
 }: ComboboxPrimitive.List.Props): React.ReactElement {
+  // When the popup is portaled inside a modal Dialog, react-remove-scroll's
+  // wheel handler cancels native wheel scrolling for the (body-portaled) popup,
+  // so the list can only be scrolled by dragging the scrollbar. Drive the scroll
+  // manually from a non-passive wheel listener so the mouse wheel works again.
+  const detachWheelRef = React.useRef<(() => void) | null>(null);
+  const listRef = React.useCallback((node: HTMLDivElement | null) => {
+    detachWheelRef.current?.();
+    detachWheelRef.current = null;
+    if (!node) {
+      return;
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || node.scrollHeight <= node.clientHeight) {
+        return;
+      }
+      const step =
+        event.deltaMode === 1
+          ? 16
+          : event.deltaMode === 2
+            ? node.clientHeight
+            : 1;
+      const delta = event.deltaY * step;
+      if (delta === 0) {
+        return;
+      }
+      node.scrollTop += delta;
+      // Cancel the default (blocked) scroll and stop react-remove-scroll from
+      // double-handling the same wheel event.
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    detachWheelRef.current = () => {
+      node.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+
   return (
     <ComboboxPrimitive.List
+      ref={listRef}
       data-slot="combobox-list"
       className={cn(
         "no-scrollbar max-h-[min(calc(--spacing(72)---spacing(9)),calc(var(--available-height)---spacing(9)))] scroll-py-1 overflow-y-auto p-1 data-empty:p-0 overflow-y-auto overscroll-contain",

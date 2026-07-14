@@ -115,7 +115,7 @@ export const en = {
         sttModelLabel: "Speech recognition model",
         sttModelDescription:
           "Choose one of five curated Whisper models, or search Hugging Face for another Transformers-compatible Whisper model.",
-        sttModelSearchPlaceholder: "Search or paste owner/model…",
+        sttModelSearchPlaceholder: "Search model",
         sttModelSearching: "Searching Hugging Face…",
         sttModelNoResults: "No Whisper models found",
         sttModelFailed: "Could not load the STT model",

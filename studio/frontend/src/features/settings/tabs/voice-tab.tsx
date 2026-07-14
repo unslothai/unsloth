@@ -53,6 +53,7 @@ import { toast } from "@/lib/toast";
 import {
   Delete02Icon,
   PlusSignIcon,
+  Search01Icon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -89,18 +90,36 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "ar-SA", label: "العربية" },
 ];
 
-// Speech-recognition models, not voices. Label is just name + download size;
-// the speed/accuracy note lives in the row description.
-const STT_MODEL_LABELS: Record<DefaultSttModel, string> = {
-  tiny: "Whisper Tiny · 155 MB",
-  base: "Whisper Base · 295 MB",
-  small: "Whisper Small · 970 MB",
-  "large-v3-turbo": "Whisper Large v3 Turbo · 1.6 GB",
-  "large-v3": "Whisper Large v3 · 3.1 GB",
+// Speech-recognition models, not voices. Name and download size are kept apart
+// so the list can right-align the size; the speed/accuracy note lives in the
+// row description.
+const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
+  tiny: "Whisper Tiny",
+  base: "Whisper Base",
+  small: "Whisper Small",
+  "large-v3-turbo": "Whisper Large v3 Turbo",
+  "large-v3": "Whisper Large v3",
+};
+const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
+  tiny: "155 MB",
+  base: "295 MB",
+  small: "970 MB",
+  "large-v3-turbo": "1.6 GB",
+  "large-v3": "3.1 GB",
 };
 
+function sttModelName(model: SttModel): string {
+  return STT_MODEL_NAMES[model as DefaultSttModel] ?? model;
+}
+
+function sttModelSize(model: SttModel): string {
+  return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
+}
+
+// Combined name and size for the text input; the list shows them separately.
 function displaySttModel(model: SttModel): string {
-  return STT_MODEL_LABELS[model as DefaultSttModel] ?? model;
+  const size = sttModelSize(model);
+  return size ? `${sttModelName(model)} · ${size}` : sttModelName(model);
 }
 
 function SttModelCombobox({
@@ -207,6 +226,13 @@ function SttModelCombobox({
           aria-label="Speech recognition model"
           placeholder={t("settings.voice.dictation.sttModelSearchPlaceholder")}
           className="h-8 w-full [&_input]:text-xs"
+          startAddon={
+            <HugeiconsIcon
+              icon={Search01Icon}
+              strokeWidth={2}
+              className="size-3.5 text-muted-foreground"
+            />
+          }
         />
         <ComboboxContent anchor={anchorRef}>
           {isLoading && query ? (
@@ -225,13 +251,18 @@ function SttModelCombobox({
               return (
                 <ComboboxItem key={model} value={model}>
                   <span className="min-w-0 flex-1 truncate">
-                    {displaySttModel(model)}
+                    {sttModelName(model)}
                     {curated ? (
                       <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                         {getSttModelRepo(model)}
                       </span>
                     ) : null}
                   </span>
+                  {sttModelSize(model) ? (
+                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                      {sttModelSize(model)}
+                    </span>
+                  ) : null}
                 </ComboboxItem>
               );
             }}
