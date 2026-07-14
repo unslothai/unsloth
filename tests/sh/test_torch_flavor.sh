@@ -19,6 +19,8 @@ _FUNC_FILE=$(mktemp)
     echo ""
     sed -n '/^_torch_index_url_leaf()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_is_pip_rocm_family_leaf()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_expected_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_torch_index_repairable()/,/^}/p' "$INSTALL_SH"
@@ -79,6 +81,13 @@ assert_eq "bare cu digits stays"  "cu126" "$(_expected_torch_flavor_tag 'https:/
 assert_eq "custom rocm-current"   ""    "$(_expected_torch_flavor_tag 'https://mirror/whl/rocm-current')"
 assert_eq "radeon rocm-rel leaf"  ""    "$(_expected_torch_flavor_tag 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1')"
 assert_eq "real rocm7.2 stays"    "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7.2')"
+# A rocm<digit>-SUFFIX private mirror (rocm7.2-private, rocm7-current) shares the family
+# prefix but is a custom pin: it must return "" (custom) so the companion bounds apply,
+# not "rocm" which skips them. Prefix rocm[0-9]* is not enough -- match the family exactly.
+assert_eq "suffixed rocm7.2-private" "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2-private')"
+assert_eq "suffixed rocm7-current"   "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7-current')"
+assert_eq "two-dot rocm7.2.1"        "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2.1')"
+assert_eq "bare rocm7 stays"       "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7')"
 
 echo "=== _torch_index_repairable ==="
 assert_eq "cu130 repairable"   "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/cu130')"
@@ -87,6 +96,28 @@ assert_eq "gfx repairable"     "yes"   "$(_torch_index_repairable 'https://repo.
 assert_eq "gfx1151 repairable" "yes"   "$(_torch_index_repairable 'https://repo.amd.com/rocm/whl/gfx1151/')"
 assert_eq "cpu NOT repairable" "no"    "$(_torch_index_repairable 'https://download.pytorch.org/whl/cpu')"
 assert_eq "unknown NOT repair" "no"    "$(_torch_index_repairable 'https://my.mirror/whl/simple')"
+# A suffixed rocm leaf is a verbatim pin, not a --default-index repairable family.
+assert_eq "rocm-private NOT repair" "no" "$(_torch_index_repairable 'https://co.internal/whl/rocm7.2-private')"
+
+echo "=== _is_pip_rocm_family_leaf ==="
+assert_family() {
+    _label="$1"; _expected="$2"; _leaf="$3"
+    if _is_pip_rocm_family_leaf "$_leaf"; then _actual="yes"; else _actual="no"; fi
+    assert_eq "$_label" "$_expected" "$_actual"
+}
+assert_family "rocm7.2 family"        "yes" "rocm7.2"
+assert_family "rocm6.4 family"        "yes" "rocm6.4"
+assert_family "bare rocm7 family"     "yes" "rocm7"
+assert_family "gfx120x-all family"    "yes" "gfx120x-all"
+assert_family "gfx1151 family"        "yes" "gfx1151"
+assert_family "rocm7.2-private custom" "no" "rocm7.2-private"
+assert_family "rocm7-current custom"  "no"  "rocm7-current"
+assert_family "rocm-current custom"   "no"  "rocm-current"
+assert_family "rocm-rel-7.2.1 custom" "no"  "rocm-rel-7.2.1"
+assert_family "rocm7.2.1 custom"      "no"  "rocm7.2.1"
+assert_family "cpu not rocm"          "no"  "cpu"
+assert_family "cu128 not rocm"        "no"  "cu128"
+assert_family "simple not rocm"       "no"  "simple"
 
 echo "=== _tauri_torch_index_family (credential redaction) ==="
 # A token/fragment in the pinned URL must be stripped BEFORE classification so it is

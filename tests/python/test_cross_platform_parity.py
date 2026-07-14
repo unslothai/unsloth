@@ -568,32 +568,42 @@ class TestKnown211SetParity:
 
 
 class TestPinnedRocmLeafDigitParity:
-    """A pinned index is a pip ROCm --default-index family only when its leaf is
-    rocm+digit (rocm7.1 / rocm7.2) or gfx*. A bare `rocm*` glob wrongly catches a
-    custom mirror / Radeon find-links leaf (rocm-current / rocm-rel-7.2.1) and routes
-    it through the ROCm install path (which silently falls back to CPU on failure)
-    instead of the verbatim --default-index install. install.sh (_torch_index_repairable)
-    and install_python_stack.py (_is_pip_rocm_family_leaf) already require a digit
-    after rocm; install.ps1's pinned reroute must match."""
+    """A pinned index is a pip ROCm --default-index family only when its leaf is an
+    EXACT rocm+digits (rocm7 / rocm7.2) or gfx*. A ^rocm[0-9] PREFIX (or a bare rocm*
+    glob) wrongly catches a custom mirror / find-links leaf (rocm-current /
+    rocm-rel-7.2.1) AND a suffixed private-mirror leaf (rocm7.2-private / rocm7-current),
+    routing it through the ROCm install path (which silently falls back to CPU on
+    failure) or skipping the custom-index companion bounds, instead of the verbatim
+    --default-index install. All installers must match the family EXACTLY: Python and
+    install.sh via a shared _is_pip_rocm_family_leaf, setup.ps1 via Test-PipRocmFamilyLeaf,
+    install.ps1 via an anchored ^rocm[0-9]+(\\.[0-9]+)?$ reroute."""
 
     def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # The pinned gfx*/rocm reroute must require a digit after rocm.
-        assert re.search(r"\$_pinLeaf -like 'gfx\*' -or \$_pinLeaf -match '\^rocm\\d'", text), (
-            "install.ps1 pinned-index reroute must use -match '^rocm\\d' (not a bare "
-            "-like 'rocm*'), so rocm-current / rocm-rel-* fall through to the verbatim "
-            "install instead of the ROCm --default-index path"
+        # The pinned gfx*/rocm reroute must match rocm EXACTLY (anchored), so a suffixed
+        # rocm7.2-private / rocm-current falls through to the verbatim --default-index path.
+        assert "-match '^rocm[0-9]+(\\.[0-9]+)?$'" in text, (
+            "install.ps1 pinned-index reroute must anchor the rocm match "
+            "(^rocm[0-9]+(\\.[0-9]+)?$), not a bare -like 'rocm*' or an unanchored ^rocm\\d"
         )
-        # The broad glob must be gone from that reroute.
+        # Neither the broad glob nor the unanchored prefix may drive that reroute.
         assert (
             "-like 'rocm*'" not in text
         ), "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
+        assert (
+            "-match '^rocm\\d'" not in text
+        ), "install.ps1 must not route a pinned index on an unanchored -match '^rocm\\d'"
 
     def test_setup_ps1_pinned_reroute_requires_rocm_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        assert "-match '^rocm\\d'" in text, (
-            "setup.ps1 pinned-index reroute must use -match '^rocm\\d' (not a bare "
-            "-like 'rocm*' glob) so custom find-links leaves stay on the verbatim path"
+        # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which
+        # anchors the rocm match so a suffixed custom leaf stays on the verbatim path.
+        assert "function Test-PipRocmFamilyLeaf" in text, (
+            "setup.ps1 must define Test-PipRocmFamilyLeaf (the exact rocm/gfx family gate)"
+        )
+        assert "'^rocm[0-9]+(\\.[0-9]+)?$'" in text, (
+            "setup.ps1 Test-PipRocmFamilyLeaf must anchor the rocm match "
+            "(^rocm[0-9]+(\\.[0-9]+)?$) so rocm7.2-private / rocm-current stay verbatim"
         )
         pinned_block = text[text.find("$_pinGfx211 = Test-RocmGfx211Leaf") :][:2000]
         assert (
@@ -602,42 +612,52 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
+        # _torch_index_repairable routes rocm/gfx through the exact-match helper.
+        assert "_is_pip_rocm_family_leaf" in text, (
+            "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
+        )
         assert re.search(
-            r"cu\[0-9\]\*\|rocm\[0-9\]\*\|gfx\*", text
-        ), "install.sh _torch_index_repairable must require rocm[0-9]* (a digit after rocm)"
+            r'case "\$1" in\n\s*gfx\*\) return 0', text
+        ), "install.sh _is_pip_rocm_family_leaf must treat gfx* as a family"
 
     def test_stack_py_pip_rocm_family_requires_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
         assert re.search(
-            r'r"\^rocm\\d"', text
-        ), "install_python_stack.py _is_pip_rocm_family_leaf must match ^rocm\\d"
+            r'fullmatch\(r"rocm\\d\+\(\?:\\\.\\d\+\)\?", leaf\)', text
+        ), "install_python_stack.py _is_pip_rocm_family_leaf must fullmatch rocm\\d+(?:\\.\\d+)?"
+        # The unanchored prefix must be gone from the family/flavor gates.
+        assert (
+            're.match(r"^rocm\\d"' not in text
+        ), "install_python_stack.py must not gate a family on an unanchored re.match(^rocm\\d)"
 
     def test_normalize_family_leaf_digit_gates_rocm(self):
         """_normalize_family_leaf lowercases only true family leaves. rocm7.2 / cu128
-        are families (lowercased), but rocm-Current / rocm-rel-7.2.1 / cu128-private
-        keep their case so a custom-index leaf is not falsely matched equal (URL paths
-        can be case-sensitive). All three installers digit-gate the rocm prefix and
-        match the cu leaf EXACTLY (cu + digits)."""
+        are families (lowercased), but rocm-Current / rocm-rel-7.2.1 / cu128-private AND
+        a suffixed rocm7.2-private keep their case so a custom-index leaf is not falsely
+        matched equal (URL paths can be case-sensitive). All three installers match the
+        rocm family EXACTLY (not a ^rocm[0-9] prefix) and match the cu leaf EXACTLY."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
-        assert re.search(
-            r"rocm\[0-9\]\*\|gfx\*\|cpu", sh
-        ), "install.sh _normalize_family_leaf must digit-gate rocm (rocm[0-9]*)"
+        assert '_is_pip_rocm_family_leaf "$_l_low"' in sh, (
+            "install.sh _normalize_family_leaf must gate rocm via the exact-match "
+            "_is_pip_rocm_family_leaf helper (not a rocm[0-9]* glob)"
+        )
         # cu is exact: the leaf is a family only when stripping "cu" leaves all digits.
         assert '"${_l_low#cu}"' in sh, (
             "install.sh _normalize_family_leaf must match cu EXACTLY (strip cu, require "
             "an all-digit remainder) so cu128-private stays a custom leaf"
         )
         setup = SETUP_PS1.read_text(encoding = "utf-8")
-        assert (
-            "-match '^(rocm[0-9]|gfx)'" in setup
-        ), "setup.ps1 Get-NormalizedFamilyLeaf must digit-gate rocm (^(rocm[0-9]|gfx))"
+        assert "(Test-PipRocmFamilyLeaf $low)" in setup, (
+            "setup.ps1 Get-NormalizedFamilyLeaf must gate rocm via the exact-match "
+            "Test-PipRocmFamilyLeaf helper (not a ^(rocm[0-9]|gfx) prefix)"
+        )
         assert (
             "-match '^cu[0-9]+$'" in setup
         ), "setup.ps1 Get-NormalizedFamilyLeaf must match cu EXACTLY (^cu[0-9]+$)"
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert re.search(
-            r'r"\^rocm\[0-9\]"', stack
-        ), "install_python_stack.py _normalize_family_leaf must digit-gate rocm (^rocm[0-9])"
+            r'fullmatch\(r"rocm\[0-9\]\+\(\?:\\\.\[0-9\]\+\)\?", low\)', stack
+        ), "install_python_stack.py _normalize_family_leaf must fullmatch rocm[0-9]+(?:\\.[0-9]+)?"
         assert re.search(
             r'r"cu\[0-9\]\+"', stack
         ), "install_python_stack.py _normalize_family_leaf must fullmatch cu[0-9]+"
@@ -654,13 +674,14 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_install_sh_rocm_side_effects_digit_gated(self):
         """The AMD bitsandbytes + 'repair ROCm torch' side effects must fire only on
-        a real ROCm family (rocm[0-9]*/gfx*), not a bare */rocm* whole-URL glob that
-        catches a custom CPU/CUDA index like /rocm-current and force-repairs it from
-        the wrong --default-index."""
+        an EXACT ROCm family (rocm7.2/gfx*), not a bare */rocm* whole-URL glob nor a
+        ^rocm[0-9] prefix that catches a custom CPU/CUDA index like /rocm-current or a
+        suffixed /rocm7.2-private and force-repairs it from the wrong --default-index."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        assert re.search(
-            r"rocm\[0-9\]\*\|gfx\*\) _torch_index_is_rocm_family=true", text
-        ), "install.sh must set _torch_index_is_rocm_family from a digit-gated leaf"
+        assert (
+            'if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then\n    _torch_index_is_rocm_family=true'
+            in text
+        ), "install.sh must set _torch_index_is_rocm_family from the exact-match helper"
         assert (
             '[ "$_torch_index_is_rocm_family" = true ]' in text
         ), "install.sh ROCm bnb/repair hooks must gate on _torch_index_is_rocm_family"
@@ -1009,14 +1030,17 @@ class TestPinnedIndexClearsUvEnvParity:
         ), "setup.ps1's CUDA branch must install via the bounded spec variables"
 
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
-        """The marker stale check must use the same rocm+digit gate as the
-        install selection, or a custom rocm-* leaf force-reinstalls on every
-        studio update."""
+        """The marker stale check must use the same EXACT rocm/gfx gate as the install
+        selection (Test-PipRocmFamilyLeaf), or a custom rocm-* / suffixed rocm7.2-private
+        leaf is stale-compared as a family and force-reinstalls on every studio update."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         stale = text[text.find("Get-RocmPinStaleTags -PinLeaf") - 2500 :][:2500]
-        assert "-match '^rocm\\d'" in stale.replace(
-            "\\", "\\"
-        ), "setup.ps1 stale check must digit-gate rocm leaves"
+        assert (
+            "Test-PipRocmFamilyLeaf" in stale
+        ), "setup.ps1 stale check must gate rocm leaves via the exact Test-PipRocmFamilyLeaf"
         assert (
             stale.count("-like 'rocm*'") == 0
         ), "setup.ps1 stale check must not use a bare -like 'rocm*' glob"
+        assert (
+            "-match '^rocm\\d'" not in stale
+        ), "setup.ps1 stale check must not use an unanchored -match '^rocm\\d'"

@@ -22,7 +22,8 @@ $TorchIndexMarkerName = ".unsloth-torch-index"
 
 foreach ($name in @(
     "Get-TorchIndexLeaf", "Remove-IndexUrlCredentials",
-    "Get-NormalizedFamilyLeaf", "Get-NormalizedIndexUrl", "Get-TorchIndexMarkerPath",
+    "Test-PipRocmFamilyLeaf", "Get-NormalizedFamilyLeaf", "Get-NormalizedIndexUrl",
+    "Get-TorchIndexMarkerPath",
     "Read-TorchIndexMarker", "Write-TorchIndexMarker", "Test-MarkerPinMismatch",
     "Test-RocmKnown211Version"
 )) {
@@ -51,6 +52,28 @@ Check "host case preserved, unknown custom leaf keeps case" `
 Check "gfx120X-all == gfx120x-all after normalize" `
     ((Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all") -eq (Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120x-all"))
 Check "empty -> null" ($null -eq (Get-NormalizedIndexUrl "   "))
+
+Write-Host "Get-NormalizedFamilyLeaf (exact rocm/gfx/cpu/cu lowered; custom keeps case)"
+# EXACT rocm/gfx/cpu/cu families are lowercased for equality; a suffixed private-mirror
+# leaf (rocm7.2-Private) or a find-links leaf (rocm-Rel-7.2.1) is a custom pin whose case
+# must survive so a case-only change is a real mismatch (Test-PipRocmFamilyLeaf gate).
+Check "rocm7.2 family lowered"          ((Get-NormalizedFamilyLeaf "ROCm7.2") -ceq "rocm7.2")
+Check "gfx120X-all family lowered"      ((Get-NormalizedFamilyLeaf "GFX120X-all") -ceq "gfx120x-all")
+Check "cu128 family lowered"            ((Get-NormalizedFamilyLeaf "CU128") -ceq "cu128")
+Check "suffixed rocm7.2-Private kept"   ((Get-NormalizedFamilyLeaf "rocm7.2-Private") -ceq "rocm7.2-Private")
+Check "rocm7-Current kept"              ((Get-NormalizedFamilyLeaf "rocm7-Current") -ceq "rocm7-Current")
+Check "rocm-Rel-7.2.1 kept"             ((Get-NormalizedFamilyLeaf "rocm-Rel-7.2.1") -ceq "rocm-Rel-7.2.1")
+Check "cu128-Private kept"              ((Get-NormalizedFamilyLeaf "cu128-Private") -ceq "cu128-Private")
+
+Write-Host "Test-PipRocmFamilyLeaf (exact rocm/gfx family gate)"
+Check "rocm7.2 -> family"        (Test-PipRocmFamilyLeaf "rocm7.2")
+Check "rocm7 -> family"          (Test-PipRocmFamilyLeaf "rocm7")
+Check "gfx1151 -> family"        (Test-PipRocmFamilyLeaf "gfx1151")
+Check "rocm7.2-private -> custom" (-not (Test-PipRocmFamilyLeaf "rocm7.2-private"))
+Check "rocm7-current -> custom"  (-not (Test-PipRocmFamilyLeaf "rocm7-current"))
+Check "rocm-current -> custom"   (-not (Test-PipRocmFamilyLeaf "rocm-current"))
+Check "rocm7.2.1 -> custom"      (-not (Test-PipRocmFamilyLeaf "rocm7.2.1"))
+Check "cpu -> not rocm"          (-not (Test-PipRocmFamilyLeaf "cpu"))
 
 Write-Host "Remove-IndexUrlCredentials (userinfo never persists or prints)"
 Check "user:token@ stripped" `

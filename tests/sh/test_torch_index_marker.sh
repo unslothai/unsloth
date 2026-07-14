@@ -22,6 +22,8 @@ _FUNC_FILE=$(mktemp)
     echo ""
     sed -n '/^_torch_index_url_leaf()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_is_pip_rocm_family_leaf()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_normalize_family_leaf()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_normalize_index_url()/,/^}/p' "$INSTALL_SH"
@@ -60,6 +62,11 @@ assert_eq "empty -> empty" "" "$(_normalize_index_url '   ')"
 assert_eq "rocm7.2 unchanged" \
     "https://download.pytorch.org/whl/rocm7.2" \
     "$(_normalize_index_url 'https://download.pytorch.org/whl/rocm7.2/')"
+# A suffixed rocm7.2-Private mirror is a CUSTOM pin, not a family: its case must survive
+# normalization (a case-only change is a real mismatch), unlike the exact rocm7.2 family.
+assert_eq "suffixed rocm7.2-Private case preserved" \
+    "https://co.internal/whl/rocm7.2-Private" \
+    "$(_normalize_index_url 'https://co.internal/whl/rocm7.2-Private/')"
 
 echo "=== _strip_index_url_credentials ==="
 assert_eq "user:token@ stripped" \

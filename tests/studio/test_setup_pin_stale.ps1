@@ -59,6 +59,15 @@ Write-Host "Get-RocmPinStaleTags (mirror of _rocm_pin_family_mismatch)"
 Check "rocm7.2 pin + 2.11.0+rocm7.2 -> not stale"  (-not (IsStale "rocm7.2" "2.11.0+rocm7.2"))
 Check "rocm7.2 pin + 2.10.0+rocm6.4 -> stale"      (IsStale "rocm7.2" "2.10.0+rocm6.4")
 Check "rocm6.4 pin + 2.10.0+rocm6.4 -> not stale"  (-not (IsStale "rocm6.4" "2.10.0+rocm6.4"))
+# rocm7.2 is a KNOWN-2.11 index (torch>=2.11,<2.12). A +rocm7.2 wheel whose RELEASE
+# drifted off 2.11 (2.12/2.13 from an out-of-band upgrade or a custom rocm7.2 mirror)
+# shares the rocm tag but violates the spec -> stale (mirror of _rocm_pin_family_mismatch).
+Check "rocm7.2 pin + 2.12.0+rocm7.2 -> stale"      (IsStale "rocm7.2" "2.12.0+rocm7.2")
+Check "rocm7.2 pin + 2.13.0+rocm7.2 -> stale"      (IsStale "rocm7.2" "2.13.0+rocm7.2")
+Check "rocm7.2 pin + 2.11.5+rocm7.2 -> not stale"  (-not (IsStale "rocm7.2" "2.11.5+rocm7.2"))
+# An UNKNOWN newer rocm (not on the 2.11 allowlist) is not floored to 2.11, so a
+# matching rocm version at any release line is NOT stale on this exact-compare branch.
+Check "rocm8.0 pin + 2.12.0+rocm8.0 -> not stale"  (-not (IsStale "rocm8.0" "2.12.0+rocm8.0"))
 # rocm pin vs an untagged (no +rocm) wheel: a CPU/CUDA build never satisfies a
 # ROCm pin, regardless of its release line -> always stale (needs reinstall).
 Check "rocm7.2 pin + 2.10.0 (untagged) -> stale"   (IsStale "rocm7.2" "2.10.0")

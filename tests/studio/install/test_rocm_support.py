@@ -927,6 +927,17 @@ class TestEnsureRocmTorch:
         assert f(f"{base}/rocm7.2", "2.11.0+rocm7.2") is False
         assert f(f"{base}/rocm7.2", "2.10.0+rocm6.4") is True
         assert f(f"{base}/rocm6.4", "2.10.0+rocm6.4") is False
+        # rocm7.2 is a KNOWN-2.11 index (torch>=2.11,<2.12). A +rocm7.2 wheel whose
+        # RELEASE drifted off 2.11 -- e.g. 2.12/2.13+rocm7.2 from an out-of-band upgrade
+        # or a custom rocm7.2 mirror -- shares the rocm tag but violates the spec, so it
+        # is a mismatch that must reinstall to floor (Codex P2). The ROCm-version compare
+        # alone (7.2 == 7.2) would wrongly accept it, and >=2.11 accepts 2.12 too.
+        assert f(f"{base}/rocm7.2", "2.12.0+rocm7.2") is True
+        assert f(f"{base}/rocm7.2", "2.13.0+rocm7.2") is True
+        assert f(f"{base}/rocm7.2", "2.11.5+rocm7.2") is False  # patch on 2.11 is in-spec
+        # An UNKNOWN newer rocm (not on the 2.11 allowlist) is not floored to 2.11, so a
+        # matching rocm version at any release line is NOT a mismatch on this branch.
+        assert f(f"{base}/rocm8.0", "2.12.0+rocm8.0") is False
         # gfx pin (2.11 line) vs installed release line.
         assert f(f"{amd}/gfx1151", "2.10.0+rocm6.4") is True
         assert f(f"{amd}/gfx1151", "2.11.0+rocm7.13.0") is False
@@ -966,12 +977,21 @@ class TestEnsureRocmTorch:
         assert leaf_f("rocm6.4") is True
         assert leaf_f("gfx120x-all") is True
         assert leaf_f("gfx1151") is True
+        # A bare rocm<digits> (no minor) is still an exact family.
+        assert leaf_f("rocm7") is True
         # A Radeon find-links dir leaf, a custom mirror, cpu and cuda are NOT pip rocm.
         assert leaf_f("rocm-rel-7.2.1") is False
         assert leaf_f("simple") is False
         assert leaf_f("current") is False
         assert leaf_f("cpu") is False
         assert leaf_f("cu128") is False
+        # A rocm<digit>-SUFFIX private mirror shares the family prefix but is a custom
+        # pin the verbatim path owns: a ^rocm\d PREFIX match wrongly treats it as a
+        # --index-url family (skipping the companion bounds and, on a pre-marker venv
+        # with a compatible +rocm wheel, never applying the pin). Match EXACTLY (Codex P2).
+        assert leaf_f("rocm7.2-private") is False
+        assert leaf_f("rocm7-current") is False
+        assert leaf_f("rocm7.2.1") is False  # two-part local suffix -> custom, not rocm7.2
 
         radeon = "https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1"
         pip_rocm = "https://download.pytorch.org/whl/rocm7.2"
@@ -996,6 +1016,12 @@ class TestEnsureRocmTorch:
         # (the finding's "leave the matching marker alone" scenario).
         assert _classify(radeon, rocm_fn) is None
         assert _classify(radeon, unk_fn) == radeon
+
+        # A rocm<digit>-suffix private mirror routes the same way: NOT a pip rocm family,
+        # IS an unknown-family (verbatim) pin.
+        suffixed = "https://co.internal/whl/rocm7.2-private"
+        assert _classify(suffixed, rocm_fn) is None
+        assert _classify(suffixed, unk_fn) == suffixed
 
     @patch.object(stack_mod, "_write_torch_index_marker")
     @patch.object(stack_mod, "pip_install")
@@ -2038,6 +2064,27 @@ class TestEnsureRocmTorchMarker:
         )
         mock_pip.assert_not_called()
 
+    def test_pinned_known_family_broken_probe_reinstalls(self):
+        """A cu128 pin whose torch is UNIMPORTABLE (probe -> None: a broken/partial wheel
+        or ABI mismatch) must be reinstalled from the pin, not left in place. _torch_pin_needs_apply
+        FORCES this pass on a failed probe, so returning on None would strand the broken
+        torch and force the pass on every future update; reinstalling repairs it and rewrites
+        the marker so the next probe succeeds and the fast path returns (Codex P2)."""
+        mock_pip, _ = self._ensure_known("https://mirror.local/cu128", None)
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/cu128" in str(mock_pip.call_args)
+        assert "https://mirror.local/cu128" in self._marker_path.read_text()
+
+    def test_pinned_known_family_broken_probe_win_rocm_reinstalls(self):
+        """The same broken-probe repair on a Windows ROCm pin uses the NONFATAL
+        pip_install_try (a setup.ps1 CPU fallback must not abort the install), reinstalling
+        from the pinned per-arch index with the mirrored rocm7.2 floor spec."""
+        _, mock_try = self._ensure_known(
+            "https://repo.amd.com/rocm/whl/gfx1151", None, is_windows = True
+        )
+        assert mock_try.call_count == 1
+        assert "https://repo.amd.com/rocm/whl/gfx1151" in str(mock_try.call_args)
+
     def test_pinned_known_family_same_flavor_marker_change_reinstalls(self):
         """A cu128 build that already matches the cu128 FLAVOR but whose marker records a
         DIFFERENT cu128 index (mirror A -> mirror B) is reinstalled from the new URL and
@@ -2142,11 +2189,11 @@ class TestEnsureRocmTorchMarker:
         mock_pip.assert_not_called()
         mock_try.assert_not_called()
 
-    def test_pinned_known_family_skips_failed_probe(self):
-        """A broken/missing torch probe -> no forced reinstall (no loop)."""
-        mock_pip, mock_try = self._ensure_known("https://mirror.local/cu128", None)
-        mock_pip.assert_not_called()
-        mock_try.assert_not_called()
+    # NOTE: the broken-probe (probe -> None) case now REINSTALLS from the pin rather than
+    # skipping -- see test_pinned_known_family_broken_probe_reinstalls /
+    # test_pinned_known_family_broken_probe_win_rocm_reinstalls above. Returning on a failed
+    # probe stranded a broken torch while _torch_pin_needs_apply forced the pass forever
+    # (Codex P2), so the old "skips_failed_probe" guard was intentionally replaced.
 
     def test_pinned_known_family_skips_no_torch_and_intel_mac(self):
         """NO_TORCH (headless no-torch) and Intel mac (already NO_TORCH) do nothing."""

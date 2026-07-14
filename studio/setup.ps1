@@ -476,7 +476,7 @@ $TorchIndexMarkerName = ".unsloth-torch-index"
 function Get-NormalizedFamilyLeaf {
     param([string]$Leaf)
     $low = $Leaf.ToLowerInvariant()
-    if ($low -match '^(rocm[0-9]|gfx)' -or $low -eq 'cpu' -or $low -match '^cu[0-9]+$') { return $low }
+    if ((Test-PipRocmFamilyLeaf $low) -or $low -eq 'cpu' -or $low -match '^cu[0-9]+$') { return $low }
     return $Leaf
 }
 
@@ -587,6 +587,18 @@ function Test-CudaFamilyLeaf {
     return $Leaf -match '^cu[0-9]+$'
 }
 
+# True only for a real pip --index-url ROCm family leaf: EXACT rocm<digits> /
+# rocm<digits>.<digits> (rocm7.2), or a repo.amd.com per-arch gfx leaf (gfx120x-all).
+# A leaf that merely STARTS with rocm (rocm-current, rocm-rel-7.2.1, rocm7.2-private)
+# is a custom pin the verbatim path owns, NOT a family, so an unanchored '^rocm\d'
+# prefix is not enough -- anchor the match so a suffixed leaf routes to the verbatim
+# path. Mirrors install_python_stack.py::_is_pip_rocm_family_leaf and install.sh.
+function Test-PipRocmFamilyLeaf {
+    param([string]$Leaf)
+    if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
+    return ($Leaf -like 'gfx*') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
+}
+
 # Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns a hashtable
 # @{ Expected = <tag>; Installed = <tag> } so the caller rebuilds when they
 # differ. Mirrors install_python_stack.py::_rocm_pin_family_mismatch:
@@ -637,7 +649,17 @@ function Get-RocmPinStaleTags {
     # rocmX.Y pin.
     if ($_pinVer -and $_instVer) {
         # Both rocm versions readable: exact comparison. A readable $_instVer already
-        # implies a +rocm tag, so no separate tag check is needed here.
+        # implies a +rocm tag, so no separate tag check is needed here. When the rocm
+        # versions match AND the pin is a KNOWN-2.11 index (rocm7.2 -> torch>=2.11,<2.12),
+        # the installed torch RELEASE must also be on the 2.11 line: a +rocm7.2 wheel that
+        # drifted to 2.12 (an out-of-band upgrade or a custom rocm7.2 mirror) shares the
+        # rocm tag but violates the spec, so fold the release into the tag to report it
+        # stale. Mirrors _rocm_pin_family_mismatch's KNOWN-2.11 release check.
+        $_pinKnown211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
+        $_instOn211 = $_instRel.Success -and [int]$_instRel.Groups[1].Value -eq 2 -and [int]$_instRel.Groups[2].Value -eq 11
+        if ($_pinKnown211 -and -not $_instOn211) {
+            return @{ Expected = "rocm$_pinVer(torch2.11)"; Installed = "rocm$_instVer(torch-off-2.11)" }
+        }
         return @{ Expected = "rocm$_pinVer"; Installed = "rocm$_instVer" }
     }
     $_pinNeeds211 = $false
@@ -2819,7 +2841,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # the verbatim/marker path, and must not be stale-compared as one (that
             # reported not-rocm vs rocm(torch<2.11) and force-reinstalled on every
             # studio update even though the pin never changed).
-            if ($_pinLeaf -like 'gfx*' -or $_pinLeaf -match '^rocm\d') {
+            if (Test-PipRocmFamilyLeaf $_pinLeaf) {
                 # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
                 # would match any installed +rocm wheel and mask a pin change from
                 # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
@@ -3269,15 +3291,15 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
         $ROCmVisionSpec = "torchvision>=0.26.0,<0.27.0"
         $ROCmAudioSpec  = "torchaudio>=2.11.0,<2.12.0"
         substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
-    } elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -match '^rocm\d') {
+    } elseif (Test-PipRocmFamilyLeaf $_pinLeaf) {
         # Other gfx per-arch indexes and older rocm (<=7.1) ship torch <2.11;
         # route via the ROCm path with bare specs (matches the automatic path's
         # bare floor for these arches).
-        # Require a DIGIT after rocm (rocm7.1, not rocm-rel-7.2.1 / rocm-current):
-        # only rocm<digit> and gfx* are pip --index-url (PEP 503) families; a
-        # rocm-<nondigit> leaf is a custom/find-links URL that must stay on the
+        # EXACT rocm<digits> (rocm7.1, not rocm-rel-7.2.1 / rocm-current / rocm7.2-private):
+        # only an exact rocm<digit> and gfx* are pip --index-url (PEP 503) families; a
+        # suffixed or rocm-<nondigit> leaf is a custom/find-links URL that must stay on the
         # verbatim unknown-pin path. Mirrors install.ps1 and
-        # install_python_stack.py's _is_pip_rocm_family_leaf (^rocm\d).
+        # install_python_stack.py's _is_pip_rocm_family_leaf.
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
         $ROCmTorchSpec  = "torch"
         $ROCmVisionSpec = "torchvision"

@@ -150,10 +150,13 @@ def _normalize_family_leaf(leaf: str) -> str:
     Mirrors the gate in install.sh / setup.ps1. Pure function.
     """
     low = leaf.lower()
+    # EXACT rocm family (rocm7.2 / rocm7), not a ^rocm[0-9] PREFIX: a suffixed custom
+    # leaf (rocm7.2-private) is a verbatim pin whose case must survive, same as
+    # rocm-Current / cu128-private below. Mirrors _is_pip_rocm_family_leaf.
     if (
         low.startswith("gfx")
         or low == "cpu"
-        or re.match(r"^rocm[0-9]", low)
+        or re.fullmatch(r"rocm[0-9]+(?:\.[0-9]+)?", low)
         or re.fullmatch(r"cu[0-9]+", low)
     ):
         return low
@@ -1323,9 +1326,13 @@ def _is_pip_rocm_family_leaf(leaf: str) -> bool:
     (repo.radeon.com/.../rocm-rel-7.2.1, which install.sh records in the marker)
     starts with "rocm" but is NOT a pip index -- it must route to the verbatim/marker
     path, not a --index-url reinstall that fails against a find-links listing.
-    Mirrors install.sh's rocm[0-9]* / setup.ps1's ^(rocm[0-9]|gfx) gate. Pure function.
+    A rocm<digit> PREFIX is not enough either: a private mirror leaf like
+    rocm7.2-private or rocm7-current shares the prefix but is a custom pin the verbatim
+    path must own, so match the rocm family EXACTLY (rocm<digits> or rocm<digits>.<digits>,
+    nothing trailing). Mirrors install.sh's exact rocm gate / setup.ps1's Test gate.
+    Pure function.
     """
-    return bool(re.match(r"^rocm\d", leaf)) or leaf.startswith("gfx")
+    return bool(re.fullmatch(r"rocm\d+(?:\.\d+)?", leaf)) or leaf.startswith("gfx")
 
 
 def _explicit_rocm_torch_index_url() -> "str | None":
@@ -1403,7 +1410,18 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
         # rocm7.2 pin over the AMD per-arch (+rocm7.13.x) wheel compares (7, 2) vs
         # (7, 13) -> mismatch, which correctly reinstalls the generic wheel the
         # user pinned instead of leaving the per-arch one in place.
-        return _pin_ver != _inst_ver
+        if _pin_ver != _inst_ver:
+            return True
+        # Same ROCm family. _ROCM_TORCH_PKG_SPECS pins the KNOWN-2.11 rocm indexes to the
+        # 2.11 torch line (rocm7.2 -> torch>=2.11,<2.12). A +rocm7.2 wheel whose RELEASE
+        # drifted off 2.11 -- e.g. a 2.12+rocm7.2 build from an out-of-band `pip install`
+        # or a custom rocm7.2 mirror serving a newer line -- carries a matching ROCm tag
+        # but violates that spec, so reinstall it to floor instead of leaving it. (>=2.11
+        # is not enough: _inst_is_211 accepts 2.12 too, so compare the release exactly.)
+        if _pin_is_211 and _inst_rel is not None:
+            if (int(_inst_rel.group(1)), int(_inst_rel.group(2))) != (2, 11):
+                return True
+        return False
     # rocm pin with an unreadable installed version: compare on the torch 2.11 line,
     # but an untagged (no +rocm) wheel never satisfies a rocmX.Y pin -> mismatch.
     if not _inst_has_rocm:
@@ -1711,7 +1729,7 @@ def _torch_flavor_matches_pin(pin: str, flavor: "tuple[str, str, str]") -> "bool
         return cutag == leaf
     if leaf == "cpu":
         return marker == "cpu"
-    if re.match(r"^rocm\d", leaf) or leaf.startswith("gfx"):
+    if _is_pip_rocm_family_leaf(leaf):
         if marker != "hip":
             return False
         # Reuse the exact per-arch/version predicate _ensure_rocm_torch uses, so a
@@ -1804,18 +1822,24 @@ def _ensure_pinned_known_family_torch() -> None:
     if not (_is_cuda_cpu or _is_win_rocm):
         return  # unknown family (verbatim owns it); non-Windows rocm not handled here
     flavor = _probe_torch_flavor()
-    if flavor is None:
-        return
-    # Reinstall when the installed flavor does not match the pin, OR when the marker
-    # records a DIFFERENT index of the SAME flavor -- a mirror or per-arch switch the
-    # wheel's flavor tag cannot see (one /cpu mirror to another, or gfx1151 ->
+    # flavor None = torch missing/broken (unimportable). _torch_pin_needs_apply forces
+    # this pass on a failed probe, so returning here would strand the broken torch and
+    # force the pass on every future update. The pin is authoritative, so treat an
+    # unimportable torch as drifted and reinstall the pinned trio; once it lands torch
+    # imports, the probe succeeds, and the fast path returns (no loop). The spec/marker
+    # below derive from the pinned LEAF, not the (absent) installed flavor, so they stay
+    # valid when the probe failed.
+    #
+    # Otherwise reinstall when the installed flavor does not match the pin, OR when the
+    # marker records a DIFFERENT index of the SAME flavor -- a mirror or per-arch switch
+    # the wheel's flavor tag cannot see (one /cpu mirror to another, or gfx1151 ->
     # gfx120x-all, both +rocm7.13.0), exactly as the Linux _ensure_{cuda,cpu}_torch
     # helpers do. Without this a same-flavor repoint is never applied while
     # _torch_pin_needs_apply keeps forcing the pass on the marker mismatch. An ABSENT
     # marker on an already-matching venv is left to _record_torch_index_pin_baseline (no
     # forced reinstall of a correct pre-marker venv -- backward compat). The reinstall
     # rewrites the marker, so the next update matches and the fast path returns (no loop).
-    _flavor_ok = _torch_flavor_matches_pin(pin, flavor) is not False
+    _flavor_ok = flavor is not None and _torch_flavor_matches_pin(pin, flavor) is not False
     if _flavor_ok and _marker_pin_mismatch(pin) is not True:
         return
     if _is_win_rocm:

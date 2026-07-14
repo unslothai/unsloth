@@ -2254,6 +2254,28 @@ _torch_index_url_leaf() {
 # Lowercase the leaf first so gfx120X-all (capital X) / any cased mirror leaf
 # still classifies, keeping the cuXXX tag comparison against _torch_flavor_tag
 # (which emits lowercase cuXXX) case-consistent.
+# True (exit 0) when a lowercased index leaf names a pip --index-url ROCm family: an
+# EXACT rocm<digits> / rocm<digits>.<digits> leaf (download.pytorch.org/whl/rocm7.2) or a
+# repo.amd.com per-arch gfx leaf (gfx120X-all). A leaf that merely STARTS with rocm --
+# a private rocm-current mirror, a Radeon find-links rocm-rel-7.2.1, or a rocm7.2-private
+# mirror -- is a custom pin the verbatim/companion-bounds path owns, NOT a family, so a
+# rocm<digit> PREFIX is not enough: match the family exactly. Mirrors Python's
+# _is_pip_rocm_family_leaf re.fullmatch(rocm\d+(?:\.\d+)?) and setup.ps1's Test gate.
+_is_pip_rocm_family_leaf() {
+    case "$1" in
+        gfx*) return 0 ;;
+        rocm[0-9]*)
+            # Exact rocm + digits (+ optional single .digits): a non-digit/non-dot char
+            # (rocm7.2-private, rocm7-current) or a second dot (rocm7.2.1) -> custom pin.
+            case "${1#rocm}" in
+                *[!0-9.]* | *.*.*) return 1 ;;
+                *)                 return 0 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 _expected_torch_flavor_tag() {
     _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
@@ -2269,12 +2291,13 @@ _expected_torch_flavor_tag() {
             esac
             ;;
         cpu)          echo "cpu" ;;
-        # Digit-gate rocm to real pip families (rocm7.2, ...). A custom leaf that merely
+        # Exact-match rocm/gfx families (rocm7.2, gfx120X-all). A custom leaf that merely
         # starts with rocm (a private rocm-current mirror, a Radeon find-links
-        # rocm-rel-7.2.1) is NOT a family: it must return "" (custom) so the custom-index
-        # companion bounds apply, matching _is_pip_rocm_family_leaf's ^rocm\d in Python.
-        rocm[0-9]*|gfx*) echo "rocm" ;;
-        *)            echo "" ;;
+        # rocm-rel-7.2.1, a rocm7.2-private mirror) returns "" (custom) so the custom-index
+        # companion bounds apply, matching _is_pip_rocm_family_leaf in Python.
+        *)
+            if _is_pip_rocm_family_leaf "$_leaf"; then echo "rocm"; else echo ""; fi
+            ;;
     esac
 }
 
@@ -2287,8 +2310,12 @@ _expected_torch_flavor_tag() {
 _torch_index_repairable() {
     _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
-        cu[0-9]*|rocm[0-9]*|gfx*) echo "yes" ;;
-        *)                        echo "no" ;;
+        cu[0-9]*) echo "yes" ;;
+        # Only EXACT rocm/gfx families resolve via --default-index; a suffixed custom
+        # rocm leaf (rocm7.2-private) is a verbatim pin, not a repairable family.
+        *)
+            if _is_pip_rocm_family_leaf "$_leaf"; then echo "yes"; else echo "no"; fi
+            ;;
     esac
 }
 
@@ -2343,8 +2370,11 @@ _strip_index_url_credentials() {
 _normalize_family_leaf() {
     _l_low=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
     case "$_l_low" in
-        rocm[0-9]*|gfx*|cpu) printf '%s' "$_l_low"; return ;;
+        cpu) printf '%s' "$_l_low"; return ;;
     esac
+    # Exact rocm/gfx family leaf -> a normalized family name; a suffixed custom rocm
+    # leaf (rocm7.2-private) is a verbatim pin whose case must survive (fall through).
+    if _is_pip_rocm_family_leaf "$_l_low"; then printf '%s' "$_l_low"; return; fi
     # cu + digits ONLY (cu128, not cu128-private): strip a leading "cu" and keep
     # the leaf as a family only when the remainder is non-empty and all digits.
     case "$_l_low" in
@@ -2717,10 +2747,11 @@ esac
 # force-repaired from the wrong ROCm-only path when torch.version.hip is empty.
 # A bare */rocm* whole-URL glob would misfire on those. gfx* is always a family.
 # _torch_index_leaf is already lowercased above.
-case "$_torch_index_leaf" in
-    rocm[0-9]*|gfx*) _torch_index_is_rocm_family=true ;;
-    *)               _torch_index_is_rocm_family=false ;;
-esac
+if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then
+    _torch_index_is_rocm_family=true
+else
+    _torch_index_is_rocm_family=false
+fi
 
 # rocm7.2 and the AMD per-gfx indexes with the torch._C._grouped_mm bug on <2.11
 # (repo.amd.com/.../gfx120X-all, gfx1151, gfx1150) ship torch 2.11.0 -- raise the
