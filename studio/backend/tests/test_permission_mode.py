@@ -26,7 +26,7 @@ from state.tool_approvals import resolve_tool_decision
 _SESSION = "perm-mode-session"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _isolate_permission_mode_globals():
     """Keep the loop-driving tests hermetic against process-global state that
     leaks across the full backend suite.
@@ -1061,7 +1061,9 @@ def test_auto_mode_does_not_gate_safe_calls():
     assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
     assert starts[0]["approval_id"] == ""
     assert exec_fn.calls == [("python", {"code": "print(1)"})], _diag(events, exec_fn)
-    assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)  # sandbox stays on in auto
+    assert exec_fn.disable_sandbox_seen == [False], _diag(
+        events, exec_fn
+    )  # sandbox stays on in auto
 
 
 def test_auto_mode_gates_unsafe_calls():
