@@ -491,56 +491,6 @@ def test_symlinked_cache_with_current_blob_reports_no_update():
     )
 
 
-# ── manifest-hash identity (Studio-downloaded no-symlink cache) ──
-#
-# A Studio download records each file's sha256 in its manifest, so even on a
-# no-symlink cache (empty blobs/) the exact hash is on disk. Feeding it into the
-# local identity set lets the update check match by hash and catch an equal-size
-# requant that the size-only fallback (#7113) cannot see, while a pure no-symlink
-# cache with no manifest keeps that size fallback.
-
-
-def _stub_manifest(monkeypatch, *files):
-    from hub.utils.download_manifest import ExpectedFile, Manifest
-    manifest = Manifest(
-        repo_type = "model",
-        repo_id = "org/repo",
-        variant = None,
-        started_at = "",
-        expected_files = tuple(ExpectedFile(path = p, size = s, sha256 = sha) for p, s, sha in files),
-    )
-    monkeypatch.setattr(GV.download_manifest, "read_manifest", lambda *a, **k: manifest)
-
-
-def test_manifest_hash_closes_equal_size_requant_blind_spot(monkeypatch):
-    """An equal-size upstream requant is detected via the manifest-recorded sha."""
-    _stub_manifest(monkeypatch, ("model-Q4_K_M.gguf", 4096, "STALEsha"))
-    local = GV._with_manifest_blob_hashes(
-        "org/repo", "Q4_K_M", {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
-    )
-    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
-    assert GV._variant_update_available_from_requirement(local, requirement, "Q4_K_M") is True
-
-
-def test_manifest_hash_match_reports_no_update(monkeypatch):
-    """A manifest sha matching the remote is current even when blobs/ is empty."""
-    _stub_manifest(monkeypatch, ("model-Q4_K_M.gguf", 4096, "CURRENTsha"))
-    local = GV._with_manifest_blob_hashes(
-        "org/repo", "Q4_K_M", {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
-    )
-    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "CURRENTsha"))
-    assert GV._variant_update_available_from_requirement(local, requirement, "Q4_K_M") is False
-
-
-def test_no_manifest_keeps_size_fallback(monkeypatch):
-    """Without a manifest the identity set and size fallback are unchanged."""
-    monkeypatch.setattr(GV.download_manifest, "read_manifest", lambda *a, **k: None)
-    base = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
-    assert GV._with_manifest_blob_hashes("org/repo", "Q4_K_M", base) == base
-    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "REMOTEsha"))
-    assert GV._variant_update_available_from_requirement(base, requirement, "Q4_K_M") is False
-
-
 def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp_path):
     """After a verified update, stale same-variant files/blobs are removed while
     the freshly downloaded hash and sibling variants remain cached."""

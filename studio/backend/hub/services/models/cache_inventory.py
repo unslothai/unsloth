@@ -169,11 +169,6 @@ def local_size_identity(size: int) -> str:
     return f"{_LOCAL_SIZE_IDENTITY_PREFIX}{int(size)}"
 
 
-def is_size_identity(identity: str) -> bool:
-    """Whether an identity token is a size fallback, not a real blob hash."""
-    return identity.startswith(_LOCAL_SIZE_IDENTITY_PREFIX)
-
-
 def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[str, set[str]]:
     """Map each cached GGUF file's repo-relative name to the SET of its local
     identities across all cached revisions.

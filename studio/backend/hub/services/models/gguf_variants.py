@@ -358,32 +358,11 @@ def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
     return cache_inventory.local_size_identity(size) in local_set
 
 
-def _with_manifest_blob_hashes(
-    repo_id: str, variant: str, local_blobs: dict[str, set[str]]
-) -> dict[str, set[str]]:
-    """Add each file's manifest-recorded sha256 to its cache-scanned identities.
-
-    On a no-symlink cache the emptied ``blobs/`` leaves only size tokens, so the
-    download manifest is the one exact hash on disk; matching by it catches an
-    equal-size requant the size fallback cannot see.
-    """
-    manifest = download_manifest.read_manifest("model", repo_id, variant)
-    if manifest is None:
-        return local_blobs
-    merged = {path: set(blobs) for path, blobs in local_blobs.items()}
-    for expected in manifest.expected_files:
-        if expected.sha256:
-            merged.setdefault(str(expected.path).replace("\\", "/"), set()).add(expected.sha256)
-    return merged
-
-
 def _variant_update_available_from_requirement(
     local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
 ) -> bool:
     if requirement is None or not local_blobs:
         return False
-    from hub.services.models import cache_inventory
-
     local_by_posix = {path.replace("\\", "/"): blobs for path, blobs in local_blobs.items()}
     for expected in requirement.expected_files:
         path = str(expected.path).replace("\\", "/")
@@ -401,11 +380,7 @@ def _variant_update_available_from_requirement(
             return True
         if remote_blob in local_set:
             continue
-        # Size only substitutes for a missing hash; a real hash that differs is a
-        # genuine update (the manifest gives a hash even on a no-symlink cache).
-        if all(cache_inventory.is_size_identity(h) for h in local_set) and _size_identity_matches(
-            local_set, expected.size
-        ):
+        if _size_identity_matches(local_set, expected.size):
             continue
         return True
     return False
@@ -794,11 +769,7 @@ async def get_gguf_variants_response(
                 downloaded = downloaded,
                 update_available = downloaded
                 and _variant_update_available_from_requirement(
-                    _with_manifest_blob_hashes(
-                        repo_id,
-                        v.quant,
-                        local_blobs_by_quant.get(v.quant.lower(), {}),
-                    ),
+                    local_blobs_by_quant.get(v.quant.lower(), {}),
                     requirement,
                     v.quant,
                 ),
