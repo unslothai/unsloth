@@ -1114,9 +1114,6 @@ export function VoiceTab() {
             description={t("settings.voice.dictation.notSupported")}
           />
         )}
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.voice.dictionary.sectionTitle")}>
         <SettingsRow
           label={t("settings.voice.dictionary.manageLabel")}
           description={t("settings.voice.dictionary.sectionDescription")}
@@ -1129,9 +1126,7 @@ export function VoiceTab() {
             {t("settings.voice.dictionary.manage")}
           </Button>
         </SettingsRow>
-      </SettingsSection>
 
-      <SettingsSection title={t("settings.voice.recents.sectionTitle")}>
         <SettingsRow
           label={t("settings.voice.recents.manageLabel")}
           description={t("settings.voice.recents.sectionDescription")}

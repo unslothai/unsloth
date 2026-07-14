@@ -166,8 +166,7 @@ export const en = {
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
-        sectionDescription:
-          "Apply the spelling entered here when dictation recognizes the same words or phrase",
+        sectionDescription: "Set how dictation spells specific words or phrases",
         manageLabel: "Custom spellings",
         manage: "Manage",
         backToVoice: "Back to Voice",
