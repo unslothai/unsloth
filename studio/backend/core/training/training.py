@@ -1074,20 +1074,79 @@ class TrainingBackend:
         Supersession is checked on both the watched proc and the watched job id:
         start_training updates current_job_id before it installs the new _proc, so a
         stale watchdog entering during that startup window still sees the old (dead)
-        handle and is caught by the job-id guard."""
+        handle and is caught by the job-id guard.
+
+        Once the guards pass, current_job_id is guaranteed to be the watched run, so the
+        run is finalized by that captured id (not the mutable current_job_id). Clearing
+        _proc exposes the backend as idle; a new run starting in that gap gets its own
+        fresh state and is never finalized here, and the old run is still recorded stopped
+        because finish_run targets the captured id."""
         with self._lock:
             if target_proc is not None and self._proc is not target_proc:
                 return  # a new run replaced the worker; never touch its state
             if watched_job_id is not None and self.current_job_id != watched_job_id:
                 return  # a new run is already starting up; leave its state alone
+            run_id = self.current_job_id  # == watched_job_id; capture before exposing idle
+            db_created = self._db_run_created
+            already_final = self._run_finalized
+            batch: list = []
+            final_step = final_loss = duration = None
+            loss_history: list = []
+            if not already_final:
+                self._run_finalized = True  # claim this run's finalize
+                batch = list(self._metric_buffer)
+                del self._metric_buffer[: len(batch)]
+                final_step = self._progress.step
+                final_loss = self._progress.loss
+                if final_loss is not None and not math.isfinite(final_loss):
+                    final_loss = None
+                duration = self._progress.elapsed_seconds
+                loss_history = list(self.loss_history)
             self._progress.is_training = False
             self._progress.status_message = "Training stopped."
             output_dir = self._output_dir
             self._proc = None
-        self._ensure_db_run_created()
-        self._finalize_run_in_db(
-            status = "stopped", output_dir = output_dir, expected_job_id = watched_job_id
-        )
+        if run_id and db_created and not already_final:
+            self._finish_stopped_run(
+                run_id, output_dir, batch, final_step, final_loss, duration, loss_history
+            )
+
+    def _finish_stopped_run(
+        self,
+        run_id: str,
+        output_dir: Optional[str],
+        batch: list,
+        final_step: Optional[int],
+        final_loss: Optional[float],
+        duration: Optional[float],
+        loss_history: list,
+    ) -> None:
+        """Record a force-stopped run as finished by its captured id, using state
+        snapshotted under the lock. The stop watchdog uses this so a run whose id is no
+        longer current (a new run started in the gap after the backend went idle) is still
+        finalized. insert_metrics_batch upserts and finish_run is an idempotent UPDATE, so
+        a concurrent pump finalize of the same run is harmless and a different current run
+        is never touched."""
+        try:
+            from storage.studio_db import finish_run, insert_metrics_batch
+            from utils.downsample import downsample
+
+            if batch:
+                insert_metrics_batch(run_id, batch)
+            sparkline = downsample(loss_history, 50)
+            finish_run(
+                id = run_id,
+                status = "stopped",
+                ended_at = datetime.now(timezone.utc).isoformat(),
+                final_step = final_step,
+                final_loss = final_loss,
+                duration_seconds = duration,
+                loss_sparkline = _json.dumps(sparkline),
+                output_dir = output_dir,
+                error_message = None,
+            )
+        except Exception:
+            logger.warning("Failed to finalize stopped run %s in DB", run_id, exc_info = True)
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
         """Force-kill the training subprocess so state can be reset immediately. With
