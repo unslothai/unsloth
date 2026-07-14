@@ -1077,10 +1077,8 @@ def _enforce_password_change_before_exposure(
             )
 
         typer.echo(
-            "Studio is about to be exposed on a public Cloudflare URL, but the "
-            f"admin account ('{DEFAULT_ADMIN_USERNAME}') still uses its "
-            "auto-generated bootstrap password.\n"
-            "Set a new admin password now (input shows '*' per character).",
+            "Unsloth Studio will be accessed in the world wide web, so set a "
+            "password now. Ctrl+C to abort.",
             err = True,
         )
         try:

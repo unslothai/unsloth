@@ -231,10 +231,8 @@ def prompt_for_password_change(
         out = sys.stderr
     out.write(
         "\n"
-        "Studio is about to be exposed on a public Cloudflare URL, but the\n"
-        f"admin account ('{username}') still has its auto-generated bootstrap\n"
-        "password. Set a new password now (input shows * per keystroke).\n"
-        f"Minimum length: {min_length} characters. Press Ctrl-C to abort.\n\n"
+        "Unsloth Studio will be accessed in the world wide web, so set a\n"
+        "password now. Ctrl+C to abort.\n\n"
     )
     out.flush()
     try:
