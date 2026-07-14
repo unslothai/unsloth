@@ -269,6 +269,7 @@ export const en = {
         title: "Language",
         label: "Display language",
         description: "The language used by Unsloth.",
+        autoDetect: "Auto detect",
       },
       layout: {
         title: "Layout",

@@ -9,12 +9,12 @@ import {
   type Theme,
 } from "@/features/settings";
 import {
-  DEFAULT_LOCALE,
-  getLocale,
-  isSupportedLocale,
+  DEFAULT_LOCALE_PREFERENCE,
+  getLocalePreference,
+  isLocalePreference,
   setLocale,
-  useLocale,
-  type Locale,
+  useLocalePreference,
+  type LocalePreference,
 } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -24,6 +24,11 @@ import {
 import type { AvatarShape } from "../stores/user-profile-store";
 
 const PUSH_DEBOUNCE_MS = 800;
+
+// Version 2 payloads store the language preference ("auto" or a pinned
+// locale). Version 1 always serialized the resolved locale, so its "en" is
+// usually the old default rather than an explicit pick.
+const PERSONALIZATION_VERSION = 2;
 
 type ProfileSnapshot = {
   displayName: string;
@@ -110,10 +115,10 @@ function profileSnapshot(): ProfileSnapshot {
 function payload(
   profile: ProfileSnapshot,
   theme: Theme,
-  language: Locale | null,
+  language: LocalePreference | null,
 ): PersonalizationWrite {
   return {
-    version: 1,
+    version: PERSONALIZATION_VERSION,
     profile: normalizeProfile(profile),
     appearance: { theme, language },
   };
@@ -123,10 +128,23 @@ function serialized(data: PersonalizationWrite): string {
   return JSON.stringify(data);
 }
 
+// Version 1 clients wrote language on every save, so a legacy "en" usually
+// means the user never picked a language. Map it to auto; explicit picks of
+// other locales (the old default was English) are kept. Version 2 payloads
+// are trusted verbatim, so a deliberate English pick stays pinned.
+export function remoteLanguagePreference(
+  version: unknown,
+  language: unknown,
+): unknown {
+  const isLegacy = typeof version !== "number" || version < 2;
+  if (isLegacy && language === "en") return DEFAULT_LOCALE_PREFERENCE;
+  return language;
+}
+
 function hasLocalSettings(
   profile: ProfileSnapshot,
   theme: Theme,
-  language: Locale,
+  language: LocalePreference,
 ): boolean {
   return Boolean(
     profile.displayName ||
@@ -134,7 +152,7 @@ function hasLocalSettings(
       profile.avatarDataUrl ||
       profile.avatarShape !== "circle" ||
       theme !== "system" ||
-      language !== DEFAULT_LOCALE,
+      language !== DEFAULT_LOCALE_PREFERENCE,
   );
 }
 
@@ -144,7 +162,7 @@ export function usePersonalizationSync(enabled: boolean): void {
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const avatarShape = useUserProfileStore((s) => s.avatarShape);
   const { theme } = useTheme();
-  const language = useLocale();
+  const language = useLocalePreference();
   const [hydratedGeneration, setHydratedGeneration] = useState(0);
   const authGenerationRef = useRef(0);
   const latestThemeRef = useRef(theme);
@@ -191,8 +209,12 @@ export function usePersonalizationSync(enabled: boolean): void {
             avatarShape: remote.profile.avatarShape === "rounded" ? "rounded" : "circle",
           };
           const nextTheme = remote.appearance.theme;
-          const nextLanguage = isSupportedLocale(remote.appearance.language)
-            ? remote.appearance.language
+          const remoteLanguage = remoteLanguagePreference(
+            remote.version,
+            remote.appearance.language,
+          );
+          const nextLanguage = isLocalePreference(remoteLanguage)
+            ? remoteLanguage
             : latestLanguageRef.current;
           useUserProfileStore.setState(nextProfile);
           if (nextTheme !== latestThemeRef.current) setTheme(nextTheme);
@@ -207,7 +229,7 @@ export function usePersonalizationSync(enabled: boolean): void {
             useUserProfileStore.setState(nextProfile);
           }
           const nextTheme = latestThemeRef.current;
-          const nextLanguage = getLocale();
+          const nextLanguage = getLocalePreference();
           const nextPayload = payload(nextProfile, nextTheme, nextLanguage);
           const nextSerialized = serialized(nextPayload);
           if (hasLocalSettings(nextProfile, nextTheme, nextLanguage)) {
