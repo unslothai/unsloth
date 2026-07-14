@@ -21,13 +21,20 @@ from utils.paths.sensitive import (
 
 
 def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
-    """True for a bare local filesystem root -- POSIX ``/`` or a drive root ``C:\\`` --
-    which sits above denied system dirs, but NOT a UNC share root
-    ``\\\\server\\share`` (no system dirs under it, and registerable before this
-    guard existed). ``splitdrive`` is empty on POSIX servers, so this reduces to
-    the plain ``dirname == self`` test there. ``_pathmod`` lets tests drive
-    ``ntpath`` semantics on a POSIX CI.
+    """True for a bare local filesystem root -- POSIX ``/``, a drive root ``C:\\``,
+    or a device-namespace drive root like ``\\\\?\\C:\\`` -- which sit above denied
+    system dirs, but NOT a UNC share root (``\\\\server\\share`` or its
+    ``\\\\?\\UNC\\...`` form), which has none under it and was registerable before
+    this guard. ``splitdrive`` is empty on POSIX servers, so this reduces to the
+    plain ``dirname == self`` test there. ``_pathmod`` lets tests drive ``ntpath``
+    semantics on a POSIX CI.
     """
+    # Collapse the Windows device / extended-length prefix first, so \\?\C:\ is
+    # judged the same as C:\ and \\?\UNC\server\share the same as \\server\share
+    # (else \\?\C:\ would slip through as if it were a share root).
+    if path[:4].lower() in ("\\\\?\\", "\\\\.\\"):
+        rest = path[4:]
+        path = "\\\\" + rest[4:] if rest[:4].lower() == "unc\\" else rest
     if _pathmod.dirname(path) != path:
         return False
     drive, _ = _pathmod.splitdrive(path)

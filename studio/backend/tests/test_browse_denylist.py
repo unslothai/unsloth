@@ -234,7 +234,7 @@ def test_resolve_browse_target_symlink_escape_blocked(tmp_path):
 
 
 # _is_path_inside_allowlist -- bare POSIX root parity (legacy == hub)
-def _extract_is_inside(rel_parts):
+def _extract_is_inside(rel_parts, *, os_module = os):
     """Extract a standalone _is_path_inside_allowlist (os/Path only) so both browsers' copies compare without importing their heavy modules."""
     src = _BACKEND_ROOT.joinpath(*rel_parts).read_text(encoding = "utf-8")
     tree = ast.parse(src)
@@ -245,9 +245,23 @@ def _extract_is_inside(rel_parts):
     ]
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
-    ns = {"os": os, "Path": Path}
+    ns = {"os": os_module, "Path": Path}
     exec(compile(module, f"<extracted {'/'.join(rel_parts)}>", "exec"), ns)
     return ns["_is_path_inside_allowlist"]
+
+
+# ntpath semantics with a no-FS realpath, so UNC containment can be driven on a
+# POSIX CI (the real realpath cannot resolve \\server\share off Windows).
+_WIN_OS = SimpleNamespace(
+    sep = ntpath.sep,
+    path = SimpleNamespace(
+        realpath = lambda p: ntpath.normpath(str(p)),
+        normcase = ntpath.normcase,
+        splitdrive = ntpath.splitdrive,
+        dirname = ntpath.dirname,
+        commonpath = ntpath.commonpath,
+    ),
+)
 
 
 def test_legacy_and_hub_allowlist_agree_on_posix_root():
@@ -303,6 +317,14 @@ def test_hub_add_scan_folder_rejects_filesystem_root(monkeypatch):
         (r"\\server\share", ntpath, False),
         (r"\\nas\models", ntpath, False),
         ("//server/share", ntpath, False),
+        # Device / extended-length drive roots -> still local roots (rejected),
+        # so \\?\C:\ can't slip past the guard as if it were a share root.
+        (r"\\?\C:" + "\\", ntpath, True),
+        (r"\\.\C:" + "\\", ntpath, True),
+        (r"\\?\C:", ntpath, True),
+        (r"\\.\C:", ntpath, True),
+        # Device-namespace UNC share root -> stays registerable (False).
+        (r"\\?\UNC\server\share", ntpath, False),
         # Non-root paths are never a filesystem root (False).
         ("C:\\Models", ntpath, False),
         (r"\\server\share\models", ntpath, False),
@@ -320,3 +342,25 @@ def test_both_guards_use_the_shared_local_root_helper():
     hub_src = (_BACKEND_ROOT / "hub" / "storage" / "scan_folders.py").read_text(encoding = "utf-8")
     assert "is_local_filesystem_root(normalized)" in legacy_src
     assert "is_local_filesystem_root(normalized)" in hub_src
+
+
+# A registered UNC share root must authorize its own descendants in both browsers.
+# os.path.commonpath raises "can't mix absolute and relative" on a bare
+# \\server\share, so containment falls back to a boundary-safe prefix test; without
+# it, registering a UNC share (now allowed) would 403 every folder under it.
+@pytest.mark.parametrize(
+    "rel_parts",
+    [
+        ["routes", "models.py"],
+        ["hub", "services", "models", "folder_browser.py"],
+    ],
+)
+def test_unc_share_root_authorizes_its_descendants(rel_parts):
+    is_inside = _extract_is_inside(rel_parts, os_module = _WIN_OS)
+    root = [Path(r"\\server\share")]
+    assert is_inside(Path(r"\\server\share"), root) is True            # the root itself
+    assert is_inside(Path(r"\\server\share\models"), root) is True     # direct child
+    assert is_inside(Path(r"\\server\share\a\b\c"), root) is True      # deep descendant
+    assert is_inside(Path(r"\\SERVER\SHARE\Models"), root) is True     # case-insensitive
+    assert is_inside(Path(r"\\server\share2\models"), root) is False   # sibling share
+    assert is_inside(Path(r"C:\models"), root) is False                # different volume
