@@ -522,6 +522,7 @@ def run_safetensors_tool_loop(
         # ── Phase 1: Classify all tool calls and build assistant message ──
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         decisions: list[tuple[ToolCallDecision, dict, bool]] = []
+        _seen_turn_keys: set[str] = set()
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
@@ -530,18 +531,25 @@ def run_safetensors_tool_loop(
                 and tool_name == "render_html"
                 and tc.get("id", "") == provisional_render_html_id
             )
-            decision = tool_controller.prepare_call(tc, provisional = provisional_match)
+            decision = tool_controller.prepare_call(
+                tc,
+                provisional = provisional_match,
+                extra_duplicate_keys = _seen_turn_keys,
+            )
             decisions.append((decision, tc, provisional_match))
             if decision.should_execute:
+                _seen_turn_keys.add(decision.key)
                 assistant_msg.setdefault("tool_calls", []).append(
                     decision.as_assistant_tool_call()
                 )
 
-        # Append assistant message once with all tool_calls.
-        if assistant_msg.get("tool_calls") or content_text or tool_calls:
+        # Only append assistant message if it has tool_calls or content text.
+        assistant_appended = bool(assistant_msg.get("tool_calls") or content_text)
+        if assistant_appended:
             conversation.append(assistant_msg)
 
-        # ── Phase 2: Execute or no-op each decision ──
+        # ── Phase 2a: Execute tool calls, defer no-op nudges ──
+        _pending_noops: list[ToolCallDecision] = []
         for decision, tc, provisional_match in decisions:
             if not decision.should_execute:
                 if provisional_match and not provisional_resolved:
@@ -556,12 +564,7 @@ def run_safetensors_tool_loop(
                         "result": "",
                         "provenance": decision.provenance,
                     }
-                completion = tool_controller.record_noop(decision)
-                conversation.append(completion.model_message())
-                logger.info(
-                    "Suppressed local safetensors tool call as internal no-op: "
-                    f"action={decision.action} tool={decision.tool_name}"
-                )
+                _pending_noops.append(decision)
                 continue
 
             # Bypass wins over the confirm gate at the loop level too, so a
@@ -639,6 +642,16 @@ def run_safetensors_tool_loop(
                 provisional_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+
+        # ── Phase 2b: Append deferred no-op nudges ──
+        for _nd in _pending_noops:
+            _nc = tool_controller.record_noop(_nd)
+            logger.info(
+                "Suppressed local safetensors tool call as internal no-op: "
+                f"action={_nd.action} tool={_nd.tool_name}"
+            )
+            if assistant_appended:
+                conversation.append(_nc.model_message())
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}

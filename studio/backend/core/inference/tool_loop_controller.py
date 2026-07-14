@@ -362,8 +362,14 @@ class ToolLoopController:
         *,
         forced: bool = False,
         provisional: bool = False,
+        extra_duplicate_keys: set[str] | None = None,
     ) -> ToolCallDecision:
-        """Classify a parsed tool call before any visible event is yielded."""
+        """Classify a parsed tool call before any visible event is yielded.
+
+        ``extra_duplicate_keys`` enables same-turn duplicate detection: keys
+        already seen in the current batch are treated as duplicates even
+        though no ``record_result`` has been called yet.
+        """
         function = tool_call.get("function")
         function = function if isinstance(function, Mapping) else {}
         tool_name = str(function.get("name") or "").strip()
@@ -386,7 +392,7 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif key in self._successful_keys:
+        elif key in self._successful_keys or (extra_duplicate_keys and key in extra_duplicate_keys):
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

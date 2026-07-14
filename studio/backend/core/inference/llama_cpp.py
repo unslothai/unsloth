@@ -8652,6 +8652,7 @@ class LlamaCppBackend:
                 # ── Phase 1: Classify all tool calls and build assistant message ──
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 decisions: list[tuple[ToolCallDecision, dict, bool]] = []
+                _seen_turn_keys: set[str] = set()
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
@@ -8660,25 +8661,26 @@ class LlamaCppBackend:
                         tc,
                         forced = _forced_tool_call_pending,
                         provisional = provisional_match,
+                        extra_duplicate_keys = _seen_turn_keys,
                     )
                     decisions.append((decision, tc, provisional_match))
                     if decision.should_execute:
+                        _seen_turn_keys.add(decision.key)
                         assistant_msg.setdefault("tool_calls", []).append(
                             decision.as_assistant_tool_call()
                         )
 
-                # Append assistant message once with all tool_calls.
-                if assistant_msg.get("tool_calls") or content_text or tool_calls:
+                # Only append assistant message if it has tool_calls or content text.
+                assistant_appended = bool(assistant_msg.get("tool_calls") or content_text)
+                if assistant_appended:
                     conversation.append(assistant_msg)
 
-                # ── Phase 2: Execute or no-op each decision ──
+                # ── Phase 2a: Execute tool calls, defer no-op nudges ──
+                _pending_noops: list[ToolCallDecision] = []
                 for decision, tc, provisional_match in decisions:
                     if not decision.should_execute:
+                        # Close provisional cards immediately (frontend event).
                         if provisional_match:
-                            # A provisional tool card is already on screen for this
-                            # id; close it so it never dangles when the controller
-                            # turns the call into an internal no-op (duplicate /
-                            # disabled / render_html_repeat).
                             resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                             yield {
                                 "type": "tool_end",
@@ -8687,14 +8689,9 @@ class LlamaCppBackend:
                                 "result": "",
                                 "provenance": decision.provenance,
                             }
-                        completion = tool_controller.record_noop(decision)
-                        conversation.append(completion.model_message())
+                        _pending_noops.append(decision)
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
-                        logger.info(
-                            "Suppressed local GGUF tool call as internal no-op: "
-                            f"action={decision.action} tool={decision.tool_name}"
-                        )
                         continue
 
                     # Bypass wins over the confirm gate at the loop level too,
@@ -8772,6 +8769,16 @@ class LlamaCppBackend:
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                # ── Phase 2b: Append deferred no-op nudges ──
+                for _nd in _pending_noops:
+                    _nc = tool_controller.record_noop(_nd)
+                    logger.info(
+                        "Suppressed local GGUF tool call as internal no-op: "
+                        f"action={_nd.action} tool={_nd.tool_name}"
+                    )
+                    if assistant_appended:
+                        conversation.append(_nc.model_message())
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
