@@ -10,9 +10,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXTERNAL_PROVIDERS = (
-    REPO_ROOT / "studio/frontend/src/features/chat/external-providers.ts"
-)
+EXTERNAL_PROVIDERS = REPO_ROOT / "studio/frontend/src/features/chat/external-providers.ts"
 
 
 def test_minimax_vision_capability_matches_the_selected_model():
