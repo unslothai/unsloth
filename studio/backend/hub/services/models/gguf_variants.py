@@ -340,15 +340,10 @@ def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str
 def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
     """Whether a cached file with NO blob hash is current, judged by size.
 
-    A size identity only ever lands in ``local_set`` for a file the HF cache has
-    no blob for (Windows without Developer Mode), so this check cannot loosen the
-    blob-hash comparison for a normally-cached file -- its set holds hashes only,
-    which never match a ``size:`` token.
-
-    Tradeoff: an upstream requant that leaves the byte size unchanged is not
-    detected in that layout. Re-hashing multi-GB GGUFs on the inventory hot path
-    is the only stricter option, and the alternative is the status quo, where the
-    comparison is wrong for every GGUF and no re-download can clear it.
+    A size token only lands in ``local_set`` for a file the cache has no blob for,
+    so it never loosens the hash comparison for a normal file. Tradeoff: an
+    equal-size requant is missed, versus the status quo where every no-blob GGUF
+    shows a phantom update that no re-download clears.
     """
     size = int(remote_size or 0)
     if size <= 0:
