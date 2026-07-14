@@ -332,8 +332,10 @@ export function loadOptionalBool(key: string): boolean | null {
 /**
  * Resolve the web-search / code-execution pill state to apply when a model
  * loads. Honors the user's persisted preference so a tool-capable model never
- * re-enables a pill the user turned off; falls back to the model's capability
- * only when no preference has been expressed.
+ * re-enables a pill the user turned off, and never re-disables one they turned
+ * on. When no preference has been expressed the pills stay off: tool execution
+ * is opt-in, so the person enables it with a click rather than a tool-capable
+ * model turning it on for them.
  */
 export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   toolsEnabled: boolean;
@@ -341,8 +343,8 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 } {
   if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
   return {
-    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? true,
-    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? true,
+    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? false,
+    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? false,
   };
 }
 
