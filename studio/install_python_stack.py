@@ -1616,6 +1616,31 @@ def _ensure_verbatim_torch_index() -> None:
     _VERBATIM_TRIO_SNAPSHOT = _installed_trio_snapshot()
 
 
+def _capture_verbatim_baseline() -> None:
+    """Record the verbatim custom-pin trio as the pre-update baseline BEFORE the core
+    package step, which can re-resolve and clobber a custom-pinned torch on `studio
+    update` (a newer unsloth requiring a torch the custom pin does not satisfy pulls a
+    default PyPI trio). Without this, the first _ensure_verbatim_torch_index pass runs
+    only AFTER that step: for a matching marker it records the already-clobbered trio as
+    the baseline, and the final safety pass then sees no drift and never reapplies the
+    pin. Capturing the pre-clobber trio here makes step 2b's pass detect the drift and
+    reinstall. Only for a matching custom pin with an importable torch; a mismatched or
+    absent marker (or a broken torch) is left to _ensure_verbatim_torch_index, which
+    reinstalls and writes the marker itself, and a known-family/unpinned venv has no
+    verbatim baseline. Pure snapshot record (no install)."""
+    global _VERBATIM_TRIO_SNAPSHOT
+    if NO_TORCH or IS_MAC_INTEL:
+        return
+    pin = _explicit_unknown_family_torch_index_url()
+    if pin is None:
+        return
+    if _marker_pin_mismatch(pin) is not False:
+        return  # not a matching marker -> _ensure_verbatim_torch_index (re)applies it
+    if _probe_torch_flavor() is None:
+        return  # broken/missing torch -> _ensure_verbatim_torch_index reinstalls it
+    _VERBATIM_TRIO_SNAPSHOT = _installed_trio_snapshot()
+
+
 def _probe_torch_flavor() -> "tuple[str, str, str] | None":
     """Probe the installed torch: ("hip"|"cuda"|"cpu", "+cuXXX tag or ''", version).
 
@@ -3263,6 +3288,12 @@ def install_python_stack() -> int:
             f"mlx-lm{MLX_LM_BAD_VERSION_EXCLUSION}",
             "mlx-vlm",
         )
+
+    # Capture the verbatim custom-pin baseline BEFORE step 3: the core package step can
+    # re-resolve and clobber a custom-pinned torch, and the step-2b verbatim pass below
+    # would otherwise record the already-clobbered trio as the baseline for a matching
+    # marker (so the final pass sees no drift and never reapplies the pin).
+    _capture_verbatim_baseline()
 
     # 3. Core packages: unsloth-zoo + unsloth (or custom package name)
     if skip_base:

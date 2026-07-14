@@ -313,6 +313,13 @@ _tauri_torch_index_family() {
         return
     fi
     _diag_url="${1:-}"
+    # Strip query/fragment BEFORE classifying: a token-authenticated pin like
+    # .../rocm7.2?token=SECRET would otherwise have its token echoed verbatim into the
+    # emitted [TAURI:DIAG] line (the family is ${_diag_url##*/}). Mirrors the credential
+    # stripping the marker/log paths already do; also lets .../cu128?token=x classify as
+    # cu128 instead of falling through to "auto".
+    _diag_url="${_diag_url%%\?*}"
+    _diag_url="${_diag_url%%#*}"
     case "$_diag_url" in
         */cu118) echo "cu118" ;;
         */cu124) echo "cu124" ;;
@@ -2261,9 +2268,13 @@ _expected_torch_flavor_tag() {
                 *)        echo "$_leaf" ;;
             esac
             ;;
-        cpu)        echo "cpu" ;;
-        rocm*|gfx*) echo "rocm" ;;
-        *)          echo "" ;;
+        cpu)          echo "cpu" ;;
+        # Digit-gate rocm to real pip families (rocm7.2, ...). A custom leaf that merely
+        # starts with rocm (a private rocm-current mirror, a Radeon find-links
+        # rocm-rel-7.2.1) is NOT a family: it must return "" (custom) so the custom-index
+        # companion bounds apply, matching _is_pip_rocm_family_leaf's ^rocm\d in Python.
+        rocm[0-9]*|gfx*) echo "rocm" ;;
+        *)            echo "" ;;
     esac
 }
 

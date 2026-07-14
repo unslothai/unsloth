@@ -22,6 +22,8 @@ _FUNC_FILE=$(mktemp)
     sed -n '/^_expected_torch_flavor_tag()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_torch_index_repairable()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_tauri_torch_index_family()/,/^}/p' "$INSTALL_SH"
 } > "$_FUNC_FILE"
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
@@ -70,6 +72,13 @@ assert_eq "fragment-bearing cpu" "cpu"  "$(_expected_torch_flavor_tag 'https://m
 assert_eq "cu-suffix custom leaf" ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128-private')"
 assert_eq "cu-alnum custom leaf"  ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128x')"
 assert_eq "bare cu digits stays"  "cu126" "$(_expected_torch_flavor_tag 'https://m/whl/cu126')"
+# A custom leaf that merely STARTS with rocm (a private rocm-current mirror, a Radeon
+# find-links rocm-rel-7.2.1) is NOT a pip rocm family: digit-gate to rocm[0-9]* so it
+# returns "" (custom) and the custom-index companion bounds apply. Real families
+# (rocm7.2) and gfx per-arch indexes stay "rocm".
+assert_eq "custom rocm-current"   ""    "$(_expected_torch_flavor_tag 'https://mirror/whl/rocm-current')"
+assert_eq "radeon rocm-rel leaf"  ""    "$(_expected_torch_flavor_tag 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1')"
+assert_eq "real rocm7.2 stays"    "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7.2')"
 
 echo "=== _torch_index_repairable ==="
 assert_eq "cu130 repairable"   "yes"   "$(_torch_index_repairable 'https://download.pytorch.org/whl/cu130')"
@@ -78,6 +87,22 @@ assert_eq "gfx repairable"     "yes"   "$(_torch_index_repairable 'https://repo.
 assert_eq "gfx1151 repairable" "yes"   "$(_torch_index_repairable 'https://repo.amd.com/rocm/whl/gfx1151/')"
 assert_eq "cpu NOT repairable" "no"    "$(_torch_index_repairable 'https://download.pytorch.org/whl/cpu')"
 assert_eq "unknown NOT repair" "no"    "$(_torch_index_repairable 'https://my.mirror/whl/simple')"
+
+echo "=== _tauri_torch_index_family (credential redaction) ==="
+# A token/fragment in the pinned URL must be stripped BEFORE classification so it is
+# never emitted into the [TAURI:DIAG] line. The family is the last path segment, which
+# would otherwise carry the query verbatim.
+SKIP_TORCH=false
+assert_eq "token stripped from rocm"  "rocm7.2" "$(_tauri_torch_index_family 'https://mirror/whl/rocm7.2?token=SECRET')"
+assert_eq "token-bearing cu classifies" "cu128" "$(_tauri_torch_index_family 'https://m/whl/cu128?token=x')"
+assert_eq "fragment stripped cpu"     "cpu"     "$(_tauri_torch_index_family 'https://m/whl/cpu#frag')"
+assert_eq "plain rocm7.2 unchanged"   "rocm7.2" "$(_tauri_torch_index_family 'https://download.pytorch.org/whl/rocm7.2')"
+# Regression guard: no secret token substring may survive in any classification.
+_leak=$(_tauri_torch_index_family 'https://mirror/whl/rocm7.2?token=SECRET')
+case "$_leak" in
+    *SECRET*|*token*) assert_eq "no token leak in family" "clean" "leaked:$_leak" ;;
+    *)                assert_eq "no token leak in family" "clean" "clean" ;;
+esac
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

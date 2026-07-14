@@ -1707,6 +1707,69 @@ class TestEnsureRocmTorchMarker:
                             stack_mod._ensure_verbatim_torch_index()
         mock_pip.assert_not_called()
 
+    # --- _capture_verbatim_baseline (pre-update baseline for custom pins) ------
+    def _capture(self, marker, flavor, snap = ("torch==2.10.0",)):
+        """Run _capture_verbatim_baseline for a custom pin, returning the resulting
+        module-level _VERBATIM_TRIO_SNAPSHOT."""
+        stack_mod._VERBATIM_TRIO_SNAPSHOT = None
+        if marker is None:
+            self._marker_path.unlink(missing_ok = True)
+        else:
+            self._seed(marker)
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MAC_INTEL", False):
+                with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
+                    with patch.object(stack_mod, "_installed_trio_snapshot", return_value = snap):
+                        with patch.dict(stack_mod.os.environ, env, clear = False):
+                            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                            stack_mod._capture_verbatim_baseline()
+        return stack_mod._VERBATIM_TRIO_SNAPSHOT
+
+    def test_capture_baseline_records_matching_custom_pin(self):
+        """A matching custom-pin marker + importable torch records the current trio as
+        the pre-update baseline so a later clobber is detectable."""
+        assert self._capture(
+            "https://mirror.local/simple", ("cpu", "", "2.10.0"), snap = ("torch==2.10.0+custom",)
+        ) == ("torch==2.10.0+custom",)
+
+    def test_capture_baseline_skips_when_not_applicable(self):
+        """No baseline for an absent/different marker (verbatim reinstalls + writes it)
+        or a broken torch (probe None) -- those are owned by _ensure_verbatim_torch_index."""
+        assert self._capture(None, ("cpu", "", "2.10.0")) is None
+        assert self._capture("https://mirror.local/other", ("cpu", "", "2.10.0")) is None
+        assert self._capture("https://mirror.local/simple", None) is None
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install")
+    def test_capture_baseline_lets_verbatim_detect_clobber(self, mock_pip):
+        """End to end: capture the pre-clobber baseline, then a base update swaps the
+        custom torch for a default trio; the step-2b verbatim pass now sees drift and
+        reapplies the pin. Without the baseline it would record the clobbered trio and
+        skip (round-11 P2)."""
+        self._seed("https://mirror.local/simple")
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/simple"}
+        snapshots = iter(
+            [
+                ("torch==2.10.0+custom",),  # _capture_verbatim_baseline (pre-clobber)
+                ("torch==2.13.0",),  # verbatim drift check (base update clobbered it)
+                ("torch==2.10.0+custom",),  # after the reapply reinstall
+            ]
+        )
+        with patch.object(stack_mod, "NO_TORCH", False):
+            with patch.object(stack_mod, "IS_MACOS", False):
+                with patch.object(stack_mod, "IS_MAC_INTEL", False):
+                    with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.13.0")):
+                        with patch.object(
+                            stack_mod, "_installed_trio_snapshot", side_effect = lambda: next(snapshots)
+                        ):
+                            with patch.dict(stack_mod.os.environ, env, clear = False):
+                                stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+                                stack_mod._capture_verbatim_baseline()
+                                stack_mod._ensure_verbatim_torch_index()
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/simple" in str(mock_pip.call_args)
+
     # --- _torch_flavor_matches_pin (shared by baseline + probe) ---------------
     def test_flavor_matches_pin_tristate(self):
         f = stack_mod._torch_flavor_matches_pin

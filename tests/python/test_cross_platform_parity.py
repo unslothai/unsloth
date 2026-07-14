@@ -776,6 +776,21 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "every update torch-ensure block"
         )
 
+    def test_stack_py_captures_verbatim_baseline_before_core_step(self):
+        """The verbatim custom-pin baseline must be captured BEFORE the core package step
+        (# 3), which can re-resolve and clobber a custom-pinned torch. If it ran after,
+        the step-2b verbatim pass would record the already-clobbered trio as the baseline
+        for a matching marker and the final pass would see no drift (round-11 P2)."""
+        text = STACK_PY.read_text(encoding = "utf-8")
+        cap_idx = text.find("_capture_verbatim_baseline()\n")
+        step3_idx = text.find("# 3. Core packages")
+        assert cap_idx != -1, "install_python_stack.py must call _capture_verbatim_baseline()"
+        assert step3_idx != -1, "the core package step (# 3) must exist"
+        assert cap_idx < step3_idx, (
+            "_capture_verbatim_baseline() must run BEFORE the core package step that can "
+            "clobber a custom-pinned torch, or the pre-clobber baseline is lost"
+        )
+
     def test_stack_py_final_repair_covers_windows_and_macos_arm(self):
         """The step-13 final torch repair runs the full cuda/rocm/cpu family sequence on
         Linux only, but a custom (unknown-family) pin also needs its verbatim drift
