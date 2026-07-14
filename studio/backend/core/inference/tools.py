@@ -2084,19 +2084,63 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # but ZipFile(name) reads.
                     if func.attr in _ARCHIVE_CTOR_NAMES and _builtin_open_writes(node):
                         return True
+                    # Enumerating a directory outside the sandbox reads host
+                    # filenames (and enables reading their contents) the direct
+                    # /etc/passwd checks would prompt for: Path('/etc').iterdir(),
+                    # os.scandir('/etc'), os.listdir('/home'), os.walk('/'). Gate
+                    # when the target dir folds to an absolute/tilde/sensitive path;
+                    # a relative dir (Path('.').iterdir(), os.scandir('data')) stays
+                    # safe, and an unresolved dynamic dir is left to other checks.
+                    _enum_dir = None
+                    if func.attr == "iterdir":
+                        _enum_dir = func.value
+                    elif (
+                        func.attr in ("scandir", "listdir", "walk")
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in os_aliases
+                        and node.args
+                    ):
+                        _enum_dir = node.args[0]
+                    if _enum_dir is not None:
+                        _folded_dir = _folded_path(
+                            _enum_dir, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                        )
+                        if isinstance(_folded_dir, str) and (
+                            _folded_dir.startswith("/")
+                            or _folded_dir.startswith("~")
+                            or _folded_is_sensitive(_folded_dir)
+                        ):
+                            return True
     except Exception:
         return True  # unexpected AST shape: fail closed
     return False
 
 
+# Cloud-metadata / link-local hosts (mirrors the sandbox SSRF blocklist): a
+# read-named HTTP MCP tool pointed at one (fetch_url
+# {"url": "http://169.254.169.254/..."}) reads instance credentials, so it asks.
+_MCP_METADATA_HOST_RE = re.compile(
+    r"169\.254\.\d{1,3}\.\d{1,3}|"
+    r"100\.100\.100\.\d{1,3}|"
+    r"fd00:ec2::254|"
+    r"metadata\.google\.internal|"
+    r"metadata\.tencentyun\.com|"
+    r"://metadata(?=[:/])",
+    re.IGNORECASE,
+)
+
+
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
-    """True if any string in an MCP call's arguments names a credential path or a
-    credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"})."""
+    """True if any string in an MCP call's arguments names a credential path, a
+    credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"}),
+    or a cloud-metadata host (fetch_url {"url": "http://169.254.169.254/..."})."""
 
     def walk(value) -> bool:
         if isinstance(value, str):
-            return _references_sensitive_path(value) or bool(
-                _AUTO_SENSITIVE_MCP_NOUN_RE.search(value)
+            return (
+                _references_sensitive_path(value)
+                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
+                or bool(_MCP_METADATA_HOST_RE.search(value))
             )
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())
@@ -2271,16 +2315,23 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"\blocation\s*\.\s*(?:assign|replace)\s*\(|"
     r"\bwindow\s*\.\s*open\s*\(|"
     r"\b(?:window\s*\.\s*)?location(?:\s*\.\s*href)?\s*=\s*[\"'`]?\s*(?:https?:|/)|"
+    # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
+    r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
+    r"sendBeacon|serviceWorker)[\"']\s*\]|"
     r"\bwss?://",
     re.IGNORECASE,
 )
+# Block comments can split an egress token (fetch/*x*/(...)); strip them before
+# matching. Line // comments are left alone -- stripping them would eat the // in
+# an https:// URL and hide a real load.
+_JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 
 def _render_html_reaches_network(arguments: dict) -> bool:
     code = arguments.get("code")
     if not isinstance(code, str):
         return False
-    return bool(_RENDER_HTML_NETWORK_RE.search(code))
+    return bool(_RENDER_HTML_NETWORK_RE.search(_JS_BLOCK_COMMENT_RE.sub("", code)))
 
 
 # Tools that are read-only regardless of their arguments, so auto mode never has

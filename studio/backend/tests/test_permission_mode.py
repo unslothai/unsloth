@@ -429,6 +429,19 @@ def test_terminal_classifier(command, unsafe):
             True,
         ),  # pathlib glob receiver+pattern resolves to /etc/passwd
         (
+            "from pathlib import Path\nfor p in Path('/etc').iterdir():\n    pass",
+            True,
+        ),  # enumerating an absolute system dir
+        ("import os\nos.scandir('/etc')", True),  # os.scandir over a sensitive root
+        ("import os\nos.listdir('/home')", True),  # os.listdir over a host dir
+        ("import os\nlist(os.walk('/'))", True),  # os.walk over the filesystem root
+        (
+            "from pathlib import Path\nlist(Path('.').iterdir())",
+            False,
+        ),  # relative dir enumeration stays safe
+        ("import os\nos.scandir('data')", False),  # relative scandir stays safe
+        ("import os\nos.listdir('subdir')", False),  # relative listdir stays safe
+        (
             "from pathlib import Path\nfor f in Path('data').glob('*.py'):\n    print(f)",
             False,
         ),  # benign pathlib glob stays safe
@@ -897,6 +910,10 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>window.location='https://x'</script>") is True
     assert rh("<script>location.reload()</script>") is False  # reload is not navigation
     assert rh("<script>history.back()</script>") is False
+    # Obfuscated egress: a block comment splitting fetch(, or bracket access.
+    assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
+    assert rh("<script>window['fetch']('https://example.com')</script>") is True
+    assert rh("<script>/* just a note */ var x = 1</script>") is False  # comment only
 
 
 def test_unknown_tools_fail_closed():
@@ -974,10 +991,20 @@ def test_mcp_classifier(tool, unsafe):
         ({"name": "OPENAI_API_KEY"}, True),  # explicit credential env-var read
         ({"name": "AWS_SECRET_ACCESS_KEY"}, True),
         ({"key": "DATABASE_PASSWORD"}, True),
+        (
+            {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"},
+            True,
+        ),  # AWS instance-metadata host
+        (
+            {"url": "http://metadata.google.internal/computeMetadata/v1/"},
+            True,
+        ),  # GCP metadata host
         ({"path": "notes.txt"}, False),  # ordinary path stays safe
         ({"path": "data/report.csv"}, False),
         ({"name": "PATH"}, False),  # a non-secret env var stays safe
         ({"name": "HOME"}, False),
+        ({"url": "https://example.com/api"}, False),  # ordinary URL stays safe
+        ({"url": "http://localhost:8080/health"}, False),  # localhost app stays safe
     ],
 )
 def test_mcp_sensitive_arguments(args, unsafe):
