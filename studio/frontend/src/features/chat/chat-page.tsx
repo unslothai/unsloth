@@ -2081,6 +2081,7 @@ export function ChatPage({
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
           config: meta?.config,
+          nativePathToken: meta?.nativePathToken,
           forceReload: isSameLoadedModel || undefined,
         };
         await stageOrLoad(selection);
@@ -2102,6 +2103,10 @@ export function ChatPage({
         source: "local",
         isLora: activeModelIsLora,
         ggufVariant: activeGgufVariant ?? undefined,
+        // A file-picked GGUF is reachable only via its token; without it the
+        // reload validates the display label as a repo and fails.
+        nativePathToken:
+          useChatRuntimeStore.getState().activeNativePathToken ?? undefined,
         isGguf: activeModelIsGguf,
         isDownloaded: true,
         config,

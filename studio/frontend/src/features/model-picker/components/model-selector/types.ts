@@ -39,6 +39,8 @@ export interface ModelSelectorChangeMeta {
   isGguf?: boolean;
   config?: PerModelConfig;
   forceReload?: boolean;
+  /** Native path token so an active-model reload can reopen a file-picked GGUF. */
+  nativePathToken?: string;
 }
 
 export interface ModelPickTarget {
