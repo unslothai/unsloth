@@ -598,9 +598,9 @@ class TestPinnedRocmLeafDigitParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which
         # anchors the rocm match so a suffixed custom leaf stays on the verbatim path.
-        assert "function Test-PipRocmFamilyLeaf" in text, (
-            "setup.ps1 must define Test-PipRocmFamilyLeaf (the exact rocm/gfx family gate)"
-        )
+        assert (
+            "function Test-PipRocmFamilyLeaf" in text
+        ), "setup.ps1 must define Test-PipRocmFamilyLeaf (the exact rocm/gfx family gate)"
         assert "'^rocm[0-9]+(\\.[0-9]+)?$'" in text, (
             "setup.ps1 Test-PipRocmFamilyLeaf must anchor the rocm match "
             "(^rocm[0-9]+(\\.[0-9]+)?$) so rocm7.2-private / rocm-current stay verbatim"
@@ -613,9 +613,9 @@ class TestPinnedRocmLeafDigitParity:
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
         # _torch_index_repairable routes rocm/gfx through the exact-match helper.
-        assert "_is_pip_rocm_family_leaf" in text, (
-            "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
-        )
+        assert (
+            "_is_pip_rocm_family_leaf" in text
+        ), "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
         assert re.search(
             r'case "\$1" in\n\s*gfx\*\) return 0', text
         ), "install.sh _is_pip_rocm_family_leaf must treat gfx* as a family"
