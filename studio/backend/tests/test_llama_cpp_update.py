@@ -522,6 +522,53 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
 
 
+def _run_start_update_to_completion():
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            return job
+        time.sleep(0.05)
+    return upd.get_update_status()["job"]
+
+
+def test_start_update_pinned_tag_mismatch_fails(monkeypatch, tmp_path):
+    # Installer stays on the pinned repo but produces a different tag -> it
+    # ignored the pin (the silent mismatch this pin exists to prevent). Fail loud.
+    monkeypatch.setattr(sys, "platform", "linux")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906")
+    _patch_installer_popen(
+        monkeypatch,
+        on_start = lambda cmd: _write_install(install_dir, "b9500", release_tag = "b9500-mix-deadbee"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "error", job
+    assert "b9601-mix-a0e2906" in (job["error"] or "")
+
+
+def test_start_update_pinned_reroute_to_other_repo_ok(monkeypatch, tmp_path):
+    # A Vulkan/Intel host reroutes fork->upstream and drops the pin, installing a
+    # different-repo tag. Legitimate: the pin check must not flag the repo switch.
+    monkeypatch.setattr(sys, "platform", "linux")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595", repo = "unslothai/llama.cpp")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906")
+    _patch_installer_popen(
+        monkeypatch,
+        on_start = lambda cmd: _write_install(install_dir, "b9601", repo = "ggml-org/llama.cpp"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
+
+
 def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9493")

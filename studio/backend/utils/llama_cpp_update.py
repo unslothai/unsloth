@@ -580,6 +580,16 @@ def _run_update(
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
 
+        # Pinned install must land on that exact release; a same-repo mismatch
+        # means the pin was ignored (Vulkan/Intel reroute to another repo is fine).
+        if (
+            pin_release_tag
+            and new_tag
+            and (new_marker or {}).get("published_repo") == repo
+            and new_tag != pin_release_tag
+        ):
+            raise RuntimeError(f"pinned release {pin_release_tag} but installer produced {new_tag}")
+
         with _job_lock:
             _job.update(
                 state = _JOB_SUCCESS,
