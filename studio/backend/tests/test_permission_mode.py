@@ -208,6 +208,12 @@ def _clear_pending():
         ("sort --files0-from=list.txt", True),  # reads an indirect file list
         ("sort --files0-from list.txt", True),  # separate-value form
         ("sort -u data.txt", False),  # ordinary sort stays read only
+        ("wc --files0-from=list", True),  # wc reads an indirect file list too
+        ("wc --files0-from list", True),
+        ("du --files0-from=list", True),  # du indirect file list
+        ("find -files0-from list", True),  # find primary reading a file list
+        ("wc file.txt", False),  # ordinary wc stays read only
+        ("wc -l data.txt", False),  # counting flag stays read only
         ("cat logs/app.log", False),  # ordinary relative read
         ("cat /r?n/secrets/hf_token", True),  # glob into a secret mount
         ("cat /var/r?n/secrets/db", True),
@@ -370,6 +376,17 @@ def test_terminal_classifier(command, unsafe):
         ("x = getattr(obj, 'name')\nprint(x)", False),  # getattr result not called
         ("__builtins__.exec('x=1')", True),  # __builtins__ dynamic exec
         ("f = globals()['open']\nf('out', 'w')", True),  # subscript alias write
+        (
+            "f = __builtins__.__dict__.get('open')\nf('out', 'w').write('x')",
+            True,
+        ),  # namespace .get lookup returns open
+        ("g = globals().get('open')\ng('out', 'w')", True),  # globals().get alias
+        ("e = vars(__builtins__).get('eval')\ne('1')", True),  # vars().get returns eval
+        ("d = {}\nd.get('x')", False),  # ordinary dict .get stays safe
+        (
+            "import os\nos.environ.get('PATH')",
+            False,
+        ),  # os.environ.get is not a dynamic namespace
         ("import builtins\nf = builtins.open\nf('out', 'w')", True),  # attribute alias write
         ("open('out', **{'mode': 'w'}).write('x')", True),  # kwargs splat mode
         ("name = 'passwd'\nopen(f'/etc/{name}').read()", True),  # dynamic /etc segment
@@ -854,6 +871,12 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script src='https://cdn/x.js'></script>") is True
     assert rh("<script>new XMLHttpRequest().open('GET','/x')</script>") is True
     assert rh("<img src='https://evil/pixel.png'>") is True
+    # Resource-loading forms beyond a direct fetch also reach the network.
+    assert rh("<style>body{background:url(https://evil/x.png)}</style>") is True
+    assert rh("<style>@import 'https://evil/x.css'</style>") is True
+    assert rh("<img srcset='https://evil/x.png 1x'>") is True
+    assert rh("<img src='/api/leak?d=1'>") is True  # root-relative resolves to origin
+    assert rh("<link rel=stylesheet href='//cdn/x.css'>") is True  # protocol-relative
 
 
 def test_unknown_tools_fail_closed():

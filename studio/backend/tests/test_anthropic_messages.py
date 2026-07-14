@@ -1820,6 +1820,33 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+    def test_render_html_gated_for_server_tools(self, monkeypatch):
+        # render_html is no longer unconditionally safe: a networked canvas prompts
+        # in auto and this channel cannot present that gate, so selecting it under
+        # ask/auto/omitted rejects like terminal/python; off/full (and an explicit
+        # confirm opt-out) run it.
+        rh = {"enable_tools": True, "enabled_tools": ["render_html"]}
+        for mode in ("ask", "auto", None):
+            backend = _mock_backend(monkeypatch)
+            fields = dict(rh)
+            if mode is not None:
+                fields["permission_mode"] = mode
+            payload = _basic_payload(**fields)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert "no confirmation channel" in exc.value.detail["error"]["message"]
+            assert backend.calls == []
+        for extra in (
+            {"permission_mode": "off"},
+            {"permission_mode": "full"},
+            {"confirm_tool_calls": False},
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(**{**rh, **extra})
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
     def test_permission_mode_rejected_before_auto_switch(self, monkeypatch):
         # The unsupported-mode rejection must run before _maybe_auto_switch_model,
         # so an invalid confirm-gated request never evicts the resident model

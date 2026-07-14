@@ -422,6 +422,11 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     # printf -v NAME assigns to a shell var, so `printf -v PATH %s .; ls` runs
     # ./ls from the workdir.
     "printf": frozenset({"-v"}),
+    # wc/du/find --files0-from=F read the NUL-separated list of input paths named
+    # in F, so a crafted list reads arbitrary host files past the literal path /
+    # root checks, like sort --files0-from. find spells it -files0-from (a primary).
+    "wc": frozenset({"--files0-from"}),
+    "du": frozenset({"--files0-from"}),
     "find": frozenset(
         {
             "-exec",
@@ -433,6 +438,7 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
             "-fprint0",
             "-fprintf",
             "-fls",
+            "-files0-from",
         }
     ),
     # fd -x/--exec/-X/--exec-batch run a command per result;
@@ -1572,6 +1578,25 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # invoker is still checked; the write-callable gate keeps map(len, ...) safe.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
 
+    def _is_dynamic_namespace(node) -> bool:
+        # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return
+        # open/eval/a mutator: globals()/locals()/vars(...), any X.__dict__,
+        # __builtins__, sys.modules. Looking a name up through one is as dynamic as
+        # getattr, so a value fetched from it fails closed.
+        if isinstance(node, ast.Attribute):
+            if node.attr == "__dict__":
+                return True
+            return (
+                node.attr == "modules"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "sys"
+            )
+        if isinstance(node, ast.Name):
+            return node.id in builtins_aliases
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id in ("globals", "locals", "vars")
+        return False
+
     def _methodcaller_writes(call) -> bool:
         # operator.methodcaller("write_text", ...) / methodcaller(name): unsafe
         # when the method name is a known writer/mutator, or non-constant (cannot
@@ -1758,6 +1783,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 and value.func.id in getattr_aliases
             ):
                 dynamic_aliases.update(targets)  # rm = getattr(os, "remove") / g(...)
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr in ("get", "pop", "setdefault")
+                and _is_dynamic_namespace(value.func.value)
+            ):
+                # f = __builtins__.__dict__.get("open") / globals().get("open"):
+                # a namespace lookup can return open/eval, so poison like getattr.
+                dynamic_aliases.update(targets)
             elif (
                 isinstance(value, ast.Call)
                 and (
@@ -2175,11 +2209,14 @@ def _mcp_arguments_mutate(arguments) -> bool:
 # so auto mode never has to pause them (their safety needs no argument scan).
 # render_html is NOT unconditionally safe: it runs arbitrary HTML/JS in the
 # canvas preview frame. A static canvas (charts, layout, inline SVG) never
-# reaches the network, but code that calls out (fetch/XHR/WebSocket/EventSource/
-# sendBeacon or a remote <script src>) can exfiltrate or fetch under the
+# reaches the network, but code that calls out can exfiltrate or fetch under the
 # preview's CSP when artifact network access is enabled, so those ask; a canvas
-# with no network construct still auto-runs. The w3.org SVG/XHTML namespace URL
-# lives in xmlns=, not src=/href=, so it is not matched.
+# with no network construct still auto-runs. Matches JS egress APIs, a remote or
+# root-relative <script src>/src=/href=/srcset, a CSS url()/@import that loads a
+# resource, and ws(s) URLs. A leading "/" covers both //host (protocol-relative)
+# and /path (root-relative, which the CSP resolves against the frame origin); a
+# "./x" or bare relative ref and a url(#id)/data: ref are not matched, so an
+# inline-SVG canvas (whose w3.org namespace lives in xmlns=) stays safe.
 _RENDER_HTML_NETWORK_RE = re.compile(
     r"\bfetch\s*\(|"
     r"XMLHttpRequest|"
@@ -2188,8 +2225,10 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"\bsendBeacon\b|"
     r"\bimportScripts\b|"
     r"navigator\s*\.\s*serviceWorker|"
+    r"@import|"
+    r"url\(\s*[\"']?\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
-    r"\b(?:src|href)\s*=\s*[\"']?\s*(?:https?:|//)|"
+    r"\b(?:src|href|srcset)\s*=\s*[\"']?\s*(?:https?:|/)|"
     r"\bwss?://",
     re.IGNORECASE,
 )

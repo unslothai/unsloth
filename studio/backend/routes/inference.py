@@ -11355,9 +11355,11 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 }
 # Server tools that never need a confirmation prompt (read-only / non code-
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
-# Any other selected tool (terminal, python) can require the gate this channel
-# has no way to present, so an omitted permission_mode ("ask") only asks then.
-_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "render_html"})
+# Any other selected tool (terminal, python, render_html) can require the gate
+# this channel has no way to present, so an omitted permission_mode ("ask") only
+# asks then. render_html is excluded because a networked canvas prompts in auto,
+# and this channel invokes the loop without confirm; auto/ask reject, off/full run.
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
 
 
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
@@ -11623,8 +11625,9 @@ async def anthropic_messages(
     # mixed-tool checks above. ask always wants a per-call pause this passthrough
     # cannot offer, so it 400s whenever server tools are selected. auto only needs
     # the gate for an unsafe call, so (like the omitted default) it runs for a
-    # safe-only selection (web_search/RAG/render) and 400s only when a gate-needing
-    # local terminal/python tool is selected. Rejecting must happen before the
+    # safe-only selection (web_search/RAG) and 400s when a gate-needing tool is
+    # selected (local terminal/python, or render_html whose networked canvas
+    # prompts and cannot be gated on this channel). Rejecting must happen before the
     # switch so an invalid request never evicts the resident model; it is
     # determined from the requested tools alone (backend tool support is only known
     # post-switch); an image request can never take the server-tool path, so it is
