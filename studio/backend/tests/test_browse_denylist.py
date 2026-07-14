@@ -317,17 +317,22 @@ def test_hub_add_scan_folder_rejects_filesystem_root(monkeypatch):
         (r"\\server\share", ntpath, False),
         (r"\\nas\models", ntpath, False),
         ("//server/share", ntpath, False),
-        # Device / extended-length drive roots -> still local roots (rejected),
-        # so \\?\C:\ can't slip past the guard as if it were a share root.
+        # Device / extended-length volume roots -> still local roots (rejected),
+        # so neither \\?\C:\ nor a drive-letter-less \\?\Volume{GUID}\ can slip
+        # past the guard as if it were a share root.
         (r"\\?\C:" + "\\", ntpath, True),
         (r"\\.\C:" + "\\", ntpath, True),
         (r"\\?\C:", ntpath, True),
         (r"\\.\C:", ntpath, True),
+        (r"\\?\Volume{2f8e6d31-0000-0000-0000-100000000000}" + "\\", ntpath, True),
+        (r"\\.\Volume{2f8e6d31-0000-0000-0000-100000000000}", ntpath, True),
         # Device-namespace UNC share root -> stays registerable (False).
         (r"\\?\UNC\server\share", ntpath, False),
-        # Non-root paths are never a filesystem root (False).
+        # Non-root paths (incl. deep device / extended-length) -> not a root (False).
         ("C:\\Models", ntpath, False),
         (r"\\server\share\models", ntpath, False),
+        (r"\\?\C:\Users\me\models", ntpath, False),
+        (r"\\?\Volume{2f8e6d31-0000-0000-0000-100000000000}\models", ntpath, False),
         ("/home/user", posixpath, False),
     ],
 )
