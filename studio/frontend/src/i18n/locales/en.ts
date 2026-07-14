@@ -168,6 +168,9 @@ export const en = {
         sectionTitle: "Dictation dictionary",
         sectionDescription:
           "Apply the spelling entered here when dictation recognizes the same words or phrase",
+        manageLabel: "Custom spellings",
+        manage: "Manage",
+        backToVoice: "Back to Voice",
         addEntry: "Add entry",
       },
       recents: {

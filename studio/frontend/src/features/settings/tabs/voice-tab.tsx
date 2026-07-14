@@ -10,7 +10,6 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -50,15 +49,11 @@ import { useDebouncedValue } from "@/hooks";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import {
-  Delete02Icon,
-  PlusSignIcon,
-  Search01Icon,
-  VolumeHighIcon,
-} from "@hugeicons/core-free-icons";
+import { Search01Icon, VolumeHighIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DictationDictionaryView } from "../components/dictation-dictionary-view";
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -486,17 +481,6 @@ export function VoiceTab() {
   const setDictationLanguage = useVoiceSettingsStore(
     (s) => s.setDictationLanguage,
   );
-  const dictionary = useVoiceSettingsStore((s) => s.dictionary);
-  const addDictionaryEntry = useVoiceSettingsStore((s) => s.addDictionaryEntry);
-  const updateDictionaryEntry = useVoiceSettingsStore(
-    (s) => s.updateDictionaryEntry,
-  );
-  const commitDictionaryEntry = useVoiceSettingsStore(
-    (s) => s.commitDictionaryEntry,
-  );
-  const removeDictionaryEntry = useVoiceSettingsStore(
-    (s) => s.removeDictionaryEntry,
-  );
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   const setTtsEnabled = useVoiceSettingsStore((s) => s.setTtsEnabled);
   const ttsEngine = useVoiceSettingsStore((s) => s.ttsEngine);
@@ -516,9 +500,10 @@ export function VoiceTab() {
     () => curateSystemVoices(rawVoices, ttsVoiceURI, dictationLanguage),
     [rawVoices, ttsVoiceURI, dictationLanguage],
   );
-  const [newEntry, setNewEntry] = useState("");
   const [previewing, setPreviewing] = useState(false);
-  const [subpage, setSubpage] = useState<"main" | "recents">("main");
+  const [subpage, setSubpage] = useState<"main" | "recents" | "dictionary">(
+    "main",
+  );
   const [selectedDictationId, setSelectedDictationId] = useState<string | null>(
     null,
   );
@@ -740,13 +725,6 @@ export function VoiceTab() {
   // Keep an item for an unplugged saved mic so the value stays visible.
   const knownMic = devices.some((d) => d.deviceId === micDeviceId);
 
-  const handleAddEntry = () => {
-    const trimmed = newEntry.trim();
-    if (!trimmed) return;
-    addDictionaryEntry(trimmed);
-    setNewEntry("");
-  };
-
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
   // Mirrors `previewing` so unmount cleanup can tell whether this tab owns
@@ -857,6 +835,10 @@ export function VoiceTab() {
         }}
       />
     );
+  }
+
+  if (subpage === "dictionary") {
+    return <DictationDictionaryView onBack={() => setSubpage("main")} />;
   }
 
   return (
@@ -1134,62 +1116,19 @@ export function VoiceTab() {
         )}
       </SettingsSection>
 
-      <SettingsSection
-        title={t("settings.voice.dictionary.sectionTitle")}
-        description={t("settings.voice.dictionary.sectionDescription")}
-      >
-        {dictionary.map((entry, index) => (
-          <div
-            // biome-ignore lint/suspicious/noArrayIndexKey: entries are editable in place
-            key={index}
-            className="flex items-center gap-2 py-1.5"
-          >
-            <Input
-              value={entry}
-              onChange={(e) => updateDictionaryEntry(index, e.target.value)}
-              onBlur={() => commitDictionaryEntry(index)}
-              className="h-8 flex-1 text-sm"
-              aria-label={`Dictionary entry ${index + 1}`}
-            />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-              // Keep the click from blurring an empty input first, which would
-              // commit-splice this row and make onClick delete the next one.
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => removeDictionaryEntry(index)}
-              aria-label={`Remove dictionary entry ${index + 1}`}
-            >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-            </Button>
-          </div>
-        ))}
-        <div className="flex items-center gap-2 py-1.5">
-          <Input
-            value={newEntry}
-            onChange={(e) => setNewEntry(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAddEntry();
-              }
-            }}
-            placeholder="Jane Doe"
-            className="h-8 flex-1 text-sm"
-            aria-label="New dictionary entry"
-          />
+      <SettingsSection title={t("settings.voice.dictionary.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.voice.dictionary.manageLabel")}
+          description={t("settings.voice.dictionary.sectionDescription")}
+        >
           <Button
             variant="outline"
             size="sm"
-            className="shrink-0"
-            onClick={handleAddEntry}
-            disabled={!newEntry.trim()}
+            onClick={() => setSubpage("dictionary")}
           >
-            <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
-            {t("settings.voice.dictionary.addEntry")}
+            {t("settings.voice.dictionary.manage")}
           </Button>
-        </div>
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.voice.recents.sectionTitle")}>
