@@ -9,13 +9,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+URL_SEGMENT_ID_PATTERN = r"^[^/\\]+$"
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 
 
 class RecipeCreateRequest(StrictModel):
-    id: str = Field(min_length = 1, max_length = 128)
+    id: str = Field(min_length = 1, max_length = 128, pattern = URL_SEGMENT_ID_PATTERN)
     name: str = Field(min_length = 1, max_length = 200)
     payload: dict[str, Any]
     learningRecipeId: str | None = Field(default = None, max_length = 128)
@@ -24,7 +25,9 @@ class RecipeCreateRequest(StrictModel):
 
 
 class RecipeUpdateRequest(StrictModel):
-    id: str | None = Field(default = None, min_length = 1, max_length = 128)
+    id: str | None = Field(
+        default = None, min_length = 1, max_length = 128, pattern = URL_SEGMENT_ID_PATTERN
+    )
     name: str = Field(min_length = 1, max_length = 200)
     payload: dict[str, Any]
     learningRecipeId: str | None = Field(default = None, max_length = 128)
@@ -50,8 +53,12 @@ class RecipeListResponse(StrictModel):
 
 
 class ExecutionUpsertRequest(StrictModel):
-    id: str | None = Field(default = None, min_length = 1, max_length = 128)
-    recipeId: str | None = Field(default = None, min_length = 1, max_length = 128)
+    id: str | None = Field(
+        default = None, min_length = 1, max_length = 128, pattern = URL_SEGMENT_ID_PATTERN
+    )
+    recipeId: str | None = Field(
+        default = None, min_length = 1, max_length = 128, pattern = URL_SEGMENT_ID_PATTERN
+    )
     revision: int | None = Field(default = None, ge = 0)
     jobId: str | None = Field(default = None, max_length = 128)
     kind: str | None = None
@@ -86,6 +93,7 @@ class ExecutionRecord(ExecutionUpsertRequest):
 class ExecutionListResponse(StrictModel):
     executions: list[ExecutionRecord]
     nextCursor: str | None = None
+    resumable: ExecutionRecord | None = None
 
 
 class PortableTrainingConfig(StrictModel):
@@ -98,7 +106,7 @@ class PortableTrainingConfig(StrictModel):
         warmup_steps: int
         max_steps: int
         save_steps: int
-        eval_steps: int
+        eval_steps: int | float
         weight_decay: int | float
         random_seed: int
         packing: bool
@@ -125,14 +133,16 @@ class PortableTrainingConfig(StrictModel):
 
 
 class TrainingPresetCreateRequest(StrictModel):
-    id: str = Field(min_length = 1, max_length = 128)
+    id: str = Field(min_length = 1, max_length = 128, pattern = URL_SEGMENT_ID_PATTERN)
     name: str = Field(min_length = 1, max_length = 200)
     config: PortableTrainingConfig
     createdAt: int | None = Field(default = None, ge = 0)
 
 
 class TrainingPresetUpdateRequest(StrictModel):
-    id: str | None = Field(default = None, min_length = 1, max_length = 128)
+    id: str | None = Field(
+        default = None, min_length = 1, max_length = 128, pattern = URL_SEGMENT_ID_PATTERN
+    )
     name: str = Field(min_length = 1, max_length = 200)
     config: PortableTrainingConfig
     revision: int = Field(ge = 1)

@@ -735,6 +735,7 @@ from utils.upload_limits import (  # noqa: E402
 )
 
 _BODY_PROTECTED_PREFIXES = (
+    "/api/user-assets",
     "/v1/chat/completions",
     "/v1/completions",
     "/p/",

@@ -9,6 +9,19 @@ import {
 
 const DEFAULT_BASE = "/api/data-recipe";
 
+export class RecipeApiError extends Error {
+  readonly status: number;
+
+  constructor(
+    status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RecipeApiError";
+    this.status = status;
+  }
+}
+
 export const DATA_DESIGNER_API_BASE =
   import.meta.env.VITE_DATA_DESIGNER_API ?? DEFAULT_BASE;
 
@@ -243,7 +256,7 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
 async function getJson<T>(path: string): Promise<T> {
   const response = await authFetch(`${DATA_DESIGNER_API_BASE}${path}`);
   if (!response.ok) {
-    throw new Error(await parseErrorResponse(response));
+    throw new RecipeApiError(response.status, await parseErrorResponse(response));
   }
   return response.json();
 }

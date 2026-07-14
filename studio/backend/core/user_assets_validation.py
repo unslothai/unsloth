@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias, TypeVar, overload
@@ -19,14 +20,18 @@ from typing import Any, TypeAlias, TypeVar, overload
 
 MAX_ID_CHARS = 128
 MAX_NAME_CHARS = 200
-MAX_RECIPE_JSON_BYTES = 1024 * 1024
-MAX_TRAINING_CONFIG_JSON_BYTES = 64 * 1024
-MAX_EXECUTION_JSON_BYTES = 256 * 1024
+_POLICY_PATH = Path(__file__).resolve().parents[2] / "user_assets_persistence_policy.json"
+with _POLICY_PATH.open(encoding = "utf-8") as _policy_file:
+    _PERSISTENCE_POLICY = json.load(_policy_file)
+
+MAX_RECIPE_JSON_BYTES = int(_PERSISTENCE_POLICY["maxRecipeJsonBytes"])
+MAX_TRAINING_CONFIG_JSON_BYTES = int(_PERSISTENCE_POLICY["maxTrainingConfigJsonBytes"])
+MAX_EXECUTION_JSON_BYTES = int(_PERSISTENCE_POLICY["maxExecutionJsonBytes"])
 MAX_EXECUTION_ERROR_BYTES = 4 * 1024
 MAX_COMPLETED_COLUMNS = 1000
 MAX_LEGACY_RECIPES = 100
 MAX_LEGACY_EXECUTIONS = 500
-MAX_LEGACY_BATCH_JSON_BYTES = 8 * 1024 * 1024
+MAX_LEGACY_BATCH_JSON_BYTES = int(_PERSISTENCE_POLICY["maxLegacyBatchJsonBytes"])
 
 EXECUTION_METADATA_FIELDS = frozenset(
     {
@@ -53,24 +58,8 @@ EXECUTION_METADATA_FIELDS = frozenset(
     }
 )
 
-_DENIED_SECRET_KEYS = frozenset(
-    {
-        "api_key",
-        "hf_token",
-        "github_token",
-        "wandb_token",
-        "access_token",
-        "refresh_token",
-        "authorization",
-        "cookie",
-        "set_cookie",
-        "password",
-        "secret",
-        "aws_secret_access_key",
-        "s3_secret_access_key",
-    }
-)
-_SAFE_SECRET_LOOKING_KEYS = frozenset({"api_key_env"})
+_DENIED_SECRET_KEYS = frozenset(_PERSISTENCE_POLICY["deniedSecretKeys"])
+_SAFE_SECRET_LOOKING_KEYS = frozenset(_PERSISTENCE_POLICY["safeSecretLookingKeys"])
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _FIRST_CAMEL_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _SECOND_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
@@ -357,6 +346,11 @@ def validate_id(value: Any, field_name: str = "id") -> str:
         raise UserAssetValidationError(
             "invalid_id",
             f"{field_name} must be a non-empty string of at most {MAX_ID_CHARS} characters",
+        )
+    if "/" in value or "\\" in value:
+        raise UserAssetValidationError(
+            "invalid_id",
+            f"{field_name} must be safe to use as one URL path segment",
         )
     return value
 

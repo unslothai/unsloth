@@ -15,7 +15,7 @@ import { useRecipeStudioStore } from "../stores/recipe-studio";
 import { type RecipeSnapshot, importRecipePayload } from "../utils/import";
 import type { RecipePayloadResult } from "../utils/payload/types";
 
-type SaveTone = "success" | "error";
+type SaveTone = "success" | "warning" | "error";
 
 type PersistRecipeFn = (input: {
   id: string | null;
@@ -25,7 +25,9 @@ type PersistRecipeFn = (input: {
 }) => Promise<{
   id: string;
   updatedAt: number;
-  revision: number;
+    revision: number;
+    payload: RecipePayloadResult["payload"];
+    removedCredentialPaths: string[];
 }>;
 
 type ReloadedRecipe = {
@@ -255,6 +257,10 @@ export function useRecipePersistence({
   const [conflict, setConflict] = useState<RecipePersistenceConflict | null>(
     null,
   );
+  const [credentialProjection, setCredentialProjection] = useState<{
+    paths: string[];
+    editorSignature: string;
+  } | null>(null);
 
   const normalizedWorkflowName = useMemo(
     () => normalizeNonEmptyName(workflowName, "Unnamed"),
@@ -267,9 +273,18 @@ export function useRecipePersistence({
   );
   const isDirty =
     savedSignature.length > 0 && currentSignature !== savedSignature;
-  const saveTone: SaveTone =
-    !isDirty && Boolean(lastSavedAt) ? "success" : "error";
-  const savedAtLabel = formatSavedLabel(lastSavedAt);
+  const activeCredentialProjection =
+    credentialProjection?.editorSignature === currentSignature
+      ? credentialProjection
+      : null;
+  const saveTone: SaveTone = activeCredentialProjection
+    ? "warning"
+    : !isDirty && Boolean(lastSavedAt)
+      ? "success"
+      : "error";
+  const savedAtLabel = activeCredentialProjection
+    ? `Saved without ${activeCredentialProjection.paths.length} credential field${activeCredentialProjection.paths.length === 1 ? "" : "s"}. Re-enter after reload.`
+    : formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
     setInitialRecipeReady(false);
@@ -279,6 +294,7 @@ export function useRecipePersistence({
     setLastSavedAt(initialSavedAt);
     setCurrentRevision(initialRevision);
     setConflict(null);
+    setCredentialProjection(null);
     setCopied(false);
 
     const parsed = importRecipePayload(JSON.stringify(initialPayload), {
@@ -323,8 +339,16 @@ export function useRecipePersistence({
       });
       setLastSavedAt(result.updatedAt);
       setCurrentRevision(result.revision);
-      setSavedSignature(buildSignature(nextName, currentPayload));
-      drainQueuedUploadCleanups(currentPayload);
+      setSavedSignature(buildSignature(nextName, result.payload));
+      setCredentialProjection(
+        result.removedCredentialPaths.length > 0
+          ? {
+              paths: result.removedCredentialPaths,
+              editorSignature: currentSignature,
+            }
+          : null,
+      );
+      drainQueuedUploadCleanups(result.payload);
     } catch (error) {
       console.error("Save recipe failed:", error);
       if (error instanceof UserAssetApiError) {
@@ -344,6 +368,7 @@ export function useRecipePersistence({
   }, [
     currentPayload,
     currentRevision,
+    currentSignature,
     conflict,
     onPersistRecipe,
     recipeId,
@@ -352,14 +377,14 @@ export function useRecipePersistence({
   ]);
 
   useEffect(() => {
-    if (!isDirty || saveLoading || conflict) {
+    if (!isDirty || saveLoading || conflict || activeCredentialProjection) {
       return;
     }
     const timeoutId = window.setTimeout(() => {
       void persistRecipe();
     }, 800);
     return () => window.clearTimeout(timeoutId);
-  }, [conflict, isDirty, persistRecipe, saveLoading]);
+  }, [activeCredentialProjection, conflict, isDirty, persistRecipe, saveLoading]);
 
   const reloadServerRecipe = useCallback(async (): Promise<void> => {
     if (saveLoading) return;
@@ -383,6 +408,7 @@ export function useRecipePersistence({
       setCurrentRevision(record.revision);
       setSavedSignature(buildSignature(nextName, getCurrentPayloadFromStore()));
       setConflict(null);
+      setCredentialProjection(null);
     } catch (error) {
       toastError(
         "Reload failed",
@@ -411,9 +437,17 @@ export function useRecipePersistence({
       });
       setLastSavedAt(result.updatedAt);
       setCurrentRevision(result.revision);
-      setSavedSignature(buildSignature(nextName, currentPayload));
+      setSavedSignature(buildSignature(nextName, result.payload));
+      setCredentialProjection(
+        result.removedCredentialPaths.length > 0
+          ? {
+              paths: result.removedCredentialPaths,
+              editorSignature: currentSignature,
+            }
+          : null,
+      );
       setConflict(null);
-      drainQueuedUploadCleanups(currentPayload);
+      drainQueuedUploadCleanups(result.payload);
     } catch (error) {
       toastError(
         "Save failed",
@@ -422,7 +456,7 @@ export function useRecipePersistence({
     } finally {
       setSaveLoading(false);
     }
-  }, [currentPayload, onPersistRecipe, saveLoading, workflowName]);
+  }, [currentPayload, currentSignature, onPersistRecipe, saveLoading, workflowName]);
 
   // Drain queued cleanups even when autosave is skipped: a net-zero edit (add
   // then remove an unstructured seed before the 800ms debounce) keeps isDirty

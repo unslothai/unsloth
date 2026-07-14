@@ -7,6 +7,7 @@ export { authFetch, logout, refreshSession } from "./api";
 export {
   clearAuthTokens,
   getAuthToken,
+  getAuthSubjectKey,
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,

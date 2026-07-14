@@ -12,7 +12,13 @@ import {
 } from "@/components/ui/dialog";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
-import { type ReactElement, useEffect, useMemo, useState } from "react";
+import {
+  type ReactElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   type LegacyImportItemResult,
   type LegacyImportResult,
@@ -20,10 +26,10 @@ import {
   bootstrapUserAssets,
   importLegacyUserAssets,
 } from "./api";
+import { MAX_LEGACY_BATCH_JSON_BYTES } from "./persistence-policy";
 
 const SOURCE = "recipe-indexeddb-v1";
 const LEGACY_PAGE_SIZE = 100;
-const MAX_LEGACY_BATCH_BYTES = 8 * 1024 * 1024;
 const MAX_VISIBLE_DETAILS = 100;
 const utf8Encoder = new TextEncoder();
 
@@ -56,33 +62,71 @@ function withoutRevision(recipe: LegacyRecipe) {
   return { ...recipe, revision: undefined };
 }
 
-function splitByLegacyBatchBytes<T extends object>(
+type LegacyBatchPlan<T> = {
+  batches: T[][];
+  rejected: LegacyImportItemResult[];
+};
+
+function splitByLegacyBatchBytes<T extends { id: string }>(
   items: T[],
   kind: "recipes" | "executions",
-): T[][] {
+  confirmSubject: string,
+): LegacyBatchPlan<T> {
   const batches: T[][] = [];
+  const rejected: LegacyImportItemResult[] = [];
   let current: T[] = [];
-  const byteLength = (values: T[]): number =>
-    utf8Encoder.encode(
-      JSON.stringify({
-        recipes: kind === "recipes" ? values : [],
-        executions: kind === "executions" ? values : [],
-      }),
-    ).byteLength;
+  const emptyEnvelope = {
+    source: SOURCE,
+    confirmSubject,
+    recipes: [] as T[],
+    executions: [] as T[],
+  };
+  const baseBytes = utf8Encoder.encode(JSON.stringify(emptyEnvelope)).byteLength;
+  let currentBytes = baseBytes;
 
   for (const item of items) {
-    const candidate = [...current, item];
-    if (current.length > 0 && byteLength(candidate) > MAX_LEGACY_BATCH_BYTES) {
+    const itemBytes = utf8Encoder.encode(JSON.stringify(item)).byteLength;
+    const addedBytes = itemBytes + (current.length > 0 ? 1 : 0);
+    if (
+      current.length === 0 &&
+      currentBytes + addedBytes > MAX_LEGACY_BATCH_JSON_BYTES
+    ) {
+      rejected.push({
+        id: item.id,
+        outcome: "rejected",
+        reason: "legacy_batch_limit_exceeded",
+      });
+      continue;
+    }
+    if (
+      current.length > 0 &&
+      currentBytes + addedBytes > MAX_LEGACY_BATCH_JSON_BYTES
+    ) {
       batches.push(current);
       current = [item];
+      currentBytes = baseBytes + itemBytes;
     } else {
-      current = candidate;
+      current.push(item);
+      currentBytes += addedBytes;
     }
   }
   if (current.length > 0) {
     batches.push(current);
   }
-  return batches;
+  for (const batch of batches) {
+    const envelope = {
+      ...emptyEnvelope,
+      recipes: kind === "recipes" ? batch : [],
+      executions: kind === "executions" ? batch : [],
+    };
+    if (
+      utf8Encoder.encode(JSON.stringify(envelope)).byteLength >
+      MAX_LEGACY_BATCH_JSON_BYTES
+    ) {
+      throw new Error("Legacy import batch accounting exceeded its byte limit.");
+    }
+  }
+  return { batches, rejected };
 }
 
 async function scanUncoveredCount<T extends { id: string }>(
@@ -151,6 +195,8 @@ export function LegacyImportCoordinator({
   const [result, setResult] = useState<LegacyImportResult | null>(null);
   const [open, setOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const importAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -223,6 +269,7 @@ export function LegacyImportCoordinator({
   async function importRecipePages(
     aggregate: LegacyImportResult,
     bootstrap: UserAssetsBootstrap,
+    signal: AbortSignal,
   ): Promise<void> {
     const importedIds = new Set(bootstrap.importLedger.recipes);
     let cursor: string | null = null;
@@ -231,13 +278,19 @@ export function LegacyImportCoordinator({
       const recipes = page.items
         .filter((item) => !importedIds.has(item.id))
         .map(withoutRevision);
-      for (const recipeBatch of splitByLegacyBatchBytes(recipes, "recipes")) {
+      const plan = splitByLegacyBatchBytes(
+        recipes,
+        "recipes",
+        bootstrap.subject,
+      );
+      addEffectiveResults(aggregate, "recipes", plan.rejected);
+      for (const recipeBatch of plan.batches) {
         const batch = await importLegacyUserAssets({
           source: SOURCE,
           confirmSubject: bootstrap.subject,
           recipes: recipeBatch,
           executions: [],
-        });
+        }, { signal });
         addEffectiveResults(aggregate, "recipes", batch.recipes);
       }
       if (cursor !== null && page.nextCursor === cursor)
@@ -249,22 +302,26 @@ export function LegacyImportCoordinator({
   async function importExecutionPages(
     aggregate: LegacyImportResult,
     bootstrap: UserAssetsBootstrap,
+    signal: AbortSignal,
   ): Promise<void> {
     const importedIds = new Set(bootstrap.importLedger.executions);
     let cursor: string | null = null;
     do {
       const page = await readExecutions(cursor, LEGACY_PAGE_SIZE);
       const executions = page.items.filter((item) => !importedIds.has(item.id));
-      for (const executionBatch of splitByLegacyBatchBytes(
+      const plan = splitByLegacyBatchBytes(
         executions,
         "executions",
-      )) {
+        bootstrap.subject,
+      );
+      addEffectiveResults(aggregate, "executions", plan.rejected);
+      for (const executionBatch of plan.batches) {
         const batch = await importLegacyUserAssets({
           source: SOURCE,
           confirmSubject: bootstrap.subject,
           recipes: [],
           executions: executionBatch,
-        });
+        }, { signal });
         const retryIds = new Set(
           batch.executions
             .filter((item) => item.outcome === "missing_parent" && item.id)
@@ -277,7 +334,7 @@ export function LegacyImportCoordinator({
             confirmSubject: bootstrap.subject,
             recipes: [],
             executions: executionBatch.filter((item) => retryIds.has(item.id)),
-          });
+          }, { signal });
           effective = effectiveRetryResults(batch.executions, retry.executions);
         }
         addEffectiveResults(aggregate, "executions", effective);
@@ -291,10 +348,13 @@ export function LegacyImportCoordinator({
   async function handleImport(): Promise<void> {
     if (!pending || importing) return;
     setImporting(true);
+    setImportError(null);
+    const controller = new AbortController();
+    importAbort.current = controller;
     try {
       const nextResult = createAggregate();
-      await importRecipePages(nextResult, pending.bootstrap);
-      await importExecutionPages(nextResult, pending.bootstrap);
+      await importRecipePages(nextResult, pending.bootstrap, controller.signal);
+      await importExecutionPages(nextResult, pending.bootstrap, controller.signal);
       setResult(nextResult);
       onImported();
       toastSuccess(t("dataRecipes.import.complete"));
@@ -304,12 +364,14 @@ export function LegacyImportCoordinator({
           ? (error.detail as { code?: unknown })
           : null;
       const code = typeof detail?.code === "string" ? detail.code : undefined;
-      toastError(
-        t("dataRecipes.import.failed"),
-        (code ? reasonLabels[code] : undefined) ??
-          t("dataRecipes.import.failedDescription"),
-      );
+      const message = controller.signal.aborted
+        ? "Import cancelled. Your legacy data was kept for retry."
+        : ((code ? reasonLabels[code] : undefined) ??
+          t("dataRecipes.import.failedDescription"));
+      setImportError(message);
+      toastError(t("dataRecipes.import.failed"), message);
     } finally {
+      importAbort.current = null;
       setImporting(false);
     }
   }
@@ -327,7 +389,13 @@ export function LegacyImportCoordinator({
       : "dataRecipes.import.executionCountOther";
 
   return (
-    <Dialog
+    <>
+      {!open ? (
+        <Button type="button" variant="outline" onClick={() => setOpen(true)}>
+          {t("dataRecipes.import.title")}
+        </Button>
+      ) : null}
+      <Dialog
       open={open}
       onOpenChange={(nextOpen) => !importing && setOpen(nextOpen)}
     >
@@ -341,7 +409,11 @@ export function LegacyImportCoordinator({
           </DialogDescription>
         </DialogHeader>
         {result ? (
-          <div className="space-y-3 rounded-lg border bg-muted/20 p-3 text-sm">
+          <div
+            role="status"
+            aria-live="polite"
+            className="space-y-3 rounded-lg border bg-muted/20 p-3 text-sm"
+          >
             <div className="space-y-2">
               {summary.map((item) => (
                 <div key={item.outcome} className="flex justify-between gap-4">
@@ -378,6 +450,11 @@ export function LegacyImportCoordinator({
             {t(executionCountKey, { count: pending.executionCount })}
           </p>
         )}
+        {importError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {importError}
+          </p>
+        ) : null}
         <DialogFooter>
           {result ? (
             <Button type="button" onClick={() => setOpen(false)}>
@@ -388,7 +465,10 @@ export function LegacyImportCoordinator({
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setOpen(false)}
+                onClick={() => {
+                  if (importing) importAbort.current?.abort();
+                  else setOpen(false);
+                }}
               >
                 {t("dataRecipes.import.cancel")}
               </Button>
@@ -404,7 +484,8 @@ export function LegacyImportCoordinator({
             </>
           )}
         </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

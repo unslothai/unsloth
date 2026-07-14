@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 
 const USER_ASSETS_BASE = "/api/user-assets";
+const USER_ASSET_REQUEST_TIMEOUT_MS = 15_000;
 
 export type UserAssetErrorDetail = {
   code?: string;
@@ -44,8 +45,34 @@ async function readError(response: Response): Promise<UserAssetApiError> {
   return new UserAssetApiError(response.status, detail);
 }
 
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort(init?.signal?.reason);
+  if (init?.signal?.aborted) abortFromCaller();
+  else init?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException("Request timed out", "TimeoutError"));
+  }, USER_ASSET_REQUEST_TIMEOUT_MS);
+  try {
+    return await authFetch(`${USER_ASSETS_BASE}${path}`, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (timedOut) {
+      throw new Error("The persistence request timed out. Please try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    init?.signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await authFetch(`${USER_ASSETS_BASE}${path}`, init);
+  const response = await request(path, init);
   if (!response.ok) throw await readError(response);
   return response.json() as Promise<T>;
 }
@@ -56,6 +83,13 @@ function jsonInit(method: string, body: unknown): RequestInit {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
+}
+
+function assetPathSegment(id: string): string {
+  if (!id || id.includes("/") || id.includes("\\")) {
+    throw new Error("Asset ids must be safe to use as one URL path segment.");
+  }
+  return encodeURIComponent(id);
 }
 
 export type UserAssetsBootstrap = {
@@ -108,7 +142,7 @@ export async function listServerRecipes<TPayload>(): Promise<
 
 export function getServerRecipe<TPayload>(id: string) {
   return requestJson<RecipeAssetRecord<TPayload>>(
-    `/recipes/${encodeURIComponent(id)}`,
+    `/recipes/${assetPathSegment(id)}`,
   );
 }
 
@@ -117,10 +151,11 @@ export function createServerRecipe<TPayload>(
     RecipeAssetRecord<TPayload>,
     "revision" | "createdAt" | "updatedAt"
   >,
+  options: { signal?: AbortSignal } = {},
 ) {
   return requestJson<RecipeAssetRecord<TPayload>>(
     "/recipes",
-    jsonInit("POST", recipe),
+    { ...jsonInit("POST", recipe), signal: options.signal },
   );
 }
 
@@ -131,16 +166,16 @@ export function updateServerRecipe<TPayload>(input: {
   learningRecipeId?: string | null;
   learningRecipeTitle?: string | null;
   revision: number;
-}) {
+}, options: { signal?: AbortSignal } = {}) {
   return requestJson<RecipeAssetRecord<TPayload>>(
-    `/recipes/${encodeURIComponent(input.id)}`,
-    jsonInit("PUT", input),
+    `/recipes/${assetPathSegment(input.id)}`,
+    { ...jsonInit("PUT", input), signal: options.signal },
   );
 }
 
 export async function deleteServerRecipe(id: string, revision: number) {
-  const response = await authFetch(
-    `${USER_ASSETS_BASE}/recipes/${encodeURIComponent(id)}?revision=${revision}`,
+  const response = await request(
+    `/recipes/${assetPathSegment(id)}?revision=${revision}`,
     { method: "DELETE" },
   );
   if (!response.ok) throw await readError(response);
@@ -149,6 +184,7 @@ export async function deleteServerRecipe(id: string, revision: number) {
 export type RecipeExecutionPage<TExecution> = {
   executions: TExecution[];
   nextCursor: string | null;
+  resumable?: TExecution | null;
 };
 
 export function listServerRecipeExecutions<TExecution>(
@@ -159,7 +195,7 @@ export function listServerRecipeExecutions<TExecution>(
   params.set("limit", String(options.limit ?? 100));
   if (options.cursor) params.set("cursor", options.cursor);
   return requestJson<RecipeExecutionPage<TExecution>>(
-    `/recipes/${encodeURIComponent(recipeId)}/executions?${params.toString()}`,
+    `/recipes/${assetPathSegment(recipeId)}/executions?${params.toString()}`,
   );
 }
 
@@ -170,7 +206,7 @@ export function upsertServerRecipeExecution<TExecution>(input: {
   revision?: number;
 }) {
   return requestJson<TExecution>(
-    `/recipes/${encodeURIComponent(input.recipeId)}/executions/${encodeURIComponent(input.executionId)}`,
+    `/recipes/${assetPathSegment(input.recipeId)}/executions/${assetPathSegment(input.executionId)}`,
     jsonInit("PUT", { ...input.metadata, revision: input.revision }),
   );
 }
@@ -183,10 +219,10 @@ export function importLegacyUserAssets<
   confirmSubject: string;
   recipes: TRecipe[];
   executions: TExecution[];
-}) {
+}, options: { signal?: AbortSignal } = {}) {
   return requestJson<LegacyImportResult>(
     "/legacy-import",
-    jsonInit("POST", input),
+    { ...jsonInit("POST", input), signal: options.signal },
   );
 }
 
@@ -208,7 +244,7 @@ export async function listServerTrainingPresets<TConfig>() {
 
 export function getServerTrainingPreset<TConfig>(id: string) {
   return requestJson<TrainingPresetRecord<TConfig>>(
-    `/training-presets/${encodeURIComponent(id)}`,
+    `/training-presets/${assetPathSegment(id)}`,
   );
 }
 
@@ -230,14 +266,14 @@ export function updateServerTrainingPreset<TConfig>(input: {
   revision: number;
 }) {
   return requestJson<TrainingPresetRecord<TConfig>>(
-    `/training-presets/${encodeURIComponent(input.id)}`,
+    `/training-presets/${assetPathSegment(input.id)}`,
     jsonInit("PUT", input),
   );
 }
 
 export async function deleteServerTrainingPreset(id: string, revision: number) {
-  const response = await authFetch(
-    `${USER_ASSETS_BASE}/training-presets/${encodeURIComponent(id)}?revision=${revision}`,
+  const response = await request(
+    `/training-presets/${assetPathSegment(id)}?revision=${revision}`,
     { method: "DELETE" },
   );
   if (!response.ok) throw await readError(response);

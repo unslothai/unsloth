@@ -9,28 +9,15 @@ import {
   listServerRecipes,
   updateServerRecipe,
 } from "@/features/user-assets";
+// Shared persistence policy is infrastructure, not a feature UI dependency.
+// eslint-disable-next-line no-restricted-imports
+import { DENIED_SECRET_KEYS } from "@/features/user-assets/persistence-policy";
 import { normalizeNonEmptyName } from "@/utils";
 import { useCallback, useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
 const repositoryListeners = new Set<() => void>();
-const DENIED_SECRET_KEYS = new Set([
-  "api_key",
-  "hf_token",
-  "github_token",
-  "wandb_token",
-  "access_token",
-  "refresh_token",
-  "authorization",
-  "cookie",
-  "set_cookie",
-  "password",
-  "secret",
-  "aws_secret_access_key",
-  "s3_secret_access_key",
-]);
-
 function normalizeSecretKey(key: string): string {
   return key
     .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
@@ -100,9 +87,12 @@ function isSecretField(path: string[], key: string, value: unknown): boolean {
 function sanitizeRecipeForPersistence(
   value: unknown,
   path: string[] = [],
+  removedPaths: string[] = [],
 ): unknown {
   if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeRecipeForPersistence(entry, path));
+    return value.map((entry, index) =>
+      sanitizeRecipeForPersistence(entry, [...path, String(index)], removedPaths),
+    );
   }
   if (!value || typeof value !== "object") {
     return value;
@@ -112,9 +102,14 @@ function sanitizeRecipeForPersistence(
   for (const [key, entry] of Object.entries(value)) {
     const normalizedKey = normalizeSecretKey(key);
     if (isSecretField(path, key, entry)) {
+      removedPaths.push([...path, normalizedKey].join("."));
       continue;
     }
-    output[key] = sanitizeRecipeForPersistence(entry, [...path, normalizedKey]);
+    output[key] = sanitizeRecipeForPersistence(
+      entry,
+      [...path, normalizedKey],
+      removedPaths,
+    );
   }
   if (
     output.provider_type === "stdio" &&
@@ -162,8 +157,11 @@ export async function saveRecipe(
   input: SaveRecipeInput,
 ): Promise<RecipeRecord> {
   const name = normalizeNonEmptyName(input.name);
+  const removedCredentialPaths: string[] = [];
   const payload = sanitizeRecipeForPersistence(
     input.payload,
+    [],
+    removedCredentialPaths,
   ) as RecipeRecord["payload"];
   const record =
     input.id && input.revision !== undefined
@@ -182,9 +180,10 @@ export async function saveRecipe(
           learningRecipeId: input.learningRecipeId,
           learningRecipeTitle: input.learningRecipeTitle,
         });
-  primeRecipeCache(record);
+  const authoritativeRecord = { ...record, removedCredentialPaths };
+  primeRecipeCache(authoritativeRecord);
   notifyRepositoryChanged();
-  return record;
+  return authoritativeRecord;
 }
 
 export async function deleteRecipe(

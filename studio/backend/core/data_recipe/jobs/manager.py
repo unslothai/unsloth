@@ -655,7 +655,10 @@ class JobManager:
                 for e in self._drain_queue(mp_q):
                     self._safe_handle_event(job, e)
 
-                retired_job: Job | None = None
+                # The dead process owns the captured generation, even if a new
+                # generation is installed before this finalizer reacquires the
+                # lock. Always retire that generation's workflow credential.
+                retired_job: Job | None = job
                 prepared: tuple[tuple[Subscription, ...], dict] | None = None
                 with self._lock:
                     if (

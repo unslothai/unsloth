@@ -59,12 +59,33 @@ def _wait_until(predicate, timeout = 5.0):
 def _manager_with_active_job():
     m = JobManager.__new__(JobManager)
     m._lock = threading.Lock()
-    job = Job(job_id = "job-test")
+    m._subs = []
+    m._events = []
+    m._seq = 0
+    job = Job(job_id = "job-test", owner_subject = "owner-a")
     job.status = "active"
     m._job = job
     m._proc = _FakeProc(alive = True)
     m._mp_q = _ScriptedQueue([])
     return m
+
+
+def test_replaced_dead_generation_still_retires_its_workflow_key(monkeypatch):
+    manager = _manager_with_active_job()
+    old_job = manager._job
+    manager._proc._alive = False
+    retired = []
+
+    def replace_during_drain(_queue):
+        manager._job = Job(job_id="job-new", owner_subject="owner-b")
+        manager._proc = _FakeProc(alive=True)
+        manager._mp_q = _ScriptedQueue([])
+        return []
+
+    monkeypatch.setattr(manager, "_drain_queue", replace_during_drain)
+    monkeypatch.setattr(manager, "_retire_workflow_key", retired.append)
+    manager._pump_loop()
+    assert retired == [old_job]
 
 
 def test_pump_survives_handler_exception_and_still_finalizes(monkeypatch):

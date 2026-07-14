@@ -12,6 +12,7 @@ export type RecipeRecord = {
   updatedAt: number;
   learningRecipeId?: string | null;
   learningRecipeTitle?: string | null;
+  removedCredentialPaths?: string[];
 };
 
 export type SaveRecipeInput = {

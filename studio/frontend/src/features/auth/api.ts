@@ -23,6 +23,7 @@ let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+const RETRYABLE_NETWORK_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,12 +37,15 @@ async function fetchWithTauriNetworkRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const retryable = RETRYABLE_NETWORK_METHODS.has(method);
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetch(input, init);
     } catch (error) {
       if (
         !isTauri ||
+        !retryable ||
         !(error instanceof TypeError) ||
         attempt >= TAURI_FETCH_RETRY_DELAYS_MS.length
       ) {

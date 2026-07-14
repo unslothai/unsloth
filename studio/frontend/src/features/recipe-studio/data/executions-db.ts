@@ -7,6 +7,10 @@ import {
   listServerRecipeExecutions,
   upsertServerRecipeExecution,
 } from "@/features/user-assets";
+import { getAuthSubjectKey } from "@/features/auth";
+// Shared persistence policy is infrastructure, not a feature UI dependency.
+// eslint-disable-next-line no-restricted-imports
+import { MAX_EXECUTION_JSON_BYTES } from "@/features/user-assets/persistence-policy";
 import type {
   PersistedRecipeExecution,
   RecipeExecutionMetadata,
@@ -15,13 +19,40 @@ import type {
 } from "../execution-types";
 
 const revisions = new Map<string, number>();
-const writeQueues = new Map<string, Promise<void>>();
-const MAX_EXECUTION_JSON_BYTES = 256 * 1024;
+type WriteState = {
+  latest: RecipeExecutionRecord | null;
+  running: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  waiters: Array<{ resolve: () => void; reject: (error: unknown) => void }>;
+};
+const writeStates = new Map<string, WriteState>();
+let activeSubjectKey: string | null = null;
 const TERMINAL = new Set<RecipeExecutionStatus>([
   "cancelled",
   "completed",
   "error",
 ]);
+
+function syncSubject(): string {
+  const subject = getAuthSubjectKey();
+  if (activeSubjectKey !== subject) {
+    for (const state of writeStates.values()) {
+      if (state.timer) clearTimeout(state.timer);
+      state.latest = null;
+      for (const waiter of state.waiters.splice(0)) {
+        waiter.reject(new Error("Execution persistence account changed."));
+      }
+    }
+    revisions.clear();
+    writeStates.clear();
+    activeSubjectKey = subject;
+  }
+  return subject;
+}
+
+function executionKey(id: string): string {
+  return `${syncSubject()}\u0000${id}`;
+}
 
 function truncateUtf8(value: unknown, maxBytes: number): string | null {
   if (typeof value !== "string") return null;
@@ -169,72 +200,113 @@ function incomingWins(
   );
 }
 
-async function persistOnce(record: RecipeExecutionRecord): Promise<void> {
+async function persistOnce(
+  record: RecipeExecutionRecord,
+  key = executionKey(record.id),
+): Promise<void> {
   const metadata = serializeExecutionMetadata(record);
-  const expectedRevision = revisions.get(record.id) ?? record.revision;
-  try {
-    const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>({
-      recipeId: record.recipeId,
-      executionId: record.id,
-      metadata,
-      revision: expectedRevision,
-    });
-    revisions.set(record.id, saved.revision);
-  } catch (error) {
-    if (!(error instanceof UserAssetApiError) || error.status !== 409)
-      throw error;
-    const current = error.detail.current as
-      | PersistedRecipeExecution
-      | undefined;
-    if (!current) throw error;
-    revisions.set(record.id, current.revision);
-    if (!incomingWins(metadata, current)) return;
-    const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>({
-      recipeId: record.recipeId,
-      executionId: record.id,
-      metadata,
-      revision: current.revision,
-    });
-    revisions.set(record.id, saved.revision);
+  let expectedRevision = revisions.get(key) ?? record.revision;
+  let lastConflict: UserAssetApiError | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>({
+        recipeId: record.recipeId,
+        executionId: record.id,
+        metadata,
+        revision: expectedRevision,
+      });
+      revisions.set(key, saved.revision);
+      return;
+    } catch (error) {
+      if (!(error instanceof UserAssetApiError) || error.status !== 409)
+        throw error;
+      const current = error.detail.current as
+        | PersistedRecipeExecution
+        | undefined;
+      if (!current) throw error;
+      revisions.set(key, current.revision);
+      if (!incomingWins(metadata, current)) return;
+      expectedRevision = current.revision;
+      lastConflict = error;
+    }
   }
+  throw lastConflict ?? new Error("Execution write did not converge.");
+}
+
+export async function listRecipeExecutionPage(
+  recipeId: string,
+  options: { cursor?: string | null; limit?: number } = {},
+): Promise<RecipeExecutionPage<PersistedRecipeExecution>> {
+  const page = await listServerRecipeExecutions<PersistedRecipeExecution>(
+    recipeId,
+    { cursor: options.cursor, limit: options.limit ?? 100 },
+  );
+  for (const execution of page.executions)
+    revisions.set(executionKey(execution.id), execution.revision);
+  if (page.resumable)
+    revisions.set(executionKey(page.resumable.id), page.resumable.revision);
+  return page;
 }
 
 export async function listRecipeExecutions(
   recipeId: string,
 ): Promise<PersistedRecipeExecution[]> {
-  const executions: PersistedRecipeExecution[] = [];
-  let cursor: string | null = null;
-  do {
-    const page: RecipeExecutionPage<PersistedRecipeExecution> =
-      await listServerRecipeExecutions<PersistedRecipeExecution>(recipeId, {
-        cursor,
-        limit: 100,
-      });
-    executions.push(...page.executions);
-    cursor = page.nextCursor;
-  } while (cursor);
-  for (const execution of executions)
-    revisions.set(execution.id, execution.revision);
-  return executions;
+  const page = await listRecipeExecutionPage(recipeId);
+  if (
+    page.resumable &&
+    !page.executions.some((execution) => execution.id === page.resumable?.id)
+  ) {
+    return [...page.executions, page.resumable];
+  }
+  return page.executions;
+}
+
+async function drainWrites(key: string, state: WriteState): Promise<void> {
+  if (state.running) return;
+  state.running = true;
+  state.timer = null;
+  try {
+    while (state.latest) {
+      const next = state.latest;
+      state.latest = null;
+      await persistOnce(next, key);
+    }
+    for (const waiter of state.waiters.splice(0)) waiter.resolve();
+  } catch (error) {
+    for (const waiter of state.waiters.splice(0)) waiter.reject(error);
+  } finally {
+    state.running = false;
+    if (state.latest) {
+      void drainWrites(key, state);
+    } else {
+      writeStates.delete(key);
+    }
+  }
 }
 
 export function saveRecipeExecution(
   execution: RecipeExecutionRecord,
 ): Promise<void> {
-  const previous = writeQueues.get(execution.id) ?? Promise.resolve();
-  const next = previous
-    .catch(() => undefined)
-    .then(() => persistOnce(execution));
-  const queued = next.then(
-    () => {
-      if (writeQueues.get(execution.id) === queued)
-        writeQueues.delete(execution.id);
-    },
-    () => {
-      if (writeQueues.get(execution.id) === queued)
-        writeQueues.delete(execution.id);
-    },
-  );
-  writeQueues.set(execution.id, queued);
-  return next;
+  const key = executionKey(execution.id);
+  const state = writeStates.get(key) ?? {
+    latest: null,
+    running: false,
+    timer: null,
+    waiters: [],
+  };
+  state.latest = execution;
+  writeStates.set(key, state);
+  const promise = new Promise<void>((resolve, reject) => {
+    state.waiters.push({ resolve, reject });
+  });
+  const terminal = TERMINAL.has(execution.status);
+  if (terminal && state.timer) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  if (!state.running && !state.timer) {
+    if (terminal) void drainWrites(key, state);
+    else state.timer = setTimeout(() => void drainWrites(key, state), 200);
+  }
+  return promise;
 }

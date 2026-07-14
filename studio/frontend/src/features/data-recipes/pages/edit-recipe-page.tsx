@@ -115,6 +115,8 @@ export function EditRecipePage({
         id: record.id,
         updatedAt: record.updatedAt,
         revision: record.revision,
+        payload: record.payload,
+        removedCredentialPaths: record.removedCredentialPaths ?? [],
       };
     },
     [loadState, navigate, recipeId],

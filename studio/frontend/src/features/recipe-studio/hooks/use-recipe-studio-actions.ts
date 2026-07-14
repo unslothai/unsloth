@@ -14,7 +14,7 @@ import type {
 import { useRecipeExecutions } from "./use-recipe-executions";
 import { useRecipePersistence } from "./use-recipe-persistence";
 
-type SaveTone = "success" | "error";
+type SaveTone = "success" | "warning" | "error";
 
 type PersistRecipeFn = (input: {
   id: string | null;
@@ -25,6 +25,8 @@ type PersistRecipeFn = (input: {
   id: string;
   updatedAt: number;
   revision: number;
+  payload: RecipePayload;
+  removedCredentialPaths: string[];
 }>;
 
 type UseRecipeStudioActionsParams = {

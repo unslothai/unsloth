@@ -266,7 +266,8 @@ def update_recipe(
             """
             UPDATE data_recipes
             SET name = ?, payload_json = ?, learning_recipe_id = ?,
-                learning_recipe_title = ?, revision = revision + 1, updated_at = ?
+                learning_recipe_title = ?, revision = revision + 1,
+                updated_at = MAX(updated_at + 1, created_at, ?)
             WHERE owner_subject = ? AND id = ? AND deleted_at IS NULL AND revision = ?
             """,
             (
@@ -330,7 +331,9 @@ def delete_recipe(owner_subject: str, recipe_id: str, expected_revision: int) ->
         conn.execute(
             """
             UPDATE data_recipes
-            SET revision = revision + 1, updated_at = ?, deleted_at = ?
+            SET revision = revision + 1,
+                updated_at = MAX(updated_at + 1, created_at, ?),
+                deleted_at = MAX(updated_at + 1, created_at, ?)
             WHERE owner_subject = ? AND id = ?
             """,
             (now, now, owner, asset_id),
@@ -440,6 +443,17 @@ def list_recipe_executions(
                 ),
             ).fetchall()
         page_rows = rows[:limit]
+        resumable_row = conn.execute(
+            """
+            SELECT * FROM data_recipe_executions
+            WHERE owner_subject = ? AND recipe_id = ? AND finished_at IS NULL
+              AND json_extract(metadata_json, '$.status') NOT IN
+                  ('cancelled', 'completed', 'error')
+            ORDER BY created_at DESC, id ASC
+            LIMIT 1
+            """,
+            (owner, parent_id),
+        ).fetchone()
         next_cursor = None
         if len(rows) > limit and page_rows:
             last = page_rows[-1]
@@ -447,6 +461,9 @@ def list_recipe_executions(
         return {
             "executions": [_execution_from_row(row) for row in page_rows],
             "nextCursor": next_cursor,
+            "resumable": _execution_from_row(resumable_row)
+            if resumable_row is not None
+            else None,
         }
     finally:
         conn.close()
@@ -469,6 +486,10 @@ def upsert_recipe_execution(
     finished_at = projected.get("finishedAt")
     if finished_at is not None:
         finished_at = validate_timestamp(finished_at, "finishedAt")
+        if finished_at < created_at:
+            raise UserAssetValidationError(
+                "invalid_timestamp", "finishedAt must not be earlier than createdAt"
+            )
     now = _now_ms()
     conn = studio_db.get_connection()
     try:
@@ -507,7 +528,7 @@ def upsert_recipe_execution(
                     parent_id,
                     metadata_json,
                     created_at,
-                    now,
+                    max(now, created_at),
                     finished_at,
                 ),
             )
@@ -521,7 +542,8 @@ def upsert_recipe_execution(
             conn.execute(
                 """
                 UPDATE data_recipe_executions
-                SET metadata_json = ?, revision = revision + 1, updated_at = ?,
+                SET metadata_json = ?, revision = revision + 1,
+                    updated_at = MAX(updated_at + 1, created_at, ?),
                     finished_at = ?
                 WHERE owner_subject = ? AND id = ? AND revision = ?
                 """,
@@ -647,7 +669,8 @@ def update_training_preset(
         changed = conn.execute(
             """
             UPDATE training_presets
-            SET name = ?, config_json = ?, revision = revision + 1, updated_at = ?
+            SET name = ?, config_json = ?, revision = revision + 1,
+                updated_at = MAX(updated_at + 1, created_at, ?)
             WHERE owner_subject = ? AND id = ? AND deleted_at IS NULL AND revision = ?
             """,
             (name, config_json, now, owner, asset_id, expected_revision),
@@ -702,7 +725,9 @@ def delete_training_preset(owner_subject: str, preset_id: str, expected_revision
         conn.execute(
             """
             UPDATE training_presets
-            SET revision = revision + 1, updated_at = ?, deleted_at = ?
+            SET revision = revision + 1,
+                updated_at = MAX(updated_at + 1, created_at, ?),
+                deleted_at = MAX(updated_at + 1, created_at, ?)
             WHERE owner_subject = ? AND id = ?
             """,
             (now, now, owner, asset_id),
@@ -783,17 +808,19 @@ def _already_imported(
 ) -> bool:
     row = conn.execute(
         """
-        SELECT outcome FROM user_asset_legacy_imports
+        SELECT outcome, reason FROM user_asset_legacy_imports
         WHERE owner_subject = ? AND source = ? AND entity_kind = ? AND legacy_id = ?
         """,
         (owner, source, kind, legacy_id),
     ).fetchone()
     if row is None:
         return False
-    if row["outcome"] == "missing_parent":
-        # Older builds accidentally terminalized this deferred result. Remove
-        # the stale ledger row so the execution can be retried after its parent
-        # recipe arrives in a later bounded import batch.
+    if row["outcome"] == "missing_parent" or (
+        row["outcome"] == "rejected"
+        and row["reason"] not in {"already_exists", "parent_retired"}
+    ):
+        # Older builds accidentally terminalized deferred and validation
+        # failures. Remove those rows so corrected input can be retried.
         conn.execute(
             """
             DELETE FROM user_asset_legacy_imports
@@ -866,7 +893,7 @@ def import_legacy_assets(
                         learning_id,
                         learning_title,
                         created_at,
-                        now,
+                        max(now, created_at),
                     ),
                 )
                 _ledger_outcome(conn, owner, source, "recipe", asset_id, outcome, None, now)
@@ -874,10 +901,6 @@ def import_legacy_assets(
             except UserAssetValidationError as error:
                 result = _legacy_result(raw_id, "rejected", reason = error.code)
                 recipe_results.append(result)
-                if ledger_id:
-                    _ledger_outcome(
-                        conn, owner, source, "recipe", ledger_id, "rejected", error.code, now
-                    )
 
         for raw in executions:
             item = raw if isinstance(raw, Mapping) else {}
@@ -942,6 +965,13 @@ def import_legacy_assets(
                 projected = project_execution_metadata(clean_item)
                 created_at = validate_timestamp(projected.get("createdAt"), "createdAt")
                 finished_at = projected.get("finishedAt")
+                if finished_at is not None:
+                    finished_at = validate_timestamp(finished_at, "finishedAt")
+                    if finished_at < created_at:
+                        raise UserAssetValidationError(
+                            "invalid_timestamp",
+                            "finishedAt must not be earlier than createdAt",
+                        )
                 metadata_json = canonical_json(
                     projected, MAX_EXECUTION_JSON_BYTES, "execution metadata"
                 )
@@ -958,7 +988,7 @@ def import_legacy_assets(
                         parent_id,
                         metadata_json,
                         created_at,
-                        now,
+                        max(now, created_at),
                         finished_at,
                     ),
                 )
@@ -967,17 +997,6 @@ def import_legacy_assets(
                 execution_results.append(_legacy_result(asset_id, outcome, redacted_paths = paths))
             except UserAssetValidationError as error:
                 execution_results.append(_legacy_result(raw_id, "rejected", reason = error.code))
-                if ledger_id:
-                    _ledger_outcome(
-                        conn,
-                        owner,
-                        source,
-                        "execution",
-                        ledger_id,
-                        "rejected",
-                        error.code,
-                        now,
-                    )
         conn.commit()
     except Exception:
         conn.rollback()

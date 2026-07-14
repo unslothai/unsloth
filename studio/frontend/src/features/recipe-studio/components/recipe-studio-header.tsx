@@ -25,7 +25,7 @@ import {
   RECIPE_STUDIO_WARNING_ICON_TONE,
 } from "../utils/ui-tones";
 
-type StatusTone = "success" | "error";
+type StatusTone = "success" | "warning" | "error";
 
 type RecipeStudioHeaderProps = {
   activeView: RecipeStudioView;
@@ -42,6 +42,7 @@ type RecipeStudioHeaderProps = {
 
 const STATUS_MESSAGE_CLASS: Record<StatusTone, string> = {
   success: "Saved",
+  warning: "Saved without credentials",
   error: "Needs saving",
 };
 

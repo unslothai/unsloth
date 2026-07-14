@@ -30,6 +30,24 @@ export function getAuthToken(): string | null {
   return localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
+export function getAuthSubjectKey(): string {
+  const token = getAuthToken();
+  if (!token) return "anonymous";
+  try {
+    const encoded = token.split(".")[1];
+    if (!encoded) return `token:${token}`;
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(
+      atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")),
+    ) as { sub?: unknown };
+    return typeof payload.sub === "string" && payload.sub
+      ? `subject:${payload.sub}`
+      : `token:${token}`;
+  } catch {
+    return `token:${token}`;
+  }
+}
+
 export function getRefreshToken(): string | null {
   if (!canUseStorage()) return null;
   return localStorage.getItem(AUTH_REFRESH_TOKEN_KEY);

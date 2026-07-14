@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
   },
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
+    "test": "vitest",
+    "test:ci": "vitest run",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
   },
@@ -104,10 +106,13 @@
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.5.2",
+    "fake-indexeddb": "6.2.5",
     "globals": "^17.4.0",
+    "jsdom": "28.1.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.55.0",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "4.1.10"
   },
   "allowScripts": {
     "@biomejs/biome@1.9.4": true,

@@ -103,6 +103,8 @@ export type PersistRecipeResult = {
   id: string;
   updatedAt: number;
   revision: number;
+  payload: RecipePayload;
+  removedCredentialPaths: string[];
 };
 
 export type RecipeStudioPageProps = {

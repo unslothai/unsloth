@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import Dexie, { type EntityTable } from "dexie";
+// This low-level migration reader is intentionally not part of the feature UI API.
+// eslint-disable-next-line no-restricted-imports
+import { readLegacyStorePage } from "@/features/user-assets/legacy-indexeddb";
 import type { RecipeExecutionRecord } from "../execution-types";
 import { serializeExecutionMetadata } from "./executions-db";
 
@@ -13,41 +15,19 @@ export type LegacyRecipeExecutionPage = {
   nextCursor: string | null;
 };
 
-async function databaseExists(name: string): Promise<boolean> {
-  if (typeof indexedDB === "undefined" || !("databases" in indexedDB))
-    return false;
-  const databases = await indexedDB.databases();
-  return databases.some((database) => database.name === name);
-}
-
 export async function readLegacyRecipeExecutions(
   cursor: string | null = null,
   limit = DEFAULT_PAGE_SIZE,
 ): Promise<LegacyRecipeExecutionPage> {
-  if (!(await databaseExists(DATABASE_NAME)))
-    return { items: [], nextCursor: null };
   const pageSize = Math.max(1, Math.min(DEFAULT_PAGE_SIZE, Math.floor(limit)));
-  const db = new Dexie(DATABASE_NAME) as Dexie & {
-    executions: EntityTable<RecipeExecutionRecord, "id">;
-  };
-  db.version(1).stores({ executions: "id, recipeId, kind, status, createdAt" });
-  db.version(2).stores({
-    executions: "id, recipeId, kind, status, createdAt, finishedAt, jobId",
+  const page = await readLegacyStorePage<RecipeExecutionRecord>({
+    databaseName: DATABASE_NAME,
+    storeName: "executions",
+    cursor,
+    limit: pageSize,
   });
-  try {
-    const records = await (cursor
-      ? db.executions.where("id").above(cursor)
-      : db.executions.orderBy("id")
-    )
-      .limit(pageSize + 1)
-      .toArray();
-    const hasMore = records.length > pageSize;
-    const items = records.slice(0, pageSize).map(serializeExecutionMetadata);
-    return {
-      items,
-      nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null,
-    };
-  } finally {
-    db.close();
-  }
+  return {
+    items: page.items.map(serializeExecutionMetadata),
+    nextCursor: page.nextCursor,
+  };
 }

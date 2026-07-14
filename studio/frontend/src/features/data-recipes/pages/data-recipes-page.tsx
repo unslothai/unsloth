@@ -346,6 +346,11 @@ export function DataRecipesPage(): ReactElement {
         to: "/data-recipes/$recipeId",
         params: { recipeId: recipe.id },
       });
+    } catch (error) {
+      toastError(
+        "Failed to create recipe.",
+        error instanceof Error ? error.message : "Please try again.",
+      );
     } finally {
       setCreatingRecipe(false);
     }
@@ -455,7 +460,10 @@ export function DataRecipesPage(): ReactElement {
 
         {ready ? (
           error ? (
-            <div className="mt-8 rounded-2xl border border-destructive/30 bg-card px-6 py-10 text-center">
+            <div
+              role="alert"
+              className="mt-8 rounded-2xl border border-destructive/30 bg-card px-6 py-10 text-center"
+            >
               <p className="text-sm font-medium text-foreground">
                 {t("dataRecipes.server.loadError")}
               </p>

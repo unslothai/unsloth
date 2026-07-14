@@ -289,7 +289,9 @@ export function TrainingSection() {
                   : t("studio.training.startTraining")}
           </Button>
           {startError && (
-            <p className="text-xs text-red-500 leading-relaxed">{startError}</p>
+            <p role="alert" className="text-xs text-red-500 leading-relaxed">
+              {startError}
+            </p>
           )}
           {isIncompatible && (
             <p className="text-xs text-red-500 leading-relaxed">
@@ -349,6 +351,7 @@ export function TrainingSection() {
             </div>
             <div className="flex gap-2">
               <Input
+                aria-label={t("studio.trainingPresets.title")}
                 className="h-8 min-w-0 flex-1 text-xs"
                 value={presetName}
                 maxLength={200}
@@ -382,7 +385,10 @@ export function TrainingSection() {
               </Button>
             </div>
             {presetState.error ? (
-              <div className="flex items-center justify-between gap-2 text-xs text-destructive">
+              <div
+                role="alert"
+                className="flex items-center justify-between gap-2 text-xs text-destructive"
+              >
                 <span>{t("studio.trainingPresets.loadError")}</span>
                 <Button
                   type="button"
@@ -395,7 +401,7 @@ export function TrainingSection() {
               </div>
             ) : null}
             {presetState.conflict ? (
-              <div className="space-y-2 text-xs text-destructive">
+              <div role="alert" className="space-y-2 text-xs text-destructive">
                 <p>{t("studio.trainingPresets.conflictDescription")}</p>
                 <div className="flex gap-2">
                   <Button
