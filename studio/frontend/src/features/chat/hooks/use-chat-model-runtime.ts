@@ -903,11 +903,18 @@ export function useChatModelRuntime() {
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype ?? null,
                   chat_template_override:
                     stateBeforeUnload.loadedChatTemplateOverride ?? null,
+                  // Restore its speculative-decoding config too. Omitting these
+                  // reloaded the model at backend defaults (speculation off)
+                  // while the UI still showed it enabled.
+                  speculative_type: stateBeforeUnload.loadedSpeculativeType ?? null,
+                  spec_draft_n_max: stateBeforeUnload.loadedSpecDraftNMax ?? null,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
-                  loadedSpeculativeType: null,
-                  loadedSpecDraftNMax: null,
+                  speculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
+                  loadedSpeculativeType: stateBeforeUnload.loadedSpeculativeType ?? null,
+                  specDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
+                  loadedSpecDraftNMax: stateBeforeUnload.loadedSpecDraftNMax ?? null,
                 });
                 await refresh();
               } catch {
