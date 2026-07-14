@@ -4985,6 +4985,7 @@ async def generate_stream(
                     break
                 if isinstance(chunk, GenStreamError):
                     yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    yield "data: [DONE]\n\n"
                     return
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             if completed:
@@ -4999,6 +5000,7 @@ async def generate_stream(
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+            yield "data: [DONE]\n\n"
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
             if not completed and not cancel_event.is_set():

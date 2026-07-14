@@ -119,7 +119,7 @@ def test_gemma_channel_detection_uses_active_template_not_token_metadata():
         def apply_chat_template(self, *_args, **_kwargs):
             raise NotImplementedError
 
-    expected = ("<|channel>thought\n", "<channel|>")
+    expected = ("<|channel>thought", "<channel|>")
     assert detect_reasoning_channel_markers(TemplateTokenizer()) == expected
     assert detect_reasoning_channel_markers(NamedTemplateTokenizer()) is None
     assert (
@@ -164,11 +164,11 @@ def test_native_template_fallback_returns_selected_reasoning_metadata():
     )
 
     assert result.prompt == "hi|TOOLS"
-    assert result.reasoning_channel_markers == ("<|channel>thought\n", "<channel|>")
+    assert result.reasoning_channel_markers == ("<|channel>thought", "<channel|>")
 
 
 def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
-    parser = ReasoningChannelNormalizer("<|channel>thought\n", "<channel|>")
+    parser = ReasoningChannelNormalizer("<|channel>thought", "<channel|>")
     output = ""
     snapshots = []
     for chunk in (
@@ -184,7 +184,12 @@ def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
             snapshots.append(output)
 
     assert snapshots == [
+        "<think>",
         "<think>Reason",
         "<think>Reason</think><|tool_call>web_search<tool_call|>",
     ]
     assert snapshots[1].startswith(snapshots[0])
+    compact = ReasoningChannelNormalizer("<|channel>thought", "<channel|>")
+    assert compact.feed("<|channel>thought<channel|>answer") + compact.finish() == (
+        "<think></think>answer"
+    )

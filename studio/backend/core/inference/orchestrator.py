@@ -1375,10 +1375,21 @@ class InferenceOrchestrator:
                 )
             else:
                 stream = self.generate_chat_response(**common_kwargs)
-            for chunk in stream:
-                if isinstance(chunk, GenStreamError):
-                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
-                yield chunk
+            close_stream = False
+            try:
+                for chunk in stream:
+                    if isinstance(chunk, GenStreamError):
+                        close_stream = True
+                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    yield chunk
+            finally:
+                if close_stream:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            logger.debug("failed to close errored generation stream", exc_info = True)
 
         initial = list(messages)
         if system_prompt:

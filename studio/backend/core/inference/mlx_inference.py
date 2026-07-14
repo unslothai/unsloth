@@ -576,7 +576,6 @@ class MLXInferenceBackend:
         )
         with self._generation_lock:
             final_response = None
-            generation_failed = False
             try:
                 gen_kwargs = dict(
                     prompt = prompt,
@@ -609,8 +608,6 @@ class MLXInferenceBackend:
                         break
             except Exception as e:
                 import traceback
-
-                generation_failed = True
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
@@ -624,7 +621,7 @@ class MLXInferenceBackend:
                     )
         if normalizer is not None:
             cancelled = cancel_event is not None and cancel_event.is_set()
-            tail = normalizer.drain() if cancelled or generation_failed else normalizer.finish()
+            tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
                 normalized_output += tail
                 yield normalized_output

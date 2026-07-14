@@ -499,13 +499,18 @@ def test_streaming_gen_stream_error_is_not_model_text(monkeypatch):
     backend = _ErrorAfterPartial()
     payload = _request(stream = True)
     response = _call(payload, monkeypatch, backend, supports_tools = False)
-    objs = _sse_objects(_collect_sse(response))
+    chunks = _collect_sse(response)
+    objs = _sse_objects(chunks)
 
     deltas = [o.get("choices", [{}])[0].get("delta", {}) for o in objs if o.get("choices")]
     assert any("partial" in json.dumps(delta) for delta in deltas)
     assert not any("/tmp/secret" in json.dumps(delta) for delta in deltas)
     errors = [o["error"]["message"] for o in objs if "error" in o]
     assert errors == ["An internal error occurred."]
+    assert any(
+        "data: [DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk)
+        for chunk in chunks
+    )
 
 
 def test_server_tool_streaming_invalid_event_is_error(monkeypatch):

@@ -16,9 +16,13 @@ from typing import Optional
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _GEMMA_CHANNEL_START = "<|channel>"
-_GEMMA_THOUGHT_OPEN = "<|channel>thought\n"
+_GEMMA_THOUGHT_OPEN = "<|channel>thought"
 _GEMMA_THOUGHT_CLOSE = "<channel|>"
-_GEMMA_TEMPLATE_OPENERS = (_GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_OPEN.replace("\n", "\\n"))
+_GEMMA_TEMPLATE_OPENERS = (
+    _GEMMA_THOUGHT_OPEN + "\n",
+    _GEMMA_THOUGHT_OPEN + "\\n",
+    _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
+)
 
 
 def _tokenizer_objects(tokenizer) -> tuple:
@@ -131,6 +135,7 @@ class ReasoningChannelNormalizer:
         self._buffer = ""
         self._in_reasoning = False
         self._reasoning_done = False
+        self._skip_opening_newline = False
 
     def feed(self, text: str) -> str:
         """Consume a raw text delta and return the stable canonical delta."""
@@ -141,6 +146,13 @@ class ReasoningChannelNormalizer:
                 output.append(self._buffer)
                 self._buffer = ""
                 break
+
+            if self._in_reasoning and self._skip_opening_newline:
+                if self._buffer.startswith("\n"):
+                    self._buffer = self._buffer[1:]
+                self._skip_opening_newline = False
+                if not self._buffer:
+                    break
 
             marker = self._closing_marker if self._in_reasoning else self._opening_marker
             index = self._buffer.find(marker)
@@ -158,6 +170,7 @@ class ReasoningChannelNormalizer:
             else:
                 output.append(_THINK_OPEN)
                 self._in_reasoning = True
+                self._skip_opening_newline = True
         return "".join(output)
 
     def finish(self) -> str:
