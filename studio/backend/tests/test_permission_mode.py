@@ -82,6 +82,8 @@ def _clear_pending():
         ("xxd -c 16 in.bin out.hex", True),  # outfile past a numeric flag value
         ("xxd input.bin", False),  # single positional reads to stdout
         ("xxd -c 16 input.bin", False),  # flag value is not a second file
+        ("xxd 42 99", True),  # digit-named outfile positional still counts
+        ("xxd -s 0x10 input.bin", False),  # seek value is not a second file
         ("awk '{print}' file", True),  # awk can system()/write
         ("grep -o x file", False),  # grep -o is stdout only
         ("ls\nrm -rf x", True),  # newline separates commands
@@ -154,6 +156,12 @@ def _clear_pending():
         ("cat /r?n/secrets/hf_token", True),  # glob into a secret mount
         ("cat /var/r?n/secrets/db", True),
         ("cat /root/.s??/id_rsa", True),  # glob into a credential dir
+        ("cat ~/.huggingface/tok?n", True),  # glob resolves to a credential basename
+        ("cat proj/.netr?", True),  # glob resolves to .netrc anywhere
+        ("cat repo/.aws/cred*", True),  # glob resolves to credentials anywhere
+        ("cat backup/id_rs?", True),  # glob resolves to id_rsa anywhere
+        ("cat notes/dra?t.txt", False),  # benign globbed basename stays safe
+        ("cat data/token_counts.tx?", False),  # 'token' prefix basename stays safe
         ("ls /home/*/projects", False),  # benign glob not into a cred dir
         ("grep -R TOKEN ~root", True),  # tilde-user recursive root escapes
         ("grep -R TOKEN ~/logs", True),  # tilde-home recursive root escapes
@@ -214,6 +222,9 @@ def _clear_pending():
         ("uniq input.txt output.txt", True),  # second positional is a written OUTPUT
         ("uniq -f 2 in out", True),  # numeric flag value skipped, two file positionals
         ("uniq input.txt", False),  # single positional reads to stdout, stays safe
+        ("uniq 123 out.txt", True),  # digit-named INPUT still leaves out.txt as the 2nd file
+        ("uniq 123", False),  # a single digit-named input reads to stdout, stays safe
+        ("uniq --skip-fields=2 input.txt", False),  # attached flag value, single file
         ("sort a.txt | uniq -c", False),  # piped uniq with no output file stays safe
         ("hostname new-name", True),  # a positional sets the hostname
         ("hostname -F /etc/hn", True),  # -F/--file sets the hostname from a file
@@ -906,6 +917,19 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "SELECT pg_notify('jobs', 'wake')"}, True),  # server-side notification
         ({"query": "SELECT set_config('x', 'y', false)"}, True),  # session config write
         ({"query": "SELECT nextval_col FROM t"}, False),  # 'nextval' column prefix stays safe
+        ({"query": "TRUNCATE users"}, True),  # multi-char table name (bare TRUNCATE)
+        ({"query": "TRUNCATE TABLE accounts"}, True),  # multi-char TRUNCATE TABLE
+        ({"query": 'TRUNCATE TABLE "users"'}, True),  # quoted TRUNCATE target
+        ({"query": "TRUNCATE accounts RESTART IDENTITY"}, True),  # TRUNCATE with options
+        ({"query": "SELECT truncate_log FROM t"}, False),  # 'truncate' column stays safe
+        ({"query": "UPDATE users AS u SET admin=1"}, True),  # aliased UPDATE target (AS)
+        ({"query": 'UPDATE "users" AS u SET x=1'}, True),  # quoted+aliased UPDATE
+        ({"query": "UPDATE public.users AS u SET x=1"}, True),  # schema-qualified aliased UPDATE
+        ({"query": "SELECT * FROM users AS u"}, False),  # aliased SELECT stays safe
+        ({"query": "please update the documentation set"}, False),  # NL, no AS, stays safe
+        ({"query": "GRANT SELECT ON t TO u"}, True),  # privilege grant (multi-word)
+        ({"query": "REVOKE ALL ON t FROM u"}, True),  # privilege revoke (multi-word)
+        ({"query": "SELECT * FROM grants"}, False),  # 'grants' table stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

@@ -446,6 +446,16 @@ _DATE_DISPLAY_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f"
 # [outfile]]): the 1st file reads to stdout, but a second file positional
 # overwrites it, like `sort -o`.
 _AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq", "xxd"})
+# Value-taking option flags for those commands whose argument is a separate token
+# (uniq -f 2, xxd -c 16). The value must be consumed so a numeric option value is
+# not miscounted as the output-file positional, and, conversely, a file that is
+# literally named with digits (uniq 123 out) is still counted.
+_SECOND_POSITIONAL_VALUE_FLAGS = {
+    "uniq": frozenset({"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"}),
+    "xxd": frozenset(
+        {"-c", "--cols", "-s", "--seek", "-l", "--len", "-g", "--groupsize", "-o", "--offset"}
+    ),
+}
 # find/fd group with (...) which resets command context, so scan every token for
 # these once find/fd appears anywhere.
 _AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
@@ -800,6 +810,28 @@ _SENSITIVE_GLOB_DIRS = (
     "/home/u/.config/gcloud",
     "/home/u/.config/gh",
 )
+# Credential basenames a glob can reach even when the directory is not wholly
+# sensitive (cat ~/.huggingface/tok?n -> token, cat ~/.netr? -> .netrc); the
+# canonical-target list only covers a few fixed home paths, so match the globbed
+# basename against these directly.
+_SENSITIVE_GLOB_BASENAMES = frozenset(
+    {
+        "token",
+        "stored_tokens",
+        "credentials",
+        ".netrc",
+        "netrc",
+        ".pypirc",
+        ".npmrc",
+        ".git-credentials",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "passwd",
+        "shadow",
+    }
+)
 # A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
 # scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
@@ -849,6 +881,14 @@ def _glob_token_sensitive(token: str) -> bool:
     if not any(c in token for c in "?*["):
         return False
     if any(fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS):
+        return True
+    # A glob that resolves to a credential basename is sensitive wherever it
+    # lives (cat ~/.huggingface/tok?n -> token, cat proj/.netr? -> .netrc); the
+    # fixed-target list only covers a handful of home paths.
+    base = token.rsplit("/", 1)[-1]
+    if any(c in base for c in "?*[") and any(
+        fnmatch.fnmatch(name, base) for name in _SENSITIVE_GLOB_BASENAMES
+    ):
         return True
     # A globbed directory that resolves into a secret/credential dir makes every
     # file below it sensitive (cat /r?n/secrets/hf_token).
@@ -1362,12 +1402,12 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
                     return True
                 if is_long_abbrev and uf.startswith("--") and uf.startswith(flag_head):
                     return True
-            # A date display flag that takes a following value (-d STRING, -r
-            # FILE) so its value is not mistaken for a clock-setting positional.
-            pending_flag_value = (
-                current_command == "date"
-                and "=" not in token
-                and flag_head in _DATE_DISPLAY_VALUE_FLAGS
+            # A flag that takes a following value (date -d STRING / -r FILE;
+            # uniq -f N; xxd -c N) so the value token is not mistaken for a
+            # clock-setting positional or an output-file positional.
+            pending_flag_value = "=" not in token and (
+                (current_command == "date" and flag_head in _DATE_DISPLAY_VALUE_FLAGS)
+                or flag_head in _SECOND_POSITIONAL_VALUE_FLAGS.get(current_command, ())
             )
             if not prefix_pending:
                 expect_command = False
@@ -1375,10 +1415,13 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         if not expect_command:
             raw_pos = token.strip(";&|()`{}")
             # uniq [INPUT [OUTPUT]] writes its second file positional; count file
-            # positionals (skipping numeric flag values like `-f 2`) and ask on
-            # the second one.
+            # positionals and ask on the second one. A preceding option's value
+            # (uniq -f 2) is consumed via pending_flag_value, so a file literally
+            # named with digits (uniq 123 out) is still counted.
             if current_command in _AUTO_SECOND_POSITIONAL_WRITES:
-                if raw_pos and not raw_pos.lstrip("+-").isdigit():
+                if pending_flag_value:
+                    pending_flag_value = False
+                elif raw_pos:
                     positional_args += 1
                     if positional_args >= 2:
                         return True
@@ -1978,15 +2021,22 @@ _SQL_UPDATE_TARGET = r"(?:only\s+)?" + _SQL_IDENT + r"(?:\s*\.\s*" + _SQL_IDENT 
 _MCP_ARG_MUTATION_RE = re.compile(
     r"\b(?:delete\s+from|"
     r"drop\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
-    r"truncate\s+(?:table\s+)?\w|"
-    r"update\s+" + _SQL_UPDATE_TARGET + r"\s+set\b|"
+    # Match the whole identifier (the outer trailing \b needs the alternative to
+    # end on a word boundary, so a bare \w stops mid-name and TRUNCATE users slips
+    # through); the optional opening quote/bracket/backtick covers "users"/[users].
+    r"truncate\s+(?:table\s+)?[\"\[`]?\w+|"
+    # UPDATE <target> [AS alias] SET: allow an explicit AS alias before SET so
+    # UPDATE users AS u SET is caught, not just the bare form. The implicit-alias
+    # form (UPDATE users u SET) is left out because it is indistinguishable from
+    # the prose "update <noun> <noun> set" and would flag natural language.
+    r"update\s+" + _SQL_UPDATE_TARGET + r"(?:\s+as\s+" + _SQL_IDENT + r")?\s+set\b|"
     r"insert\s+into|replace\s+into|"
     # SELECT ... INTO OUTFILE/DUMPFILE writes a file (MySQL); bare SELECT INTO
     # <table> is left out (PL/pgSQL uses it to read into a variable).
     r"select\s+[^;]*?\binto\s+(?:outfile|dumpfile)\b|"
     r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
-    r"grant\s+\w|revoke\s+\w|merge\s+into|"
+    r"grant\s+\w+|revoke\s+\w+|merge\s+into|"
     # Catalog mutations: COMMENT ON <obj>, SECURITY LABEL, and LOCK TABLE change
     # metadata or take a lock. Each needs a following keyword, so a "comment"
     # column (SELECT comment FROM t) or "locks" table stays safe.
