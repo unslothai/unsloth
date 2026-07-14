@@ -13,6 +13,9 @@ export interface RecentDictation {
 }
 
 const MAX_RECENT_DICTATIONS = 20;
+// Cap stored transcript length so a few long dictations cannot bloat the
+// persisted blob and trip a synchronous localStorage quota error on save.
+const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
@@ -110,7 +113,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       recentDictations: [],
       addRecentDictation: (text) =>
         set((state) => {
-          const trimmed = text.trim();
+          const trimmed = text.trim().slice(0, MAX_RECENT_DICTATION_LENGTH);
           if (!trimmed) return state;
           return {
             recentDictations: [
@@ -158,6 +161,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                     typeof v?.text === "string" && typeof v?.at === "number",
                 )
                 .slice(0, MAX_RECENT_DICTATIONS)
+                .map((v) => ({
+                  text: v.text.slice(0, MAX_RECENT_DICTATION_LENGTH),
+                  at: v.at,
+                }))
             : [],
           ttsEnabled:
             typeof saved?.ttsEnabled === "boolean" ? saved.ttsEnabled : true,
