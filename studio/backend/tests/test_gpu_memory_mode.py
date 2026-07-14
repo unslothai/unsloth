@@ -418,6 +418,12 @@ def test_manual_offload_emits_gpu_layers_fit_off_and_n_cpu_moe():
     # MoE offload uses --n-cpu-moe via _resolve_cpu_moe_flag (tested behaviorally below).
     assert "_resolve_cpu_moe_flag(" in src
     assert 'cmd.extend(["--n-cpu-moe", str(moe_flag)])' in src
+    # A count requested on a dense model is never emitted, so it must also be
+    # dropped from the recorded state -- else /status and /load report a count
+    # llama-server never received (same rule as the tensor-split drop below).
+    moe_emit = src.find('cmd.extend(["--n-cpu-moe", str(moe_flag)])')
+    assert "elif n_cpu_moe:" in src[moe_emit : moe_emit + 300]
+    assert "self._n_cpu_moe = 0" in src[moe_emit : moe_emit + 300]
     # The offload path forces use_fit False so --fit-ctx is never added under --fit off.
     emit = src.find('cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])')
     assert "use_fit = False" in src[src.rfind("\n", 0, emit) - 200 : emit + 80]
@@ -453,6 +459,12 @@ def test_manual_offload_emits_tensor_split():
     gate = src.find('if gpu_memory_mode == "manual" and gpu_layers >= 0:')
     nxt = src.find("elif use_fit:", gate)
     assert '","' in src[gate:nxt] and "tensor_split" in src[gate:nxt]
+    # A split with a single effective GPU is never emitted, so it must also be
+    # dropped from the recorded state -- else /status and /load report a ratio
+    # llama-server never received and the dedupe baseline preserves it.
+    assert "elif tensor_split:" in src[gate:nxt]
+    drop = src.find("elif tensor_split:", gate, nxt)
+    assert "self._tensor_split = None" in src[drop : drop + 250]
 
 
 def test_resolve_cpu_moe_flag():

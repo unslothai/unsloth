@@ -6870,6 +6870,10 @@ class LlamaCppBackend:
                     )
                     if moe_flag is not None:
                         cmd.extend(["--n-cpu-moe", str(moe_flag)])
+                    elif n_cpu_moe:
+                        # Requested on a dense model: nothing was emitted, so
+                        # don't report a count llama-server never received.
+                        self._n_cpu_moe = 0
                     # Distribute the model across GPUs by the user's per-GPU shares
                     # (--tensor-split). Works with the default layer split and with
                     # tensor parallelism; --fit off means no fit/tensor abort. Only
@@ -6908,6 +6912,10 @@ class LlamaCppBackend:
                                 _split_total,
                             )
                             self._tensor_split = None
+                    elif tensor_split:
+                        # Single effective GPU: the split is never emitted, so
+                        # don't report it as active via /status and /load.
+                        self._tensor_split = None
                 elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
