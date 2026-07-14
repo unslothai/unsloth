@@ -92,8 +92,8 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 // Speech-recognition models, not voices. Label is just name + download size;
 // the speed/accuracy note lives in the row description.
 const STT_MODEL_LABELS: Record<DefaultSttModel, string> = {
-  tiny: "Whisper Tiny · 610 MB",
-  base: "Whisper Base · 1.2 GB",
+  tiny: "Whisper Tiny · 155 MB",
+  base: "Whisper Base · 295 MB",
   small: "Whisper Small · 970 MB",
   "large-v3-turbo": "Whisper Large v3 Turbo · 1.6 GB",
   "large-v3": "Whisper Large v3 · 3.1 GB",
