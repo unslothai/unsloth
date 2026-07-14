@@ -111,8 +111,7 @@ def inference(
             repetition_penalty = repetition_penalty,
             enable_thinking = think,
         )
-        if is_mlx_distributed:
-            stream = raise_on_streamed_error(stream)
+        stream = raise_on_streamed_error(stream)
         if rank == 0:
             typer.echo("Assistant:")
             try:
