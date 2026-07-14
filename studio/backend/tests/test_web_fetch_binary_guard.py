@@ -38,7 +38,11 @@ class _FakeOpener:
     def __init__(self, resp):
         self._resp = resp
 
-    def open(self, req, timeout=None):
+    def open(
+        self,
+        req,
+        timeout = None,
+    ):
         return self._resp
 
 
@@ -48,9 +52,11 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         tools, "_validate_and_resolve_host", lambda host, port: (True, "", "93.184.216.34")
     )
     monkeypatch.setattr(
-        tools.urllib.request, "build_opener", lambda *a, **k: _FakeOpener(_FakeResp(body, content_type))
+        tools.urllib.request,
+        "build_opener",
+        lambda *a, **k: _FakeOpener(_FakeResp(body, content_type)),
     )
-    return tools._fetch_page_text("https://example.com/thing", timeout=5)
+    return tools._fetch_page_text("https://example.com/thing", timeout = 5)
 
 
 # ── content-type classifier ──
@@ -118,7 +124,9 @@ def test_html_page_unaffected(monkeypatch):
 def test_content_type_sanitized_in_message(monkeypatch):
     # An obs-folded Content-Type can smuggle control chars into get_content_type();
     # the returned message must be trimmed to a clean MIME token.
-    out = _fetch_with(monkeypatch, b"\x00\x01\x02" * 500, "application/octet-stream\r\n data: injected")
+    out = _fetch_with(
+        monkeypatch, b"\x00\x01\x02" * 500, "application/octet-stream\r\n data: injected"
+    )
     assert "\n" not in out and "\r" not in out
     assert "injected" not in out
     assert "application/octet-stream" in out
@@ -130,7 +138,7 @@ def test_content_type_sanitized_in_message(monkeypatch):
         # Straddle the 12.5% ratio (well above the 16-char floor): just under vs
         # just over len//8. Locks the divisor so it can't silently drift.
         (120, 1000, False),  # 120 <= 1000//8 (125) -> kept
-        (130, 1000, True),   # 130 >  1000//8 (125) -> binary
+        (130, 1000, True),  # 130 >  1000//8 (125) -> binary
     ],
 )
 def test_replacement_ratio_boundary(monkeypatch, n_bad, n_total, expect_binary):
