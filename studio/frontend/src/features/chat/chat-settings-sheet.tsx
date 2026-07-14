@@ -81,6 +81,7 @@ import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
@@ -590,7 +591,10 @@ export function ChatSettingsPanel({
     status: llamaUpdateStatus,
     applying: llamaUpdating,
     apply: applyLlamaUpdate,
-  } = useLlamaUpdateCheck({ enabled: mtpUpdatable });
+  } = useLlamaUpdateCheck({
+    enabled: mtpUpdatable,
+    onReloadRequired: resyncInferenceStatusAfterServerModelChange,
+  });
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
