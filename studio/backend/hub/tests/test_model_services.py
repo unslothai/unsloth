@@ -228,7 +228,11 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
     (home / "models").mkdir()
-    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda: [home])
+    # _build_browse_allowlist now accepts optional (media_roots, drive_roots)
+    # that browse_folders_response passes in; accept and ignore them here.
+    monkeypatch.setattr(
+        folder_browser, "_build_browse_allowlist", lambda *_a, **_k: [home]
+    )
 
     response = folder_browser.browse_folders_response(str(home), show_hidden = True)
 

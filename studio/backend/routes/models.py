@@ -1469,8 +1469,13 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     )
 
 
+# Declared sync (def, not async) so FastAPI runs it in the threadpool: the whole
+# handler does blocking filesystem I/O (drive probes, iterdir, realpath), and a
+# disconnected mapped drive can make the drive probe wait out its timeout -- on
+# the event loop that would stall every other request. Matches the hub browse
+# endpoint, which is also sync.
 @router.get("/browse-folders", response_model = BrowseFoldersResponse)
-async def browse_folders(
+def browse_folders(
     path: Optional[str] = Query(
         None,
         description = (
