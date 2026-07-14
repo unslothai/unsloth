@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import ast
+import importlib.util
+import inspect
 import os
 import platform
 import subprocess
@@ -11,6 +14,15 @@ import pytest
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_legacy_cli():
+    spec = importlib.util.spec_from_file_location(
+        "unsloth_legacy_cli", _REPO_ROOT / "unsloth-cli.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run_collective_probe():
@@ -118,6 +130,32 @@ def _run_collective_probe():
         save_markers = sorted(path.name for path in output_dir.glob("save-*.txt"))
         assert save_markers == ([] if mode == "cancelled" else ["save-0.txt"])
 
+    legacy_cli = _load_legacy_cli()
+    distributed_save = legacy_cli._save_or_push_model_with_mlx_ddp
+    legacy_args = (object(), object(), object(), True)
+
+    def save_legacy_model(*args):
+        assert args == legacy_args
+        (probe_dir / f"legacy-save-{rank}.txt").touch(exist_ok = False)
+
+    legacy_cli._save_or_push_model = save_legacy_model
+    distributed_save(*legacy_args, trainer)
+    assert sorted(path.name for path in probe_dir.glob("legacy-save-*.txt")) == [
+        "legacy-save-0.txt"
+    ]
+
+    def fail_legacy_save(*_args):
+        raise OSError("probe legacy save failed")
+
+    legacy_cli._save_or_push_model = fail_legacy_save
+    try:
+        distributed_save(*legacy_args, trainer)
+    except RuntimeError as exc:
+        expected = "rank 0 failed" if rank == 0 else "peer rank failed"
+        assert expected in str(exc)
+    else:
+        raise AssertionError("legacy save failure was not propagated")
+
     launcher_env = (os.environ["MLX_RANK"], os.environ["MLX_HOSTFILE"])
     import unsloth_cli.commands.train as train_cmd
     from typer.testing import CliRunner
@@ -160,6 +198,57 @@ def test_mlx_launch_finalization_collectives(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert len(list(tmp_path.glob("passed-*.txt"))) == 2, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("is_mlx", "trainer"),
+    ((True, Mock(distributed_world_size = 1)), (False, object())),
+)
+def test_legacy_non_distributed_save_is_unchanged(is_mlx, trainer):
+    legacy_cli = _load_legacy_cli()
+    save_model = Mock()
+    legacy_cli._save_or_push_model = save_model
+    run_node = ast.parse(inspect.getsource(legacy_cli.run)).body[0]
+    run_body = run_node.body
+    run_calls = [
+        statement.value
+        for statement in run_body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Name)
+    ]
+    (train_call,) = (
+        call for call in run_calls if call.func.id == "_train_with_legacy_save_control"
+    )
+    (save_call,) = (
+        call for call in run_calls if call.func.id == "_save_or_push_model_with_mlx_ddp"
+    )
+    all_call_names = [
+        node.func.id
+        for node in ast.walk(run_node)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert all_call_names.count("_save_or_push_model_with_mlx_ddp") == 1
+    assert "_save_or_push_model" not in all_call_names
+    assert train_call.lineno < save_call.lineno
+    assert [arg.id for arg in save_call.args] == [
+        "model",
+        "tokenizer",
+        "args",
+        "is_mlx",
+        "trainer",
+    ]
+
+    model, tokenizer, args = object(), object(), object()
+    legacy_cli._save_or_push_model_with_mlx_ddp(
+        model,
+        tokenizer,
+        args,
+        is_mlx,
+        trainer,
+    )
+
+    save_model.assert_called_once_with(model, tokenizer, args, is_mlx)
 
 
 if __name__ == "__main__":

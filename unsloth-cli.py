@@ -147,6 +147,26 @@ def _save_or_push_model(model, tokenizer, args, is_mlx):
         model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
 
 
+def _save_or_push_model_with_mlx_ddp(model, tokenizer, args, is_mlx, trainer):
+    if not is_mlx or int(trainer.distributed_world_size) <= 1:
+        return _save_or_push_model(model, tokenizer, args, is_mlx)
+
+    raise_distributed_failure = getattr(trainer, "_raise_distributed_failure", None)
+    if not callable(raise_distributed_failure):
+        raise RuntimeError(
+            "Unsloth MLX DDP CLI requires MLXTrainer failure coordination. "
+            "Upgrade unsloth-zoo to a compatible version."
+        )
+
+    error = None
+    if bool(trainer.is_main_process):
+        try:
+            _save_or_push_model(model, tokenizer, args, is_mlx)
+        except Exception as exc:
+            error = exc
+    raise_distributed_failure(error is not None, "legacy CLI final save", error)
+
+
 def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
     config_kwargs = dict(
         per_device_train_batch_size = args.per_device_train_batch_size,
@@ -286,7 +306,7 @@ def run(args):
 
     _train_with_legacy_save_control(trainer, is_mlx)
 
-    _save_or_push_model(model, tokenizer, args, is_mlx)
+    _save_or_push_model_with_mlx_ddp(model, tokenizer, args, is_mlx, trainer)
 
 
 if __name__ == "__main__":
