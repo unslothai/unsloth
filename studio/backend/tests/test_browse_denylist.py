@@ -358,9 +358,9 @@ def test_both_guards_use_the_shared_local_root_helper():
 def test_unc_share_root_authorizes_its_descendants(rel_parts):
     is_inside = _extract_is_inside(rel_parts, os_module = _WIN_OS)
     root = [Path(r"\\server\share")]
-    assert is_inside(Path(r"\\server\share"), root) is True            # the root itself
-    assert is_inside(Path(r"\\server\share\models"), root) is True     # direct child
-    assert is_inside(Path(r"\\server\share\a\b\c"), root) is True      # deep descendant
-    assert is_inside(Path(r"\\SERVER\SHARE\Models"), root) is True     # case-insensitive
-    assert is_inside(Path(r"\\server\share2\models"), root) is False   # sibling share
-    assert is_inside(Path(r"C:\models"), root) is False                # different volume
+    assert is_inside(Path(r"\\server\share"), root) is True  # the root itself
+    assert is_inside(Path(r"\\server\share\models"), root) is True  # direct child
+    assert is_inside(Path(r"\\server\share\a\b\c"), root) is True  # deep descendant
+    assert is_inside(Path(r"\\SERVER\SHARE\Models"), root) is True  # case-insensitive
+    assert is_inside(Path(r"\\server\share2\models"), root) is False  # sibling share
+    assert is_inside(Path(r"C:\models"), root) is False  # different volume
