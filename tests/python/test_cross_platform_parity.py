@@ -564,9 +564,9 @@ class TestKnown211SetParity:
                 f"{label} floor gate must anchor the rocm match (^rocm(\\d+)\\.(\\d+)$) so a "
                 "suffixed custom leaf is not floored/routed as rocm7.2"
             )
-            assert "-match '^rocm(\\d+)\\.(\\d+)'\n" not in text, (
-                f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
-            )
+            assert (
+                "-match '^rocm(\\d+)\\.(\\d+)'\n" not in text
+            ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
         """install.ps1's custom (non-cu-family) pinned-torch install must bound BOTH
@@ -574,16 +574,16 @@ class TestKnown211SetParity:
         must not pull a companion built for a newer torch ABI while the marker records the
         pin as applied. A cu<digits> family index keeps bare companions (Codex P2)."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        assert '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text, (
-            "install.ps1 custom-pin install must bound torchvision (>=0.19,<0.26.0)"
-        )
-        assert '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text, (
-            "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        )
+        assert (
+            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text
+        ), "install.ps1 custom-pin install must bound torchvision (>=0.19,<0.26.0)"
+        assert (
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
+        ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
         # Gated on the leaf NOT being a cu<digits> family (a cu index bounds itself).
-        assert "$_pinCuLeaf -notmatch '^cu[0-9]+$'" in text, (
-            "install.ps1 must bound companions only for a non-cu-family (custom) pin"
-        )
+        assert (
+            "$_pinCuLeaf -notmatch '^cu[0-9]+$'" in text
+        ), "install.ps1 must bound companions only for a non-cu-family (custom) pin"
         # The bounded companions must actually be passed to the install command.
         assert re.search(
             r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
