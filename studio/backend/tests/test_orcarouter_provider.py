@@ -51,7 +51,7 @@ def test_orcarouter_listed_in_registry_endpoint_payload():
 
 
 def _drive(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 async def _collect(agen):
@@ -107,3 +107,66 @@ def test_orcarouter_stream_uses_chat_completions_with_auth_and_attribution(monke
     assert captured["body"]["model"] == "orcarouter/auto"
     assert captured["body"]["stream"] is True
     assert any("ok" in line for line in lines)
+
+
+# ── Sampling-param stripping for reasoning-class ids ────────────────
+
+
+def _capture_orcarouter_body(monkeypatch, model: str) -> dict:
+    """Drive one streamed request and return the outbound JSON body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "orcarouter",
+            base_url = "https://api.orcarouter.ai/v1",
+            api_key = "sk-orca-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = model,
+                temperature = 0.7,
+                top_p = 0.95,
+                presence_penalty = 0.0,
+                max_tokens = 64,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    return captured["body"]
+
+
+def test_orcarouter_strips_sampling_for_reasoning_ids(monkeypatch):
+    # Reasoning-class upstreams (and `auto`, which can route to one) 400 on a
+    # non-default temperature/top_p/presence_penalty, so those must not reach
+    # the wire.
+    for model in ("orcarouter/auto", "openai/gpt-5.5", "anthropic/claude-opus-4.8", "deepseek/deepseek-v4-pro"):
+        body = _capture_orcarouter_body(monkeypatch, model)
+        assert body["model"] == model
+        assert "temperature" not in body, model
+        assert "top_p" not in body, model
+        assert "presence_penalty" not in body, model
+
+
+def test_orcarouter_keeps_sampling_for_non_reasoning_ids(monkeypatch):
+    # Non-reasoning upstreams accept the sampling knobs; they must pass through
+    # so the UI controls stay functional.
+    for model in ("google/gemini-3.5-flash", "grok/grok-4.3", "qwen/qwen3.7-max"):
+        body = _capture_orcarouter_body(monkeypatch, model)
+        assert body["model"] == model
+        assert body["temperature"] == 0.7, model
+        assert body["top_p"] == 0.95, model
+        assert "presence_penalty" in body, model

@@ -60,6 +60,25 @@ def _openai_image_replay_requires_reasoning(model: str) -> bool:
     return normalized.startswith("gpt-5") or normalized.startswith("o")
 
 
+# OrcaRouter is a meta-router that forwards sampling params verbatim to whatever
+# upstream it selects. Its curated reasoning-class flagships (OpenAI gpt-5.x,
+# Anthropic Opus 4.8, DeepSeek v4 reasoners) 400 on a non-default
+# temperature/top_p/presence_penalty, and `orcarouter/auto` can route to one of
+# them per request — so those knobs are stripped for these ids (see the
+# body_omit note in providers.py; body_omit itself is provider-wide, which the
+# heterogeneous OrcaRouter picker can't use).
+_ORCAROUTER_SAMPLING_STRIPPED_PREFIXES = (
+    "orcarouter/auto",
+    "openai/gpt-5",
+    "anthropic/claude-opus-4.8",
+    "deepseek/deepseek-v4-pro",
+)
+
+
+def _orcarouter_strips_sampling(model: str) -> bool:
+    return model.strip().lower().startswith(_ORCAROUTER_SAMPLING_STRIPPED_PREFIXES)
+
+
 def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]]:
     """Return a Responses input-safe reasoning item, if ``item`` is one.
 
@@ -969,6 +988,15 @@ class ExternalProviderClient:
         provider_info = get_provider_info(self.provider_type) or {}
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
+
+        # OrcaRouter's curated picker mixes reasoning and non-reasoning ids, so a
+        # provider-wide body_omit would wrongly strip sampling for models that
+        # accept it. Strip per-model instead, only for the reasoning-class ids
+        # (and `auto`, which may route to one), which otherwise 400 on the
+        # temperature/top_p/presence_penalty the route layer always fills in.
+        if self.provider_type == "orcarouter" and _orcarouter_strips_sampling(model):
+            for field in ("temperature", "top_p", "presence_penalty"):
+                body.pop(field, None)
 
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always
         # on (ignore the toggle); kimi-k2.6 defaults on, can be disabled.
