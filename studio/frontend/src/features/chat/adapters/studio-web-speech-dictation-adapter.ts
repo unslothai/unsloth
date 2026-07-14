@@ -21,29 +21,31 @@ const stopStream = (stream: MediaStream | null) => {
   stream?.getTracks().forEach((track) => track.stop());
 };
 
+const mediaErrorName = (error: unknown): unknown =>
+  error && typeof error === "object" && "name" in error
+    ? (error as { name?: unknown }).name
+    : undefined;
+
 /** True for getUserMedia errors meaning the requested device is gone. */
 export const isMissingDeviceError = (error: unknown): boolean => {
-  const name =
-    error && typeof error === "object" && "name" in error
-      ? (error as { name?: unknown }).name
-      : undefined;
+  const name = mediaErrorName(error);
   return name === "OverconstrainedError" || name === "NotFoundError";
 };
 
 export const describeMediaError = (error: unknown): string => {
-  if (!(error instanceof DOMException)) {
-    return "Dictation could not access the microphone.";
-  }
-  if (error.name === "NotAllowedError") {
+  const name = mediaErrorName(error);
+  if (name === "NotAllowedError" || name === "SecurityError") {
     return "Microphone access is blocked. Allow microphone access for this Unsloth page, then try again.";
   }
-  if (error.name === "NotFoundError") {
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
     return "No microphone was found for dictation.";
   }
-  if (error.name === "NotReadableError") {
+  if (name === "NotReadableError" || name === "AbortError") {
     return "The microphone is already in use or unavailable.";
   }
-  return error.message || "Dictation could not access the microphone.";
+  return error instanceof Error && error.message
+    ? error.message
+    : "Dictation could not access the microphone.";
 };
 
 export const describeSpeechError = (error: string, message?: string): string => {

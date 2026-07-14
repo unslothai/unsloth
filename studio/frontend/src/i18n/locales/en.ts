@@ -132,7 +132,8 @@ export const en = {
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
-        sectionDescription: "Words or phrases dictation should recognize",
+        sectionDescription:
+          "Apply the spelling entered here when dictation recognizes the same words or phrase",
         addEntry: "Add entry",
       },
       recents: {
