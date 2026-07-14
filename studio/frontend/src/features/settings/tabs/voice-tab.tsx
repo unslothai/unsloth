@@ -20,6 +20,7 @@ import {
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import {
   StudioWebSpeechDictationAdapter,
+  describeSpeechError,
   isMissingDeviceError,
 } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useT } from "@/i18n";
@@ -242,8 +243,12 @@ function DictationTest() {
       }
       setInterim(interimText);
     };
-    recognition.onerror = () => {
-      // an end event follows and finalize() runs there
+    recognition.onerror = (event) => {
+      // onend follows and runs finalize(); surface non-abort failures here.
+      const errorEvent = event as SpeechRecognitionErrorEvent;
+      if (errorEvent.error !== "aborted") {
+        toast.error(describeSpeechError(errorEvent.error, errorEvent.message));
+      }
     };
     recognition.onend = () => finalize();
     try {

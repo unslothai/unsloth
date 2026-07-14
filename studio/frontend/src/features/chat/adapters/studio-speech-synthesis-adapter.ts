@@ -297,22 +297,16 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       },
     };
 
-    if (ttsEngine === "studio") {
+    // Fall back to the backend model when the runtime lacks Web Speech
+    // synthesis (e.g. an audio-only WebView), so read-aloud still works.
+    if (
+      ttsEngine === "studio" ||
+      !StudioSpeechSynthesisAdapter.systemVoicesSupported()
+    ) {
       const session = speakWithStudioModel(text, handleEnd, () => {
         if (res.status.type !== "ended") res.status = { type: "running" };
       });
       cancelImpl = session.cancel;
-      return res;
-    }
-
-    if (!StudioSpeechSynthesisAdapter.systemVoicesSupported()) {
-      cancelImpl = () => handleEnd("cancelled");
-      queueMicrotask(() =>
-        handleEnd(
-          "error",
-          new Error("System speech synthesis is not available here."),
-        ),
-      );
       return res;
     }
 
