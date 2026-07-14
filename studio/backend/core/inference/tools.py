@@ -1381,6 +1381,12 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # sections stripped during conversion; 512 KB reaches article content even
 # where <head> alone is ~200 KB.
 _MAX_FETCH_BYTES = 512 * 1024
+# A decoded page is treated as binary when more than 1/_BINARY_REPLACEMENT_DIVISOR
+# (12.5%) of its chars are U+FFFD, but always tolerating up to
+# _MIN_REPLACEMENT_CHARS stray bad bytes so minor encoding glitches don't drop a
+# real page.
+_MIN_REPLACEMENT_CHARS = 16
+_BINARY_REPLACEMENT_DIVISOR = 8
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1482,6 +1488,26 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
+def _is_texty_content_type(content_type: str) -> bool:
+    """True for MIME types safe to decode as text (HTML pages, plain text,
+    JSON/XML feeds). Binary types (PDF, images, archives, octet-stream) return
+    False so the fetcher never decodes them into a flood of U+FFFD replacement
+    chars that poison the model context (unslothai/unsloth#7084).
+
+    A missing Content-Type coerces to ``text/plain`` upstream, so unlabeled
+    bodies pass here and are caught instead by the replacement-char fallback.
+    """
+    ct = (content_type or "").lower()
+    if not ct:
+        return True  # unlabeled: let the replacement-char fallback decide
+    if ct.startswith("text/"):
+        return True
+    if ct.startswith("application/"):
+        # "xml" also covers xhtml+xml / *+xml; "json" covers *+json.
+        return any(marker in ct for marker in ("json", "xml", "javascript", "csv"))
+    return False
+
+
 def _fetch_page_text(
     url: str,
     max_chars: int = _MAX_PAGE_CHARS,
@@ -1562,8 +1588,29 @@ def _fetch_page_text(
         else:
             return "Failed to fetch URL: too many redirects."
 
+        # Reject binary bodies (PDF, image, archive): decoding them as text
+        # floods the model context with U+FFFD replacement chars (#7084).
+        content_type = resp.headers.get_content_type()
+        if not _is_texty_content_type(content_type):
+            # Trim to a clean MIME token: get_content_type() can echo control
+            # chars from an obs-folded header, and this string is returned to
+            # the model.
+            m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+            safe_type = m.group(0) if m else "unknown type"
+            return (
+                f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; "
+                "not readable as text)"
+            )
+
         charset = resp.headers.get_content_charset() or "utf-8"
         raw_html = raw_bytes.decode(charset, errors = "replace")
+
+        # Fallback for binary mislabeled as text/* or sent with no Content-Type:
+        # a real text page has only a few replacement chars, if any.
+        if raw_html.count("\ufffd") > max(
+            _MIN_REPLACEMENT_CHARS, len(raw_html) // _BINARY_REPLACEMENT_DIVISOR
+        ):
+            return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:
