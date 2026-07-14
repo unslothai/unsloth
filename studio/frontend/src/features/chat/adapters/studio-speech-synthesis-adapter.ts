@@ -59,17 +59,52 @@ function voiceBaseName(voice: SpeechSynthesisVoice): string {
   return name;
 }
 
+// Well-known natural English voices, best first. Breaks ties when the platform
+// gives no quality hint in the name, so basic voices are not just alphabetical.
+const PREFERRED_VOICE_NAMES = [
+  "samantha",
+  "alex",
+  "ava",
+  "allison",
+  "susan",
+  "tom",
+  "daniel",
+  "serena",
+  "karen",
+  "moira",
+  "tessa",
+  "fiona",
+];
+
+// Quality tier from vendor hints in the voice name.
 function voiceQualityScore(voice: SpeechSynthesisVoice): number {
   const name = voice.name.toLowerCase();
   let score = 0;
-  if (name.includes("premium")) score += 8;
-  if (name.includes("enhanced")) score += 7;
-  if (name.includes("natural") || name.includes("neural")) score += 6;
-  if (name.includes("siri")) score += 6;
-  if (name.includes("google")) score += 5;
-  if (name.includes("microsoft")) score += 4;
-  if (voice.default) score += 3;
+  if (name.includes("premium")) score += 100;
+  if (name.includes("siri")) score += 90;
+  if (name.includes("enhanced")) score += 80;
+  if (name.includes("natural") || name.includes("neural")) score += 70;
+  if (name.includes("google")) score += 40;
+  if (name.includes("microsoft")) score += 30;
   return score;
+}
+
+// Higher for voices in the user's exact region, then the same language.
+function voiceLocaleScore(voice: SpeechSynthesisVoice): number {
+  const navLang =
+    typeof navigator !== "undefined" && navigator.language
+      ? navigator.language.toLowerCase()
+      : "en-us";
+  const lang = voice.lang.toLowerCase().replace("_", "-");
+  if (lang === navLang) return 2;
+  if (langBase(lang) === langBase(navLang)) return 1;
+  return 0;
+}
+
+// Rank in the preferred list, best first; 0 when the voice is not listed.
+function voicePreferredRank(voice: SpeechSynthesisVoice): number {
+  const index = PREFERRED_VOICE_NAMES.indexOf(voiceBaseName(voice));
+  return index === -1 ? 0 : PREFERRED_VOICE_NAMES.length - index;
 }
 
 function langBase(tag: string): string {
@@ -107,12 +142,33 @@ export function curateSystemVoices(
   });
 
   kept.sort((a, b) => {
-    const scoreDiff = voiceQualityScore(b) - voiceQualityScore(a);
-    if (scoreDiff !== 0) return scoreDiff;
+    const quality = voiceQualityScore(b) - voiceQualityScore(a);
+    if (quality !== 0) return quality;
+    const locale = voiceLocaleScore(b) - voiceLocaleScore(a);
+    if (locale !== 0) return locale;
+    const preferred = voicePreferredRank(b) - voicePreferredRank(a);
+    if (preferred !== 0) return preferred;
+    const byDefault = Number(b.default) - Number(a.default);
+    if (byDefault !== 0) return byDefault;
     return a.name.localeCompare(b.name);
   });
 
-  const curated = kept.slice(0, MAX_CURATED_VOICES);
+  // macOS reports some voices twice (a compact and an enhanced copy) under the
+  // same name. Keep one per name and language, preferring the selected voice
+  // then the best ranked, so the list shows no duplicates.
+  const keyOf = (voice: SpeechSynthesisVoice) =>
+    `${voiceBaseName(voice)}|${voice.lang.toLowerCase()}`;
+  const winners = new Map<string, string>();
+  for (const voice of kept) {
+    const key = keyOf(voice);
+    if (!winners.has(key)) winners.set(key, voice.voiceURI);
+    if (voice.voiceURI === selectedVoiceURI) winners.set(key, voice.voiceURI);
+  }
+  const deduped = kept.filter(
+    (voice) => winners.get(keyOf(voice)) === voice.voiceURI,
+  );
+
+  const curated = deduped.slice(0, MAX_CURATED_VOICES);
   if (
     selectedVoiceURI &&
     selectedVoiceURI !== "default" &&
