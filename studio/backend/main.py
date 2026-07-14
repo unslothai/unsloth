@@ -234,6 +234,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 import hashlib
+import ipaddress
 import mimetypes
 import re as _re
 import shutil
@@ -1363,6 +1364,28 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     return (scheme, host, port)
 
 
+def _is_loopback_client(request: Request) -> bool:
+    """True only when the HTTP client is on this machine (a loopback peer).
+
+    Gates the bootstrap-credential auto-fill so a wildcard bind (``-H 0.0.0.0``)
+    never serves the seeded admin password in-page to a LAN peer; a remote peer
+    must read it from the terminal instead. Fails safe: an absent, unparseable,
+    or non-loopback peer is treated as remote. Reads the real socket peer, which
+    is trustworthy in the default deployment: uvicorn only trusts forwarded
+    headers under Colab, and the caller exempts Colab. A user-run reverse proxy
+    that rewrites the peer to loopback is out of scope.
+    """
+    client = request.client
+    if client is None:
+        return False
+    try:
+        ip = ipaddress.ip_address(client.host)
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
 def _is_same_origin_request(request: Request) -> bool:
     """True when Origin is missing or matches request's scheme://host:port.
 
@@ -1410,8 +1433,10 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request):
+        # Bootstrap pw is same-origin only, and (outside Colab's single-user
+        # sandbox) only to a client on this machine: a wildcard bind must not
+        # serve it in-page to a LAN peer. Vary: Origin keeps caches honest.
+        if _is_same_origin_request(request) and (_IS_COLAB or _is_loopback_client(request)):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None
