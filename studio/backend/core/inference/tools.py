@@ -1609,9 +1609,7 @@ def _fetch_page_text(
             # the model.
             m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
             safe_type = m.group(0) if m else "unknown type"
-            return (
-                f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)"
-            )
+            return f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)"
 
         charset = resp.headers.get_content_charset() or "utf-8"
         raw_html = raw_bytes.decode(charset, errors = "replace")
