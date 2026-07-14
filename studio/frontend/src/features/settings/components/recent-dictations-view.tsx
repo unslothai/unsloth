@@ -12,6 +12,18 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -19,9 +31,10 @@ import {
   ArrowLeft01Icon,
   Copy01Icon,
   Delete02Icon,
+  Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   type RecentDictation,
   useVoiceSettingsStore,
@@ -31,6 +44,8 @@ type PendingDelete =
   | { kind: "one"; dictation: RecentDictation }
   | { kind: "all" }
   | null;
+
+type SortOrder = "newest" | "oldest" | "az";
 
 function formatDictationDate(ms: number): string {
   return new Date(ms).toLocaleString(undefined, {
@@ -60,8 +75,26 @@ export function RecentDictationsView({
     (s) => s.clearRecentDictations,
   );
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
+  const [search, setSearch] = useState("");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const selected =
     recentDictations.find((dictation) => dictation.id === selectedId) ?? null;
+
+  const visible = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const filtered = query
+      ? recentDictations.filter((d) => d.text.toLowerCase().includes(query))
+      : recentDictations;
+    const sorted = [...filtered];
+    if (sortOrder === "oldest") {
+      sorted.sort((a, b) => a.at - b.at);
+    } else if (sortOrder === "az") {
+      sorted.sort((a, b) => a.text.localeCompare(b.text));
+    } else {
+      sorted.sort((a, b) => b.at - a.at);
+    }
+    return sorted;
+  }, [recentDictations, search, sortOrder]);
 
   async function handleCopy(text: string) {
     if (await copyToClipboard(text)) {
@@ -153,71 +186,124 @@ export function RecentDictationsView({
           {t("settings.voice.recents.empty")}
         </p>
       ) : (
-        <div className="flex flex-col">
-          <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
-            <span className="min-w-0 flex-1">
-              {t("settings.voice.recents.dictationColumn")}
-            </span>
-            <span className="hidden w-40 shrink-0 sm:block">
-              {t("settings.voice.recents.dateColumn")}
-            </span>
-            <span className="w-16 shrink-0" />
-          </div>
-          {recentDictations.map((dictation) => (
-            <div
-              key={dictation.id}
-              className="group flex items-stretch gap-2 border-b border-border/40 last:border-0"
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <InputGroup className="h-8 flex-1">
+              <InputGroupAddon align="inline-start">
+                <HugeiconsIcon
+                  icon={Search01Icon}
+                  strokeWidth={2}
+                  className="size-3.5 text-muted-foreground"
+                />
+              </InputGroupAddon>
+              <InputGroupInput
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t("settings.voice.recents.searchPlaceholder")}
+                aria-label={t("settings.voice.recents.searchPlaceholder")}
+                className="text-sm"
+              />
+            </InputGroup>
+            <Select
+              value={sortOrder}
+              onValueChange={(value) => setSortOrder(value as SortOrder)}
             >
-              <button
-                type="button"
-                onClick={() => onSelect(dictation.id)}
-                aria-label={t("settings.voice.recents.view")}
-                className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              <SelectTrigger
+                size="sm"
+                className="w-36 shrink-0"
+                aria-label={t("settings.voice.recents.sortLabel")}
               >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="newest">
+                  {t("settings.voice.recents.sortNewest")}
+                </SelectItem>
+                <SelectItem value="oldest">
+                  {t("settings.voice.recents.sortOldest")}
+                </SelectItem>
+                <SelectItem value="az">
+                  {t("settings.voice.recents.sortAlpha")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {visible.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              {t("settings.voice.recents.noMatches")}
+            </p>
+          ) : (
+            <div className="flex flex-col">
+              <div className="flex items-center gap-4 border-b border-border/60 px-1 pb-2 text-xs font-semibold text-foreground">
                 <span className="min-w-0 flex-1">
-                  <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
-                    {dictation.text}
-                  </span>
-                  <span className="mt-1 block text-xs text-muted-foreground sm:hidden">
-                    {formatDictationDate(dictation.at)}
-                  </span>
+                  {t("settings.voice.recents.dictationColumn")}
                 </span>
-                <span className="hidden w-40 shrink-0 text-sm text-muted-foreground tabular-nums sm:block">
-                  {formatDictationDate(dictation.at)}
+                <span className="hidden w-40 shrink-0 sm:block">
+                  {t("settings.voice.recents.dateColumn")}
                 </span>
-              </button>
-              <span className="flex w-16 shrink-0 items-center justify-end gap-1">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await handleCopy(dictation.text);
-                  }}
-                  aria-label={t("settings.voice.recents.copy")}
-                  title={t("settings.voice.recents.copy")}
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                <span className="w-16 shrink-0" />
+              </div>
+              {visible.map((dictation) => (
+                <div
+                  key={dictation.id}
+                  className="group flex items-stretch gap-2 border-b border-border/40 last:border-0"
                 >
-                  <HugeiconsIcon
-                    icon={Copy01Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingDelete({ kind: "one", dictation })}
-                  aria-label={t("settings.voice.recents.delete")}
-                  title={t("settings.voice.recents.delete")}
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <HugeiconsIcon
-                    icon={Delete02Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
-              </span>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(dictation.id)}
+                    aria-label={t("settings.voice.recents.view")}
+                    className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
+                        {dictation.text}
+                      </span>
+                      <span className="mt-1 block text-xs text-muted-foreground sm:hidden">
+                        {formatDictationDate(dictation.at)}
+                      </span>
+                    </span>
+                    <span className="hidden w-40 shrink-0 text-sm text-muted-foreground tabular-nums sm:block">
+                      {formatDictationDate(dictation.at)}
+                    </span>
+                  </button>
+                  <span className="flex w-16 shrink-0 items-center justify-end gap-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await handleCopy(dictation.text);
+                      }}
+                      aria-label={t("settings.voice.recents.copy")}
+                      title={t("settings.voice.recents.copy")}
+                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <HugeiconsIcon
+                        icon={Copy01Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPendingDelete({ kind: "one", dictation })
+                      }
+                      aria-label={t("settings.voice.recents.delete")}
+                      title={t("settings.voice.recents.delete")}
+                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <HugeiconsIcon
+                        icon={Delete02Icon}
+                        strokeWidth={1.75}
+                        className="size-4"
+                      />
+                    </button>
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+
           <div className="flex justify-end border-t border-border/60 pt-3">
             <Button
               variant="outline"
