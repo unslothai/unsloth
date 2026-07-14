@@ -4,8 +4,8 @@
 """
 Static registry of supported external LLM providers.
 
-All providers expose OpenAI-compatible /v1/chat/completions endpoints
-with Bearer token auth and SSE streaming.
+Provider-specific protocol, authentication, and streaming behavior is handled
+by ``external_provider.py`` using the metadata declared here.
 """
 
 import re
