@@ -691,3 +691,60 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     assert recs["finished"][0]["status"] == "stopped"
     assert recs["insert_ids"] == ["job_old"], "buffered metrics must land on the captured run"
     assert b._metric_buffer == [], "the captured batch must be drained"
+
+
+def test_escalation_does_not_claim_finalize_before_row_exists(monkeypatch):
+    # Item A (round 4): if the DB row is not created yet (an early create failed and the
+    # pump is retrying it), the escalation must not claim _run_finalized or call
+    # _finish_stopped_run, so the pump's later create-then-finalize still records the run.
+    b = TrainingBackend()
+    called: list = []
+    monkeypatch.setattr(b, "_finish_stopped_run", lambda *a: called.append(a))
+
+    b._proc = _FakeProc(alive = False)
+    b.current_job_id = "job_q"
+    b._db_run_created = False  # row not created yet
+    b._run_finalized = False
+    b._progress.is_training = True
+
+    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_q")
+
+    assert called == [], "must not finalize before the row exists"
+    assert b._run_finalized is False, "must not claim the finalize the pump still owes"
+    assert b._progress.is_training is False, "parent state must still clear so the UI unsticks"
+    assert b._proc is None
+
+
+def test_finish_stopped_run_requeues_on_db_error(monkeypatch):
+    # Item B (round 4): a transient DB error must unclaim the finalize and requeue the
+    # drained metrics (when the run is still current) so a later retry can record it stopped.
+    _install_fake_db(monkeypatch)
+    sys.modules["storage.studio_db"].finish_run = lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("database is locked")
+    )
+    b = TrainingBackend()
+    b.current_job_id = "job_r"
+    b._run_finalized = True  # the caller (escalation) already claimed
+    b._metric_buffer[:] = []  # the caller already drained the batch
+
+    b._finish_stopped_run("job_r", None, [{"step": 1}], 1, None, None, [])
+
+    assert b._run_finalized is False, "a DB error must unclaim so the pump can retry"
+    assert b._metric_buffer == [{"step": 1}], "the drained batch must be requeued for retry"
+
+
+def test_finish_stopped_run_error_leaves_new_run_untouched(monkeypatch):
+    # If the watched run was superseded, a DB error must not unclaim/requeue onto the new run.
+    _install_fake_db(monkeypatch)
+    sys.modules["storage.studio_db"].finish_run = lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("database is locked")
+    )
+    b = TrainingBackend()
+    b.current_job_id = "job_new"  # a new run is live
+    b._run_finalized = True  # the new run's flag
+    b._metric_buffer[:] = [{"step": 99}]  # the new run's buffer
+
+    b._finish_stopped_run("job_old", None, [{"step": 1}], 1, None, None, [])
+
+    assert b._run_finalized is True, "must not unclaim the new run's finalize"
+    assert b._metric_buffer == [{"step": 99}], "must not corrupt the new run's buffer"

@@ -1087,12 +1087,15 @@ class TrainingBackend:
             if watched_job_id is not None and self.current_job_id != watched_job_id:
                 return  # a new run is already starting up; leave its state alone
             run_id = self.current_job_id  # == watched_job_id; capture before exposing idle
-            db_created = self._db_run_created
-            already_final = self._run_finalized
+            # Only claim the finalize when the row already exists. If creation is still in
+            # progress (an early create failed and the pump is retrying it), claiming here
+            # would make the pump's later finalize no-op and strand the row as running, so
+            # leave the finalize to that create-then-finalize path.
+            do_finalize = bool(run_id) and self._db_run_created and not self._run_finalized
             batch: list = []
             final_step = final_loss = duration = None
             loss_history: list = []
-            if not already_final:
+            if do_finalize:
                 self._run_finalized = True  # claim this run's finalize
                 batch = list(self._metric_buffer)
                 del self._metric_buffer[: len(batch)]
@@ -1106,7 +1109,7 @@ class TrainingBackend:
             self._progress.status_message = "Training stopped."
             output_dir = self._output_dir
             self._proc = None
-        if run_id and db_created and not already_final:
+        if do_finalize:
             self._finish_stopped_run(
                 run_id, output_dir, batch, final_step, final_loss, duration, loss_history
             )
@@ -1126,7 +1129,9 @@ class TrainingBackend:
         longer current (a new run started in the gap after the backend went idle) is still
         finalized. insert_metrics_batch upserts and finish_run is an idempotent UPDATE, so
         a concurrent pump finalize of the same run is harmless and a different current run
-        is never touched."""
+        is never touched. On a DB error (e.g. a transient SQLite lock), the finalize is
+        unclaimed and the metrics re-queued when the run is still current, so the pump or a
+        later retry can still record it stopped instead of stranding the row as running."""
         try:
             from storage.studio_db import finish_run, insert_metrics_batch
             from utils.downsample import downsample
@@ -1147,6 +1152,12 @@ class TrainingBackend:
             )
         except Exception:
             logger.warning("Failed to finalize stopped run %s in DB", run_id, exc_info = True)
+            with self._lock:
+                # Only if this run is still current; a new run's state must never be touched.
+                if self.current_job_id == run_id:
+                    self._run_finalized = False  # unclaim so the pump/a later retry finalizes
+                    if batch:
+                        self._metric_buffer[:0] = batch  # requeue drained metrics for retry
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
         """Force-kill the training subprocess so state can be reset immediately. With
