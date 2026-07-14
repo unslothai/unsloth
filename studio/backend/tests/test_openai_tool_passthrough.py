@@ -6877,6 +6877,72 @@ class TestApiMonitorAudioInput:
 
         asyncio.run(_run())
 
+    def test_cancelled_non_gguf_tts_does_not_commit_memory(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+            from core.inference import memory as chat_memory
+
+            class DummyTtsBackend:
+                active_model_name = "tts-model"
+                models = {
+                    "tts-model": {
+                        "is_audio": True,
+                        "audio_type": "snac",
+                    }
+                }
+
+            commits = []
+
+            async def fake_generate_audio(
+                _payload,
+                _request,
+                current_subject = None,
+            ):
+                assert inf_mod._cancel_by_cancel_id_or_stash("tts-cancel") == 1
+                return inf_mod.JSONResponse(content = {"choices": []})
+
+            monkeypatch.setattr(chat_memory, "get_memory_settings", lambda: (True, True))
+            monkeypatch.setattr(
+                chat_memory, "explicit_command", lambda *_: commits.append("explicit")
+            )
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(is_loaded = False),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
+            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "remember that I use tabs")],
+                cancel_id = "tts-cancel",
+                memory_scope = MemoryScopeRequest(
+                    thread_id = "thread",
+                    source_message_id = "message",
+                    recall = False,
+                    allow_explicit_commands = True,
+                    auto_capture = False,
+                ),
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            response = await inf_mod.openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            assert request.state.memory_cancel_event.is_set()
+            assert response.background is not None
+            await response.background()
+            assert commits == []
+
+        asyncio.run(_run())
+
     def test_non_gguf_tts_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod

@@ -200,6 +200,35 @@ def test_direct_statement_skips_question_shaped_claims(tmp_path, monkeypatch):
     assert studio_db.list_chat_memories() == []
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "Can you remember how to configure dark mode?",
+        "Could you remember what my dark mode setting is?",
+        "Would you please remember why dark mode is enabled?",
+        "Can you remember which dark mode setting I chose?",
+        "Could you remember if dark mode is enabled?",
+    ),
+)
+def test_recall_style_remember_questions_are_not_saved(tmp_path, monkeypatch, question):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "Configure dark mode in settings", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": question}],
+        },
+    )
+
+    context = memory.recall_context("thread", "message")
+    assert context is not None and saved["content"] in context
+    assert memory.explicit_command("thread", "message") == []
+    assert studio_db.list_chat_memories() == [saved]
+
+
 def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
     _setup_source(tmp_path, monkeypatch)
     saved = memory.create_memory(content = "Use dark mode", scope = "global")
@@ -416,6 +445,37 @@ def test_recall_requires_relevant_content(tmp_path, monkeypatch):
     assert memory.recall_context("thread", "message") is None
 
 
+def test_profile_facts_require_relevant_saved_memory(tmp_path, monkeypatch):
+    _setup_source(tmp_path, monkeypatch)
+    memory.create_memory(content = "My favorite editor is Helix", scope = "global")
+    monkeypatch.setattr(memory, "_profile_fields", lambda: {"Display name": "Wasim"})
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "Help me debug this error"}],
+        },
+    )
+
+    assert memory.recall_context("thread", "message") is None
+
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "Which editor do I prefer?"}],
+        },
+    )
+    context = memory.recall_context("thread", "message")
+    assert context is not None
+    assert "My favorite editor is Helix" in context
+    assert "<profile>\n- Display name: Wasim\n</profile>" in context
+
+
 @pytest.mark.parametrize(
     ("saved_content", "query"),
     (
@@ -447,6 +507,11 @@ def test_recall_ignores_first_person_filler_overlap(tmp_path, monkeypatch, saved
         "I am Muslim",
         "I have diabetes",
         "I'm allergic to latex",
+        "I am Republican",
+        "I am a Democrat",
+        "I am Catholic",
+        "I am bisexual",
+        "We are pansexual",
     ),
 )
 def test_automatic_capture_rejects_concrete_sensitive_attributes(tmp_path, monkeypatch, content):

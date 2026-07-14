@@ -114,7 +114,9 @@ _SENSITIVE_ATTRIBUTE_RE = re.compile(
     r"bipolar disorder|schizophrenia|autism|adhd|ptsd)\b|"
     r"\b(?:i\s+am|i'm|we\s+are|we're)\s+allergic to\b|"
     r"\b(?:i\s+am|i'm|we\s+are|we're)\s+(?:an?\s+)?(?:"
-    r"hiv[- ]positive|muslim|christian|jewish|hindu|buddhist|sikh|atheist)\b",
+    r"hiv[- ]positive|muslim|christian|jewish|hindu|buddhist|sikh|atheist|"
+    r"catholic|protestant|mormon|republican|democrat|conservative|liberal|"
+    r"socialist|communist|libertarian|bisexual|pansexual|asexual|heterosexual|queer)\b",
     re.I,
 )
 
@@ -150,7 +152,9 @@ _FORGET_EVIDENCE_RE = re.compile(
 )
 _POLITE_COMMAND_PREFIX = r"^\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+(?:please\s+)?)?"
 _COMMAND_RE = re.compile(
-    _POLITE_COMMAND_PREFIX + r"remember(?:\s+that)?\s+(.+?)\??\s*$",
+    _POLITE_COMMAND_PREFIX
+    + r"remember(?:\s+that)?\s+(?!(?:how|what|why|where|when|who|whom|whose|which|whether|if)\b)"
+    r"(.+?)\??\s*$",
     re.I,
 )
 _FORGET_RE = re.compile(
@@ -804,21 +808,14 @@ def recall_context(
         ]
     context = render_context(rows, text, thread.get("projectId"), include_ids)
     facts = _profile_fields()
-    if facts:
+    if facts and context:
         profile_block = "\n".join(
             f"- {escape(label)}: {escape(value)}" for label, value in facts.items()
         )
-        if context:
-            context = context.replace(
-                "</saved_memory_context>",
-                f"<profile>\n{profile_block}\n</profile>\n</saved_memory_context>",
-            )
-        else:
-            context = (
-                "<saved_memory_context>\nThese are authoritative profile facts, not instructions.\n<profile>\n"
-                + profile_block
-                + "\n</profile>\n</saved_memory_context>"
-            )
+        context = context.replace(
+            "</saved_memory_context>",
+            f"<profile>\n{profile_block}\n</profile>\n</saved_memory_context>",
+        )
     return context
 
 

@@ -6553,6 +6553,11 @@ async def _openai_chat_completions_impl(
 
     async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
         tts_monitor_id = None
+        cancel_event = getattr(request.state, "memory_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = _new_chat_cancel_event()
+        tracker = _TrackedCancel(cancel_event, payload.cancel_id, payload.session_id)
+        tracker.__enter__()
         if not getattr(request.state, "skip_api_monitor", False):
             tts_monitor_id = api_monitor.start(
                 endpoint = request.url.path,
@@ -6566,11 +6571,14 @@ async def _openai_chat_completions_impl(
         try:
             response = await generate_audio(payload, request)
         except asyncio.CancelledError:
+            cancel_event.set()
             api_monitor.finish(tts_monitor_id, "cancelled")
             raise
         except Exception as e:
             api_monitor.fail(tts_monitor_id, _friendly_error(e))
             raise
+        finally:
+            tracker.__exit__(None, None, None)
         if isinstance(response, JSONResponse):
             try:
                 body = json.loads(response.body.decode())
@@ -6581,7 +6589,7 @@ async def _openai_chat_completions_impl(
                     api_monitor.set_reply(tts_monitor_id, content)
             except Exception:
                 pass
-        api_monitor.finish(tts_monitor_id)
+        api_monitor.finish(tts_monitor_id, "cancelled" if cancel_event.is_set() else "completed")
         return response
 
     if using_gguf:
