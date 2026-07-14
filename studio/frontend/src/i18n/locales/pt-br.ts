@@ -91,6 +91,8 @@ export const ptBR = {
       title: "Configurações",
       description: "Gerencie suas preferências do Unsloth.",
       closeAriaLabel: "Fechar configurações",
+      searchPlaceholder: "Pesquisar configurações…",
+      searchNoResults: "Nenhuma configuração encontrada.",
     },
     tabs: {
       general: "Geral",
@@ -113,7 +115,7 @@ export const ptBR = {
       hideToken: "Ocultar token",
       showToken: "Mostrar token",
       password: "Senha",
-      passwordDescription: "Altere a senha desta conta do Studio.",
+      passwordDescription: "Altere a senha desta conta do Unsloth.",
       passwordDialog: {
         trigger: "Alterar senha",
         title: "Alterar senha",
@@ -247,7 +249,11 @@ export const ptBR = {
       avatarShape: "Formato da foto de perfil",
       avatarShapeCircle: "Círculo",
       avatarShapeRounded: "Arredondado",
-      chooseSloth: "Ou escolha uma preguiça",
+      greetingSloth: "Preguiça na saudação",
+      greetingSlothDescription: "Mostra a preguiça na saudação do chat.",
+      chooseSloth: "Ou escolha uma preguiça como foto de perfil",
+      noPicture: "Sem foto de perfil",
+      noneLabel: "Nenhuma",
       nameSaved: "Nome de perfil salvo",
       namePersistErrorTitle: "Não foi possível persistir o nome de perfil",
       namePersistErrorDescription:
@@ -270,6 +276,95 @@ export const ptBR = {
         light: "Claro",
         dark: "Escuro",
       },
+      palette: {
+        label: "Paleta de cores",
+        description: "Cores usadas no Unsloth, nos modos claro e escuro.",
+        standard: "Padrão",
+        classic: "Clássico",
+        minimal: "Minimalista",
+      },
+      custom: {
+        reset: "Redefinir",
+        resetAll: "Redefinir personalização",
+        preferencesTitle: "Preferências",
+        colors: {
+          lightGroup: "Tema claro",
+          darkGroup: "Tema escuro",
+          accent: "Destaque",
+          background: "Fundo",
+          foreground: "Texto",
+        },
+        fontDefault: "Padrão",
+        fontBundledGroup: "Integradas",
+        fontImportedGroup: "Importadas",
+        fontDeviceGroup: "Neste dispositivo",
+        fontFolderGroup: "Da pasta",
+        fontDeviceLoading: "Procurando fontes do dispositivo…",
+        fontSearch: "Buscar fontes…",
+        fontNoResults: "Nenhuma fonte encontrada.",
+        colorPicker: {
+          hue: "Matiz",
+          hex: "Cor hexadecimal",
+          eyedropper: "Escolher uma cor da tela",
+        },
+        uiFont: {
+          label: "Fonte da interface",
+        },
+        headingFont: {
+          label: "Fonte de títulos",
+        },
+        chatFont: {
+          label: "Fonte do chat",
+        },
+        codeFont: {
+          label: "Fonte de código",
+        },
+        importFont: {
+          upload: "Enviar",
+          scanFolder: "Selecionar pasta",
+          alreadyAvailable: "Esta fonte já está disponível, então a cópia existente será usada.",
+          folderNoFonts: "Nenhum arquivo de fonte encontrado nessa pasta.",
+          remove: "Remover",
+          errorInvalidType:
+            "Tipo de arquivo não suportado. Use .woff2, .woff, .ttf ou .otf.",
+          errorTooLarge: "O arquivo de fonte é muito grande (máx. 1,5 MB).",
+          errorLimit: "Você pode importar até 3 fontes.",
+          errorStorageFull: "Sem espaço de armazenamento local para esta fonte. Remova uma fonte importada primeiro.",
+          errorFailed: "Não foi possível carregar este arquivo de fonte.",
+        },
+        uiFontSize: {
+          label: "Tamanho da fonte da interface",
+          description: "Ajuste o tamanho base da interface do Unsloth.",
+        },
+        codeFontSize: {
+          label: "Tamanho da fonte de código",
+          description: "Ajuste o tamanho base do código.",
+        },
+        fontSmoothing: {
+          label: "Suavização de fonte",
+          description: "Usar anti-aliasing suavizado nas fontes.",
+        },
+        edgeFades: {
+          label: "Esmaecimento nas bordas",
+          description: "Esmaece o conteúdo nas bordas dos painéis. Desligado mostra uma linha divisória fina.",
+        },
+        contrast: {
+          label: "Contraste",
+          description: "Intensidade das bordas e do texto secundário.",
+        },
+        reduceMotion: {
+          label: "Reduzir movimento",
+          description: "Reduza as animações ou siga o sistema.",
+          system: "Sistema",
+          on: "Ativado",
+          off: "Desativado",
+        },
+        pointerCursors: {
+          label: "Usar cursor de ponteiro",
+          description:
+            "Muda o cursor para ponteiro ao passar sobre elementos interativos.",
+        },
+      },
       language: {
         title: "Idioma",
         label: "Idioma de exibição",
@@ -282,10 +377,17 @@ export const ptBR = {
         compactSidebarDescription:
           "Mantém a barra lateral expandida em vez de recolhê-la em ícones.",
       },
+      sidebarMenu: {
+        title: "Menu da barra lateral",
+        description:
+          "Mostre, oculte e reordene os itens do menu de perfil da barra lateral. Configurações, Ajuda, Sair e Desligar permanecem fixos.",
+        darkModeToggle: "Alternador de modo escuro",
+        dragToReorder: "Arraste para reordenar",
+      },
     },
     resources: {
       title: "Sistema",
-      description: "Monitore o hardware e o armazenamento deste servidor Studio.",
+      description: "Monitore o hardware e o armazenamento deste servidor Unsloth.",
       liveUpdates: "Atualizações ao vivo",
       floatingWindow: "Janela flutuante",
       disableOverlay: "Desativar sobreposição",
