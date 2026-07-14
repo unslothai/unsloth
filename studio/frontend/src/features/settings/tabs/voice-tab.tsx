@@ -134,6 +134,9 @@ function SttModelCombobox({
   const t = useT();
   const hfToken = useHfTokenStore((state) => state.token);
   const anchorRef = useRef<HTMLDivElement>(null);
+  // Set while a pick is in flight so the input keeps the model's display text
+  // instead of the combobox writing the raw value back as a search query.
+  const selectingRef = useRef(false);
   const [inputValue, setInputValue] = useState(() => displaySttModel(value));
   // A pick fills the input with the model's display text. Treat that text as a
   // selection, not a search, so choosing a model never triggers a lookup.
@@ -195,6 +198,7 @@ function SttModelCombobox({
     if (!(model && isSttModelId(model))) {
       return;
     }
+    selectingRef.current = true;
     onChange(model);
     setInputValue(displaySttModel(model));
   };
@@ -223,7 +227,15 @@ function SttModelCombobox({
         value={value}
         inputValue={inputValue}
         onValueChange={selectModel}
-        onInputValueChange={setInputValue}
+        onInputValueChange={(next) => {
+          // Ignore the value the combobox echoes back on a pick; keep our display.
+          if (selectingRef.current) {
+            selectingRef.current = false;
+            return;
+          }
+          setInputValue(next);
+        }}
+        itemToStringLabel={displaySttModel}
         itemToStringValue={displaySttModel}
         autoHighlight={true}
       >
@@ -254,9 +266,17 @@ function SttModelCombobox({
             {(model: string) => {
               const curated = (STT_MODELS as readonly string[]).includes(model);
               return (
-                <ComboboxItem key={model} value={model}>
+                <ComboboxItem
+                  key={model}
+                  value={model}
+                  onPointerDown={() => {
+                    selectingRef.current = true;
+                  }}
+                >
                   <span className="min-w-0 flex-1 truncate">
-                    {sttModelName(model)}
+                    <span className="block truncate text-xs">
+                      {sttModelName(model)}
+                    </span>
                     {curated ? (
                       <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
                         {getSttModelRepo(model)}
@@ -264,7 +284,7 @@ function SttModelCombobox({
                     ) : null}
                   </span>
                   {sttModelSize(model) ? (
-                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
                       {sttModelSize(model)}
                     </span>
                   ) : null}
