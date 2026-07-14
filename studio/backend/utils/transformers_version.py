@@ -954,14 +954,18 @@ _LATEST_REPAIR_BACKOFF_SECS = 5 * 60
 
 
 def _latest_sidecar_intact() -> bool:
-    """Pinned latest sidecar has its transformers dir and every pinned package.
-    A sidecar that kept transformers/ but lost a pinned package would otherwise
-    route models to the latest tier and fail activation in workers, which refuse
-    parent-only repairs."""
+    """The pinned latest sidecar exists with its transformers dir and every pinned
+    package. False when the pin itself is gone: a cached 'latest' mapping must then be
+    dropped (routing re-resolves to no latest tier), not trusted, and a sidecar that kept
+    transformers/ but lost a pinned package must self-heal rather than route models to a
+    latest tier that fails activation in workers, which refuse parent-only repairs.
+
+    (_overlay_transformers_dir only calls this after gating on a present pin, so the
+    pin-missing case here is the cache-revalidation caller whose pin was deleted after
+    the mapping was first cached.)"""
     pin = _latest_pin_data()
     if pin is None:
-        # No valid pin means nothing to repair against (callers gate on the pin).
-        return True
+        return False
     return _venv_dir_is_valid(_VENV_T5_LATEST_DIR, tuple(pin["packages"]))
 
 

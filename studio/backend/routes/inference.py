@@ -4663,16 +4663,33 @@ async def validate_model(
                     transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
                     break
 
-        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way;
-        # else validation passes a load /load then 409s. An installable upgrade counts
-        # too: after the consent dialog installs it, /load and the worker force 16-bit.
+        # Whether the model can load on the CURRENT transformers through its own remote
+        # code (auto_map, or the YAML trust default). Computed before the 16-bit flip
+        # because a model with this fallback still loads 4-bit without the offered install,
+        # exactly as /load does.
+        requires_trust_remote_code = False
+        if not is_gguf:
+            requires_trust_remote_code = any(
+                _requires_trust_remote_code_for_model(_t, request.hf_token)
+                for _t in security_targets
+            )
+
+        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way. An
+        # ALREADY-ACTIVE latest sidecar always forces 16-bit (the worker will). A merely
+        # OFFERED (not yet installed) upgrade forces 16-bit only when the model has NO
+        # custom-code fallback: with auto_map it still loads 4-bit on the current
+        # transformers (as /load does without a successful install), and the install route
+        # refuses while training is active, so sizing 16-bit here would 409 the only viable
+        # 4-bit path. /load re-sizes 16-bit after a successful install and re-guards there.
         if effective_load_in_4bit and not is_gguf:
             from utils.transformers_version import latest_tier_active_for
-            if (
+            _install_only_upgrade = (
                 transformers_upgrade is not None
                 and transformers_upgrade.supported_in_pypi
                 and transformers_upgrade.pypi_version
-            ) or await asyncio.to_thread(
+                and not requires_trust_remote_code
+            )
+            if _install_only_upgrade or await asyncio.to_thread(
                 latest_tier_active_for, config.identifier, request.hf_token
             ):
                 effective_load_in_4bit = False
@@ -4689,14 +4706,10 @@ async def validate_model(
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
         # mixed repo are inert for this load, so gating on them is a false positive. Only
-        # run the remote-code/security preflight for non-GGUF loads.
-        requires_trust_remote_code = False
+        # run the security preflight for non-GGUF loads (requires_trust_remote_code was
+        # already resolved above for the sizing flip).
         requires_security_review = False
         if not is_gguf:
-            requires_trust_remote_code = any(
-                _requires_trust_remote_code_for_model(_t, request.hf_token)
-                for _t in security_targets
-            )
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )

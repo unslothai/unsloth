@@ -2669,6 +2669,25 @@ class TestLatestTierForces16Bit:
             "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0]
         ), "an installable upgrade must force 16-bit sizing for the guard"
 
+    def test_validate_offered_upgrade_preserves_custom_code_4bit(self):
+        # A merely-offered (not installed) upgrade must NOT force 16-bit sizing when the
+        # model has a custom-code (auto_map) fallback: /load loads it 4-bit without the
+        # install, and the install route refuses during active training, so 16-bit sizing
+        # here would 409 the only viable 4-bit path.
+        src = self._read("routes/inference.py")
+        body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
+        flip = body.split("Mirror /load's latest-sidecar 16-bit flip", 1)[1].split(
+            "_guard_chat_load_against_training", 1
+        )[0]
+        assert "not requires_trust_remote_code" in flip, (
+            "the offered-upgrade 16-bit flip must be gated on the absence of a custom-code "
+            "fallback so /validate does not 409 a 4-bit load /load would allow"
+        )
+        # requires_trust_remote_code must be resolved before the flip consumes it.
+        assert body.index("requires_trust_remote_code = any(") < body.index(
+            "not requires_trust_remote_code"
+        )
+
     def test_install_route_guards_active_latest_workers(self):
         # Stage-and-swap replaces .venv_t5_latest in place, so a live worker on the
         # old sidecar would lazy-import files from the new version.
@@ -2955,6 +2974,20 @@ class TestCachedLatestMappingRevalidated:
         )
         assert tv._config_model_types("530") == frozenset({"gemma3"})
 
+    def test_deleted_pin_drops_cached_latest_mapping(self, monkeypatch, tmp_path):
+        # A pin marker deleted after the mapping was cached makes _latest_pin_data None;
+        # the cache must be dropped (not trusted), so routing re-resolves to no latest tier
+        # rather than routing to a latest tier that then fails worker activation.
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
+        # No pin marker on disk -> _latest_pin_data() is None -> not intact.
+        assert tv._latest_sidecar_intact() is False
+        assert tv._config_model_types("latest") == frozenset()
+        assert "latest" not in tv._config_mapping_cache
+
 
 class TestOverlayRepairsIncompleteSidecar:
     """Routing self-heals a pinned latest sidecar that is present but incomplete,
@@ -3085,6 +3118,9 @@ class TestKillSwitchBeatsMappingCache:
         import utils.transformers_version as tv
 
         monkeypatch.setitem(tv._config_mapping_cache, "latest", frozenset({"brandnew"}))
+        # The cache is trusted only when the sidecar is intact; hold it intact so this
+        # test isolates the kill switch, not the sidecar-revalidation path.
+        monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: True)
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         assert tv._config_model_types("latest") == frozenset()
         monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS")
