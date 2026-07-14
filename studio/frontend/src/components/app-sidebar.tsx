@@ -82,12 +82,6 @@ import {
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import {
-  exportConversationRawJsonl,
-  exportConversationCsv,
-  exportConversationShareGPT,
-} from "@/features/chat/prompt-storage/prompt-storage-dialog";
-import { listStoredChatThreads } from "@/features/chat/utils/chat-history-storage";
-import {
   Tooltip,
   TooltipContent,
 } from "@/components/ui/tooltip";
@@ -102,6 +96,7 @@ import {
   createChatProject,
   deleteChatProject,
   deleteChatItem,
+  listStoredChatThreads,
   moveChatItemToProject,
   renameChatItem,
   renameChatProject,
@@ -123,6 +118,7 @@ import {
   deleteTrainingRun,
   emitTrainingRunDeleted,
   emitTrainingRunUpdated,
+  getTrainingRunDisplayTitle,
   removeTrainingUnloadGuard,
   renameTrainingRun,
   useTrainingCompletionWatch,
@@ -172,6 +168,36 @@ const TestTubeOutlineIcon = TestTube01Icon.slice(
   0,
   3,
 ) as typeof TestTube01Icon;
+
+
+type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+
+const CHAT_EXPORT_OPTIONS: Array<{
+  label: string;
+  format: ConversationExportFormat;
+}> = [
+  { label: "Raw JSONL", format: "raw-jsonl" },
+  { label: "CSV", format: "csv" },
+  { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
+];
+
+async function exportConversationByFormat(
+  threadId: string,
+  format: ConversationExportFormat,
+): Promise<void> {
+  const exports = await import(
+    "@/features/chat/prompt-storage/prompt-storage-dialog"
+  );
+  switch (format) {
+    case "raw-jsonl":
+      return exports.exportConversationRawJsonl(threadId);
+    case "csv":
+      return exports.exportConversationCsv(threadId);
+    case "sharegpt-jsonl":
+      return exports.exportConversationShareGPT(threadId);
+  }
+}
+
 
 function runStatusDotClass(status: TrainingRunSummary["status"]): string {
   switch (status) {
@@ -261,19 +287,6 @@ function NavItem({
   );
 }
 
-// TEMP DEV override: preview the update card on installs with no real update
-// (e.g. an editable checkout). In the browser console run
-// `localStorage.setItem("unsloth_force_update_card", "1")` and reload. Remove
-// before merge.
-function devForceUpdateCard(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem("unsloth_force_update_card") === "1";
-  } catch {
-    return false;
-  }
-}
-
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
@@ -290,13 +303,10 @@ export function AppSidebar() {
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
-  // default. `forceUpdateCard` is a TEMP dev override to preview it on installs
-  // with no real update (e.g. an editable checkout); remove before merge.
+  // default.
   const { status: webUpdate } = useWebUpdateCheck();
-  const [forceUpdateCard] = useState(devForceUpdateCard);
-  const showUpdateCard = Boolean(webUpdate) || forceUpdateCard;
-  const updateVersion =
-    webUpdate?.latestVersion ?? (forceUpdateCard ? "0.0.0" : null);
+  const showUpdateCard = Boolean(webUpdate);
+  const updateVersion = webUpdate?.latestVersion ?? null;
 
   // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
@@ -305,13 +315,12 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
-  // When Train/Export are greyed out (chat-only host), explain why on hover
-  // instead of disabling them silently. mlx_unavailable is the common macOS case
-  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
-  const trainExportDisabledHint: string | undefined = !chatOnly
+  // Explain a greyed-out Train (chat-only host) on hover instead of disabling silently. Export is
+  // no longer disabled here: it stays navigable so its page can show a precise grayed-out reason.
+  const trainDisabledHint: string | undefined = !chatOnly
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
-      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
+      ? "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "no_gpu"
@@ -375,7 +384,11 @@ export function AppSidebar() {
   const activeProjectId = isChatRoute
     ? ((search.project as string | undefined) ?? null)
     : null;
-  const { items: allChatItems } = useChatSidebarItems({
+  const {
+    items: allChatItems,
+    archivedItems: archivedChatItems,
+    loaded: chatItemsLoaded,
+  } = useChatSidebarItems({
     enabled: !isStudioRoute,
     requireMessages: false,
   });
@@ -569,7 +582,14 @@ export function AppSidebar() {
   useEffect(() => {
     if (!pendingRename) return;
     const match = allChatItems.find((i) => i.id === pendingRename.id);
-    if (match && match.title === pendingRename.title) setPendingRename(null);
+    if (!match || match.title !== pendingRename.title) return;
+    queueMicrotask(() => {
+      setPendingRename((current) =>
+        current?.id === pendingRename.id && current.title === pendingRename.title
+          ? null
+          : current,
+      );
+    });
   }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
@@ -592,7 +612,7 @@ export function AppSidebar() {
     setRenamingTarget({ kind: "chat", item, current: item.title });
   }
   function openRenameRun(run: TrainingRunSummary) {
-    const current = run.display_name ?? run.model_name;
+    const current = getTrainingRunDisplayTitle(run);
     setRenameDraft(current);
     setRenamingTarget({ kind: "run", run, current });
   }
@@ -666,12 +686,6 @@ export function AppSidebar() {
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
-
-  useEffect(() => {
-    if (confirmingDelete?.kind !== "project") {
-      setDeleteProjectFiles(false);
-    }
-  }, [confirmingDelete]);
 
   async function commitDelete() {
     const target = confirmingDelete;
@@ -911,11 +925,7 @@ export function AppSidebar() {
                 <span>Export</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                {[
-                  { label: "Raw JSONL", fn: exportConversationRawJsonl },
-                  { label: "CSV", fn: exportConversationCsv },
-                  { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
-                ].map(({ label, fn }) => (
+                {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
                   <DropdownMenuItem
                     key={label}
                     onSelect={async () => {
@@ -923,7 +933,9 @@ export function AppSidebar() {
                         const ids = item.type === "single"
                           ? [item.id]
                           : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                        await Promise.all(ids.map((id) => fn(id)));
+                        await Promise.all(
+                          ids.map((id) => exportConversationByFormat(id, format)),
+                        );
                       } catch {
                         toast.error("Export failed.");
                       }
@@ -1221,7 +1233,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
-                tooltip={trainExportDisabledHint}
+                tooltip={trainDisabledHint}
                 spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
@@ -1250,7 +1262,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
-                    tooltip={trainExportDisabledHint}
+                    tooltip={trainDisabledHint}
                     spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1271,11 +1283,8 @@ export function AppSidebar() {
                     icon={DownloadSquare01Icon}
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
-                    disabled={chatOnly}
-                    tooltip={trainExportDisabledHint}
                     spinner={exportInProgress}
                     onClick={() => {
-                      if (chatOnly) return;
                       navigate({ to: "/export" });
                       closeMobileIfOpen();
                     }}
@@ -1325,6 +1334,16 @@ export function AppSidebar() {
                       renderChatSidebarItem(item, "recent"),
                     )}
                   </SidebarMenu>
+                  {/* "No chats yet" only when there is truly no history:
+                      project-scoped and archived threads leave Recents empty
+                      but still count as existing chats. */}
+                  {chatItemsLoaded &&
+                    allChatItems.length === 0 &&
+                    archivedChatItems.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-muted-foreground">
+                        {t("shell.navigation.noChatsYet")}
+                      </p>
+                    )}
                 </SidebarGroupContent>
               </CollapsibleContent>
             </SidebarGroup>
@@ -1377,7 +1396,7 @@ export function AppSidebar() {
                               aria-hidden
                             />
                             <span className="truncate">
-                              {run.display_name ?? run.model_name}
+                              {getTrainingRunDisplayTitle(run)}
                             </span>
                             <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
                               {formatRelativeShort(run.started_at)}
@@ -1554,9 +1573,6 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
-                      {t("common.new")}
-                    </span>
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     ref={anchorRef as React.Ref<HTMLDivElement>}
@@ -1653,8 +1669,7 @@ export function AppSidebar() {
               renderEmphasizedTranslation(
                 t,
                 "shell.dialog.deleteRun.description",
-                confirmingDelete.run.display_name ??
-                  confirmingDelete.run.model_name,
+                getTrainingRunDisplayTitle(confirmingDelete.run),
               )
             ) : confirmingDelete?.kind === "chat" ? (
               renderEmphasizedTranslation(

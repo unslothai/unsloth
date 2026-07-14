@@ -14,6 +14,7 @@ _TESTS_DIR = pathlib.Path(__file__).resolve().parent.parent  # tests/
 _REPO_ROOT = _TESTS_DIR.parent  # unsloth/
 _INSTALL_SH = _REPO_ROOT / "install.sh"
 _INSTALL_PS1 = _REPO_ROOT / "install.ps1"
+_SETUP_PS1 = _REPO_ROOT / "studio" / "setup.ps1"
 _NO_TORCH_RT = _REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
 
 
@@ -107,6 +108,56 @@ class TestStructuralInstallPs1Unchanged:
 
     def test_hardcoded_torch_constraint_present(self):
         assert '"torch>=2.4,<2.11.0"' in self._ps1
+
+
+class TestInstallPs1UvDefaultIndex:
+    """Installer-managed torch indexes must override inherited uv defaults."""
+
+    _ps1 = _read(_INSTALL_PS1)
+
+    def test_torch_installs_use_default_index(self):
+        assert "--default-index $TorchIndexUrl" in self._ps1
+        assert "--default-index $ROCmIndexUrl" in self._ps1
+
+    def test_torch_installs_do_not_use_deprecated_index_url(self):
+        assert "--index-url $TorchIndexUrl" not in self._ps1
+        assert "--index-url $ROCmIndexUrl" not in self._ps1
+
+    def test_torch_installs_neutralize_all_uv_index_env_vars(self):
+        # Extra-index vars outrank --default-index, so pinned installs must clear them.
+        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+            assert var in self._ps1
+        assert 'Remove-Item "Env:$n"' in self._ps1
+
+
+class TestSetupPs1FastInstallIndex:
+    """setup.ps1 Fast-Install must neutralize inherited uv indexes when pinning."""
+
+    _ps1 = _read(_SETUP_PS1)
+
+    def test_fast_install_clears_all_uv_index_env_vars(self):
+        for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL"):
+            assert var in self._ps1
+        # Must truly remove the vars (child sees no value), not set them empty.
+        assert 'Remove-Item "Env:$n"' in self._ps1
+
+
+class TestInstallShUvDefaultIndex:
+    """Linux/Mac installer torch indexes must override inherited uv defaults."""
+
+    _sh = _read(_INSTALL_SH)
+
+    def test_torch_installs_use_default_index(self):
+        assert '--default-index "$TORCH_INDEX_URL"' in self._sh
+
+    def test_torch_installs_do_not_use_deprecated_index_url(self):
+        assert '--index-url "$TORCH_INDEX_URL"' not in self._sh
+
+    def test_torch_installs_neutralize_all_uv_index_env_vars(self):
+        # --default-index installs run with all uv index env vars unset via `env -u`.
+        assert (
+            "env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL" in self._sh
+        )
 
 
 # Group 2 -- Shell snippet tests (bash subprocess, mocked python)

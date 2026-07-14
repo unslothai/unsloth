@@ -391,7 +391,7 @@ class SyntheticDataKit:
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
         if not hasattr(self, "max_seq_length"):
-            raise RuntimeError("Please use SynthetidDataKit.from_pretrained(...) first!")
+            raise RuntimeError("Please use SyntheticDataKit.from_pretrained(...) first!")
         if not hasattr(self, "overlap") or not hasattr(self, "max_generation_tokens"):
             raise RuntimeError("Please use prepare_qa_generation first!")
 
@@ -425,8 +425,13 @@ class SyntheticDataKit:
         else:
             # length > max_tokens > overlap here, so length - overlap > 0 and the
             # linspace boundaries below are always non-negative.
-            n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
-            boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)
+            # Minimal count: overlapping chunks cover `length` in
+            # ceil((length - overlap) / stride) chunks, not ceil(length / stride)
+            # which over-splits just past a stride multiple.
+            n_chunks = int(np.ceil((length - self.overlap) / (max_tokens - self.overlap)))
+            # n_chunks + 1 points: [:-1]/[1:] pairing yields n_chunks ranges; using
+            # n_chunks points gave one fewer, oversized chunk (over max_tokens).
+            boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks + 1)).astype(int)
             boundaries = np.stack((boundaries[:-1], (boundaries + self.overlap)[1:])).T
             boundaries = np.minimum(boundaries, length).tolist()
 

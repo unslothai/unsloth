@@ -42,6 +42,8 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
+export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
+  "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -51,6 +53,8 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
+export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 
 // Persist only the model-agnostic intents (auto/ngram/off). MTP modes
@@ -69,6 +73,12 @@ export const DEFAULT_RAG_TOP_K = 5;
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+// OCR scanned/image-only PDF pages at ingest time. On by default; off skips the
+// extra vision pass (only matters when the loaded chat model has vision).
+export const DEFAULT_RAG_OCR = true;
+// Describe figures/charts in PDFs at ingest time so they become searchable. On by
+// default (no-op without a vision model); off skips the per-figure vision calls.
+export const DEFAULT_RAG_CAPTION = true;
 
 function loadRagSource(): RagSource {
   if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
@@ -592,6 +602,10 @@ type ChatRuntimeStore = {
   // autoInject = forced first-pass retrieval before answering.
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
+  // OCR scanned/image-only PDF pages at ingest time (vision model required).
+  ragOcrScanned: boolean;
+  // Describe figures/charts at ingest time (vision model required).
+  ragCaptionFigures: boolean;
   /**
    * When on, local Studio tool calls pause for an explicit allow/deny in the
    * chat before they run.
@@ -632,6 +646,7 @@ type ChatRuntimeStore = {
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
+  nudgeToolCalls: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -659,6 +674,9 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
+  /** Persisted, shared by the chat model selector and the Hub page: list only
+   *  models whose size fits this device's memory budget. */
+  fitOnDeviceOnly: boolean;
   /** A local model picked while `loadOnSelection` is off: staged, not loaded.
    *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
@@ -757,10 +775,13 @@ type ChatRuntimeStore = {
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
   setRagAutoInjectMinScore: (score: number) => void;
+  setRagOcrScanned: (enabled: boolean) => void;
+  setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
+  setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
@@ -779,6 +800,7 @@ type ChatRuntimeStore = {
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
+  setFitOnDeviceOnly: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
@@ -812,6 +834,7 @@ type ScalarSettingKey =
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
+  | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout";
 
@@ -849,6 +872,7 @@ const SCALAR_SETTING_KEYS = [
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
   "autoHealToolCalls",
+  "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
 ] as const satisfies readonly ScalarSettingKey[];
@@ -1077,10 +1101,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
     { min: 0, max: 1 },
   ),
+  ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
+  ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
+  nudgeToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -1095,6 +1122,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1498,6 +1526,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { ragAutoInjectMinScore };
     }),
+  setRagOcrScanned: (ragOcrScanned) =>
+    set(() => {
+      saveBool(CHAT_RAG_OCR_KEY, ragOcrScanned);
+      return { ragOcrScanned };
+    }),
+  setRagCaptionFigures: (ragCaptionFigures) =>
+    set(() => {
+      saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
+      return { ragCaptionFigures };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
@@ -1510,6 +1548,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.autoHealToolCalls,
       );
       return { autoHealToolCalls };
+    }),
+  setNudgeToolCalls: (nudgeToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "nudgeToolCalls",
+        nudgeToolCalls,
+        state.nudgeToolCalls,
+      );
+      return { nudgeToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -1555,6 +1602,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setShowAllQuantizations: (showAllQuantizations) => {
     saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
     set({ showAllQuantizations });
+  },
+  setFitOnDeviceOnly: (fitOnDeviceOnly) => {
+    saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
+    set({ fitOnDeviceOnly });
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
   stageModel: (selection) => {

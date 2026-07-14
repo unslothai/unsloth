@@ -22,7 +22,6 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
@@ -33,7 +32,6 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
@@ -79,6 +77,7 @@ const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
 
 type TitleResponse = {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string;
     };
@@ -181,7 +180,10 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
+      import("unpdf"),
+      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
+    ]);
     const pdf = await getDocumentProxy(buffer);
     const { text } = await extractText(pdf, { mergePages: true });
     return {
@@ -298,7 +300,10 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const arrayBuffer = await attachment.file.arrayBuffer();
+    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
+      import("mammoth"),
+      attachment.file.arrayBuffer(),
+    ]);
     const { value } = await mammoth.extractRawText({ arrayBuffer });
     return {
       id: attachment.id,
@@ -470,6 +475,8 @@ async function generateTitleWithModel(payload: {
       max_tokens: 24,
       top_k: 20,
       repetition_penalty: 1.0,
+      enable_thinking: false,
+      reasoning_effort: "none",
       messages: [
         {
           role: "system",
@@ -485,8 +492,10 @@ async function generateTitleWithModel(payload: {
     .json()
     .catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
-  const raw: string | undefined = body?.choices?.[0]?.message?.content;
-  if (!raw) return null;
+  const choice = body?.choices?.[0];
+  if (choice?.finish_reason === "length") return null;
+  const raw: string | undefined = choice?.message?.content;
+  if (!raw || /<\/?think>/i.test(raw)) return null;
   return normalizeTitle(raw);
 }
 
@@ -1045,16 +1054,17 @@ function useStudioRuntimeAdapters(
   return adapters;
 }
 
-const chatAdapter = createOpenAIStreamAdapter();
-
 function useRuntimeHook(
   modelType: ModelType,
   pairId?: string,
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(modelType, pairId);
   const persistedChatAdapter = useMemo(
-    () => createPersistedRunAdapter(chatAdapter),
-    [],
+    () =>
+      createPersistedRunAdapter(
+        createOpenAIStreamAdapter({ modelType, pairId }),
+      ),
+    [modelType, pairId],
   );
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }

@@ -198,7 +198,12 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             import asyncio as _asyncio
             await _asyncio.sleep(30)  # never finishes during the test
 
@@ -520,7 +525,12 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             return "ran"
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
@@ -587,10 +597,12 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
     import re as _re
     from pathlib import Path
 
+    from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
+
     src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text()
     m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", src, _re.DOTALL)
     assert m, "could not extract _TOOL_XML_RE"
-    ns: dict = {"_re": _re}
+    ns: dict = {"_re": _re, "_DS_OPEN_SRC": _DS_OPEN_SRC}
     exec(f"_TOOL_XML_RE = _re.compile({m.group(1)})", ns)
     rx = ns["_TOOL_XML_RE"]
     stripped = rx.sub(

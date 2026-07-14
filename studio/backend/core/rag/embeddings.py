@@ -21,6 +21,7 @@ from functools import lru_cache
 from typing import Callable
 
 from utils.hardware.hardware import DeviceType, get_device
+from utils.transformers_dtype import dtype_kwargs
 
 from . import config
 
@@ -63,11 +64,92 @@ def _install_torchao_stub_once() -> None:
     install_torchao_windows_rocm_stub()
 
 
+class UnsafeEmbeddingModelError(RuntimeError):
+    """Raised when the embedding model repo is flagged unsafe. A distinct type so the
+    llama-server fallback paths re-raise it instead of masking a security block as a
+    routine ST failure."""
+
+
+def _ambient_hf_token() -> str | None:
+    """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
+    the scan can reach a gated/private repo instead of failing open. None if unavailable."""
+    try:
+        from huggingface_hub import get_token
+        return get_token()
+    except Exception:
+        return None
+
+
+def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
+    """The module directories a SentenceTransformer load reads weights from, taken from
+    the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
+    ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
+    security scan: a flagged pickle directly under one must block. Returns () on any
+    failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
+    """
+    try:
+        import json
+
+        from utils.paths import is_local_path
+
+        if is_local_path(name):
+            from pathlib import Path
+            from utils.paths import normalize_path
+
+            path = Path(normalize_path(name)).expanduser() / "modules.json"
+            if not path.is_file():
+                return ()
+            data = json.loads(path.read_text())
+        else:
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.utils import EntryNotFoundError
+
+            try:
+                local = hf_hub_download(name, "modules.json", token = token or None)
+            except EntryNotFoundError:
+                return ()
+            data = json.loads(open(local).read())
+        subdirs = []
+        for module in data or ():
+            sub = str((module or {}).get("path", "")).strip().strip("/")
+            if sub:
+                subdirs.append(sub)
+        return tuple(dict.fromkeys(subdirs))
+    except Exception:
+        return ()
+
+
+def _guard_model_security(name: str) -> None:
+    """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
+    SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
+    /settings gate (a name can also arrive via env/default); local paths and unreachable
+    scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
+    """
+    try:
+        from utils.security import evaluate_file_security, security_load_subdirs
+
+        token = _ambient_hf_token()
+        # Union the audio-model load roots with the ST module dirs so a flagged pickle
+        # directly under a Transformer module dir (0_Transformer/) blocks instead of
+        # passing as an unreferenced nested shard.
+        load_subdirs = tuple(
+            dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
+        )
+        blocked = evaluate_file_security(name, hf_token = token, load_subdirs = load_subdirs).blocked
+    except Exception:
+        return
+    if blocked:
+        raise UnsafeEmbeddingModelError(
+            f"Embedding model {name!r} is flagged as unsafe by Hugging Face's security "
+            "scan; refusing to load. Set a different RAG embedding model."
+        )
+
+
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16
     for a ~1.5x speedup at negligible accuracy loss."""
     global _model, _name
-    name = model_name or config.EMBEDDING_MODEL
+    name = model_name or config.effective_embedding_model()
     with _lock:
         if _model is None or _name != name:
             _install_torchao_stub_once()
@@ -75,9 +157,8 @@ def _get(model_name: str | None = None):
 
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
-            _model = SentenceTransformer(
-                name, device = device, model_kwargs = {"torch_dtype": "float16"}
-            )
+            _guard_model_security(name)
+            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
             _name = name
         return _model
 
@@ -159,6 +240,8 @@ class _SentenceTransformersBackend:
     ):
         try:
             return _st_encode(texts, model_name = model_name, normalize = normalize)
+        except UnsafeEmbeddingModelError:
+            raise  # a security block must hard-fail, not fall back to llama-server
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
             # ST loaded but this encode blew up; swap the process to the llama-server
             # embedder (so later encodes stay in one space) and retry.
@@ -222,6 +305,8 @@ def _build_st_backend_or_fallback():
     try:
         backend.warm(model_name = None)
         return backend
+    except UnsafeEmbeddingModelError:
+        raise  # a security block must hard-fail, not fall back to llama-server
     except Exception as st_err:  # noqa: BLE001 - any ST/torch import or load failure
         fallback = _try_make_llama_backend()
         if fallback is None:
@@ -288,6 +373,37 @@ def _reset_backend() -> None:
     with _backend_lock:
         _backend = None
         _backend_key = None
+
+
+def active_backend_is_llama() -> bool:
+    """True when this process actually embeds via the llama-server (GGUF) backend.
+
+    Reflects the ACTUAL built backend once one exists: an ``auto`` install that
+    resolves to sentence-transformers but then falls back to llama-server at
+    runtime (``_build_st_backend_or_fallback`` on a torch/CUDA load failure, or
+    ``_switch_to_llama_fallback`` on an encode failure) loads only inert GGUF, so
+    callers gating on the ST pickle must see llama here. Before any backend is
+    built, defers to the resolver (``auto`` -> ``_resolve_auto()``, else the raw
+    key) exactly as a fresh process would. Never raises: a backend probe must not
+    block saving a model."""
+    try:
+        with _backend_lock:
+            backend = _backend
+        if backend is not None:
+            # A backend exists: report what it ACTUALLY is. A concrete
+            # sentence-transformers backend must return False even if the
+            # resolver would now pick llama, so its pickle stays gated. If the
+            # llama import fails we cannot be llama, so fall to the safe False.
+            try:
+                from .embed_llama_server import LlamaServerBackend
+            except Exception:  # noqa: BLE001 - llama plumbing import must never block
+                return False
+            return isinstance(backend, LlamaServerBackend)
+        raw = (config.EMBED_BACKEND or "auto").strip().lower()
+        key = _resolve_auto() if raw in _AUTO_ALIASES else raw
+        return key in _LLAMA_ALIASES
+    except Exception:  # noqa: BLE001 - a backend probe must never block saving
+        return False
 
 
 def warm(model_name: str | None = None) -> None:

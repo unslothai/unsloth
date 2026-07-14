@@ -28,7 +28,9 @@ Strategy:
   sys.path swap using the same directories pre-installed by setup.sh.
 """
 
+import ast
 import importlib
+import importlib.util
 import json
 import structlog
 from loggers import get_logger
@@ -173,6 +175,7 @@ _TRANSFORMERS_530_ARCHITECTURES: set[str] = {
     "Qwen3MoeForCausalLM",
     "Qwen3NextForCausalLM",
     "Glm4MoeLiteForCausalLM",
+    "Lfm2MoeForCausalLM",
     "Lfm2VlForConditionalGeneration",
 }
 _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
@@ -183,6 +186,7 @@ _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
     "qwen3_moe",
     "qwen3_next",
     "glm4_moe_lite",
+    "lfm2_moe",
     "lfm2_vl",
 }
 
@@ -225,6 +229,11 @@ _VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
 _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
+
+# llm-compressor-main shadow for FP8/FP4 export of newer-transformers models. Like the .venv_t5_*
+# sidecars but also shadows llm-compressor main + compressed-tensors; installed --no-deps so it
+# reuses the workspace torch (torch-agnostic).
+_VENV_LLMCOMPRESSOR_DIR = str(_studio_root() / ".venv_llmcompressor")
 
 # Tier precedence: higher rank wins in _higher_tier.
 _TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3}
@@ -865,6 +874,116 @@ def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
     return _config_json_cache.get(_token_cache_key(model_name, hf_token))
 
 
+# --- Static tier from CONFIG_MAPPING_NAMES (AST only: no import/network/exec) ---
+# A model_type absent from an overlay's mapping can't load there. Parse each sidecar's
+# config map from source and pick the lowest tier that ships it, so a new arch routes
+# correctly with no per-model table edit. Only ever upgrades default, never lowers.
+_config_mapping_cache: dict[str, frozenset[str]] = {}
+
+
+def _overlay_transformers_dir(tier: str) -> str | None:
+    """transformers source dir for a tier, located without importing it."""
+    if tier != "default":
+        root = {"530": _VENV_T5_530_DIR, "550": _VENV_T5_550_DIR, "510": _VENV_T5_510_DIR}.get(tier)
+        src = os.path.join(root, "transformers") if root else None
+        return src if src and _safe_is_dir(Path(src)) else None
+    # default: the base 4.x transformers. find_spec resolves to a 5.x sidecar if one
+    # is already on sys.path, so skip any .venv_t5_* / llmcompressor overlay dir.
+    sidecars = tuple(
+        os.path.abspath(d) + os.sep
+        for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR, _VENV_LLMCOMPRESSOR_DIR)
+    )
+    candidates = []
+    try:
+        spec = importlib.util.find_spec("transformers")
+        if spec and spec.origin:
+            candidates.append(os.path.dirname(spec.origin))
+    except Exception:
+        pass
+    candidates += [os.path.join(e, "transformers") for e in sys.path if e]
+    for c in candidates:
+        if _safe_is_dir(Path(c)) and not os.path.abspath(c).startswith(sidecars):
+            return c
+    return None
+
+
+def _mapping_first_keys(value: ast.AST) -> set[str]:
+    """First keys of a dict literal, or of an OrderedDict(...)/dict(...)/.update(...)
+    built from 2-tuple lists and **{...} unpacking."""
+
+    def keys_of(node):
+        if isinstance(node, ast.Dict):
+            return list(node.keys)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [
+                el.elts[0] for el in node.elts if isinstance(el, (ast.Tuple, ast.List)) and el.elts
+            ]
+        return []
+
+    nodes = keys_of(value)
+    if isinstance(value, ast.Call):
+        for a in value.args:
+            nodes += keys_of(a)
+        for kw in value.keywords:  # **{...} unpacking has kw.arg is None
+            if kw.arg is None:
+                nodes += keys_of(kw.value)
+    return {n.value for n in nodes if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
+
+def _config_model_types(tier: str) -> frozenset[str]:
+    """model_type keys in a tier's CONFIG_MAPPING_NAMES (5.10 moved it to auto_mappings.py)."""
+    cached = _config_mapping_cache.get(tier)
+    if cached is not None:
+        return cached
+    tdir = _overlay_transformers_dir(tier)
+    if tdir is None:
+        return frozenset()  # overlay not provisioned yet; do not cache so a later call re-reads
+    keys: set[str] = set()
+    for rel in ("models/auto/configuration_auto.py", "models/auto/auto_mappings.py"):
+        path = Path(tdir) / rel
+        if not _safe_is_file(path):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            for node in ast.walk(tree):
+                # direct binding, or a CONFIG_MAPPING_NAMES.update({...}) mutation
+                if isinstance(node, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == "CONFIG_MAPPING_NAMES" for t in node.targets
+                ):
+                    keys |= _mapping_first_keys(node.value)
+                elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                    fn = node.value.func
+                    if (
+                        isinstance(fn, ast.Attribute)
+                        and fn.attr == "update"
+                        and isinstance(fn.value, ast.Name)
+                        and fn.value.id == "CONFIG_MAPPING_NAMES"
+                    ):
+                        keys |= _mapping_first_keys(node.value)
+        except Exception:
+            continue
+    result = frozenset(keys)
+    _config_mapping_cache[tier] = result
+    return result
+
+
+def _tier_from_config_mapping(cfg: dict) -> str | None:
+    """Lowest tier whose transformers ships cfg's model_type, or None if unknown."""
+    model_type = cfg.get("model_type")
+    if not isinstance(model_type, str):
+        for key in _NESTED_CONFIG_KEYS:
+            sub = cfg.get(key)
+            if isinstance(sub, dict) and isinstance(sub.get("model_type"), str):
+                model_type = sub["model_type"]
+                break
+    if not isinstance(model_type, str):
+        return None
+    for tier in sorted(_TIER_RANK, key = _TIER_RANK.get):
+        if model_type in _config_model_types(tier):
+            return tier
+    return None
+
+
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
 # When the cheap signals only say "needs some 5.x", parse config.json with the built-in
 # parser in each candidate sidecar (lowest first) instead of guessing. Generalizes beyond
@@ -1205,6 +1324,14 @@ def get_transformers_tier(
                             match,
                         )
                         return tier
+            static = _tier_from_config_mapping(cfg)
+            if static is not None and static != "default":
+                logger.info(
+                    "Transformers tier %s selected for %s (config mapping: model_type absent below)",
+                    static,
+                    model_name,
+                )
+                return static
             local_tc = Path(model_name) / "tokenizer_config.json"
             if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name, hf_token):
                 if not probe:
@@ -1264,6 +1391,18 @@ def get_transformers_tier(
             return override
         logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
         return "530"
+    # _load_config_json (not the cache-only reader) so a config served from the hub
+    # cache during a transient outage still feeds the mapping resolver.
+    remote_cfg = _load_config_json(model_name, hf_token)
+    if remote_cfg is not None:
+        static = _tier_from_config_mapping(remote_cfg)
+        if static is not None and static != "default":
+            logger.info(
+                "Transformers tier %s selected for %s (config mapping: model_type absent below)",
+                static,
+                model_name,
+            )
+            return static
     if _check_tokenizer_config_needs_v5(model_name, hf_token):
         if not probe:
             return "530"
@@ -1516,6 +1655,152 @@ def _ensure_venv_t5_510_exists() -> bool:
 def _ensure_venv_t5_exists() -> bool:
     """Backwards-compat: ensure the Gemma 4 5.5 sidecar venv exists."""
     return _ensure_venv_t5_550_exists()
+
+
+# --- llm-compressor-main shadow (FP8/FP4 export of newer-transformers models) ---------------------
+# Exact, reproducible pins (bump deliberately in review). Full 40-char SHA validated to FP8-quantize
+# Qwen3.5 / Gemma-4 / Llama.
+_LLMC_MAIN_TRANSFORMERS = "5.10.2"
+_LLMC_MAIN_SHA = "973c9c539a84dd9efaf74e115ede5ca419704c18"
+_LLMC_MAIN_COMPRESSED_TENSORS = "0.17.2a20260702"
+# Installed --no-deps (torch untouched); the full runtime set llm-compressor main needs, pinned.
+_VENV_LLMCOMPRESSOR_SPECS = (
+    f"transformers=={_LLMC_MAIN_TRANSFORMERS}",
+    f"llmcompressor @ git+https://github.com/vllm-project/llm-compressor@{_LLMC_MAIN_SHA}",
+    f"compressed-tensors=={_LLMC_MAIN_COMPRESSED_TENSORS}",
+    "huggingface-hub==1.21.0",
+    "hf-xet==1.5.1",
+    "tokenizers==0.22.2",
+    "safetensors==0.8.0",
+    "accelerate==1.14.0",
+    "datasets==5.0.0",
+    "pydantic==2.13.4",
+    "pydantic-core==2.46.4",
+    "typing-inspection==0.4.2",
+    "loguru==0.7.3",
+    "pyyaml==6.0.3",
+    "nvidia-ml-py==13.610.43",
+    "pillow==12.3.0",
+    "auto-round==0.13.1",
+    "regex==2026.6.28",
+)
+# Fingerprint of the pin set; bump the trailing schema version to force a rebuild on layout changes.
+_LLMC_SHADOW_FINGERPRINT = (
+    f"{_LLMC_MAIN_SHA}|{_LLMC_MAIN_TRANSFORMERS}|{_LLMC_MAIN_COMPRESSED_TENSORS}|schema=1"
+)
+_LLMC_SHADOW_MARKER = ".unsloth_llmc_fingerprint"
+
+
+def _llmcompressor_main_disabled() -> bool:
+    """True if the operator forbids the llm-compressor-main shadow (air-gapped / locked-down)."""
+    return os.environ.get("UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _llmcompressor_shadow_is_valid() -> bool:
+    """True if the shadow dir exists with a marker matching the current pin fingerprint."""
+    marker = Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER
+    try:
+        return marker.is_file() and marker.read_text().strip() == _LLMC_SHADOW_FINGERPRINT
+    except Exception:
+        return False
+
+
+def _ensure_venv_llmcompressor_exists() -> bool:
+    """Ensure .venv_llmcompressor/ has the pinned llm-compressor-main stack. Install if missing.
+
+    All specs are installed with --no-deps into a --target dir (mirrors the transformers sidecars),
+    so the workspace torch is never touched. Returns True on success.
+    """
+    if _llmcompressor_shadow_is_valid():
+        return True
+    if _llmcompressor_main_disabled():
+        logger.warning(
+            "llm-compressor-main shadow needed but UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN is set; "
+            "compressed export of newer-transformers models will fail fast."
+        )
+        return False
+    if _env_offline():
+        logger.warning(
+            "llm-compressor-main shadow missing and HF/offline mode is set; cannot provision it."
+        )
+        return False
+
+    logger.warning(
+        "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
+        _VENV_LLMCOMPRESSOR_DIR,
+    )
+    shutil.rmtree(_VENV_LLMCOMPRESSOR_DIR, ignore_errors = True)
+    os.makedirs(_VENV_LLMCOMPRESSOR_DIR, exist_ok = True)
+
+    # Prefer uv (faster) then pip; install every spec at once, --no-deps, prereleases allowed
+    # (compressed-tensors ships as a pre-release).
+    base = [
+        "--target",
+        _VENV_LLMCOMPRESSOR_DIR,
+        "--no-deps",
+        "--prerelease=allow",
+        *_VENV_LLMCOMPRESSOR_SPECS,
+    ]
+    cmds = []
+    if shutil.which("uv"):
+        cmds.append(["uv", "pip", "install", "--python", sys.executable, *base])
+    cmds.append(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            *[a for a in base if a != "--prerelease=allow"],
+            "--pre",
+        ]
+    )
+
+    last_out = ""
+    for cmd in cmds:
+        result = subprocess.run(
+            cmd,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            text = True,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        last_out = result.stdout or ""
+        if result.returncode == 0:
+            try:
+                (Path(_VENV_LLMCOMPRESSOR_DIR) / _LLMC_SHADOW_MARKER).write_text(
+                    _LLMC_SHADOW_FINGERPRINT
+                )
+            except Exception:
+                pass
+            logger.info("Provisioned llm-compressor-main shadow at %s", _VENV_LLMCOMPRESSOR_DIR)
+            return True
+        logger.warning("llm-compressor-main shadow install failed with %s; trying next", cmd[0])
+
+    logger.error(
+        "Failed to provision llm-compressor-main shadow (spec: llmcompressor@%s). Output:\n%s",
+        _LLMC_MAIN_SHA,
+        last_out[-4000:],
+    )
+    return False
+
+
+def llmcompressor_shadow_pythonpath() -> str | None:
+    """Provision (lazily) the llm-compressor-main shadow and return its sys.path entry, or None.
+
+    Returns None when the shadow is disabled (UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN), offline, or
+    provisioning failed - callers then fall back to the fail-fast path.
+    """
+    if _llmcompressor_main_disabled():
+        return None
+    if _ensure_venv_llmcompressor_exists():
+        return _VENV_LLMCOMPRESSOR_DIR
+    return None
 
 
 def _activate_venv(venv_dir: str, label: str) -> None:

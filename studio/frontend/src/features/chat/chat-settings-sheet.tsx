@@ -80,6 +80,7 @@ import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
@@ -573,7 +574,10 @@ export function ChatSettingsPanel({
     status: llamaUpdateStatus,
     applying: llamaUpdating,
     apply: applyLlamaUpdate,
-  } = useLlamaUpdateCheck({ enabled: mtpUpdatable });
+  } = useLlamaUpdateCheck({
+    enabled: mtpUpdatable,
+    onReloadRequired: resyncInferenceStatusAfterServerModelChange,
+  });
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
@@ -1732,6 +1736,7 @@ export function ChatSettingsPanel({
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5 pt-1">
               <AutoHealToolCallsToggle />
+              <NudgeToolCallsToggle />
               <ConfirmToolCallsToggle />
               <BypassPermissionsToggle />
               <MaxToolCallsSlider />
@@ -2001,6 +2006,30 @@ function AutoHealToolCallsToggle() {
         className="panel-switch"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
+      />
+    </div>
+  );
+}
+
+function NudgeToolCallsToggle() {
+  const nudgeToolCalls = useChatRuntimeStore((s) => s.nudgeToolCalls);
+  const setNudgeToolCalls = useChatRuntimeStore((s) => s.setNudgeToolCalls);
+
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Nudge Tool Calls
+        </span>
+        <InfoHint>
+          When a tool call cannot be repaired, re-ask the model once so the
+          intended tool still runs. API requests stay opt-in.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch"
+        checked={nudgeToolCalls}
+        onCheckedChange={setNudgeToolCalls}
       />
     </div>
   );
