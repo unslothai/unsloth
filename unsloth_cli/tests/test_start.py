@@ -294,15 +294,56 @@ def test_merge_codex_config_keeps_user_oss_provider():
     assert _parse_toml(merged)["oss_provider"] == "ollama"
 
 
-def test_write_codex_config_profile(tmp_path):
+def test_write_codex_config_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     start.write_codex_config(BASE, MODEL, tmp_path)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
     assert profile["model"] == MODEL["id"]
     assert profile["model_context_window"] == 131072
+
+    catalog_path = Path(profile["model_catalog_json"])
+    assert catalog_path == Path("model-catalog.json")
+    catalog = json.loads((tmp_path / catalog_path).read_text())
+    assert catalog["models"][0]["slug"] == MODEL["id"]
+    assert catalog["models"][0]["context_window"] == 131072
+    assert catalog["models"][0]["max_context_window"] == 131072
+    assert catalog["models"][0]["supports_parallel_tool_calls"] is False
+
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
+
+
+def test_write_codex_config_catalog_without_context_length(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    start.write_codex_config(BASE, {"id": "unsloth/no-window"}, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    catalog = json.loads((tmp_path / profile["model_catalog_json"]).read_text())
+    entry = catalog["models"][0]
+    assert entry["slug"] == "unsloth/no-window"
+    assert "context_window" not in entry
+    assert "max_context_window" not in entry
+
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [("codex-cli 0.109.0", False), ("codex-cli 0.110.0", True), ("codex-cli 0.144.4", True)],
+)
+def test_codex_model_catalog_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._codex_supports_model_catalog() is expected
+
+
+def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    start.write_codex_config(BASE, MODEL, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    assert "model_catalog_json" not in profile
+    assert not (tmp_path / "model-catalog.json").exists()
 
 
 @pytest.fixture()

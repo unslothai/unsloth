@@ -875,6 +875,61 @@ def _merge_codex_config(existing: str, base: str) -> str:
     )
 
 
+# Keep custom-model behavior aligned with Codex's own unknown-model fallback. This
+# Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
+_CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
+_CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+
+
+def _codex_supports_model_catalog() -> bool:
+    executable = shutil.which("codex")
+    if executable is None:
+        # A --no-launch recipe may be copied to another machine; assume a current Codex.
+        return True
+    try:
+        output = subprocess.check_output(
+            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL
+        )
+    except Exception:
+        return False
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+    return bool(match) and tuple(int(part) for part in match.groups()) >= (
+        _CODEX_MODEL_CATALOG_MIN_VERSION
+    )
+
+
+
+def _codex_model_catalog(model: dict) -> dict:
+    """Return conservative metadata for a Studio model unknown to Codex's built-in catalog."""
+    model_id = model["id"]
+    window = model.get("context_length") or model.get("max_context_length")
+    entry = {
+        "slug": model_id,
+        "display_name": model_id,
+        "description": "Model served by Unsloth Studio",
+        "supported_reasoning_levels": [],
+        "shell_type": "default",
+        "visibility": "none",
+        "supported_in_api": True,
+        "priority": 99,
+        "availability_nux": None,
+        "upgrade": None,
+        "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8"),
+        "supports_reasoning_summaries": False,
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": None,
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_parallel_tool_calls": False,
+        "experimental_supported_tools": [],
+    }
+    if window:
+        entry["context_window"] = int(window)
+        entry["max_context_window"] = int(window)
+    return {"models": [entry]}
+
+
+
 def write_codex_config(base: str, model: dict, home: Path) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
@@ -892,6 +947,17 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         f'model_provider = "{_CODEX_PROFILE}"\n'
         f"model = {json.dumps(model['id'])}\n"
     )
+    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
+        catalog = home / "model-catalog.json"
+        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding = "utf-8")
+            typer.echo(f"Updated {catalog}")
+        # Resolve relative to the profile file. This also survives WSL launching a Windows
+        # Codex binary, where a Linux absolute path inside TOML would not be usable.
+        profile_text += f"model_catalog_json = {json.dumps(catalog.name)}\n"
+
+
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
