@@ -209,7 +209,6 @@ async def clear_oauth_tokens_async(url: str) -> None:
         auth = OAuth(mcp_url = url, token_storage = _oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
-        # Cleanup is best-effort; the row delete still wins.
         logger.warning("Failed to clear OAuth tokens for %s: %s", url, exc)
 
 
@@ -593,10 +592,9 @@ def _get_stdio_session(
             except Exception:
                 session.close()
                 raise
-            # A caller can read the server row, then lose to an update/delete
-            # whose close ran before our generation snapshot. Re-verify the row
-            # after connect; the generation check below covers a close landing
-            # between this check and publish.
+            # A caller can read the server row, then lose to an update/delete whose close ran
+            # before our generation snapshot. Re-verify the row after connect; the generation check
+            # below covers a close landing between this check and publish.
             if config_check is not None:
                 try:
                     current = bool(config_check())
@@ -765,11 +763,10 @@ async def list_tools_async(
     return await asyncio.wait_for(_fetch(), timeout = timeout)
 
 
-# Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools()
-# probes a server only on a cache miss, keeping MCP discovery off the chat
-# send's critical path -- tool schemas are stable within a session. The
-# /refresh route warms it; a URL/header/OAuth change or a delete evicts it.
-# Successful probes are cached indefinitely.
+# Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools() probes a server only
+# on a cache miss, keeping MCP discovery off the chat send's critical path -- tool schemas are
+# stable within a session. The /refresh route warms it; a URL/header/OAuth change or a delete
+# evicts it. Successful probes are cached indefinitely.
 _tool_cache: dict[str, list[dict]] = {}
 
 # server_id -> monotonic time before which a failed server must not be
@@ -919,13 +916,11 @@ def _call_stdio_tool(
         discard_session = ephemeral
         retry = False
         try:
-            # We may have waited on the call lock while another caller's timeout
-            # retired this session, a server update/delete invalidated it, or a
-            # reused subprocess died. Re-check all three before dispatch so we
-            # never run on a retired/dead client or a stale config.
+            # We may have waited on the call lock while another caller's timeout retired this
+            # session, a server update/delete invalidated it, or a reused subprocess died. Re-check
+            # all three before dispatch so we never run on a retired/dead client or a stale config.
             if session.closed.is_set():
-                # Intentional close (server update/delete/shutdown): don't retry
-                # on the stale config.
+                # Intentional close (server update/delete/shutdown): don't retry on stale config.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
             elif session.defunct:
@@ -966,9 +961,8 @@ def _call_stdio_tool(
             raise RuntimeError("MCP server was updated or removed during the call")
         except Exception as exc:
             if session.closed.is_set():
-                # An intentional close (server update/delete) can surface as a
-                # plain transport error or AttributeError instead of
-                # _SessionClosed; don't mistake it for a crash.
+                # An intentional close (server update/delete) can surface as a plain transport
+                # error or AttributeError instead of _SessionClosed; don't mistake it for a crash.
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
             # ToolError leaves the transport alive -> keep the session so its state
