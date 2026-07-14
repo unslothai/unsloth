@@ -116,6 +116,7 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
         "max_steps, eval_steps_val = _configure_mlx_training_schedule("
     )
     assert "_setup_mlx_tracking(trainer, config, output_dir, _send)" in run_source
+    assert "_finalize_mlx_training(trainer, _snapshot_stop" in run_source
 
 
 def test_mlx_rank_owned_worker_setup(monkeypatch):
@@ -190,6 +191,29 @@ def test_mlx_epoch_steps_use_global_ddp_batch():
         trainer, 0, 17, 2, 2, 1, warmup_ratio = 0.3, eval_steps_ratio = 0.3
     ) == (5, 1)
     assert (trainer.args.warmup_steps, trainer.args.eval_steps) == (2, 1)
+
+
+def test_mlx_finalization_reads_trainer_before_atomic_stop_snapshot():
+    reads = []
+
+    class Trainer:
+        distributed_world_size = 1
+
+        @property
+        def stop_requested(self):
+            reads.append("trainer")
+            return False
+
+        @stop_requested.setter
+        def stop_requested(self, _value):
+            reads.append("setter")
+
+    state = _worker._mlx_worker_finalization_state(
+        Trainer(), lambda: (reads.append("snapshot") or True, False)
+    )
+
+    assert state == (True, True)
+    assert reads[:2] == ["trainer", "snapshot"]
 
 
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
