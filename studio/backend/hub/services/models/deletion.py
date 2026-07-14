@@ -408,7 +408,13 @@ def reclaim_replaced_gguf_variant(
             and extract_quant_label(name).lower() == variant_key,
         )
         for snap, blob, name in matches:
-            blob_hash = _blob_hash_from_path(blob) if blob is not None else None
+            # Prune only a file we can identify as a real, stale cache blob. A
+            # no-symlink snapshot file has no identifiable blob hash, so keep it.
+            blob_hash = (
+                _blob_hash_from_path(blob)
+                if cache_inventory._is_real_cache_blob(blob, repo_dir)
+                else None
+            )
             if blob_hash is None or blob_hash in keep_main_hashes:
                 continue
             stale_matches.append((snap, blob, name))

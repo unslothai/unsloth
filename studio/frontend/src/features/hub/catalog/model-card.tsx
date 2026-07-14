@@ -277,7 +277,7 @@ export const ModelCard = memo(function ModelCard({
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
       style={cardAccentStyle}
-      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <OwnerAvatar
@@ -295,7 +295,7 @@ export const ModelCard = memo(function ModelCard({
             {row.owner.toLowerCase() === "unsloth" && (
               <span
                 aria-label="Verified Unsloth"
-                className="hub-verified-badge size-3.5 shrink-0 text-primary"
+                className="hub-verified-badge size-3.5 shrink-0 text-verified"
               />
             )}
           </span>

@@ -159,8 +159,8 @@
       "file": "huggingface_hub/hf_api.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L4613:         while True: sha256:f764b6ca3118b23c7c0e670e77178c022a6905f825d7df6e528545fa10aae8f6",
-      "evidence_hash": "9c85d50c227285fa8dc69512999cbb082258cda4b299c7d0e0f69f5aff7accd4"
+      "evidence": "L4677:         while True: sha256:04afb38843e4125d1476f3f04bdad0edf1f63f8d75ad49a713b13e4bc68612fb",
+      "evidence_hash": "18877a2502c862b46a5d7e33fa7c39ab4ef32da7e1b07f596fd455f4376770c6"
     },
     {
       "package": "huggingface-hub",
@@ -340,11 +340,19 @@
     },
     {
       "package": "openai",
+      "file": "openai/resources/beta/responses/responses.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L3999:         while True: sha256:df298b6eaf3416589b79f4ef283f8fb76e54d505bfda8840673f8e6419117e2e",
+      "evidence_hash": "10ce5cb5a7097fcff4042ddcfb4802edda60aa4b7b113c8b926a52ddb76f78c2"
+    },
+    {
+      "package": "openai",
       "file": "openai/resources/beta/threads/runs/runs.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1074:         while True: sha256:ef6d59a4a10b73a5af491f10af2885b7a309fda9468eb0f9572d19558d3ceb9f",
-      "evidence_hash": "43c03b55fedcbc980e5e6649c3c4493729128d280cc868349ab9590908ea5f99"
+      "evidence": "L1053:         while True: sha256:973bb1aeca2e17e022872dc343a1bf5d8fe33bfa59fe01e2f8fe875522db5bce",
+      "evidence_hash": "24626e4aa53047a515ead563b42c07c43f73a2c5b82978fa59f58ffc2859e19b"
     },
     {
       "package": "openai",
@@ -359,7 +367,7 @@
       "file": "openai/resources/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3803:         while True: sha256:1ce0b5a388c747945cdfda1a71b77afdfd03ae840d7aa9fa62f02eb00aa5e29f",
+      "evidence": "L3950:         while True: sha256:1ce0b5a388c747945cdfda1a71b77afdfd03ae840d7aa9fa62f02eb00aa5e29f",
       "evidence_hash": "6de300ebb5e6e17cb51c89cbcdf08515a44655182f0776f0908a9d1043ebbcd7"
     },
     {
@@ -625,6 +633,14 @@
       "severity": "CRITICAL",
       "evidence": "L1221:       os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L1226:       os.dup2(self.orig_stream_dup, self.orig_stream_fileno)",
       "evidence_hash": "bba233b67f8ea4f0723b2fecaabf56528531bccd77ace836165bf38b47246bcc"
+    },
+    {
+      "package": "sentencepiece",
+      "file": "sentencepiece/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L772:             os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L777:             os.dup2(self.orig_stream_dup, self.orig_stream_fileno)",
+      "evidence_hash": "65b5a11cce128fe09b3f238c01bed7c883d1740d7d46d659118f67940f6c17dc"
     },
     {
       "package": "setuptools",

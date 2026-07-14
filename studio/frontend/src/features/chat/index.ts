@@ -41,7 +41,10 @@ export {
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
-export { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+export {
+  useChatModelRuntime,
+  resyncInferenceStatusAfterServerModelChange,
+} from "./hooks/use-chat-model-runtime";
 export {
   customProviderDisplayName,
   isCustomProviderType,
