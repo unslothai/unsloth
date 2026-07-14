@@ -19,11 +19,13 @@ from core.inference.stt_sidecar import (
     SttAudioTooLongError,
     SttLanguageError,
     SttLoadCancelledError,
+    SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
     WhisperSttSidecar,
     normalize_whisper_language,
     resolve_model_id,
+    resolve_model_repo,
 )
 
 _REAL_DECODE_AUDIO_BOUNDED = stt_sidecar_module._decode_audio_bounded
@@ -62,10 +64,15 @@ class _CaptureInference:
         return self.text
 
 
-def test_only_unsloth_models_are_offered():
-    # Guard against ever pointing STT at third-party weights.
-    assert set(STT_MODELS) == {"small", "large-v3-turbo", "large-v3"}
-    assert all(repo.startswith("unsloth/") for repo in STT_MODELS.values())
+def test_five_curated_whisper_models_are_offered():
+    assert STT_MODELS == {
+        "tiny": "unslothai/whisper-tiny",
+        "base": "unslothai/whisper-base",
+        "small": "unsloth/whisper-small",
+        "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
+        "large-v3": "unsloth/whisper-large-v3",
+    }
+    assert all(repo.startswith(("unsloth/", "unslothai/")) for repo in STT_MODELS.values())
     assert DEFAULT_STT_MODEL in STT_MODELS
 
 
@@ -101,10 +108,19 @@ def test_load_rejects_an_incomplete_stt_runtime(monkeypatch, missing):
         sidecar.load("small")
 
 
-def test_unknown_model_id_falls_back_to_default():
-    assert resolve_model_id("tiny") == DEFAULT_STT_MODEL
+def test_model_id_accepts_defaults_and_custom_hub_repositories():
+    assert resolve_model_id("tiny") == "tiny"
     assert resolve_model_id(None) == DEFAULT_STT_MODEL
     assert resolve_model_id("large-v3") == "large-v3"
+    assert resolve_model_id("openai/whisper-medium") == "openai/whisper-medium"
+    assert resolve_model_repo("tiny") == "unslothai/whisper-tiny"
+    assert resolve_model_repo("openai/whisper-medium") == "openai/whisper-medium"
+
+
+@pytest.mark.parametrize("model", ["tiny-ish", "owner/model/extra", "../model", "owner/"])
+def test_invalid_custom_model_id_is_rejected(model):
+    with pytest.raises(SttModelIdError, match = "owner/model"):
+        resolve_model_id(model)
 
 
 def test_fast_transcription_uses_greedy_decoding(monkeypatch):
@@ -267,6 +283,7 @@ def _install_fake_torch(monkeypatch):
         backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False)),
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "av", SimpleNamespace())
     return fake_torch
 
 
@@ -306,16 +323,24 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
     assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
 
 
-def test_model_cache_preflight_is_local_only(monkeypatch):
+@pytest.mark.parametrize(
+    ("model_id", "repo_id"),
+    [
+        ("small", "unsloth/whisper-small"),
+        ("tiny", "unslothai/whisper-tiny"),
+        ("openai/whisper-medium", "openai/whisper-medium"),
+    ],
+)
+def test_model_cache_preflight_is_local_only(monkeypatch, model_id, repo_id):
     calls = []
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
         lambda **kwargs: calls.append(kwargs) or "/cached/model",
     )
 
-    WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded("small")
+    WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(model_id)
 
-    assert calls == [{"repo_id": "unsloth/whisper-small", "local_files_only": True}]
+    assert calls == [{"repo_id": repo_id, "local_files_only": True}]
 
 
 def test_model_cache_preflight_reports_missing_snapshot(monkeypatch):

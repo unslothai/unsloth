@@ -20,20 +20,51 @@ const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
-/**
- * STT model ids, mirrored from the backend allowlist (stt_sidecar.py).
- * Only models Unsloth has uploaded to Hugging Face are listed.
- */
-export const STT_MODELS = ["small", "large-v3-turbo", "large-v3"] as const;
-export type SttModel = (typeof STT_MODELS)[number];
-/** Unsloth Whisper repos downloaded through Studio's existing Model Hub manager. */
-export const STT_MODEL_REPOS: Record<SttModel, string> = {
+/** Five curated Whisper choices, mirrored by the backend (stt_sidecar.py). */
+export const STT_MODELS = [
+  "tiny",
+  "base",
+  "small",
+  "large-v3-turbo",
+  "large-v3",
+] as const;
+export type DefaultSttModel = (typeof STT_MODELS)[number];
+/** A curated id or a user-selected Hugging Face `owner/model` repository. */
+export type SttModel = string;
+/** Whisper repos downloaded through Studio's existing Model Hub manager. */
+export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
+  tiny: "unslothai/whisper-tiny",
+  base: "unslothai/whisper-base",
   small: "unsloth/whisper-small",
   "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
   "large-v3": "unsloth/whisper-large-v3",
 };
-export const DEFAULT_STT_MODEL: SttModel = "small";
-// Every offered model is multilingual, so none are English-only for now.
+export const DEFAULT_STT_MODEL: DefaultSttModel = "small";
+const HF_REPO_ID =
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
+
+export function isSttModelId(value: string): boolean {
+  const normalized = value.trim();
+  return (
+    (STT_MODELS as readonly string[]).includes(normalized) ||
+    HF_REPO_ID.test(normalized)
+  );
+}
+
+export function normalizeSttModel(value: unknown): SttModel {
+  if (typeof value !== "string") {
+    return DEFAULT_STT_MODEL;
+  }
+  const normalized = value.trim();
+  return isSttModelId(normalized) ? normalized : DEFAULT_STT_MODEL;
+}
+
+export function getSttModelRepo(model: SttModel): string {
+  return STT_MODEL_REPOS[model as DefaultSttModel] ?? normalizeSttModel(model);
+}
+
+// All curated models are multilingual. Custom `.en` Whisper checkpoints are
+// treated as English-only so a later language change falls back safely.
 export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set([]);
 
 /** Whether a model can honor the selected dictation language. */
@@ -41,7 +72,10 @@ export function isSttModelLanguageCompatible(
   model: SttModel,
   language: string,
 ): boolean {
-  if (!ENGLISH_ONLY_STT_MODELS.has(model)) {
+  const isEnglishOnly =
+    ENGLISH_ONLY_STT_MODELS.has(model) ||
+    getSttModelRepo(model).toLowerCase().endsWith(".en");
+  if (!isEnglishOnly) {
     return true;
   }
   const normalized = language.trim().replaceAll("_", "-").toLowerCase();
@@ -111,15 +145,18 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
       sttModel: DEFAULT_STT_MODEL,
-      setSttModel: (sttModel) =>
-        set((state) => ({
-          sttModel: isSttModelLanguageCompatible(
-            sttModel,
-            state.dictationLanguage,
-          )
-            ? sttModel
-            : DEFAULT_STT_MODEL,
-        })),
+      setSttModel: (value) =>
+        set((state) => {
+          const sttModel = normalizeSttModel(value);
+          return {
+            sttModel: isSttModelLanguageCompatible(
+              sttModel,
+              state.dictationLanguage,
+            )
+              ? sttModel
+              : DEFAULT_STT_MODEL,
+          };
+        }),
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
@@ -221,11 +258,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         const dictationLanguage = asString(saved?.dictationLanguage, "auto");
-        const savedSttModel = (STT_MODELS as readonly string[]).includes(
-          saved?.sttModel as string,
-        )
-          ? (saved?.sttModel as SttModel)
-          : DEFAULT_STT_MODEL;
+        const savedSttModel = normalizeSttModel(saved?.sttModel);
         const sttModel = isSttModelLanguageCompatible(
           savedSttModel,
           dictationLanguage,

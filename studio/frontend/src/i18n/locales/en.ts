@@ -114,7 +114,10 @@ export const en = {
           "Runs locally and works offline. Download once, then load on demand; memory is released after dictation.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription:
-          "Converts your speech to text. Smaller models are faster, while larger models are more accurate.",
+          "Choose one of five curated Whisper models, or search Hugging Face for another Transformers-compatible Whisper model.",
+        sttModelSearchPlaceholder: "Search or paste owner/model…",
+        sttModelSearching: "Searching Hugging Face…",
+        sttModelNoResults: "No Whisper models found",
         sttModelFailed: "Could not load the STT model",
         sttModelUnsupported: "Recording is not supported in this browser",
         sttChecking: "Checking…",

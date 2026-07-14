@@ -5316,6 +5316,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
+        SttModelIdError,
         SttModelNotDownloadedError,
         SttUnavailableError,
         get_stt_sidecar,
@@ -5330,6 +5331,8 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         raise HTTPException(status_code = 501, detail = str(e))
     except SttLoadCancelledError as e:
         raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
     except Exception as e:
         logger.error(f"STT load error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
@@ -5355,6 +5358,7 @@ async def _transcribe_audio_bytes(
         SttAudioTooLongError,
         SttLanguageError,
         SttLoadCancelledError,
+        SttModelIdError,
         SttModelNotDownloadedError,
         SttUnavailableError,
         get_stt_sidecar,
@@ -5380,6 +5384,8 @@ async def _transcribe_audio_bytes(
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
     except SttLanguageError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttAudioTooLongError as e:

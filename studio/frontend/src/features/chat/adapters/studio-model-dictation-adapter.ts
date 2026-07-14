@@ -18,11 +18,10 @@ import {
 // Finer timeslice inside a segment so the buffer is ready the moment a segment
 // is cut or the user stops.
 const SEGMENT_TIMESLICE_MS = 250;
-// Segment sizing for the background transcription pipeline. Segments are cut at
-// natural pauses so word boundaries are preserved, but bounded so no single
-// clip is too short to be accurate or too long to keep the tick snappy.
-const MIN_SEGMENT_MS = 1400;
-const MAX_SEGMENT_MS = 5000;
+// Whisper pads input to 30 seconds. Keep short dictation in one clip. For long
+// dictation, cut at the first pause after 20s or before the 30s boundary.
+const MIN_SEGMENT_MS = 20_000;
+const MAX_SEGMENT_MS = 28_000;
 const SILENCE_CUT_MS = 280;
 // Raw RMS (0..1) above which a frame counts as speech. Noise suppression keeps
 // the room floor well below this.
@@ -145,13 +144,9 @@ export function unloadSttModel(): Promise<void> {
 }
 
 /**
- * Dictation via a local STT model. While the user talks, audio is split at
- * natural pauses and each chunk is transcribed in the
- * background, so when they confirm only the final short tail is left to
- * transcribe and the text appears almost immediately. Confirming keeps the
- * text; discarding throws it away. Stopping releases the mic immediately.
- * Works in any browser with MediaRecorder, including Firefox, which has no
- * Web Speech recognition.
+ * Local model dictation. Short recordings use one pass. Long recordings split
+ * near Whisper's 30-second window. Confirm keeps text, discard removes it, and
+ * either action releases the microphone immediately.
  */
 export class StudioModelDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
@@ -380,8 +375,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       startSegment();
     };
 
-    // Pause detector: mark voiced frames, and cut the segment after a short
-    // silence once it is long enough, or force a cut if it runs too long.
+    // Pause detector: mark voiced frames. Short dictations remain one segment;
+    // long ones cut at a pause after the target duration, or at the hard limit.
     onAudioFrame = (rawRms, now) => {
       const seg = currentSeg;
       if (!seg || finalizing) {

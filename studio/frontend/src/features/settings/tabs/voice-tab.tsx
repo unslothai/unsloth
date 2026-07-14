@@ -2,6 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -33,6 +41,12 @@ import {
   getDownloadProgress,
   useRepoDownload,
 } from "@/features/hub";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
+import { useDebouncedValue } from "@/hooks";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
@@ -48,10 +62,11 @@ import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
-  DEFAULT_STT_MODEL,
+  type DefaultSttModel,
   STT_MODELS,
-  STT_MODEL_REPOS,
   type SttModel,
+  getSttModelRepo,
+  isSttModelId,
   isSttModelLanguageCompatible,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
@@ -76,11 +91,156 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 
 // Speech-recognition models, not voices. Label is just name + download size;
 // the speed/accuracy note lives in the row description.
-const STT_MODEL_LABELS: Record<SttModel, string> = {
+const STT_MODEL_LABELS: Record<DefaultSttModel, string> = {
+  tiny: "Whisper Tiny · 610 MB",
+  base: "Whisper Base · 1.2 GB",
   small: "Whisper Small · 970 MB",
   "large-v3-turbo": "Whisper Large v3 Turbo · 1.6 GB",
   "large-v3": "Whisper Large v3 · 3.1 GB",
 };
+
+function displaySttModel(model: SttModel): string {
+  return STT_MODEL_LABELS[model as DefaultSttModel] ?? model;
+}
+
+function SttModelCombobox({
+  value,
+  language,
+  onChange,
+}: {
+  value: SttModel;
+  language: string;
+  onChange: (model: SttModel) => void;
+}) {
+  const t = useT();
+  const hfToken = useHfTokenStore((state) => state.token);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [inputValue, setInputValue] = useState(() => displaySttModel(value));
+  const selectedDisplay = displaySttModel(value);
+  const query = inputValue.trim() === selectedDisplay ? "" : inputValue.trim();
+  const debouncedQuery = useDebouncedValue(query);
+
+  useEffect(() => {
+    setInputValue(displaySttModel(value));
+  }, [value]);
+
+  const { results, isLoading } = useHubModelSearch(debouncedQuery, {
+    task: "automatic-speech-recognition",
+    accessToken: hfApiToken(hfToken),
+    excludeGguf: true,
+    enabled: debouncedQuery.length >= 2,
+    keepUnsupportedTags: true,
+    ownerScope: "all",
+  });
+
+  const items = useMemo(() => {
+    if (!query) {
+      const defaults: string[] = STT_MODELS.filter((model) =>
+        isSttModelLanguageCompatible(model, language),
+      );
+      if (!defaults.includes(value)) {
+        defaults.push(value);
+      }
+      return defaults;
+    }
+
+    const ids: string[] = [];
+    if (isSttModelId(query)) {
+      ids.push(query);
+    }
+    for (const result of results) {
+      const tags = result.tags?.map((tag) => tag.toLowerCase()) ?? [];
+      const isWhisper =
+        result.id.toLowerCase().includes("whisper") || tags.includes("whisper");
+      if (
+        isWhisper &&
+        result.pipelineTag === "automatic-speech-recognition" &&
+        isSttModelLanguageCompatible(result.id, language) &&
+        !ids.includes(result.id)
+      ) {
+        ids.push(result.id);
+      }
+    }
+    if (!ids.includes(value)) {
+      ids.push(value);
+    }
+    return ids;
+  }, [language, query, results, value]);
+
+  const selectModel = (model: string | null) => {
+    if (!(model && isSttModelId(model))) {
+      return;
+    }
+    onChange(model);
+    setInputValue(displaySttModel(model));
+  };
+
+  return (
+    <div
+      ref={anchorRef}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter") {
+          return;
+        }
+        if (!(event.target instanceof HTMLInputElement)) {
+          return;
+        }
+        if (!query || items.length === 0) {
+          return;
+        }
+        event.preventDefault();
+        selectModel(items[0]);
+      }}
+    >
+      <Combobox
+        items={items}
+        filteredItems={items}
+        filter={null}
+        value={value}
+        inputValue={inputValue}
+        onValueChange={selectModel}
+        onInputValueChange={setInputValue}
+        itemToStringValue={displaySttModel}
+        autoHighlight={true}
+      >
+        <ComboboxInput
+          aria-label="Speech recognition model"
+          placeholder={t("settings.voice.dictation.sttModelSearchPlaceholder")}
+          className="h-8 w-full [&_input]:text-xs"
+        />
+        <ComboboxContent anchor={anchorRef}>
+          {isLoading && query ? (
+            <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+              <Spinner className="size-3.5" />
+              {t("settings.voice.dictation.sttModelSearching")}
+            </div>
+          ) : (
+            <ComboboxEmpty>
+              {t("settings.voice.dictation.sttModelNoResults")}
+            </ComboboxEmpty>
+          )}
+          <ComboboxList>
+            {(model: string) => {
+              const curated = (STT_MODELS as readonly string[]).includes(model);
+              return (
+                <ComboboxItem key={model} value={model}>
+                  <span className="min-w-0 flex-1 truncate">
+                    {displaySttModel(model)}
+                    {curated ? (
+                      <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                        {getSttModelRepo(model)}
+                      </span>
+                    ) : null}
+                  </span>
+                </ComboboxItem>
+              );
+            }}
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
+    </div>
+  );
+}
 
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth Studio! This is a preview of the selected voice.";
@@ -339,7 +499,7 @@ export function VoiceTab() {
   const [statusNonce, setStatusNonce] = useState(0);
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
-  const sttRepoId = STT_MODEL_REPOS[sttModel];
+  const sttRepoId = getSttModelRepo(sttModel);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;
     state: SttDownloadAvailability;
@@ -704,37 +864,16 @@ export function VoiceTab() {
               description={t("settings.voice.dictation.sttModelDescription")}
             >
               <div className="flex w-56 flex-col items-stretch gap-2">
-                <Select
+                <SttModelCombobox
                   value={sttModel}
-                  onValueChange={(value) => {
-                    const next = (STT_MODELS as readonly string[]).includes(
-                      value,
-                    )
-                      ? (value as (typeof STT_MODELS)[number])
-                      : DEFAULT_STT_MODEL;
+                  language={dictationLanguage}
+                  onChange={(next) => {
                     if (next !== sttModel) {
                       void unloadSttModel().catch(() => {});
                     }
                     setSttModel(next);
                   }}
-                >
-                  <SelectTrigger
-                    aria-label="Speech recognition model"
-                    className="w-full"
-                    size="sm"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STT_MODELS.filter((model) =>
-                      isSttModelLanguageCompatible(model, dictationLanguage),
-                    ).map((model) => (
-                      <SelectItem key={model} value={model}>
-                        {STT_MODEL_LABELS[model]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                />
                 {sttDownload.progress ? (
                   <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 pt-2">
                     <div className="mb-1.5 flex items-center justify-between gap-3">

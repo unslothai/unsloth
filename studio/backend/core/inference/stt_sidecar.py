@@ -8,15 +8,18 @@ Loads a Whisper model (via Transformers) in the backend process, separate from
 the chat model that runs in the inference subprocess. This lets a user dictate
 into any chat model, including text-only ones, without evicting it.
 
-Only weights Unsloth has uploaded are used. They are downloaded explicitly
-through Studio's Model Hub and kept warm briefly between dictations. CUDA runs
-in float16; Apple Silicon (MPS) and CPU run in float32.
+Five Unsloth-curated Whisper models are offered by default. Users may also
+select another Transformers-compatible Whisper repository from Hugging Face.
+Weights are downloaded explicitly through Studio's Model Hub and kept warm
+briefly between dictations. CUDA runs in float16; Apple Silicon (MPS) and CPU
+run in float32.
 """
 
 from __future__ import annotations
 
 import gc
 import io
+import re
 import threading
 from typing import Optional
 
@@ -24,16 +27,21 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Multilingual Whisper models. Keys are the API/UI ids; values are the Unsloth
-# HF repos downloaded through Studio's Model Hub. Only Unsloth uploads are
-# offered, so Studio never pulls third-party weights.
+# Multilingual Whisper defaults. Keys are stable API/UI ids; values are the
+# repositories downloaded through Studio's Model Hub. A request may also use a
+# validated Hugging Face `owner/model` id for another Whisper-compatible model.
 STT_MODELS: dict[str, str] = {
+    "tiny": "unslothai/whisper-tiny",
+    "base": "unslothai/whisper-base",
     "small": "unsloth/whisper-small",
     "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
     "large-v3": "unsloth/whisper-large-v3",
 }
 DEFAULT_STT_MODEL = "small"
 STT_KEEP_ALIVE_SECONDS = 5 * 60
+_HF_REPO_ID = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"
+)
 
 # Bound decoded audio so a crafted upload cannot exhaust memory. Callers also
 # cap the encoded bytes; this bounds the decoded PCM length.
@@ -51,6 +59,10 @@ class SttLoadCancelledError(RuntimeError):
 
 class SttModelNotDownloadedError(RuntimeError):
     """The selected model is not complete in the shared Hub cache."""
+
+
+class SttModelIdError(ValueError):
+    """The requested custom model is not a valid Hugging Face repository id."""
 
 
 class SttAudioDecodeError(ValueError):
@@ -122,10 +134,24 @@ def is_available() -> bool:
 
 
 def resolve_model_id(model: Optional[str]) -> str:
-    """Map a requested id to a supported one, falling back to the default."""
-    if model and model in STT_MODELS:
-        return model
-    return DEFAULT_STT_MODEL
+    """Resolve a curated id or validate a custom Hugging Face repository."""
+    if not model:
+        return DEFAULT_STT_MODEL
+    normalized = model.strip()
+    if normalized in STT_MODELS:
+        return normalized
+    if _HF_REPO_ID.fullmatch(normalized):
+        return normalized
+    raise SttModelIdError(
+        "STT model must be one of Studio's defaults or a Hugging Face "
+        "repository in 'owner/model' form."
+    )
+
+
+def resolve_model_repo(model_id: str) -> str:
+    """Return the Hub repository for a curated or custom model id."""
+    resolved = resolve_model_id(model_id)
+    return STT_MODELS.get(resolved, resolved)
 
 
 def _is_missing_local_model_error(exc: BaseException) -> bool:
@@ -395,13 +421,14 @@ class WhisperSttSidecar:
 
     def _ensure_model_downloaded(self, model_id: str) -> None:
         """Fail before decode or model replacement when the cache is incomplete."""
+        model_id = resolve_model_id(model_id)
         with self._lock:
             if self._engine is not None and self._model_id == model_id:
                 return
         try:
             from huggingface_hub import snapshot_download
             snapshot_download(
-                repo_id = STT_MODELS[model_id],
+                repo_id = resolve_model_repo(model_id),
                 local_files_only = True,
             )
         except Exception as exc:
@@ -433,7 +460,7 @@ class WhisperSttSidecar:
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
                 self._release_engine_locked()
-                repo = STT_MODELS[model_id]
+                repo = resolve_model_repo(model_id)
                 logger.info("Loading STT model %s (%s) on %s", model_id, repo, device)
 
                 def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
