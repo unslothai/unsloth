@@ -23,6 +23,7 @@ def _request(client_host):
 
 def test_loopback_peers_are_local():
     from main import _is_loopback_client
+
     # IPv4 loopback covers the whole 127.0.0.0/8 range, plus IPv6 ::1 and the
     # IPv4-mapped-IPv6 form a dual-stack socket reports for an IPv4 connection.
     for host in ("127.0.0.1", "127.0.0.5", "127.255.255.254", "::1", "::ffff:127.0.0.1"):
