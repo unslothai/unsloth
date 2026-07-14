@@ -400,7 +400,9 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
 # Flags that turn an otherwise read-only command into a writer or executor
 # (sort -o FILE, tree -o FILE, xxd -r IN OUT, find -exec/-delete/...).
 _AUTO_UNSAFE_COMMAND_FLAGS = {
-    "sort": frozenset({"-o", "--output", "--compress-program", "-T", "--temporary-directory"}),
+    # --files0-from=F makes sort read the NUL-separated list of input files
+    # named in F, so a crafted list reads arbitrary host files indirectly.
+    "sort": frozenset({"-o", "--output", "--compress-program", "-T", "--temporary-directory", "--files0-from"}),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
     # GNU time -o/--output/-a/--append FILE writes timing output; time is a
@@ -463,6 +465,10 @@ _AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE
 # Recursive readers with an absolute-path target escape the workdir onto host
 # files (grep -R TOKEN /home, rg TOKEN /), so they ask.
 _AUTO_RECURSIVE_SEARCH = frozenset({"grep", "egrep", "fgrep", "rg", "ug", "find", "fd"})
+# Directory walkers that always recurse (tree /home, du /) read the whole host
+# subtree under an absolute/tilde root, like a recursive search. ls only recurses
+# with -R/--recursive, so it is gated separately when that flag is present.
+_AUTO_RECURSIVE_LISTERS = frozenset({"tree", "du"})
 # Benign wrappers: safe AND forward command position to their target (checked in
 # turn). sudo/su/chroot/etc. are absent, so they classify as unsafe.
 _AUTO_SAFE_WRAPPERS = frozenset(
@@ -598,9 +604,11 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
         "removexattr",
         "import_module",
         # loader.exec_module runs a module's code like import_module; archive
-        # extractall writes arbitrary files (zip-slip).
+        # extractall/extract write arbitrary files (zip-slip): extract takes a
+        # single member but an attacker-controlled member path still escapes.
         "exec_module",
         "extractall",
+        "extract",
         "FileIO",
         # asyncio subprocess spawners run a program past the terminal blocklist.
         "create_subprocess_exec",
@@ -1360,13 +1368,23 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
         if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
             return True
-    # A recursive search rooted outside the sandbox reads host files (grep -R
-    # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root, p=/; grep -R TOKEN $p); ask.
-    # Bash expands ~/~user to a home dir after this decision, so a tilde root is
-    # a sandbox escape too. A path-qualified command token starts with "/" as
-    # well, but that already asks below.
-    if any(os.path.basename(t.strip(";&|()`{}")).lower() in _AUTO_RECURSIVE_SEARCH for t in tokens):
-        if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
+    # A recursive reader rooted outside the sandbox reads host files (grep -R
+    # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root, p=/; grep -R TOKEN $p, and
+    # the always-recursive walkers tree /home / du /); ask. Bash expands
+    # ~/~user to a home dir after this decision, so a tilde root is a sandbox
+    # escape too. A path-qualified command token starts with "/" as well, but
+    # that already asks below.
+    if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
+        token_bases = [os.path.basename(t.strip(";&|()`{}")).lower() for t in tokens]
+        if any(b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS for b in token_bases):
+            return True
+        # ls only walks the whole subtree with -R/--recursive (ls -R /home,
+        # ls -laR /); a non-recursive ls /home lists one level and stays here.
+        if "ls" in token_bases and any(
+            t.split("=", 1)[0] in ("-R", "--recursive")
+            or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
+            for t in tokens
+        ):
             return True
     expect_command = True
     prefix_pending = False
@@ -1526,6 +1544,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     basicconfig_aliases: "set[str]" = set()
     # fileinput.input(..., inplace=True) rewrites a file in place.
     fileinput_aliases = {"fileinput"}
+    # Higher-order invokers (map/filter/starmap/reduce) call their first arg, so
+    # one handed a writer (map(open, ...)) writes without a direct open() site.
+    # Track aliases (m = map; from itertools import starmap as sm) so an aliased
+    # invoker is still checked; the write-callable gate keeps map(len, ...) safe.
+    invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
 
     def _methodcaller_writes(call) -> bool:
         # operator.methodcaller("write_text", ...) / methodcaller(name): unsafe
@@ -1649,6 +1672,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
+                # from itertools import starmap as sm / from functools import
+                # reduce as r: an aliased higher-order invoker.
+                if alias.name in _HIGHER_ORDER_INVOKERS:
+                    invoker_aliases.add(alias.asname or alias.name)
         elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             value = node.value
             # AnnAssign (f: object = open) has a single target, no destructuring.
@@ -1667,6 +1694,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 writer_aliases.update(targets)  # s = save (numpy save alias)
             elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
                 archive_ctor_aliases.update(targets)  # z = ZipFile
+            elif isinstance(value, ast.Name) and value.id in invoker_aliases:
+                invoker_aliases.update(targets)  # m = map
             elif isinstance(value, ast.Name) and value.id in path_ctor_aliases:
                 path_ctor_aliases.update(targets)  # P = Path
             elif isinstance(value, ast.Name) and value.id in pathjoin_aliases:
@@ -1921,11 +1950,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     if func.id in basicconfig_aliases and _basicconfig_writes(node):
                         return True
                     # A writer/open alias handed to a higher-order invoker
-                    # (map(open, names, modes), starmap(np.save, ...)) is called
-                    # without a direct open(...)/save(...) site; the callable is
-                    # the first positional arg. A benign map(len, ...) is unaffected.
+                    # (map(open, names, modes), starmap(np.save, ...), or an
+                    # aliased m = map / sm = starmap) is called without a direct
+                    # open(...)/save(...) site; the callable is the first
+                    # positional arg. A benign map(len, ...) is unaffected.
                     if (
-                        func.id in _HIGHER_ORDER_INVOKERS
+                        func.id in invoker_aliases
                         and node.args
                         and _wraps_write_callable(node.args[0])
                     ):

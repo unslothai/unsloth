@@ -183,6 +183,21 @@ def _clear_pending():
         ("fd pattern /etc", True),
         ("grep -r foo src/", False),  # sandbox-relative search stays safe
         ("rg TOKEN .", False),
+        ("tree /home", True),  # always-recursive walker escapes onto host files
+        ("du /", True),  # disk-usage walk of the whole host root
+        ("du -sh /home", True),  # summarized host-home walk still recurses
+        ("ls -R /home", True),  # ls recurses with -R onto host files
+        ("ls -R /etc", True),
+        ("ls -laR /", True),  # -R inside a short cluster still recurses
+        ("tree .", False),  # cwd walk stays in the sandbox
+        ("tree ./project", False),  # relative walk stays safe
+        ("du -sh", False),  # du with no path defaults to cwd
+        ("du -sh ./build", False),  # relative disk-usage stays safe
+        ("ls -R subdir", False),  # relative recursive listing stays safe
+        ("ls -la /home", False),  # non-recursive listing of one level stays here
+        ("sort --files0-from=list.txt", True),  # reads an indirect file list
+        ("sort --files0-from list.txt", True),  # separate-value form
+        ("sort -u data.txt", False),  # ordinary sort stays read only
         ("cat logs/app.log", False),  # ordinary relative read
         ("cat /r?n/secrets/hf_token", True),  # glob into a secret mount
         ("cat /var/r?n/secrets/db", True),
@@ -617,12 +632,40 @@ def test_terminal_classifier(command, unsafe):
             "import itertools\nlist(itertools.chain(xs, ys))",
             False,
         ),  # non-invoker itertools helper stays safe
+        (
+            "m = map\nlist(m(open, ['o.txt'], ['w']))",
+            True,
+        ),  # aliased invoker (m = map) handed open()
+        (
+            "from itertools import starmap as sm\nlist(sm(open, [('out', 'w')]))",
+            True,
+        ),  # imported-as invoker alias handed open()
+        (
+            "f = filter\nlist(f(open, ['a']))",
+            True,
+        ),  # aliased filter() handed open()
+        (
+            "m = map\nlist(m(str, [1, 2]))",
+            False,
+        ),  # aliased invoker with a benign callable stays safe
         ("spec.loader.exec_module(module)", True),  # runs a module's code
         ("spec.loader.get_data('x')", False),  # loader read stays safe
         (
             "import zipfile\nzipfile.ZipFile('a.zip').extractall('out')",
             True,
         ),  # extractall writes arbitrary files
+        (
+            "import zipfile\nzipfile.ZipFile('a.zip').extract('member', 'out')",
+            True,
+        ),  # single-member extract still writes to disk (zip-slip)
+        (
+            "import tarfile\ntarfile.open('a.tar').extract('m', 'out')",
+            True,
+        ),  # tarfile single-member extract writes to disk
+        (
+            "import zipfile\nzipfile.ZipFile('a.zip').read('n')",
+            False,
+        ),  # archive in-memory read stays safe
         (
             "import zipfile\nzipfile.ZipFile('a.zip').namelist()",
             False,
@@ -989,6 +1032,7 @@ class _FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):
