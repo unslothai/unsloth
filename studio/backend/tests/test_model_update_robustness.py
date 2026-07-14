@@ -502,7 +502,6 @@ def test_symlinked_cache_with_current_blob_reports_no_update():
 
 def _stub_manifest(monkeypatch, *files):
     from hub.utils.download_manifest import ExpectedFile, Manifest
-
     manifest = Manifest(
         repo_type = "model",
         repo_id = "org/repo",
