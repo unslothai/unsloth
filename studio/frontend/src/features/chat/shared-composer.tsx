@@ -23,7 +23,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
-import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
+import {
+  StudioDictationAdapter,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
@@ -207,7 +211,11 @@ function useDictation(
 
   const start = useCallback(async () => {
     if (startingRef.current || sessionRef.current) return;
-    if (!StudioDictationAdapter.isSupported()) return;
+    // Unsupported engine (e.g. Firefox): explain and steer to the local model.
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
     startingRef.current = true;
 
     let session: StudioDictationSession;
@@ -217,6 +225,7 @@ function useDictation(
       session = new StudioDictationAdapter().listen();
     } catch {
       startingRef.current = false;
+      notifyStudioDictationUnavailable();
       return;
     }
     sessionRef.current = session;
@@ -691,7 +700,6 @@ export function SharedComposer({
     isDictating,
     start: startDictation,
     stop: stopDictation,
-    supported: dictationSupported,
   } = useDictation(setText);
 
   useEffect(() => {
@@ -1937,7 +1945,7 @@ export function SharedComposer({
               </button>
             )
           ) : null}
-          {dictationSupported && (
+          {
             <>
               {!isDictating ? (
                 <TooltipIconButton
@@ -1965,7 +1973,7 @@ export function SharedComposer({
                 </TooltipIconButton>
               )}
             </>
-          )}
+          }
           {isQueueRunning ? (
             <button
               type="button"

@@ -35,6 +35,10 @@ import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
+import {
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat/adapters/studio-dictation-adapter";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   IntentAwareScrollProvider,
@@ -3387,22 +3391,35 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  const aui = useAui();
+  // Keep the mic clickable: if the engine can't run here, explain and point to
+  // the local model instead of disabling the button.
+  const startDictation = () => {
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    try {
+      aui.composer().startDictation();
+    } catch {
+      notifyStudioDictationUnavailable();
+    }
+  };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
           the stop and discard actions. */}
       <ComposerPrimitive.If dictation={false}>
-        <ComposerPrimitive.Dictate asChild={true}>
-          <TooltipIconButton
-            tooltip="Dictate"
-            aria-label="Dictate"
-            variant="ghost"
-            className="size-8 rounded-full text-foreground"
-          >
-            <MicIcon className="size-5" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Dictate>
+        <TooltipIconButton
+          tooltip="Dictate"
+          aria-label="Dictate"
+          variant="ghost"
+          className="size-8 rounded-full text-foreground"
+          onClick={startDictation}
+        >
+          <MicIcon className="size-5" />
+        </TooltipIconButton>
       </ComposerPrimitive.If>
       <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
         <ComposerPrimitive.Send asChild={true}>

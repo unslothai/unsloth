@@ -33,7 +33,6 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
-import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
@@ -884,7 +883,6 @@ function useStudioRuntimeAdapters(
   pairId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
-  const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
 
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
@@ -1024,13 +1022,10 @@ function useStudioRuntimeAdapters(
     [aui, modelType, pairId],
   );
 
-  const dictation = useMemo(
-    () =>
-      StudioDictationAdapter.isSupported(dictationEngine)
-        ? new StudioDictationAdapter()
-        : undefined,
-    [dictationEngine],
-  );
+  // Always register the adapter so the mic stays clickable for any engine. The
+  // engine is resolved at listen() time and the composer shows guidance when it
+  // cannot run, so engine switches also work on an already-mounted thread.
+  const dictation = useMemo(() => new StudioDictationAdapter(), []);
   const speech = useMemo(
     () =>
       StudioSpeechSynthesisAdapter.isSupported()

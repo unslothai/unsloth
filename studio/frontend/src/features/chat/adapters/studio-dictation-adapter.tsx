@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   type DictationEngine,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
+import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { StudioModelDictationAdapter } from "./studio-model-dictation-adapter";
 import {
@@ -68,4 +70,54 @@ export class StudioDictationAdapter implements DictationAdapter {
     }
     throw new Error("Browser dictation is not supported in this browser.");
   }
+}
+
+/** Whether dictation can run now for the chosen engine. */
+export function isStudioDictationAvailable(
+  dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
+    .dictationEngine,
+): boolean {
+  return StudioDictationAdapter.isSupported(dictationEngine);
+}
+
+/** Explain why dictation can't start and point the user to the local model. */
+export function notifyStudioDictationUnavailable(
+  dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
+    .dictationEngine,
+): void {
+  // Both engines need a secure context (localhost or HTTPS).
+  if (typeof window !== "undefined" && !window.isSecureContext) {
+    toast.error("Voice typing needs a secure connection.", {
+      description:
+        "Open Studio at http://127.0.0.1 (localhost) or over HTTPS to dictate.",
+    });
+    return;
+  }
+  if (dictationEngine === "model") {
+    // Defensive: MediaRecorder is effectively always present here.
+    toast.error("Voice recording isn't available in this browser.");
+    return;
+  }
+  // Browser Web Speech is missing (e.g. Firefox). Stack the text and button so
+  // the action sits below, not squeezed into a side column.
+  const toastId = toast.error("Voice typing isn't available in this browser.", {
+    description: (
+      <div className="mt-0.5 flex flex-col items-start gap-2">
+        <span>
+          Choose the local speech-to-text model in Voice settings to dictate
+          here.
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            useSettingsDialogStore.getState().openDialog("voice");
+            toast.dismiss(toastId);
+          }}
+          className="rounded-full bg-foreground px-2.5 py-1 text-xs font-medium text-background transition-colors hover:bg-foreground/90"
+        >
+          Open Voice settings
+        </button>
+      </div>
+    ),
+  });
 }
