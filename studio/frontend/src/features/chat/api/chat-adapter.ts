@@ -1493,9 +1493,8 @@ async function autoLoadSmallestModel(): Promise<{
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
-    // The context pin is per-model, so read it from the same remembered settings
-    // that fed effectiveMaxSeqLength -- not the live store, which holds the pin
-    // for whatever the user last touched, or null on a background auto-load.
+    // The context pin is per-model too, so it comes from remembered settings,
+    // not the live store.
     const fitMaxSeqLength = resolveFitMaxSeqLength(
       candidate.kind === "gguf",
       effectiveGpuMemoryMode,
@@ -1551,8 +1550,7 @@ async function autoLoadSmallestModel(): Promise<{
         : {}),
     });
     saveSpeculativeType(effectiveSpeculativeType);
-    // Self-gates on is_gguf (and skips diffusion), so it only persists for a
-    // real GGUF chat load; the mode arg is inert on other kinds.
+    // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
     persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
     useChatRuntimeStore
       .getState()

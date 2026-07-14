@@ -836,9 +836,8 @@ export function useChatModelRuntime() {
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
             saveSpeculativeType(loadSpeculativeType);
-            // Persist the GPU Memory mode only on a successful non-diffusion
-            // GGUF load (not on dropdown change), so an abandoned selection
-            // doesn't stick and a mode-agnostic diffusion load doesn't clobber it.
+            // Persist the GPU Memory mode only on a successful load (not on
+            // dropdown change), so an abandoned selection doesn't stick.
             persistGpuMemoryModeOnLoad(loadResponse, loadGpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;

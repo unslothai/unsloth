@@ -62,9 +62,8 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse | null> {
 }
 
 function toGpuInfo(data: SystemInfoResponse | null): GpuInfo {
-  // CPU/RAM exist even on hosts without a GPU, so populate them on every path.
-  // No discrete GPU (e.g. Mac): still surface system RAM so memory math
-  // (unified memory) has a budget to work with.
+  // CPU/RAM exist even on GPU-less hosts (e.g. Mac), so populate them on every
+  // path: unified-memory math still needs a RAM budget to work with.
   const base = {
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
@@ -106,10 +105,7 @@ function toGpuDevices(data: SystemInfoResponse | null): SystemGpuDevice[] {
     }));
 }
 
-/**
- * Aggregate GPU info from /api/system. Cached at module level, so only one
- * request is made no matter how many GPU hooks are mounted.
- */
+/** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 export function useGpuInfo(): GpuInfo {
   const [gpu, setGpu] = useState<GpuInfo>(
     cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,

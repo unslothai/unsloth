@@ -441,9 +441,8 @@ export function saveGpuMemoryMode(value: "auto" | "manual"): void {
 }
 
 /** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
- *  non-GGUF has no such mode, and diffusion runs mode-agnostic (the backend
- *  reports "auto"), so neither must clobber the standing manual preference.
- *  Gates on the authoritative response flags so every load path stays in sync. */
+ *  non-GGUF has no such mode, and diffusion runs mode-agnostic (reports "auto"),
+ *  so neither must clobber the standing manual preference. */
 export function persistGpuMemoryModeOnLoad(
   resp: { is_gguf?: boolean; is_diffusion?: boolean },
   mode: "auto" | "manual",
@@ -1884,10 +1883,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ...(settings.gpuLayers != null && { gpuLayers: settings.gpuLayers }),
       ...(settings.nCpuMoe != null && { nCpuMoe: settings.nCpuMoe }),
       ...(settings.selectedGpuIds !== undefined && {
-        // Reconcile a persisted pick against the GPUs actually present now: a
-        // saved [1] restored on a 1-GPU host (or under relative/UUID visibility)
-        // would hide the picker yet still send gpu_ids, which the backend
-        // rejects, with no way to clear it. Drop unknown ids / stale picks.
+        // Reconcile against the GPUs present now (see reconcilePersistedGpuIds):
+        // a saved [1] on a 1-GPU host (or under relative/UUID visibility) would
+        // hide the picker yet still send gpu_ids, which the backend rejects.
         selectedGpuIds: reconcilePersistedGpuIds(settings.selectedGpuIds),
       }),
     }),

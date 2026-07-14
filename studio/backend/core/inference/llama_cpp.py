@@ -2495,15 +2495,11 @@ class LlamaCppBackend:
     def _emit_child_gpu_visibility(env: dict, pinned: str) -> None:
         """Write the child's GPU visibility mask (CUDA, plus the HIP mirror on
         ROCm, where narrowing only CUDA_VISIBLE_DEVICES leaves an AMD child
-        seeing the full set). Do NOT also set ROCR_VISIBLE_DEVICES to the same
-        value: ROCR filters at the HSA/ROCr layer and HIP at the HIP layer, so
-        setting both with the same physical indices applies the mask twice --
-        ROCR reduces the visible set and re-indexes it from 0, then HIP indexes
-        into the already-reduced set. A single non-zero pin (e.g. "1") then
-        points out of range at the HIP layer, HIP enumerates 0 devices, and
-        llama.cpp falls back to CPU ("ggml_cuda_init: no ROCm-capable device is
-        detected"). The HIP mask alone narrows correctly; clear any inherited
-        ROCR mask so it can't double up."""
+        seeing the full set). Do NOT also set ROCR_VISIBLE_DEVICES: ROCR and HIP
+        mask at different layers, so the same indices apply twice -- ROCR reduces
+        and re-indexes from 0, then a non-zero HIP pin points out of range, HIP
+        enumerates 0 devices, and llama.cpp falls back to CPU. The HIP mask alone
+        narrows correctly; clear any inherited ROCR mask so it can't double up."""
         env["CUDA_VISIBLE_DEVICES"] = pinned
         try:
             import torch as _torch
@@ -5799,13 +5795,12 @@ class LlamaCppBackend:
                 # use the same helper so a healthy env-driven tensor server matches.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = _effective_tensor_parallel(extra_args, tensor_parallel)
-                # Zero GPU layers leaves nothing to split: --split-mode tensor or
-                # a per-GPU ratio at gpu_layers=0 launches tensor mode with no
-                # offloaded work -- and under the CPU-only GPU mask below, with
-                # no visible devices at all, which aborts the server instead of
-                # the intended CPU-only load. Drop both for this launch (a user
-                # --split-mode in extras still wins last-wins and keeps the GPUs
-                # visible via the mask's own gate).
+                # gpu_layers=0 leaves nothing to split, yet --split-mode tensor or
+                # a per-GPU ratio still launches tensor mode -- and under the
+                # CPU-only mask below (no visible devices) that aborts the server
+                # instead of loading on CPU. Drop both here (a user --split-mode in
+                # extras still wins last-wins and keeps the GPUs visible via the
+                # mask's own gate).
                 if gpu_memory_mode == "manual" and gpu_layers == 0:
                     if tensor_parallel or tensor_split:
                         logger.info(
@@ -6875,15 +6870,14 @@ class LlamaCppBackend:
                         # don't report a count llama-server never received.
                         self._n_cpu_moe = 0
                     # Distribute the model across GPUs by the user's per-GPU shares
-                    # (--tensor-split). Works with the default layer split and with
-                    # tensor parallelism; --fit off means no fit/tensor abort. Only
-                    # emit when >1 GPU is in use AND the list matches that count: the
-                    # field is hidden (not cleared) when the picker narrows to one,
-                    # and a direct caller can send a stale ratio for a different GPU
-                    # set. A length mismatch never reaches llama.cpp: too-short (and
-                    # moderately-too-long) lists just zero-pad, concentrating on the
-                    # listed GPUs, and only a 16+ entry list past llama.cpp's device
-                    # cap aborts, so Studio drops any mismatch to the free-VRAM default.
+                    # (--tensor-split). Works with layer split and tensor
+                    # parallelism; --fit off means no fit/tensor abort. Only emit
+                    # when >1 GPU is in use AND the list length matches that count:
+                    # the field is hidden (not cleared) when the picker narrows to
+                    # one, and a direct caller can send a stale ratio for a different
+                    # GPU set. Studio drops any mismatch to the free-VRAM default
+                    # (llama.cpp would silently zero-pad a short list, or abort past
+                    # its 16-device cap).
                     _split_gpus = self._effective_gpu_count(gpu_indices)
                     if tensor_split and _split_gpus > 1:
                         # An all-zero/non-positive split assigns nothing anywhere,
@@ -7211,13 +7205,12 @@ class LlamaCppBackend:
                 # set HIP_VISIBLE_DEVICES too. Vulkan is pinned via --device
                 # (above), not here.
                 # A deliberate zero-offload load with no GPU companions runs
-                # entirely on CPU, yet a visible CUDA device still costs the
-                # child a ~0.5 GB context + compute scratch that the CPU-only
-                # classification below deliberately reports as free. Hide the
-                # GPUs so the load is exactly what it claims: zero VRAM
-                # (verified: GPU stays at idle baseline and generation runs).
-                # Companion loads keep the normal masking, and a user --device
-                # in extras keeps control of its own devices.
+                # entirely on CPU, yet a visible CUDA device still costs the child
+                # ~0.5 GB (context + compute scratch) that the CPU-only
+                # classification below reports as free. Hide the GPUs so the load
+                # is exactly what it claims: zero VRAM (verified: GPU stays at idle
+                # baseline and generation runs). Companion loads keep the normal
+                # masking, and a user --device in extras keeps its own.
                 _cpu_only_zero_offload = (
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
@@ -8199,12 +8192,10 @@ class LlamaCppBackend:
     ) -> Optional[bool]:
         """GPU-residency flag for a deliberate manual zero-offload load. The
         main model is CPU-only by construction, but launched companions (mmproj
-        / a drafter) offload to the GPU regardless of ``--gpu-layers`` -- and
-        the counted-offload classifier, keyed on the main model's layer line,
-        can't see them. True when a companion is in the launched argv or env
-        (the server still holds VRAM, so training must unload it), False when
-        none is (nothing to free; training leaves the server alone), None
-        without a detected GPU (the existing no-signal convention). The drafter
+        / a drafter) offload to the GPU regardless of ``--gpu-layers`` and the
+        counted-offload classifier can't see them. True when a companion is in
+        the argv or env (server holds VRAM, training must unload it), False when
+        none is, None without a detected GPU (no-signal convention). The drafter
         check reuses the extras parser, so pass-through aliases (-md,
         --spec-draft-model, HF forms) and the LLAMA_ARG_SPEC_DRAFT_* env count
         too, not just the Studio-emitted --model-draft."""

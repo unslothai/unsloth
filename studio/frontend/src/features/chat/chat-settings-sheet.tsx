@@ -797,15 +797,14 @@ export function ChatSettingsPanel({
     (i) => gpuDevices.find((d) => d.index === i) ?? null,
   );
   // Displayed per-GPU counts. splitRatio is a stable reference balance (only a
-  // slider edit changes it), rescaled to the current total. Deriving it -- rather
-  // than mutating it on every GPU Layers change -- keeps the balance intact when
-  // the total passes through low values or Auto. No saved split: free-VRAM-
-  // weighted default (llama.cpp's unset default splits by free VRAM, so the
-  // first slider edit starts from the placement the default would have used,
-  // not a total-VRAM ratio that can land layers on a busy GPU). A genuine 0
-  // (a full GPU) is a real weight, not missing data -- the probe's no-data
-  // case already degrades to the total server-side, and an all-zero list
-  // falls back to an even split inside distributeByWeight. Not yet sent.
+  // slider edit changes it), rescaled to the current total; deriving rather than
+  // mutating it on GPU Layers changes keeps the balance intact when the total
+  // passes through low values or Auto. No saved split: free-VRAM-weighted default
+  // (llama.cpp's unset default splits by free VRAM, so the first edit starts from
+  // the default's placement, not a total-VRAM ratio that can land layers on a
+  // busy GPU). A genuine 0 (a full GPU) is a real weight, not missing data: the
+  // probe's no-data case degrades to the total server-side, and an all-zero list
+  // falls back to an even split in distributeByWeight. Not yet sent.
   const splitCounts =
     splitRatio && splitRatio.length === gpusInUse.length
       ? distributeByWeight(splitTotal, splitRatio)

@@ -3864,12 +3864,10 @@ def _resolve_inherited_extra_args(
     # stripped so an inherited override can't win the last-wins CLI
     # parse against a freshly-supplied first-class field.
     source = llama_backend.extra_args_source
-    # Compare against the resolved variant, not the request
-    # field: callers commonly omit gguf_variant for local
-    # ``.gguf`` paths and HF auto-pick flows. ``config.gguf_
-    # variant`` is the variant load_model was actually
-    # invoked with (see the HF / local branches below), so
-    # both sides of the comparison key off the same string.
+    # Compare against the resolved variant, not the request field: callers
+    # commonly omit gguf_variant for local ``.gguf`` paths and HF auto-pick
+    # flows. ``config.gguf_variant`` is the variant load_model was actually
+    # invoked with, so both sides of the comparison key off the same string.
     resolved_variant = (config.gguf_variant or "").lower()
     request_variant = (request.gguf_variant or "").lower()
     stored_variant = (source[1] or "").lower() if source else ""
@@ -3889,15 +3887,13 @@ def _resolve_inherited_extra_args(
         # inherit via "no opinion" semantics.
         extra_llama_args = []
     else:
-        # Strip only the groups whose first-class field was set by
-        # the caller, so an inherited --chat-template-file survives
-        # an Apply that omits chat_template_override. A bundled family
-        # template (e.g. the gemma-4 override) is an effective
-        # first-class template setting even when the raw request
-        # omits chat_template_override, so strip the inherited
-        # --chat-template-file in that case too -- otherwise the stale
-        # extra arg (appended last) shadows the bundled template while
-        # Studio reports the bundled template's capabilities.
+        # Strip only the groups whose first-class field was set by the caller,
+        # so an inherited --chat-template-file survives an Apply that omits
+        # chat_template_override. A bundled family template (e.g. gemma-4) counts
+        # as a first-class template setting even when the request omits
+        # chat_template_override, so strip the inherited --chat-template-file then
+        # too -- else the stale arg (appended last) shadows the bundled template
+        # while Studio reports the bundled template's capabilities.
         fields_set = getattr(request, "model_fields_set", set())
         stripped = strip_shadowing_flags(
             llama_backend.extra_args,
@@ -4196,12 +4192,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # GGUF supports gpu_ids: validate the pick up front (before the training
         # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
-        # negative / out-of-range / duplicate ids and UUID/MIG parents. XPU-host
-        # picks are rejected outright: the picker's indices are torch-xpu
-        # ordinals, and neither applicator speaks that space -- CUDA/HIP masks
-        # don't apply, and the Vulkan --device pin uses ggml's own Vulkan
-        # ordinals, which have no defined mapping from the xpu enumeration -- so
-        # a pick could silently land on the wrong device.
+        # negative / out-of-range / duplicate ids and UUID/MIG parents. XPU hosts
+        # are rejected outright: the picker's indices are torch-xpu ordinals that
+        # neither applicator speaks (CUDA/HIP masks don't apply, the Vulkan
+        # --device pin uses ggml's own Vulkan ordinals), so a pick could silently
+        # land on the wrong device.
         if config.is_gguf and effective_gpu_ids is not None:
             from utils.hardware import DeviceType, get_device
             from utils.hardware.hardware import resolve_requested_gpu_ids
