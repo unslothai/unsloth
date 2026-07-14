@@ -125,7 +125,9 @@ def _record_force_terminate(monkeypatch, b):
     calls: list = []
     monkeypatch.setattr(b, "force_terminate", lambda target_proc = None: calls.append("force"))
     monkeypatch.setattr(
-        b, "_finalize_stopped_after_escalation", lambda target_proc = None: calls.append("final")
+        b,
+        "_finalize_stopped_after_escalation",
+        lambda target_proc = None, watched_job_id = None: calls.append("final"),
     )
     return calls
 
@@ -320,7 +322,9 @@ def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
     finalized: list = []
     monkeypatch.setattr(b, "force_terminate", _boom)
     monkeypatch.setattr(
-        b, "_finalize_stopped_after_escalation", lambda target_proc = None: finalized.append(True)
+        b,
+        "_finalize_stopped_after_escalation",
+        lambda target_proc = None, watched_job_id = None: finalized.append(True),
     )
 
     b._proc = _FakeProc(alive = True)
@@ -409,7 +413,8 @@ def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
 
 
 def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
-    # The common case: the worker we watched is still current, so finalize proceeds.
+    # The common case: the worker we watched is still current, so finalize proceeds
+    # and threads the watched job id through as expected_job_id.
     b = TrainingBackend()
     finalized: list = []
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
@@ -420,12 +425,33 @@ def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
     b.current_job_id = "job_a"
     b._progress.is_training = True
 
-    b._finalize_stopped_after_escalation(target_proc = proc)
+    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_a")
 
     assert b._proc is None
     assert b._progress.is_training is False
     assert finalized and finalized[0].get("status") == "stopped"
     assert finalized[0].get("expected_job_id") == "job_a"
+
+
+def test_finalize_after_escalation_no_ops_on_job_change_during_startup(monkeypatch):
+    # start_training updates current_job_id BEFORE it installs the new _proc, so a stale
+    # watchdog can enter while _proc is still the old (dead) handle. The job-id guard must
+    # catch this even though the proc-only guard would not.
+    b = TrainingBackend()
+    finalized: list = []
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.append(kw))
+
+    old_proc = _FakeProc(alive = False)  # old worker, dead; new _proc not installed yet
+    b._proc = old_proc  # still the old handle (== target), so proc guard would pass
+    b.current_job_id = "job_new"  # but the new run already claimed the job id
+    b._progress.is_training = True
+
+    b._finalize_stopped_after_escalation(target_proc = old_proc, watched_job_id = "job_old")
+
+    assert b._proc is old_proc, "must not drop the handle during a new run's startup"
+    assert b._progress.is_training is True, "must not mark the starting run stopped"
+    assert finalized == [], "must not finalize while a new run is starting up"
 
 
 # ----------------------------------------------------------------------------
@@ -461,13 +487,16 @@ def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
 def _install_fake_db(monkeypatch):
     """Stub storage.studio_db + utils.downsample so the real DB helpers run without
     SQLite. Returns the recorder dict."""
-    recs = {"created": [], "finished": [], "inserted": []}
+    recs = {"created": [], "finished": [], "inserted": [], "insert_ids": [], "progress_ids": []}
     fake_storage = _types.ModuleType("storage")
     fake_db = _types.ModuleType("storage.studio_db")
     fake_db.create_run = lambda **kw: recs["created"].append(kw)
     fake_db.finish_run = lambda **kw: recs["finished"].append(kw)
-    fake_db.insert_metrics_batch = lambda job_id, batch: recs["inserted"].extend(batch)
-    fake_db.update_run_progress = lambda **kw: None
+    fake_db.insert_metrics_batch = lambda job_id, batch: (
+        recs["inserted"].extend(batch),
+        recs["insert_ids"].append(job_id),
+    )
+    fake_db.update_run_progress = lambda **kw: recs["progress_ids"].append(kw.get("id"))
     fake_storage.studio_db = fake_db
     monkeypatch.setitem(sys.modules, "storage", fake_storage)
     monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
@@ -541,3 +570,96 @@ def test_concurrent_flush_claims_each_metric_once(monkeypatch):
     steps = sorted(m["step"] for m in recs["inserted"])
     assert steps == list(range(200)), "each metric must be inserted exactly once"
     assert b._metric_buffer == [], "the buffer must be fully drained"
+
+
+def test_flush_pins_to_passed_run_id(monkeypatch):
+    # A finalizer flushes to the run it captured, even if a new /start has already
+    # changed current_job_id.
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id = "job_new"  # a new run is already live
+    b._db_run_created = True
+    b._metric_buffer[:] = [{"step": 1}, {"step": 2}]
+
+    b._flush_metrics_to_db(run_id = "job_old")
+
+    assert recs["insert_ids"] == ["job_old"], "metrics must go to the captured run, not the new one"
+    assert recs["progress_ids"] == ["job_old"]
+
+
+def test_finalize_uses_snapshot_run_id_across_new_run(monkeypatch):
+    # If a new /start changes current_job_id after the finalize claim but before the DB
+    # writes, finish_run must still target the run captured under the lock.
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id = "job_x"
+    b._db_run_created = True
+    b._run_finalized = False
+
+    def hijack(run_id = None):
+        # Simulate a new run taking over during the flush (after the finalize claim).
+        b.current_job_id = "job_y"
+
+    monkeypatch.setattr(b, "_flush_metrics_to_db", hijack)
+
+    b._finalize_run_in_db(status = "stopped", expected_job_id = "job_x")
+
+    assert [f["id"] for f in recs["finished"]] == [
+        "job_x"
+    ], "finish_run must target the captured run, not the run that replaced it"
+
+
+# ----------------------------------------------------------------------------
+# (g) DB row creation must not be published before the insert commits.
+# ----------------------------------------------------------------------------
+
+
+def test_ensure_db_run_created_publishes_only_after_insert(monkeypatch):
+    # _db_run_created must stay False while create_run is in flight, so a concurrent
+    # finalize can't run finish_run (an UPDATE) against a not-yet-inserted row.
+    b = TrainingBackend()
+    b.current_job_id = "job_z"
+    b._db_config = {"model_name": "m"}
+    observed: dict = {}
+
+    fake_storage = _types.ModuleType("storage")
+    fake_db = _types.ModuleType("storage.studio_db")
+
+    def _create(**kw):
+        observed["flag_during_create"] = b._db_run_created
+        observed["in_progress_during_create"] = b._db_create_in_progress
+
+    fake_db.create_run = _create
+    fake_storage.studio_db = fake_db
+    monkeypatch.setitem(sys.modules, "storage", fake_storage)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
+
+    b._ensure_db_run_created()
+
+    assert observed["flag_during_create"] is False, "flag must not be published before insert"
+    assert observed["in_progress_during_create"] is True
+    assert b._db_run_created is True, "flag must be published after a successful insert"
+    assert b._db_create_in_progress is False
+
+
+def test_ensure_db_run_created_stays_unpublished_on_failure(monkeypatch):
+    # If create_run raises, neither flag stays set, so a later caller can retry.
+    b = TrainingBackend()
+    b.current_job_id = "job_z"
+    b._db_config = {"model_name": "m"}
+
+    fake_storage = _types.ModuleType("storage")
+    fake_db = _types.ModuleType("storage.studio_db")
+
+    def _boom_create(**kw):
+        raise RuntimeError("insert failed")
+
+    fake_db.create_run = _boom_create
+    fake_storage.studio_db = fake_db
+    monkeypatch.setitem(sys.modules, "storage", fake_storage)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
+
+    b._ensure_db_run_created()
+
+    assert b._db_run_created is False, "a failed insert must not publish the row as created"
+    assert b._db_create_in_progress is False, "the in-progress flag must be cleared on failure"

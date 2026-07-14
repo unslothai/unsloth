@@ -788,6 +788,7 @@ class TrainingBackend:
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
         self._db_run_created: bool = False
+        self._db_create_in_progress: bool = False
         self._db_total_steps_set: bool = False
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
@@ -997,7 +998,7 @@ class TrainingBackend:
                 return
             watchdog = threading.Thread(
                 target = self._stop_watchdog_loop,
-                args = (proc, cancel),
+                args = (proc, cancel, self.current_job_id),
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
                 daemon = True,
             )
@@ -1005,7 +1006,12 @@ class TrainingBackend:
             self._stop_watchdog_proc = proc
             watchdog.start()
 
-    def _stop_watchdog_loop(self, target_proc: "mp.Process", cancel: bool) -> None:
+    def _stop_watchdog_loop(
+        self,
+        target_proc: "mp.Process",
+        cancel: bool,
+        watched_job_id: Optional[str] = None,
+    ) -> None:
         """Escalate a stuck stop to force_terminate(): grace after "complete", else the
         absolute backstop (see the module timeouts). No-ops on a clean exit; exits
         silently if a new run replaces the worker."""
@@ -1051,25 +1057,37 @@ class TrainingBackend:
         except Exception:
             logger.exception("Stop watchdog: force_terminate failed; finalizing anyway")
         finally:
-            self._finalize_stopped_after_escalation(target_proc = target_proc)
+            self._finalize_stopped_after_escalation(
+                target_proc = target_proc, watched_job_id = watched_job_id
+            )
 
     def _finalize_stopped_after_escalation(
-        self, target_proc: "Optional[mp.Process]" = None
+        self,
+        target_proc: "Optional[mp.Process]" = None,
+        watched_job_id: Optional[str] = None,
     ) -> None:
         """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
         even if the worker is wedged in driver teardown. No-ops if a new run has already
         replaced the worker we watched, so a stale watchdog never marks a fresh run
-        stopped or drops its handle. Preserves output_dir so a saved checkpoint is kept."""
+        stopped or drops its handle. Preserves output_dir so a saved checkpoint is kept.
+
+        Supersession is checked on both the watched proc and the watched job id:
+        start_training updates current_job_id before it installs the new _proc, so a
+        stale watchdog entering during that startup window still sees the old (dead)
+        handle and is caught by the job-id guard."""
         with self._lock:
-            if target_proc is not None and self._proc is not None and self._proc is not target_proc:
+            if target_proc is not None and self._proc is not target_proc:
                 return  # a new run replaced the worker; never touch its state
-            job_id = self.current_job_id
+            if watched_job_id is not None and self.current_job_id != watched_job_id:
+                return  # a new run is already starting up; leave its state alone
             self._progress.is_training = False
             self._progress.status_message = "Training stopped."
             output_dir = self._output_dir
             self._proc = None
         self._ensure_db_run_created()
-        self._finalize_run_in_db(status = "stopped", output_dir = output_dir, expected_job_id = job_id)
+        self._finalize_run_in_db(
+            status = "stopped", output_dir = output_dir, expected_job_id = watched_job_id
+        )
 
     def force_terminate(self, target_proc: "Optional[mp.Process]" = None) -> None:
         """Force-kill the training subprocess so state can be reset immediately. With
@@ -1654,18 +1672,28 @@ class TrainingBackend:
             self._finalize_run_in_db(**db_action_kwargs)
 
     def _ensure_db_run_created(self) -> None:
-        """Create the DB row if it doesn't exist yet. Claims creation under the lock so
-        the pump and watchdog can't both create the same run; unclaims on failure."""
+        """Create the DB row if it doesn't exist yet. A dedicated in-progress flag lets
+        only one caller create at a time, and ``_db_run_created`` is published only after
+        ``create_run`` commits, so a concurrent finalize never runs ``finish_run`` against
+        a not-yet-inserted row (an UPDATE that would touch zero rows and leave the run
+        stuck as running)."""
         with self._lock:
-            if self._db_run_created or not self.current_job_id or not self._db_config:
+            if (
+                self._db_run_created
+                or self._db_create_in_progress
+                or not self.current_job_id
+                or not self._db_config
+            ):
                 return
-            self._db_run_created = True  # claim so only one caller creates
+            self._db_create_in_progress = True  # only one caller creates
             job_id = self.current_job_id
             db_config = self._db_config
             started_at = self._db_started_at or datetime.now(timezone.utc).isoformat()
             total_steps = self._progress.total_steps or None
+        created = False
         try:
             from storage.studio_db import create_run
+
             dataset_name = (
                 db_config.get("hf_dataset")
                 or next(iter(db_config.get("local_datasets") or []), None)
@@ -1680,10 +1708,14 @@ class TrainingBackend:
                 started_at = started_at,
                 total_steps = total_steps,
             )
+            created = True
         except Exception:
-            with self._lock:
-                self._db_run_created = False  # unclaim so a later caller can retry
             logger.warning("Failed to create DB run record for early failure", exc_info = True)
+        finally:
+            with self._lock:
+                if created:
+                    self._db_run_created = True  # publish only after the insert commits
+                self._db_create_in_progress = False
 
     def _finalize_run_in_db(
         self,
@@ -1694,28 +1726,36 @@ class TrainingBackend:
     ) -> None:
         """Flush remaining metrics and mark a run as finished in the DB. Claims the
         finalize under the lock so the watchdog and pump can't double-finalize, and
-        no-ops when ``expected_job_id`` no longer matches (a new run took over)."""
+        no-ops when ``expected_job_id`` no longer matches (a new run took over). The run
+        id and the final-progress fields are snapshotted under the lock and threaded
+        through the flush/finish calls, so a racing new run started between this claim and
+        the DB writes can't be flushed or marked stopped under the old run's finalize."""
         with self._lock:
             if expected_job_id is not None and self.current_job_id != expected_job_id:
                 return
             if not self.current_job_id or not self._db_run_created or self._run_finalized:
                 return
             self._run_finalized = True  # claim so only one caller finalizes
-        self._flush_metrics_to_db()
+            run_id = self.current_job_id
+            final_step = self._progress.step
+            final_loss = self._progress.loss
+            if final_loss is not None and not math.isfinite(final_loss):
+                final_loss = None
+            duration = self._progress.elapsed_seconds
+            loss_history = list(self.loss_history)
+        self._flush_metrics_to_db(run_id = run_id)
         try:
             from storage.studio_db import finish_run
             from utils.downsample import downsample
 
-            sparkline = downsample(self.loss_history, 50)
+            sparkline = downsample(loss_history, 50)
             finish_run(
-                id = self.current_job_id,
+                id = run_id,
                 status = status,
                 ended_at = datetime.now(timezone.utc).isoformat(),
-                final_step = self._progress.step,
-                final_loss = self._progress.loss
-                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
-                else None,
-                duration_seconds = self._progress.elapsed_seconds,
+                final_step = final_step,
+                final_loss = final_loss,
+                duration_seconds = duration,
                 loss_sparkline = _json.dumps(sparkline),
                 output_dir = output_dir,
                 error_message = error_message,
@@ -1725,12 +1765,15 @@ class TrainingBackend:
                 self._run_finalized = False  # unclaim so a later flush can retry
             logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
 
-    def _flush_metrics_to_db(self) -> None:
-        """Flush buffered metrics to the database and update live progress. The buffer
-        is snapshotted and claimed under the lock so a concurrent flush (pump vs
-        watchdog finalize) can't double-remove or drop metrics."""
+    def _flush_metrics_to_db(self, run_id: Optional[str] = None) -> None:
+        """Flush buffered metrics to the database and update live progress. The target run
+        id, the metric batch, and the progress snapshot are all taken under the lock, so a
+        concurrent flush can't double-remove metrics and a racing new run can't redirect
+        the write to a different job. A finalizer passes ``run_id`` to pin the target to
+        the run it captured."""
         with self._lock:
-            if not self._metric_buffer or not self.current_job_id or not self._db_run_created:
+            target = run_id if run_id is not None else self.current_job_id
+            if not self._metric_buffer or not target or not self._db_run_created:
                 return
             # Cap buffer to bound memory growth.
             if len(self._metric_buffer) > 500:
@@ -1742,17 +1785,15 @@ class TrainingBackend:
             # Claim the batch under the lock so a concurrent flush can't re-remove it.
             batch = list(self._metric_buffer)
             del self._metric_buffer[: len(batch)]
+            step = self._progress.step
+            loss = self._progress.loss
+            if loss is not None and not math.isfinite(loss):
+                loss = None
+            duration = self._progress.elapsed_seconds
         try:
             from storage.studio_db import insert_metrics_batch, update_run_progress
-            insert_metrics_batch(self.current_job_id, batch)
-            update_run_progress(
-                id = self.current_job_id,
-                step = self._progress.step,
-                loss = self._progress.loss
-                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
-                else None,
-                duration_seconds = self._progress.elapsed_seconds,
-            )
+            insert_metrics_batch(target, batch)
+            update_run_progress(id = target, step = step, loss = loss, duration_seconds = duration)
         except Exception:
             # Re-queue the claimed batch at the front so it retries on the next flush.
             with self._lock:
