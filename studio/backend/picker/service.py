@@ -91,6 +91,8 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
 
 
 def _chat_template_from_tokenizer_config(config: dict) -> Optional[str]:
+    if not isinstance(config, dict):
+        return None
     raw = config.get("chat_template")
     if isinstance(raw, str) and raw.strip():
         return raw
@@ -126,6 +128,21 @@ def _chat_template_from_jinja_file(
     return None
 
 
+def _chat_template_from_processor_payload(payload: object) -> Optional[str]:
+    # processor chat_template.json may be the template string itself or a
+    # {name: template} map, not only a tokenizer_config-shaped object.
+    if isinstance(payload, str):
+        return payload if payload.strip() else None
+    template = _chat_template_from_tokenizer_config(payload)  # type: ignore[arg-type]
+    if template:
+        return template
+    if isinstance(payload, dict):
+        default = payload.get("default")
+        if isinstance(default, str) and default.strip():
+            return default
+    return None
+
+
 def _chat_template_from_processor_json(
     dir_path: Path, allow_roots: Optional[list[Path]] = None
 ) -> Optional[str]:
@@ -134,10 +151,10 @@ def _chat_template_from_processor_json(
         if not config_file.exists() or not _leaf_inside_allowlist(config_file, allow_roots):
             continue
         try:
-            config = json.loads(config_file.read_text(encoding = "utf-8"))
+            payload = json.loads(config_file.read_text(encoding = "utf-8"))
         except Exception:
             continue
-        template = _chat_template_from_tokenizer_config(config)
+        template = _chat_template_from_processor_payload(payload)
         if template:
             return template
     return None
@@ -300,10 +317,10 @@ def read_default_chat_template(
             if not raw:
                 continue
             try:
-                config = json.loads(raw)
+                payload = json.loads(raw)
             except Exception:
                 continue
-            template = _chat_template_from_tokenizer_config(config)
+            template = _chat_template_from_processor_payload(payload)
             if template:
                 return template
 

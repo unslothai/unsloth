@@ -954,6 +954,15 @@ export function SharedComposer({
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
+        // This pane's effective config: an explicit selection config, else the
+        // remembered store config for this model/quant (never the other pane's).
+        // A model with no saved config resolves to all-null defaults, so every
+        // setting below still falls through to its session default.
+        const resolved = config
+          ? { config, remembered: true }
+          : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
+        const ownConfig = resolved.config;
+        const ownRemembered = resolved.remembered;
         // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no
         // explicit context loads at native (0 -> n_ctx_train), not the session
         // maxSeqLength, which would silently shrink the picker's shown context.
@@ -961,26 +970,22 @@ export function SharedComposer({
           (sel.ggufVariant ?? null) != null ||
           sel.id.toLowerCase().endsWith(".gguf");
         const effectiveMaxSeqLength =
-          config?.customContextLength ??
-          normalizeMaxSeqLength(config?.maxSeqLength) ??
+          ownConfig.customContextLength ??
+          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
           (isGgufLoad ? 0 : maxSeqLength);
-        // Use this pane's own remembered template, never the other pane's
-        // (store) template; a model with no saved config loads its default.
-        const ownConfig =
-          config ?? resolveInitialConfig(sel.id, sel.ggufVariant ?? null).config;
         const effectiveChatTemplateOverride = cleanCompareChatTemplate(
           ownConfig.chatTemplateOverride,
         );
         const effectiveSpeculativeType =
-          config?.speculativeType ?? specSettings.speculativeType;
-        const effectiveSpecDraftNMax = config
+          ownConfig.speculativeType ?? specSettings.speculativeType;
+        const effectiveSpecDraftNMax = ownRemembered
           ? resolveCompareSpecDraftNMax(
               effectiveSpeculativeType,
-              config.specDraftNMax,
+              ownConfig.specDraftNMax,
             )
           : specSettings.specDraftNMax;
-        const effectiveTensorParallel = config
-          ? config.tensorParallel
+        const effectiveTensorParallel = ownRemembered
+          ? ownConfig.tensorParallel
           : fallbackTensorParallel;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
@@ -1030,7 +1035,7 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
-          cache_type_kv: config?.kvCacheDtype ?? null,
+          cache_type_kv: ownConfig.kvCacheDtype ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
