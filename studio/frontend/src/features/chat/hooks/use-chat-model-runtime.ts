@@ -708,7 +708,12 @@ export function useChatModelRuntime() {
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
-            saveSpeculativeType(loadSpeculativeType);
+            // Skip for a per-model/one-off config (keepSpeculative): that choice
+            // is model-specific and must not overwrite the global default, or a
+            // later model with no saved config would start from it instead of Auto.
+            if (!keepSpeculative) {
+              saveSpeculativeType(loadSpeculativeType);
+            }
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(
