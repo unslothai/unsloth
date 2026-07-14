@@ -30,7 +30,9 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 from core.inference.tool_loop_controller import (
+    ToolCallDecision,
     ToolLoopController,
+    _repair_conversation_state,
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
@@ -517,9 +519,9 @@ def run_safetensors_tool_loop(
             yield {"type": "status", "text": ""}
             return
 
+        # ── Phase 1: Classify all tool calls and build assistant message ──
         assistant_msg: dict = {"role": "assistant", "content": content_text}
-        assistant_appended = False
-
+        decisions: list[tuple[ToolCallDecision, dict, bool]] = []
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
             tool_name = func.get("name", "") or ""
@@ -529,11 +531,19 @@ def run_safetensors_tool_loop(
                 and tc.get("id", "") == provisional_render_html_id
             )
             decision = tool_controller.prepare_call(tc, provisional = provisional_match)
+            decisions.append((decision, tc, provisional_match))
+            if decision.should_execute:
+                assistant_msg.setdefault("tool_calls", []).append(
+                    decision.as_assistant_tool_call()
+                )
 
+        # Append assistant message once with all tool_calls.
+        if assistant_msg.get("tool_calls") or content_text or tool_calls:
+            conversation.append(assistant_msg)
+
+        # ── Phase 2: Execute or no-op each decision ──
+        for decision, tc, provisional_match in decisions:
             if not decision.should_execute:
-                if content_text and not assistant_appended:
-                    conversation.append(assistant_msg)
-                    assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # A provisional render_html card is already on screen for
                     # this id; close it so it never dangles when the controller
@@ -552,14 +562,7 @@ def run_safetensors_tool_loop(
                     "Suppressed local safetensors tool call as internal no-op: "
                     f"action={decision.action} tool={decision.tool_name}"
                 )
-                break
-
-            if not assistant_appended:
-                assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                conversation.append(assistant_msg)
-                assistant_appended = True
-            else:
-                assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
+                continue
 
             # Bypass wins over the confirm gate at the loop level too, so a
             # direct internal caller passing both flags never prompts.
@@ -642,6 +645,8 @@ def run_safetensors_tool_loop(
 
         if tool_controller.force_final_answer:
             final_attempt_done = True
+            conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+            _repair_conversation_state(conversation)
             continue
         if not unrestricted_tools and not tool_controller.active_tools():
             final_attempt_done = True
@@ -650,5 +655,6 @@ def run_safetensors_tool_loop(
             # Budget exhausted; nudge a final plain answer.
             final_attempt_done = True
             conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
+            _repair_conversation_state(conversation)
 
     yield {"type": "status", "text": ""}

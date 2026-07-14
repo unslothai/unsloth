@@ -55,7 +55,9 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
 )
 from core.inference.tool_loop_controller import (
+    ToolCallDecision,
     ToolLoopController,
+    _repair_conversation_state,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -8647,9 +8649,9 @@ class LlamaCppBackend:
                 if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
                     tool_calls = tool_calls[:1]
 
+                # ── Phase 1: Classify all tool calls and build assistant message ──
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
-                assistant_appended = False
-
+                decisions: list[tuple[ToolCallDecision, dict, bool]] = []
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
@@ -8659,11 +8661,19 @@ class LlamaCppBackend:
                         forced = _forced_tool_call_pending,
                         provisional = provisional_match,
                     )
+                    decisions.append((decision, tc, provisional_match))
+                    if decision.should_execute:
+                        assistant_msg.setdefault("tool_calls", []).append(
+                            decision.as_assistant_tool_call()
+                        )
 
+                # Append assistant message once with all tool_calls.
+                if assistant_msg.get("tool_calls") or content_text or tool_calls:
+                    conversation.append(assistant_msg)
+
+                # ── Phase 2: Execute or no-op each decision ──
+                for decision, tc, provisional_match in decisions:
                     if not decision.should_execute:
-                        if content_text and not assistant_appended:
-                            conversation.append(assistant_msg)
-                            assistant_appended = True
                         if provisional_match:
                             # A provisional tool card is already on screen for this
                             # id; close it so it never dangles when the controller
@@ -8685,16 +8695,7 @@ class LlamaCppBackend:
                             "Suppressed local GGUF tool call as internal no-op: "
                             f"action={decision.action} tool={decision.tool_name}"
                         )
-                        break
-
-                    if not assistant_appended:
-                        assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                        conversation.append(assistant_msg)
-                        assistant_appended = True
-                    else:
-                        assistant_msg.setdefault("tool_calls", []).append(
-                            decision.as_assistant_tool_call()
-                        )
+                        continue
 
                     # Bypass wins over the confirm gate at the loop level too,
                     # so a direct internal caller with both flags never prompts.
@@ -8787,7 +8788,6 @@ class LlamaCppBackend:
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
                 if tool_controller.force_final_answer or not tool_controller.active_tools():
-                    _append_budget_exhausted_nudge = False
                     break
                 continue
 
@@ -8835,6 +8835,9 @@ class LlamaCppBackend:
                     ),
                 }
             )
+
+        # Repair any orphaned tool_call references before the final pass.
+        _repair_conversation_state(conversation)
 
         # Clear status.
         yield {"type": "status", "text": ""}

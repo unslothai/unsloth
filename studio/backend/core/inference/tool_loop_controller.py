@@ -242,6 +242,40 @@ def strip_result_for_model(result: str) -> str:
     return result
 
 
+def _repair_conversation_state(conversation: list[dict]) -> None:
+    """Ensure conversation has valid structure before the final answer pass.
+
+    Finds assistant messages with ``tool_calls`` that lack matching
+    ``role: "tool"`` results and inserts placeholder results for orphaned
+    call IDs so the chat template never sees unmatched tool_call references.
+    """
+    tool_call_ids_with_results: set[str] = set()
+    for msg in conversation:
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            tool_call_ids_with_results.add(msg["tool_call_id"])
+
+    insertions: list[tuple[int, dict]] = []
+    for i, msg in enumerate(conversation):
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            tc_id = tc.get("id") if isinstance(tc, dict) else None
+            if tc_id and tc_id not in tool_call_ids_with_results:
+                insertions.append((
+                    i + 1 + len([pos for pos, _ in insertions if pos <= i]),
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "name": (tc.get("function") or {}).get("name", ""),
+                        "content": "This tool call was not completed.",
+                    },
+                ))
+                tool_call_ids_with_results.add(tc_id)
+
+    for idx, msg in reversed(insertions):
+        conversation.insert(idx, msg)
+
+
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     function = tool.get("function")
     if not isinstance(function, Mapping):
@@ -283,6 +317,7 @@ class ToolLoopController:
         auto_heal_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
+        max_consecutive_errors: int = 3,
     ) -> None:
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
@@ -297,6 +332,8 @@ class ToolLoopController:
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
         self._force_final_answer = False
+        self._consecutive_error_count = 0
+        self._max_consecutive_errors = max(1, max_consecutive_errors)
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -380,6 +417,11 @@ class ToolLoopController:
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
+            self._consecutive_error_count = 0
+        else:
+            self._consecutive_error_count += 1
+            if self._consecutive_error_count >= self._max_consecutive_errors:
+                self._force_final_answer = True
         return ToolCallCompletion(
             decision = decision,
             result = result_text,
