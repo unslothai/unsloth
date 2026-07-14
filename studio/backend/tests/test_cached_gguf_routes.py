@@ -127,8 +127,6 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
 
 
 def test_is_hidden_model_hides_dictation_models():
-    assert models_route._is_hidden_model("unslothai/whisper-tiny")
-    assert models_route._is_hidden_model("unslothai/whisper-base")
     assert models_route._is_hidden_model("unsloth/whisper-tiny")
     assert models_route._is_hidden_model("unsloth/whisper-base")
     assert models_route._is_hidden_model("unsloth/whisper-small")

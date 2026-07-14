@@ -12,8 +12,6 @@ const HIDDEN_NEEDLES = [
   "stories260k.gguf", // probe filename (carries .gguf so it stays specific)
 ];
 const HIDDEN_STT_REPOS = new Set([
-  "unslothai/whisper-tiny",
-  "unslothai/whisper-base",
   "unsloth/whisper-tiny",
   "unsloth/whisper-base",
   "unsloth/whisper-small",

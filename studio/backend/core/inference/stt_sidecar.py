@@ -31,8 +31,8 @@ logger = get_logger(__name__)
 # repositories downloaded through Studio's Model Hub. A request may also use a
 # validated Hugging Face `owner/model` id for another Whisper-compatible model.
 STT_MODELS: dict[str, str] = {
-    "tiny": "unslothai/whisper-tiny",
-    "base": "unslothai/whisper-base",
+    "tiny": "unsloth/whisper-tiny",
+    "base": "unsloth/whisper-base",
     "small": "unsloth/whisper-small",
     "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
     "large-v3": "unsloth/whisper-large-v3",

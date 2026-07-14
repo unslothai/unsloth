@@ -66,8 +66,8 @@ class _CaptureInference:
 
 def test_five_curated_whisper_models_are_offered():
     assert STT_MODELS == {
-        "tiny": "unslothai/whisper-tiny",
-        "base": "unslothai/whisper-base",
+        "tiny": "unsloth/whisper-tiny",
+        "base": "unsloth/whisper-base",
         "small": "unsloth/whisper-small",
         "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
         "large-v3": "unsloth/whisper-large-v3",
@@ -113,7 +113,7 @@ def test_model_id_accepts_defaults_and_custom_hub_repositories():
     assert resolve_model_id(None) == DEFAULT_STT_MODEL
     assert resolve_model_id("large-v3") == "large-v3"
     assert resolve_model_id("openai/whisper-medium") == "openai/whisper-medium"
-    assert resolve_model_repo("tiny") == "unslothai/whisper-tiny"
+    assert resolve_model_repo("tiny") == "unsloth/whisper-tiny"
     assert resolve_model_repo("openai/whisper-medium") == "openai/whisper-medium"
 
 
@@ -327,7 +327,7 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
     ("model_id", "repo_id"),
     [
         ("small", "unsloth/whisper-small"),
-        ("tiny", "unslothai/whisper-tiny"),
+        ("tiny", "unsloth/whisper-tiny"),
         ("openai/whisper-medium", "openai/whisper-medium"),
     ],
 )

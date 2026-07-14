@@ -64,8 +64,6 @@ def _safe_is_dir(path) -> bool:
 _HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
-        "unslothai/whisper-tiny",
-        "unslothai/whisper-base",
         "unsloth/whisper-tiny",
         "unsloth/whisper-base",
         "unsloth/whisper-small",

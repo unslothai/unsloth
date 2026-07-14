@@ -33,8 +33,8 @@ export type DefaultSttModel = (typeof STT_MODELS)[number];
 export type SttModel = string;
 /** Whisper repos downloaded through Studio's existing Model Hub manager. */
 export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
-  tiny: "unslothai/whisper-tiny",
-  base: "unslothai/whisper-base",
+  tiny: "unsloth/whisper-tiny",
+  base: "unsloth/whisper-base",
   small: "unsloth/whisper-small",
   "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
   "large-v3": "unsloth/whisper-large-v3",
