@@ -844,7 +844,9 @@ def test_render_html_gated_only_when_networked():
         return is_potentially_unsafe_tool_call("render_html", {"code": code})
 
     assert rh("<h1>Report</h1><p>Summary</p>") is False
-    assert rh("<div id=c></div><script>document.getElementById('c').textContent='x'</script>") is False
+    assert (
+        rh("<div id=c></div><script>document.getElementById('c').textContent='x'</script>") is False
+    )
     assert rh("<svg xmlns='http://www.w3.org/2000/svg'><circle r=4/></svg>") is False
     assert rh("<img src='./local.png'>") is False
     assert rh("<img src=x onerror='fetch(1)'>") is True
