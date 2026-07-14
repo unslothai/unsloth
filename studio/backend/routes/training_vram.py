@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""VRAM coordination between chat/inference and training.
+"""Memory coordination between inference and training.
 
-Decides, from live free VRAM, whether a resident chat model can stay loaded
-during training or must be unloaded, and unloads it across all backends
-(HF/MLX orchestrator + llama.cpp GGUF server). In the route layer because the
-GGUF accessor lives in routes/inference.py; backends are imported lazily.
+Uses live free VRAM to keep resident chat and STT models when they fit. STT is
+evicted before chat when training needs memory.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from loggers import get_logger
 
@@ -75,6 +73,25 @@ def summarize_resident_chat() -> Dict[str, Any]:
         "loading": loading,
         "any": bool(hf_name or gguf_name),
     }
+
+
+def summarize_resident_stt() -> Dict[str, Any]:
+    """Report the resident dictation model. Never raises."""
+    try:
+        from core.inference.stt_sidecar import get_stt_sidecar
+
+        sidecar = get_stt_sidecar()
+        model = sidecar.loaded_model
+        loading = sidecar.is_loading()
+        return {
+            "model": model,
+            "device": sidecar.device,
+            "loading": loading,
+            "any": bool(model or loading),
+        }
+    except Exception as e:
+        logger.warning("Could not inspect STT sidecar: %s", e)
+        return {"model": None, "device": None, "loading": False, "any": False}
 
 
 def can_keep_chat_during_training(
@@ -339,4 +356,68 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
+    return freed
+
+
+def free_stt_model_for_training(reason: str) -> List[str]:
+    """Unload the dictation model before training. Never raises."""
+    try:
+        from core.inference.stt_sidecar import get_stt_sidecar
+
+        sidecar = get_stt_sidecar()
+        model = sidecar.loaded_model
+        if not model and not sidecar.is_loading():
+            return []
+        label = model or "loading"
+        logger.info("Unloading STT model '%s' for training (%s)", label, reason)
+        sidecar.unload()
+        return [f"stt:{label}"]
+    except Exception as e:
+        logger.warning("Could not unload STT model: %s", e)
+        return []
+
+
+def coordinate_models_for_training(
+    can_keep: Callable[[], Tuple[bool, Dict[str, Any]]],
+) -> List[str]:
+    """Keep resident models when they fit, evicting STT before chat."""
+    resident_chat = summarize_resident_chat()
+    resident_stt = summarize_resident_stt()
+    if not resident_chat["any"] and not resident_stt["any"]:
+        return []
+
+    if resident_chat.get("loading"):
+        freed = free_stt_model_for_training(reason = "chat model still loading")
+        freed += free_chat_models_for_training(reason = "chat model still loading")
+        return freed
+
+    freed: List[str] = []
+    if resident_stt.get("loading"):
+        freed += free_stt_model_for_training(reason = "STT model still loading")
+        resident_stt = summarize_resident_stt()
+        if not resident_chat["any"] and not resident_stt["any"]:
+            return freed
+
+    keep, info = can_keep()
+    if keep:
+        logger.info(
+            "Keeping resident models loaded during training (free ~%s GB, needs ~%s GB): %s",
+            info.get("usable_gb"),
+            info.get("required_gb"),
+            {"chat": resident_chat, "stt": resident_stt},
+        )
+        return freed
+
+    if resident_stt["any"]:
+        freed += free_stt_model_for_training(reason = "insufficient training memory")
+        if not resident_chat["any"]:
+            return freed
+        keep, _info = can_keep()
+        if keep:
+            logger.info("Keeping chat model loaded after freeing STT: %s", resident_chat)
+            return freed
+
+    freed += free_chat_models_for_training(
+        reason = "insufficient VRAM to run training alongside chat",
+    )
     return freed

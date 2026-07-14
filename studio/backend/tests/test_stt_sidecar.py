@@ -152,6 +152,7 @@ def test_unknown_language_is_not_reported_as_bad_audio(monkeypatch):
     sidecar = WhisperSttSidecar()
     infer = _CaptureInference()
     monkeypatch.setattr(sidecar, "_transcribe_decoded", infer)
+    monkeypatch.setattr(stt_sidecar_module, "_known_whisper_languages", lambda: frozenset({"en"}))
 
     with pytest.raises(SttLanguageError, match = "is not supported"):
         sidecar.transcribe(b"encoded audio", language = "xx-YY")
@@ -190,8 +191,47 @@ class _FakeModel:
         return self
 
 
+class _FakeTimer:
+    def __init__(
+        self,
+        interval,
+        function,
+        args = (),
+        kwargs = None,
+    ):
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.kwargs = kwargs or {}
+        self.cancelled = False
+        self.daemon = False
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function(*self.args, **self.kwargs)
+
+
+def _install_fake_torch(monkeypatch):
+    fake_torch = SimpleNamespace(
+        float16 = "float16",
+        float32 = "float32",
+        device = lambda value: value,
+        cuda = SimpleNamespace(is_available = lambda: False),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    return fake_torch
+
+
 def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
     calls = []
+    _install_fake_torch(monkeypatch)
 
     class FakeWhisperForConditionalGeneration:
         @classmethod
@@ -215,7 +255,7 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
     )
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
-    WhisperSttSidecar().load("small")
+    WhisperSttSidecar(keep_alive_seconds = 0).load("small")
 
     assert {(kind, repo) for kind, repo, _ in calls} == {
         ("processor", "unsloth/whisper-small"),
@@ -226,6 +266,8 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
 
 
 def test_load_reports_model_hub_cache_miss(monkeypatch):
+    _install_fake_torch(monkeypatch)
+
     class LocalEntryNotFoundError(RuntimeError):
         pass
 
@@ -245,7 +287,80 @@ def test_load_reports_model_hub_cache_miss(monkeypatch):
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
 
     with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
-        WhisperSttSidecar().load("large-v3")
+        WhisperSttSidecar(keep_alive_seconds = 0).load("large-v3")
+
+
+def test_loaded_model_stays_warm_until_idle_timer_fires(monkeypatch):
+    timers = []
+    _install_fake_torch(monkeypatch)
+
+    def make_timer(*args, **kwargs):
+        timer = _FakeTimer(*args, **kwargs)
+        timers.append(timer)
+        return timer
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 300)
+    monkeypatch.setattr(stt_sidecar_module.threading, "Timer", make_timer)
+    monkeypatch.setattr(sidecar, "_build_model", lambda *_args: (object(), object()))
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar.load("small")
+
+    assert sidecar.loaded_model == "small"
+    assert timers[-1].interval == 300
+    assert timers[-1].started
+
+    timers[-1].fire()
+
+    assert sidecar.loaded_model is None
+
+
+def test_reusing_loaded_model_refreshes_idle_timer(monkeypatch):
+    timers = []
+    _install_fake_torch(monkeypatch)
+
+    def make_timer(*args, **kwargs):
+        timer = _FakeTimer(*args, **kwargs)
+        timers.append(timer)
+        return timer
+
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 300)
+    monkeypatch.setattr(stt_sidecar_module.threading, "Timer", make_timer)
+    monkeypatch.setattr(sidecar, "_build_model", lambda *_args: (object(), object()))
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+
+    sidecar.load("small")
+    first = timers[-1]
+    sidecar.load("small")
+
+    assert first.cancelled
+    assert timers[-1] is not first
+
+
+def test_new_stt_load_uses_cpu_while_training(monkeypatch):
+    fake_torch = SimpleNamespace(
+        float16 = "float16",
+        float32 = "float32",
+        cuda = SimpleNamespace(is_available = lambda: True),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: True)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(stt_sidecar_module, "_training_active", lambda: True)
+
+    assert stt_sidecar_module._pick_device() == ("cpu", "float32")
+
+
+def test_new_stt_load_prefers_cuda_when_training_is_idle(monkeypatch):
+    fake_torch = SimpleNamespace(
+        float16 = "float16",
+        float32 = "float32",
+        cuda = SimpleNamespace(is_available = lambda: True),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(stt_sidecar_module, "_training_active", lambda: False)
+
+    assert stt_sidecar_module._pick_device() == ("cuda", "float16")
 
 
 def _wav_bytes(sample_count: int, sample_rate: int = 16000) -> bytes:

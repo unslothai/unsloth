@@ -9,7 +9,7 @@ the chat model that runs in the inference subprocess. This lets a user dictate
 into any chat model, including text-only ones, without evicting it.
 
 Only weights Unsloth has uploaded are used. They are downloaded explicitly
-through Studio's Model Hub, and memory is released after dictation. CUDA runs
+through Studio's Model Hub and kept warm briefly between dictations. CUDA runs
 in float16; Apple Silicon (MPS) and CPU run in float32.
 """
 
@@ -33,6 +33,7 @@ STT_MODELS: dict[str, str] = {
     "large-v3": "unsloth/whisper-large-v3",
 }
 DEFAULT_STT_MODEL = "small"
+STT_KEEP_ALIVE_SECONDS = 5 * 60
 
 # Bound decoded audio so a crafted upload cannot exhaust memory. Callers also
 # cap the encoded bytes; this bounds the decoded PCM length.
@@ -130,6 +131,14 @@ def _is_missing_local_model_error(exc: BaseException) -> bool:
     return False
 
 
+def _training_active() -> bool:
+    try:
+        from core.training import get_training_backend
+        return bool(get_training_backend().is_training_active())
+    except Exception:
+        return False
+
+
 def _pick_device():
     """Return (device, torch_dtype) for the Whisper model.
 
@@ -139,9 +148,16 @@ def _pick_device():
     try:
         import torch
 
-        if torch.cuda.is_available():
+        # New STT loads use CPU during training. A resident GPU model may stay
+        # loaded when the training admission check confirms enough headroom.
+        training_active = _training_active()
+        if not training_active and torch.cuda.is_available():
             return "cuda", torch.float16
-        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        if (
+            not training_active
+            and getattr(torch.backends, "mps", None) is not None
+            and torch.backends.mps.is_available()
+        ):
             return "mps", torch.float32
         return "cpu", torch.float32
     except Exception as exc:
@@ -226,13 +242,17 @@ def _decode_audio_bounded(audio: bytes):
 
 
 class WhisperSttSidecar:
-    """Lazily loaded Transformers Whisper model with explicit release. Thread-safe."""
+    """Lazily loaded Whisper model with idle eviction. Thread-safe."""
 
-    def __init__(self) -> None:
+    def __init__(self, keep_alive_seconds: float = STT_KEEP_ALIVE_SECONDS) -> None:
         self._engine = None
         self._model_id: Optional[str] = None
         self._device: Optional[str] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._loading = False
+        self._keep_alive_seconds = max(0.0, keep_alive_seconds)
+        self._idle_timer: Optional[threading.Timer] = None
+        self._idle_generation = 0
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -243,12 +263,57 @@ class WhisperSttSidecar:
         return self._device
 
     def is_loading(self) -> bool:
-        # Loading holds the lock; a non-blocking acquire tells the UI to wait.
-        acquired = self._lock.acquire(blocking = False)
-        if acquired:
-            self._lock.release()
-            return False
-        return True
+        return self._loading
+
+    @property
+    def keep_alive_seconds(self) -> float:
+        return self._keep_alive_seconds
+
+    def _cancel_idle_unload_locked(self) -> None:
+        self._idle_generation += 1
+        timer = self._idle_timer
+        self._idle_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_idle_unload_locked(self) -> None:
+        self._cancel_idle_unload_locked()
+        if self._engine is None or self._keep_alive_seconds <= 0:
+            return
+        generation = self._idle_generation
+        timer = threading.Timer(
+            self._keep_alive_seconds,
+            self._idle_unload,
+            args = (generation,),
+        )
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _idle_unload(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._idle_generation or self._engine is None:
+                return
+            logger.info("Unloading idle STT model %s", self._model_id)
+            self._release_engine_locked()
+
+    def _release_engine_locked(self) -> None:
+        self._cancel_idle_unload_locked()
+        engine = self._engine
+        device = self._device
+        self._engine = None
+        self._model_id = None
+        self._device = None
+        del engine
+        try:
+            import torch
+            if device == "cuda":
+                torch.cuda.empty_cache()
+            elif device == "mps":
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+        gc.collect()
 
     def _build_model(self, repo: str, device: str, dtype):
         """Load a Whisper model + processor from the local Hub cache.
@@ -275,6 +340,7 @@ class WhisperSttSidecar:
         model_id = resolve_model_id(model)
         with self._lock:
             if self._engine is not None and self._model_id == model_id:
+                self._schedule_idle_unload_locked()
                 return self._engine
             try:
                 import torch
@@ -285,11 +351,7 @@ class WhisperSttSidecar:
                 ) from exc
 
             device, dtype = _pick_device()
-            # Drop the old model before loading a new one to free memory.
-            self._engine = None
-            self._model_id = None
-            self._device = None
-            gc.collect()
+            self._release_engine_locked()
             repo = STT_MODELS[model_id]
             logger.info("Loading STT model %s (%s) on %s", model_id, repo, device)
 
@@ -299,26 +361,30 @@ class WhisperSttSidecar:
                     "Download it in Settings, then Voice, before loading it."
                 )
 
+            self._loading = True
             try:
-                self._engine = self._build_model(repo, device, dtype)
-            except Exception as exc:
-                if _is_missing_local_model_error(exc):
-                    raise not_downloaded(exc) from exc
-                # A GPU/MPS build can fail (missing CUDA libs, unsupported op);
-                # CPU float32 always works, so retry there before giving up.
-                if device != "cpu":
-                    logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
-                    try:
-                        self._engine = self._build_model(repo, "cpu", torch.float32)
-                    except Exception as cpu_exc:
-                        if _is_missing_local_model_error(cpu_exc):
-                            raise not_downloaded(cpu_exc) from cpu_exc
+                try:
+                    self._engine = self._build_model(repo, device, dtype)
+                except Exception as exc:
+                    if _is_missing_local_model_error(exc):
+                        raise not_downloaded(exc) from exc
+                    # Retry on CPU when the accelerator cannot load the model.
+                    if device != "cpu":
+                        logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
+                        try:
+                            self._engine = self._build_model(repo, "cpu", torch.float32)
+                        except Exception as cpu_exc:
+                            if _is_missing_local_model_error(cpu_exc):
+                                raise not_downloaded(cpu_exc) from cpu_exc
+                            raise
+                        device = "cpu"
+                    else:
                         raise
-                    device = "cpu"
-                else:
-                    raise
+            finally:
+                self._loading = False
             self._model_id = model_id
             self._device = device
+            self._schedule_idle_unload_locked()
             logger.info("STT model %s ready on %s", model_id, device)
             return self._engine
 
@@ -390,7 +456,12 @@ class WhisperSttSidecar:
             # Dictation clips are short and already voiced, so greedy decoding
             # drops the five-way beam search for much lower latency.
             generate_kwargs["num_beams"] = 1
-        text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+        # Serialize inference with model switches and unloads.
+        with self._lock:
+            try:
+                text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
+            finally:
+                self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {
             "text": text,
@@ -401,24 +472,7 @@ class WhisperSttSidecar:
 
     def unload(self) -> None:
         with self._lock:
-            engine = self._engine
-            device = self._device
-            self._engine = None
-            self._model_id = None
-            self._device = None
-        # Drop the model promptly and free device memory instead of waiting for
-        # a later cyclic-GC pass. An in-flight transcription keeps its own
-        # reference and releases safely when that request finishes.
-        del engine
-        try:
-            import torch
-            if device == "cuda":
-                torch.cuda.empty_cache()
-            elif device == "mps":
-                torch.mps.empty_cache()
-        except Exception:
-            pass
-        gc.collect()
+            self._release_engine_locked()
 
 
 _sidecar: Optional[WhisperSttSidecar] = None

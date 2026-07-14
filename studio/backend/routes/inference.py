@@ -5303,6 +5303,7 @@ async def stt_status(current_subject: str = Depends(get_current_subject)):
             "loaded_model": sidecar.loaded_model,
             "loading": sidecar.is_loading(),
             "device": sidecar.device,
+            "keep_alive_seconds": sidecar.keep_alive_seconds,
             "default_model": DEFAULT_STT_MODEL,
             "models": list(STT_MODELS.keys()),
         }

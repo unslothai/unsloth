@@ -89,6 +89,7 @@ export interface SttStatus {
   loaded_model: string | null;
   loading: boolean;
   device: string | null;
+  keep_alive_seconds: number;
   default_model: string;
   models: string[];
 }
@@ -262,9 +263,6 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       }
       for (const callback of endCallbacks) callback();
       resolveEnded?.();
-      // Local dictation should not reserve RAM/VRAM while the user is chatting.
-      // The downloaded weights stay cached on disk and load again on demand.
-      void unloadSttModel().catch(() => {});
     };
 
     // Finish once the final segment has been cut and the queue has drained.

@@ -423,6 +423,12 @@ export function VoiceTab() {
         if (status.loaded_model === sttModel && !status.loading) {
           setSttDevice(status.device);
           setSttPhase("ready");
+          window.setTimeout(
+            () => {
+              if (!cancelled) setStatusNonce((n) => n + 1);
+            },
+            Math.max(1000, Math.min(status.keep_alive_seconds * 1000, 15_000)),
+          );
           return;
         }
         // Merely opening settings or selecting local STT never downloads or
