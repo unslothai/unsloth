@@ -10,9 +10,6 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from jinja2 import TemplateError
-from jinja2.sandbox import ImmutableSandboxedEnvironment
-
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -57,11 +54,29 @@ def validate_chat_template(template: str) -> ValidateChatTemplateResponse:
     text = (template or "").strip()
     if not text:
         return ValidateChatTemplateResponse(valid = True, error = None)
+    # Import Jinja lazily: it is optional at runtime (e.g. GGUF-only installs),
+    # so a missing dependency must not crash API startup through this module.
+    try:
+        from jinja2 import TemplateError
+        from jinja2.ext import Extension
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+    except ImportError:
+        return ValidateChatTemplateResponse(valid = True, error = None)
+
+    class _GenerationTag(Extension):
+        # Accept Transformers' {% generation %}...{% endgeneration %} assistant
+        # mask tag so a pasted HF chat template validates (we only parse it).
+        tags = {"generation"}
+
+        def parse(self, parser):
+            next(parser.stream)
+            return parser.parse_statements(["name:endgeneration"], drop_needle = True)
+
     try:
         env = ImmutableSandboxedEnvironment(
             trim_blocks = True,
             lstrip_blocks = True,
-            extensions = ["jinja2.ext.loopcontrols"],
+            extensions = ["jinja2.ext.loopcontrols", _GenerationTag],
         )
         env.parse(text)
         return ValidateChatTemplateResponse(valid = True, error = None)
