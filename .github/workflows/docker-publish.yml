@@ -231,12 +231,10 @@ jobs:
       # arm64 image lacks /usr/share/dotnet, hence `|| true`.
       - name: Reclaim disk
         run: |
-          # The hosted runners keep ~14-20 GB free, which is not enough for
-          # the image plus buildkit state (empirically confirmed: the Studio
-          # layer install died with ENOSPC on a staging run before this list
-          # was extended). None of these preinstalled toolchains are used
-          # here; some paths differ between the amd64 and arm64 runner
-          # images, hence `|| true`.
+          # Hosted runners keep only ~14-20 GB free -- not enough for the image
+          # plus buildkit state (Studio install hit ENOSPC before this list grew).
+          # None of these toolchains are used here; paths differ across the amd64
+          # and arm64 runners, hence `|| true`.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
                       /usr/local/.ghcup /usr/share/swift \
@@ -426,12 +424,10 @@ jobs:
 
       - name: Reclaim disk
         run: |
-          # The hosted runners keep ~14-20 GB free, which is not enough for
-          # the image plus buildkit state (empirically confirmed: the Studio
-          # layer install died with ENOSPC on a staging run before this list
-          # was extended). None of these preinstalled toolchains are used
-          # here; some paths differ between the amd64 and arm64 runner
-          # images, hence `|| true`.
+          # Hosted runners keep only ~14-20 GB free -- not enough for the image
+          # plus buildkit state (Studio install hit ENOSPC before this list grew).
+          # None of these toolchains are used here; paths differ across the amd64
+          # and arm64 runners, hence `|| true`.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache "$AGENT_TOOLSDIRECTORY" \
                       /usr/local/.ghcup /usr/share/swift \

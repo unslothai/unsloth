@@ -3,19 +3,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for select_cuda_jit_tools() from docker/entrypoint.sh.
 #
-# The image bakes CUDA 13 ptxas + NVRTC, but a cu13 cubin cannot LOAD on a
-# 570-579 driver even when it targets an old arch like sm_80 (CUDA has forward,
-# not backward, driver compatibility across major versions). So cu12.8 is the
-# IMMUTABLE baked default (libnvrtc.so.12 -> .cu128.orig), and the cu13 tools are
-# switched on ONLY for the two Blackwell datacenter arches that require them --
-# sm_103 (B300 / GB300) and sm_121 (GB10 / DGX Spark), which only ship on >= 580
-# drivers. Every other supported arch (Turing..sm_120) keeps the cu12.8 default,
-# untouched, so a 570+ driver host -- including a non-root --user container that
-# cannot rewrite the symlink -- is never broken.
-#
-# The function picks per device via nvidia-smi compute_cap: DC -> retarget
-# libnvrtc.so.12 -> the staged .cu13 alias (and point Triton at cu13 ptxas);
-# anything else -> leave the cu12.8 default in place and ptxas unset.
+# cu12.8 is the immutable baked default (libnvrtc.so.12 -> .cu128.orig); the cu13
+# tools are switched on ONLY for sm_103 (B300 / GB300) and sm_121 (GB10 / DGX
+# Spark), which ship on >= 580 drivers -- see the rationale in docker/entrypoint.sh.
+# The function picks per device via nvidia-smi compute_cap: those two arches
+# retarget libnvrtc.so.12 -> the staged .cu13 alias (and point Triton at cu13
+# ptxas); every other arch keeps the cu12.8 default and leaves ptxas unset.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

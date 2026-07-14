@@ -157,12 +157,11 @@ if [ ! -f "$STATE" ]; then
         rel="${rel#./}"
         case "$rel" in .unsloth_template_commit) continue ;; esac
         mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
-        # A pre-existing file at this path (bind-mounted or hand-created before
-        # the first boot) is user data: never clobber it, and -- crucially -- do
-        # NOT record it in the sync state. If it were recorded, the GitHub refresh
-        # below would see its hash match the recorded hash, treat it as pristine
-        # and overwrite it with upstream. Only files we actually lay down (or that
-        # are already byte-identical to the template) are recorded as managed.
+        # A pre-existing file here (bind-mounted or hand-created before first boot)
+        # is user data: keep it, and do NOT record it in the sync state -- if
+        # recorded, the GitHub refresh below would see the hash match, treat it as
+        # pristine and overwrite it. Only files we lay down (or that already match
+        # the template byte-for-byte) are recorded as managed.
         if [ -e "$DEST/$rel" ] \
            && [ "$(hash_of "$DEST/$rel")" != "$(hash_of "$TEMPLATE/$rel")" ]; then
             echo "[unsloth-nb] kept existing user file: $DEST/$rel"

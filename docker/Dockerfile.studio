@@ -2,9 +2,8 @@
 #
 # This is the image published as docker.io/unsloth/unsloth:studio (and the
 # default :latest). It layers Unsloth Studio on top of the lean core image
-# (Dockerfile, published under the `core` tags) and runs the same service trio
-# as the previous production
-# image: Studio on 8000, JupyterLab on 8888, key-only sshd on 22.
+# (Dockerfile, published under the `core` tags) and runs the same service trio as
+# the previous production image: Studio on 8000, JupyterLab on 8888, sshd on 22.
 #
 # Build (local):
 #   docker buildx build \
@@ -233,10 +232,8 @@ COPY --from=labext-builder /opt/labext-src/unsloth-jupyterlab/labextension /opt/
 # The sloth-sticker install is the ONLY fail-soft branding step: it is scoped to
 # its own { ...; } group with a `|| echo` fallback below, so a missing Studio
 # "Sloth emojis" folder does not break the build, while the REQUIRED steps above
-# it (JS resolve, favicon/logo/login copy) stay fatal. (The comment is kept out
-# of the RUN body so no comment line sits inside a backslash continuation, which
-# some Dockerfile parsers choke on.) login.html's onerror falls back to the
-# Unsloth logo if the sticker dir is ever absent.
+# it (JS resolve, favicon/logo/login copy) stay fatal. login.html's onerror falls
+# back to the Unsloth logo if the sticker dir is ever absent.
 COPY jupyter/favicon.ico /tmp/unsloth-branding/favicon.ico
 COPY jupyter/logo.png /tmp/unsloth-branding/logo.png
 COPY jupyter/login.html /tmp/unsloth-branding/login.html

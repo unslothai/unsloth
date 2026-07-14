@@ -20,14 +20,12 @@
 #   unsloth_nb_strip_colab.py <a.ipynb> [b.ipynb ...]
 #       strip the listed notebooks in place (idempotent).
 #   unsloth_nb_strip_colab.py --state <STATE> --dest <DEST>
-#       STATE-aware sync migration. STATE is the "<sha256>  <relpath>" file that
-#       unsloth_sync_notebooks.sh records for every file it wrote. For each
-#       .ipynb entry that still hashes to its recorded value (i.e. WE own it and
-#       the user has not edited it), strip the intro and update the recorded hash
-#       in place. User-edited notebooks (current hash != recorded) are left
-#       untouched. This is the safe "rewrite, then record" step the sync runs
-#       after every STATE write, so it covers first-boot populate, deleted-file
-#       restore, GitHub refresh, and in-place image upgrades in one pass.
+#       STATE-aware sync migration. For each .ipynb in the "<sha256>  <relpath>"
+#       STATE file (written by unsloth_sync_notebooks.sh) that still hashes to its
+#       recorded value (WE own it, unedited), strip the intro and update the
+#       recorded hash in place; user-edited notebooks (hash != recorded) are left
+#       untouched. Runs after every STATE write, covering first-boot populate,
+#       deleted-file restore, GitHub refresh and in-place image upgrades.
 #
 # Safe with refresh decisions: unsloth_nb_content_sig.py already classifies the
 # intro cell as boilerplate, so the body digest used to detect "only boilerplate
@@ -43,15 +41,12 @@ import sys
 # The stable identifier for the offending line (covers every GPU/Cloud variant).
 _INTRO_PREFIX = "to run this, press"
 
-# ipywidgets MIME types. The baked notebooks ship example tqdm/progress-bar
-# widget outputs (model.safetensors download bars, dataset Map bars, ...) plus a
-# metadata.widgets state block. JupyterLab's ipywidgets manager cannot always
-# rebuild the Colab-saved state, so those outputs render as a stuck
-# "Loading widget..." placeholder. Dropping the widget outputs + orphan state
-# removes the placeholder; running the cell yourself still creates a fresh,
-# working widget. Outputs are not part of the refresh signature
-# (unsloth_nb_content_sig.middle_digest hashes only cell type+source), so this is
-# safe for edit/refresh detection.
+# The baked notebooks ship example tqdm/progress-bar widget outputs plus a
+# metadata.widgets state block; JupyterLab's ipywidgets manager cannot always
+# rebuild the Colab-saved state, so they render as a stuck "Loading widget..."
+# placeholder. Dropping the widget outputs + orphan state removes it; running the
+# cell still creates a fresh widget. Outputs are not part of the refresh signature
+# (content_sig hashes only cell type+source), so this is safe for edit detection.
 _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 

@@ -81,10 +81,9 @@ banner "Block 1: host pre-flight"
 command -v docker >/dev/null 2>&1 || fail "docker not found on PATH"
 echo "  docker:       $(docker --version)"
 
-# Verify we can actually talk to the docker daemon as the current user.
-# This catches the "user not in docker group" case up front, instead of
-# letting docker buildx blow up with a "permission denied on /var/run/docker.sock"
-# error that looks like a build failure but is really a host permissions issue.
+# Verify we can talk to the docker daemon as the current user -- catches the
+# "user not in docker group" case up front, instead of a later buildx
+# "permission denied on /var/run/docker.sock" that masquerades as a build failure.
 DOCKER_INFO_OUT=$(docker info 2>&1)
 DOCKER_INFO_RC=$?
 if [[ $DOCKER_INFO_RC -ne 0 ]]; then

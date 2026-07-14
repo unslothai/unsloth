@@ -34,11 +34,9 @@ from __future__ import annotations
 import sys
 
 
-# Cell magics whose body is executed as code (Python or shell), so a hoisted
-# `#@title`/`#@param`/comment line stays an inert comment. We ONLY hoist these.
-# Anything not listed (content/data magics like %%writefile, %%file, %%html,
-# %%javascript, %%latex, %%markdown, %%svg) is left untouched, because injecting
-# the Colab form comment into its body would corrupt the written file / output.
+# Cell magics whose body runs as code (Python or shell), so a hoisted comment
+# stays inert. We ONLY hoist these; content/data magics (%%writefile, %%html,
+# ...) are left untouched (see the module docstring).
 _SAFE_CELL_MAGICS = frozenset(
     {
         "capture",  # the Colab install pattern: suppress pip/install output

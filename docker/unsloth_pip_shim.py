@@ -95,14 +95,11 @@ _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}
 # drop BOTH the flag and its value; dropping the value alone leaves pip a
 # dangling `-e` that swallows the next kept package and fails the whole cell.
 _EDITABLE_FLAGS = {"-e", "--editable"}
-# -P/--upgrade-package <name> is uv's selective-upgrade flag and
-# --reinstall-package <name> is uv's selective-reinstall flag: naming a baked
-# package (e.g. `uv pip install -P torch peft` or
-# `uv pip install --reinstall-package torch peft`) lets an ordinary install
-# target refresh/reinstall that package and clobber the pinned stack. Filter the
-# value through _KEEP too, dropping the flag+value pair for a protected name so
-# no dangling selector is left to swallow the next kept target. Unlike -e none of
-# these is itself an install target (no has_target).
+# -P/--upgrade-package and --reinstall-package are uv's selective upgrade/reinstall
+# flags: naming a baked package (`uv pip install -P torch peft`) lets an ordinary
+# target refresh/reinstall it and clobber the pinned stack. Filter the value through
+# _KEEP too, dropping the flag+value pair for a protected name so no dangling
+# selector swallows the next target. Unlike -e, none is itself an install target.
 _UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package", "--reinstall-package"}
 # Short value-flags pip/uv accept in the ATTACHED form, i.e. the 2-char flag
 # glued to its value in one token: `-rreqs.txt`, `-cconstraints.txt`, `-epath`,
@@ -112,25 +109,17 @@ _UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package", "--reinstall-package"}
 # attached `-c`/`-e`/`-P` value bypasses _KEEP.
 _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 # Resolver-wide reinstall / ignore-installed switches (pip --force-reinstall,
-# --ignore-installed, -I; uv --reinstall) force the tool to REINSTALL packages
-# that are already satisfied -- including the baked torch/transformers pulled in
-# as dependencies of a kept target. Drop them in shim mode so a
-# `pip install --force-reinstall peft` cannot rebuild the pinned stack under the
-# guise of installing an unprotected package. The kept target still installs; its
-# already-satisfied protected deps are left untouched. Per-package selectors
-# (--reinstall-package / -P) are handled through _UPGRADE_PKG_FLAGS instead.
-# uv's --exact is destructive the other way around: it performs an exact SYNC,
-# REMOVING every installed package outside the kept target's closure (vLLM,
-# bitsandbytes, the NVIDIA libs, ...), so `uv pip install --exact peft` would
-# strip the baked stack after the argument filter kept it off the command line.
+# --ignore-installed, -I; uv --reinstall) REINSTALL already-satisfied packages,
+# including the baked torch/transformers a kept target pulls in as deps. Drop them
+# so an unprotected install cannot rebuild the pinned stack; the kept target still
+# installs. Per-package selectors (-P / --reinstall-package) go via _UPGRADE_PKG_FLAGS.
+# uv's --exact is destructive the other way: an exact SYNC that REMOVES everything
+# outside the kept target's closure (vLLM, bitsandbytes, NVIDIA libs), so drop it too.
 _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall", "--exact"}
 # Value-flags whose flag+value pair is dropped outright in shim mode.
-# `--upgrade-strategy eager` makes pip upgrade EVERY dependency of a kept target
-# regardless of whether the installed version already satisfies it, which would
-# refresh the baked torch/transformers under the pinned CUDA stack. Dropping the
-# flag falls back to pip's default `only-if-needed`, so a kept target still
-# installs but already-satisfied protected deps stay put. (`only-if-needed` is
-# the default, so dropping a `--upgrade-strategy only-if-needed` is a no-op.)
+# `--upgrade-strategy eager` makes pip upgrade EVERY dependency of a kept target,
+# refreshing the baked torch/transformers. Dropping it falls back to pip's default
+# `only-if-needed`, so the target still installs but satisfied protected deps stay.
 _DROP_VALUE_FLAGS = {"--upgrade-strategy"}
 
 

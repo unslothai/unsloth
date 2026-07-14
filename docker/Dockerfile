@@ -586,21 +586,15 @@ COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 #       triton-lang/triton#8335. Fix: install cu13 ptxas and point Triton at
 #       it with TRITON_PTXAS_PATH.
 #
-# Both cu13 tools are activated ONLY for sm_103/sm_121, at runtime (see
-# select_cuda_jit_tools in entrypoint.sh), NOT baked as a global ENV/symlink
-# default: cu13 emits a cubin that a 570-579 driver cannot LOAD even when it
-# targets an older arch (CUDA 13 requires a >= 580 driver), so forcing every
-# host's JIT through cu13 would break the Ampere/Ada/Hopper/Turing GPUs this
-# image still supports on 570+ drivers. sm_103/sm_121 launched after cu12.8 and
-# only ship on >= 580 drivers, so gating cu13 to them is always safe.
-#
-# NVRTC and ptxas are CPU-side compilers; they do NOT call into libcuda, so
-# cu13 installs alongside the cu128 runtime with no driver-floor bump at INSTALL
-# time (570+). Their OUTPUT is a different story: a cu13 cubin needs a >= 580
-# driver to LOAD, so the tools are ACTIVATED per device at runtime (only for the
-# sm_103/sm_121 hosts, which ship >= 580 drivers) -- see select_cuda_jit_tools
-# in entrypoint.sh. Both arches carry the ~400 MB now: amd64 needs it for
-# sm_103, arm64 for sm_121.
+# Both cu13 tools are CPU-side compilers (no libcuda call), so they install
+# alongside the cu128 runtime with no driver-floor bump at INSTALL time (570+).
+# But their OUTPUT cubin needs a >= 580 driver to LOAD, so they are NOT baked as a
+# global ENV/symlink default -- forcing every host's JIT through cu13 would break
+# the Ampere/Ada/Hopper/Turing GPUs this image still supports on 570-579 drivers.
+# They are activated per device at runtime only for sm_103/sm_121 (which launched
+# after cu12.8 and only ship on >= 580 drivers, so gating cu13 to them is always
+# safe) -- see select_cuda_jit_tools in entrypoint.sh. Both arches carry the
+# ~400 MB: amd64 needs it for sm_103, arm64 for sm_121.
 RUN set -eux; \
         # The nvidia/cuda base already configures the CUDA apt repo (x86_64 or
         # sbsa) with its own Signed-By keyring at
@@ -632,15 +626,10 @@ RUN set -eux; \
             ln -s libnvrtc.so.12.cu128.orig "${NVRTC_DIR}/libnvrtc.so.12"; \
             ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12.cu13"; \
         fi
-# (2) ptxas override. triton 3.6.0's own ptxas is cu12.8 (no sm_103/sm_121), so
-# those two arches need the cu13 ptxas installed above. It is NOT baked as a
-# global ENV: cu13 ptxas emits a cubin whose ABI a 570-579 driver cannot LOAD
-# (CUDA 13 needs a >= 580 driver), even when targeting an older arch like sm_80,
-# so pointing every host's Triton at it would break training on the Ampere/Ada/
-# Hopper/Turing GPUs this image still supports on 570+ drivers. TRITON_PTXAS_PATH
-# is therefore selected per device at boot (only sm_103/sm_121, which ship >= 580
-# drivers, get cu13; everything else keeps Triton's bundled cu12.8 ptxas) -- see
-# select_cuda_jit_tools in entrypoint.sh.
+# (2) ptxas override. triton 3.6.0's ptxas is cu12.8 (no sm_103/sm_121), so those
+# two arches need the cu13 ptxas installed above. Not baked as a global ENV for the
+# same driver-floor reason as NVRTC (a cu13 cubin needs a >= 580 driver to load);
+# TRITON_PTXAS_PATH is selected per device at boot -- see select_cuda_jit_tools.
 
 # Register the venv's torch + NVIDIA lib dirs with the loader so torchcodec
 # (installed in the builder, see the bake comment there) can dlopen them.

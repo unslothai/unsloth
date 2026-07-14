@@ -48,12 +48,10 @@ _OTHER = "Other Notebooks"
 
 def clean_section(title):
     """README header text -> a filesystem-friendly folder label."""
-    # Drop a trailing run of '#', surrounding whitespace and any emoji/symbols
-    # that sometimes lead a header; keep ASCII text, digits and a few separators.
+    # Drop trailing '#' and surrounding whitespace.
     title = title.strip().strip("#").strip()
-    # Strip a leading run of emoji / symbols / punctuation that some domain
-    # headers lead with (e.g. "🐧 AMD Notebooks", "📒 Kaggle Notebooks") so the
-    # folder label is clean text.
+    # Strip a leading run of emoji / symbols some domain headers lead with (e.g.
+    # "🐧 AMD Notebooks", "📒 Kaggle Notebooks") so the folder label is clean text.
     title = re.sub(r"^[^\w]+", "", title)
     title = title.replace("-", " ").replace("/", " ")
     title = re.sub(r"\s+", " ", title).strip()
