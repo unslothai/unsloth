@@ -64,7 +64,7 @@ export interface VoiceSettingsState {
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
-  /** Words or phrases dictation should recognize with this exact casing. */
+  /** Exact spellings applied to matching transcript words and phrases. */
   dictionary: string[];
   addDictionaryEntry: (value: string) => void;
   updateDictionaryEntry: (index: number, value: string) => void;
