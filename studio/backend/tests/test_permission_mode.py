@@ -11,6 +11,9 @@ pauses and the sandbox is dropped, and unset/unknown modes behave as
 "ask" (every call pauses when confirm_tool_calls is on).
 """
 
+import os
+import uuid
+
 import pytest
 
 from core.inference.mcp_client import MCP_TOOL_PREFIX
@@ -21,6 +24,34 @@ from state import tool_approvals
 from state.tool_approvals import resolve_tool_decision
 
 _SESSION = "perm-mode-session"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_permission_mode_globals():
+    """Keep the loop-driving tests hermetic against process-global state that
+    leaks across the full backend suite.
+
+    ``run_safetensors_tool_loop`` reads a process-global approval registry
+    (``state.tool_approvals._pending``) and honors ``os.environ``. Other test
+    modules mutate both (module-level ``os.environ[...] = ...`` runs at import
+    time; abandoned approvals can survive a test). A stale entry keyed by the
+    shared session id, or a leaked env var, can make the loop deny or skip a
+    call that these tests expect to run, which only surfaces in the full-suite
+    ordering on CI (not when the file runs alone). Snapshot and restore both,
+    and hand every ``_drive`` call a unique session, so each test starts clean.
+    """
+    env_snapshot = dict(os.environ)
+    with tool_approvals._lock:
+        pending_snapshot = dict(tool_approvals._pending)
+        tool_approvals._pending.clear()
+    try:
+        yield
+    finally:
+        with tool_approvals._lock:
+            tool_approvals._pending.clear()
+            tool_approvals._pending.update(pending_snapshot)
+        os.environ.clear()
+        os.environ.update(env_snapshot)
 
 
 @pytest.fixture(autouse = True)
@@ -986,24 +1017,37 @@ def _drive(turns, decisions, **loop_kwargs):
     """Run the loop, resolving each gated tool_start with the next decision."""
     decision_iter = iter(decisions)
     exec_fn = _FakeExecuteTool()
+    # A per-call session id so a leaked pending approval from another test can
+    # never collide with this run's approval registry entries.
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
     gen = run_safetensors_tool_loop(
         single_turn = _multi_turn(turns),
         messages = [{"role": "user", "content": "hi"}],
         tools = _DEFAULT_TOOLS,
         execute_tool = exec_fn,
-        session_id = _SESSION,
+        session_id = session,
         **loop_kwargs,
     )
     events = []
     for ev in gen:
         events.append(ev)
         if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
-            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = _SESSION)
+            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = session)
     return events, exec_fn
 
 
 def _tool_starts(events):
     return [e for e in events if e["type"] == "tool_start"]
+
+
+def _diag(events, exec_fn):
+    """A compact dump of what the loop actually did, attached to the loop-driving
+    assertions so a full-suite-only failure on CI (which does not reproduce when
+    the file runs alone) reports the real event stream instead of a bare diff."""
+    return (
+        f"calls={exec_fn.calls} sandbox_seen={exec_fn.disable_sandbox_seen} "
+        f"events={[(e.get('type'), e.get('awaiting_confirmation'), e.get('tool_name')) for e in events]}"
+    )
 
 
 def test_auto_mode_does_not_gate_safe_calls():
@@ -1014,10 +1058,10 @@ def test_auto_mode_does_not_gate_safe_calls():
         permission_mode = "auto",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
     assert starts[0]["approval_id"] == ""
-    assert exec_fn.calls == [("python", {"code": "print(1)"})]
-    assert exec_fn.disable_sandbox_seen == [False]  # sandbox stays on in auto
+    assert exec_fn.calls == [("python", {"code": "print(1)"})], _diag(events, exec_fn)
+    assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)  # sandbox stays on in auto
 
 
 def test_auto_mode_gates_unsafe_calls():
@@ -1028,10 +1072,10 @@ def test_auto_mode_gates_unsafe_calls():
         permission_mode = "auto",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is True
+    assert starts and starts[0]["awaiting_confirmation"] is True, _diag(events, exec_fn)
     assert starts[0]["approval_id"]
-    assert len(exec_fn.calls) == 1
-    assert exec_fn.disable_sandbox_seen == [False]
+    assert len(exec_fn.calls) == 1, _diag(events, exec_fn)
+    assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
 
 
 def test_ask_mode_gates_even_safe_calls():
@@ -1064,9 +1108,9 @@ def test_off_mode_never_gates_and_keeps_sandbox():
         permission_mode = "off",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
     assert starts[0]["approval_id"] == ""
-    assert exec_fn.disable_sandbox_seen == [False]
+    assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
 
 
 def test_full_mode_never_gates_and_drops_sandbox():
@@ -1077,8 +1121,8 @@ def test_full_mode_never_gates_and_drops_sandbox():
         permission_mode = "full",
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False
-    assert exec_fn.disable_sandbox_seen == [True]
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
+    assert exec_fn.disable_sandbox_seen == [True], _diag(events, exec_fn)
 
 
 def test_bypass_flag_implies_full_mode():
@@ -1090,8 +1134,8 @@ def test_bypass_flag_implies_full_mode():
         bypass_permissions = True,
     )
     starts = _tool_starts(events)
-    assert starts and starts[0]["awaiting_confirmation"] is False
-    assert exec_fn.disable_sandbox_seen == [True]
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
+    assert exec_fn.disable_sandbox_seen == [True], _diag(events, exec_fn)
 
 
 def test_bypass_permissions_folds_to_full_on_request_models():
