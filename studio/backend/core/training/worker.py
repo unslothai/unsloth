@@ -1452,9 +1452,14 @@ def _start_mlx_stop_poller(stop_queue):
     stop_save = [True]
     stop_requested = [False]
     trainer_ref = [None]
+    stop_lock = threading.Lock()
+
+    def snapshot_stop():
+        with stop_lock:
+            return stop_requested[0], stop_save[0]
 
     def is_stop_requested():
-        return stop_requested[0]
+        return snapshot_stop()[0]
 
     def poll_stop():
         while True:
@@ -1463,8 +1468,9 @@ def _start_mlx_stop_poller(stop_queue):
                 if msg and msg.get("type") == _MLX_WORKER_COMPLETE:
                     return
                 if msg and msg.get("type") == "stop":
-                    stop_save[0] = msg.get("save", True)
-                    stop_requested[0] = True
+                    with stop_lock:
+                        stop_save[0] = msg.get("save", True)
+                        stop_requested[0] = True
                     trainer = trainer_ref[0]
                     if trainer is not None:
                         trainer.stop_requested = True
@@ -1476,7 +1482,7 @@ def _start_mlx_stop_poller(stop_queue):
 
     stop_thread = threading.Thread(target = poll_stop, daemon = True)
     stop_thread.start()
-    return stop_save, stop_requested, trainer_ref, is_stop_requested, stop_thread
+    return trainer_ref, is_stop_requested, snapshot_stop, stop_thread
 
 
 def _resolve_mlx_output_dir(config, model_name):
@@ -1555,13 +1561,18 @@ def _run_mlx_main_process_action(trainer, action, context):
     if bool(trainer.is_main_process):
         try:
             result = action()
-        except Exception as exc:
+        except BaseException as exc:
             error = exc
     raise_distributed_failure(error is not None, context, error)
     return result
 
 
-def _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue = None):
+def _prepare_mlx_output_dir(
+    trainer,
+    output_dir,
+    ensure_dir,
+    event_queue = None,
+):
     def _prepare():
         result = ensure_dir(Path(output_dir))
         if event_queue is not None:
@@ -1626,6 +1637,98 @@ def _setup_mlx_tracking(trainer, config, output_dir, send):
     return wandb_run, tb_writer
 
 
+def _mlx_worker_finalization_state(trainer, snapshot_stop):
+    trainer_stopped = bool(trainer.stop_requested)
+    local_stop_requested, stop_save = snapshot_stop()
+    stopped = trainer_stopped or bool(local_stop_requested)
+    cancelled = bool(local_stop_requested and not stop_save)
+    if int(trainer.distributed_world_size) > 1:
+        any_flag = getattr(trainer, "_distributed_any_flag", None)
+        if not callable(any_flag):
+            raise RuntimeError(
+                "Unsloth MLX DDP CLI requires MLXTrainer stop coordination. "
+                "Upgrade unsloth-zoo to a compatible version."
+            )
+        stopped = bool(any_flag(stopped))
+        cancelled = bool(any_flag(cancelled))
+    if stopped:
+        trainer.stop_requested = True
+    return stopped, cancelled
+
+
+def _synchronize_mlx_before_final_save(trainer, synchronize):
+    error = None
+    try:
+        synchronize()
+    except BaseException as exc:
+        error = exc
+    if int(trainer.distributed_world_size) <= 1:
+        if error is not None:
+            raise error
+        return
+    raise_distributed_failure = getattr(trainer, "_raise_distributed_failure", None)
+    if not callable(raise_distributed_failure):
+        raise RuntimeError(
+            "Unsloth MLX DDP CLI requires MLXTrainer failure coordination. "
+            "Upgrade unsloth-zoo to a compatible version."
+        )
+    raise_distributed_failure(error is not None, "final synchronization", error)
+
+
+def _finalize_mlx_training(
+    trainer, snapshot_stop, output_dir, synchronize, send, write_stop_checkpoint
+):
+    stopped, cancelled = _mlx_worker_finalization_state(trainer, snapshot_stop)
+    if cancelled:
+        send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+
+    if stopped:
+        saving_message = "Saving stopped model..."
+        completion_message = "Training stopped"
+    else:
+        saving_message = "Saving model..."
+        completion_message = "Training completed"
+    send("status", status_message = saving_message)
+    _synchronize_mlx_before_final_save(trainer, synchronize)
+    _run_mlx_main_process_action(
+        trainer,
+        lambda: trainer.save_model(output_dir),
+        "final model save",
+    )
+    stopped_after_save, cancelled_after_save = _mlx_worker_finalization_state(
+        trainer, snapshot_stop
+    )
+    if cancelled_after_save:
+        send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+    if stopped_after_save:
+        completion_message = "Training stopped"
+        checkpoint_ok = _run_mlx_main_process_action(
+            trainer,
+            write_stop_checkpoint,
+            "stop checkpoint save",
+        )
+        if int(trainer.distributed_world_size) > 1:
+            checkpoint_ok = trainer._distributed_any_flag(bool(checkpoint_ok))
+        if not checkpoint_ok:
+            send(
+                "error",
+                error = (
+                    "Failed to save a resumable checkpoint after stop. "
+                    "Model files were saved, but this run cannot be resumed."
+                ),
+                keep_error_status = True,
+                resume_blocked = True,
+            )
+            return
+    send(
+        "complete",
+        output_dir = output_dir if bool(trainer.is_main_process) else None,
+        status_message = completion_message,
+    )
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -1643,8 +1746,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
-    _stop_save, _stop_requested, _trainer_ref, _is_stop_requested, _stop_thread = (
-        _start_mlx_stop_poller(stop_queue)
+    _trainer_ref, _is_stop_requested, _snapshot_stop, _stop_thread = _start_mlx_stop_poller(
+        stop_queue
     )
 
     _send("status", status_message = "Loading MLX libraries...")
@@ -2157,7 +2260,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     _prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)
     _trainer_ref[0] = trainer
-    if _stop_requested[0]:
+    if _is_stop_requested():
         trainer.stop_requested = True
 
     # Tell the parent eval is configured so the frontend shows the eval chart
@@ -2303,43 +2406,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
             except Exception:
                 pass
 
-    def _stop_checkpoint_ok() -> bool:
-        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
-            return True
-        _send(
-            "error",
-            error = (
-                "Failed to save a resumable checkpoint after stop. "
-                "Model files were saved, but this run cannot be resumed."
-            ),
-            # A user stop finalizes as 'stopped'; keep this failure's error status so history explains it.
-            keep_error_status = True,
-            # Older checkpoints are stale; resuming would roll back past this stop.
-            resume_blocked = True,
-        )
-        return False
-
     try:
-        if trainer.stop_requested:
-            if not _stop_save[0]:
-                # Cancel (save=False): skip saving.
-                _send("complete", output_dir = None, status_message = "Training cancelled")
-            else:
-                _send("status", status_message = "Saving stopped model...")
-                mx.synchronize()
-                trainer.save_model(output_dir)
-                # Stop-and-save promises a resumable checkpoint, not just model files.
-                if not _stop_checkpoint_ok():
-                    return
-                _send("complete", output_dir = output_dir, status_message = "Training stopped")
-        else:
-            _send("status", status_message = "Saving model...")
-            mx.synchronize()
-            trainer.save_model(output_dir)
-            # A save-stop can race the natural final save; it made the same promise.
-            if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
-                return
-            _send("complete", output_dir = output_dir, status_message = "Training completed")
+        _finalize_mlx_training(
+            trainer,
+            _snapshot_stop,
+            output_dir,
+            mx.synchronize,
+            _send,
+            lambda: _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir),
+        )
     finally:
         _finish_tracking()
 
@@ -2406,11 +2481,11 @@ def run_mlx_training_process(
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})
             except (EOFError, OSError, ValueError):
                 pass
-    except Exception as exc:
+    except BaseException as exc:
         event_queue.put(
             {
                 "type": "error",
-                "error": str(exc),
+                "error": str(exc) or type(exc).__name__,
                 "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             }
