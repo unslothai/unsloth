@@ -609,6 +609,26 @@ export function loadedGpuMemoryFields(resp: {
   };
 }
 
+/** loadedGpuMemoryFields (plus any seedExtras), unless a staged pick is open.
+ *
+ * With a staged pick open (the load fired mid-staging), the editable GPU knobs
+ * and seedExtras carry the user's staged edits: hold them like the status
+ * reseed does, and leave the baseline unseeded (loadedGpuMemoryMode: null) so
+ * the post-staging refresh reseeds from status. Deliberately narrower than the
+ * status reseed's gates: the KV/TP/spec fields have carried this staleness on
+ * every load path since before the GPU knobs existed, so they keep their
+ * unconditional seeding here.
+ */
+export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
+  resp: Parameters<typeof loadedGpuMemoryFields>[0],
+  seedExtras?: T,
+) {
+  if (useChatRuntimeStore.getState().pendingSelection != null) {
+    return { loadedGpuMemoryMode: null };
+  }
+  return { ...loadedGpuMemoryFields(resp), ...seedExtras };
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {

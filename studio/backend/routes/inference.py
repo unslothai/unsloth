@@ -4013,9 +4013,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # Manual mode owns the offload flags: strip them from EXPLICIT extras
         # too (the inherited path already does), or a last-wins --gpu-layers /
-        # --fit in extras re-enables GPU offload on a load the guard sized (and
-        # status reports) as CPU-only. Manual + per-GPU ratio owns
-        # --tensor-split the same way.
+        # --fit in extras re-enables GPU offload on a load status reports as
+        # CPU-only. Manual + per-GPU ratio owns --tensor-split the same way.
         if request.gpu_memory_mode == "manual" and extra_llama_args:
             _stripped_explicit = strip_shadowing_flags(
                 extra_llama_args,

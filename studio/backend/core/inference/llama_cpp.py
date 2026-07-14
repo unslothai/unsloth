@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 import atexit
 import contextlib
 import json
+import math
 import os
 import re
 import struct
@@ -2069,6 +2070,24 @@ class LlamaCppBackend:
         if n_cpu_moe <= 0 or n_moe_layers <= 0:
             return None
         return leading_dense + min(n_cpu_moe, n_moe_layers)
+
+    @staticmethod
+    def _sanitize_tensor_split(tensor_split: Optional[List[float]]) -> List[float]:
+        """Per-GPU shares with negative and non-finite entries clamped to 0.
+
+        A direct caller's negative entry would launch a placement different
+        from the ratio the UI showed, and inf would pass a plain ``> 0`` total
+        gate and emit ``--tensor-split inf,...``. Returns [] for input that
+        can't be read as floats (the length gate at the call site then drops
+        the split).
+        """
+        try:
+            return [
+                x if math.isfinite(x) and x > 0.0 else 0.0
+                for x in (float(v) for v in tensor_split)
+            ]
+        except (TypeError, ValueError, OverflowError):
+            return []
 
     @property
     def layer_preserves_tensor_intent(self) -> bool:
@@ -5798,9 +5817,7 @@ class LlamaCppBackend:
                 # gpu_layers=0 leaves nothing to split, yet --split-mode tensor or
                 # a per-GPU ratio still launches tensor mode -- and under the
                 # CPU-only mask below (no visible devices) that aborts the server
-                # instead of loading on CPU. Drop both here (a user --split-mode in
-                # extras still wins last-wins and keeps the GPUs visible via the
-                # mask's own gate).
+                # instead of loading on CPU. Drop both here (nothing to split).
                 if gpu_memory_mode == "manual" and gpu_layers == 0:
                     if tensor_parallel or tensor_split:
                         logger.info(
@@ -6880,17 +6897,12 @@ class LlamaCppBackend:
                     # its 16-device cap).
                     _split_gpus = self._effective_gpu_count(gpu_indices)
                     if tensor_split and _split_gpus > 1:
-                        # An all-zero/non-positive split assigns nothing anywhere,
-                        # so fall through to the free-VRAM default in that case.
-                        try:
-                            _split_total = sum(max(float(x), 0.0) for x in tensor_split)
-                        except (TypeError, ValueError):
-                            _split_total = 0.0
-                        if len(tensor_split) == _split_gpus and _split_total > 0:
-                            # Clamp negatives to 0 so a negative entry from a
-                            # direct caller can't launch a placement different
-                            # from the ratio the UI showed.
-                            _sanitized_split = [max(float(x), 0.0) for x in tensor_split]
+                        # An all-zero/non-positive sanitized split assigns nothing
+                        # anywhere, so fall through to the free-VRAM default in
+                        # that case.
+                        _sanitized_split = self._sanitize_tensor_split(tensor_split)
+                        _split_total = sum(_sanitized_split)
+                        if len(_sanitized_split) == _split_gpus and _split_total > 0:
                             cmd.extend(
                                 ["--tensor-split", ",".join(f"{x:g}" for x in _sanitized_split)]
                             )
@@ -7210,15 +7222,32 @@ class LlamaCppBackend:
                 # classification below reports as free. Hide the GPUs so the load
                 # is exactly what it claims: zero VRAM (verified: GPU stays at idle
                 # baseline and generation runs). Companion loads keep the normal
-                # masking, and a user --device in extras keeps its own.
+                # masking, and a user device pin (in extras or an inherited
+                # LLAMA_ARG_DEVICE) keeps control of its own devices -- the child
+                # aborts on a pin it can't see. The draft-device forms count too:
+                # llama-server parses them even with no drafter loaded.
+                _device_pin_flags = (
+                    "--device",
+                    "-dev",
+                    "--spec-draft-device",
+                    "-devd",
+                    "--device-draft",
+                )
                 _cpu_only_zero_offload = (
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
                     and not is_vulkan_backend
-                    and not any(a == "--device" or str(a).startswith("--device=") for a in cmd)
-                    # Only a user-forced TENSOR split keeps the GPUs visible (it
-                    # aborts under zero devices); row/layer modes are inert with
-                    # nothing offloaded, so they don't defeat the zero-VRAM mask.
+                    and not any(
+                        str(a) in _device_pin_flags
+                        or str(a).startswith(tuple(f + "=" for f in _device_pin_flags))
+                        for a in cmd
+                    )
+                    and not (env.get("LLAMA_ARG_DEVICE") or "").strip()
+                    # A --split-mode tensor surviving in the argv keeps the GPUs
+                    # visible (tensor aborts under zero devices); the normal manual
+                    # path strips it, so this fires only when a GPU-probe failure
+                    # skipped that strip. Row/layer modes are inert with nothing
+                    # offloaded, so they don't defeat the zero-VRAM mask.
                     and not resolve_tensor_parallel(cmd, False)
                     and not self._cmd_has_gpu_companion(cmd, env)
                 )

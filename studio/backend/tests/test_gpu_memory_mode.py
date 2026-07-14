@@ -453,7 +453,9 @@ def test_manual_offload_emits_tensor_split():
     assert "if tensor_split and _split_gpus > 1:" in src
     # Emit only on a length match AND a positive sanitized total: a mismatched
     # or all-zero split aborts llama-server / assigns nothing, so it's dropped.
-    assert "if len(tensor_split) == _split_gpus and _split_total > 0:" in src
+    # The emitted list is the sanitized one (clamping tested behaviorally below).
+    assert "_sanitized_split = self._sanitize_tensor_split(tensor_split)" in src
+    assert "if len(_sanitized_split) == _split_gpus and _split_total > 0:" in src
     assert '"--tensor-split"' in src
     # Joined as a comma list (e.g. "2,1") within the explicit-offload cmd branch.
     gate = src.find('if gpu_memory_mode == "manual" and gpu_layers >= 0:')
@@ -465,6 +467,43 @@ def test_manual_offload_emits_tensor_split():
     assert "elif tensor_split:" in src[gate:nxt]
     drop = src.find("elif tensor_split:", gate, nxt)
     assert "self._tensor_split = None" in src[drop : drop + 250]
+
+
+def test_sanitize_tensor_split_clamps_negative_and_non_finite():
+    # Negative entries would launch a placement different from the ratio the
+    # UI showed; inf passes a plain > 0 total gate and would emit
+    # "--tensor-split inf,..." (llama.cpp normalizes shares by the running
+    # total, so an inf poisons the shares from that entry on). Both clamp to 0.
+    sanitize = LlamaCppBackend._sanitize_tensor_split
+    assert sanitize([2, 1]) == [2.0, 1.0]
+    assert sanitize([-1, 2]) == [0.0, 2.0]
+    assert sanitize([float("inf"), 1]) == [0.0, 1.0]
+    assert sanitize([float("nan"), 1]) == [0.0, 1.0]
+    # All-zero survives sanitization; the call site's total gate drops it.
+    assert sanitize([0, 0]) == [0.0, 0.0]
+    # Unreadable input -> []; the call site's length gate drops it.
+    assert sanitize(["x", 1]) == []
+    assert sanitize([10**400, 1]) == []
+
+
+def test_zero_offload_mask_honors_device_pin_spellings():
+    # A user device pin must keep the GPUs visible: llama-server aborts on a
+    # pin it can't see ('error: invalid device'). The pin can arrive as
+    # --device or its -dev alias, as the draft forms (parsed even with no
+    # drafter loaded), or as an inherited LLAMA_ARG_DEVICE env var.
+    src = _load_model_source()
+    gate = src.find("_device_pin_flags = (")
+    assert gate != -1, "load_model must gate the zero-offload visibility mask"
+    block = src[gate : gate + 1200]
+    for flag in (
+        '"--device"',
+        '"-dev"',
+        '"--spec-draft-device"',
+        '"-devd"',
+        '"--device-draft"',
+    ):
+        assert flag in block
+    assert 'env.get("LLAMA_ARG_DEVICE")' in block
 
 
 def test_resolve_cpu_moe_flag():

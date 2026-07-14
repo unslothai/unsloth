@@ -28,6 +28,7 @@ import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
   loadedGpuMemoryFields,
+  loadedGpuMemoryFieldsUnlessStaged,
   pendingSelectionMatches,
   persistGpuMemoryModeOnLoad,
   readPersistedSpeculativeType,
@@ -1057,8 +1058,6 @@ export function useChatModelRuntime() {
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
-                const stagedPickOpen =
-                  useChatRuntimeStore.getState().pendingSelection != null;
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   loadedSpeculativeType: null,
@@ -1066,21 +1065,18 @@ export function useChatModelRuntime() {
                   // Re-baseline the GPU knobs from the rolled-back load's own
                   // response (the shared seeding every load path uses): the
                   // refresh() below can't do it, since the status reseed is
-                  // gated off while modelLoading is still true. With a staged
-                  // pick still open (a failed staged Load stays staged for
-                  // retry), hold the knobs like the status reseed does and
-                  // leave the baseline unseeded for the post-staging refresh.
-                  ...(stagedPickOpen
-                    ? { loadedGpuMemoryMode: null }
-                    : {
-                        ...loadedGpuMemoryFields(rollbackResponse),
-                        tensorParallel: rollbackResponse.tensor_parallel ?? false,
-                        loadedTensorParallel:
-                          rollbackResponse.tensor_parallel ?? false,
-                      }),
-                  // refresh() can't re-derive the context pin (status has no such
-                  // field), so restore it to the rolled-back model's directly.
-                  customContextLength: stateBeforeUnload.loadedCustomContextLength,
+                  // gated off while modelLoading is still true. A failed staged
+                  // Load stays staged for retry, so the staged hold applies.
+                  ...loadedGpuMemoryFieldsUnlessStaged(rollbackResponse, {
+                    tensorParallel: rollbackResponse.tensor_parallel ?? false,
+                    loadedTensorParallel:
+                      rollbackResponse.tensor_parallel ?? false,
+                    // refresh() can't re-derive the context pin (status has no
+                    // such field), so restore it to the rolled-back model's
+                    // directly.
+                    customContextLength:
+                      stateBeforeUnload.loadedCustomContextLength,
+                  }),
                   loadedCustomContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                 });

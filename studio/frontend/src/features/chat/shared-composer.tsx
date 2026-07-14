@@ -81,7 +81,7 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
-  loadedGpuMemoryFields,
+  loadedGpuMemoryFieldsUnlessStaged,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
@@ -1097,7 +1097,10 @@ export function SharedComposer({
           // would dress a non-GGUF compare load in GGUF controls. Mirror the
           // interactive path, which writes it on every load success.
           activeNativePathToken: null,
-          ...loadedGpuMemoryFields(resp),
+          // Held under an open staged pick: setCheckpoint preserves a stage on
+          // the empty->active transition, so a compare load can complete with
+          // staged GPU edits still on screen.
+          ...loadedGpuMemoryFieldsUnlessStaged(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,

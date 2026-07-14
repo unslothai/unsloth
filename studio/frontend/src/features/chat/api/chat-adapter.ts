@@ -45,7 +45,7 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  loadedGpuMemoryFields,
+  loadedGpuMemoryFieldsUnlessStaged,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -1605,9 +1605,10 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        customContextLength: keepCustomCtx,
+        ...loadedGpuMemoryFieldsUnlessStaged(loadResp, {
+          customContextLength: keepCustomCtx,
+        }),
         loadedCustomContextLength: keepCustomCtx,
-        ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedChatTemplateOverride: null,
@@ -1630,7 +1631,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
         // GGUF load left, matching the interactive/status sibling load paths.
-        ...loadedGpuMemoryFields(loadResp),
+        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedChatTemplateOverride: null,
@@ -1837,24 +1838,27 @@ async function autoLoadSmallestModel(): Promise<{
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
-        max_seq_length: resolveFitMaxSeqLength(
-          /* isGguf */ true,
-          rt.gpuMemoryMode,
-          rt.gpuLayers,
-          rt.customContextLength,
-          0,
-        ),
+        // Model default under both modes: Auto layers + no pin means
+        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+        // preflight above sends the same).
+        max_seq_length: 0,
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
-        // GPU Memory is a standing preference, so honor it on auto-load.
+        // GPU Memory mode is a standing preference, so honor it on auto-load.
+        // The layer/MoE/split knobs and the context pin are per-model: the
+        // live store may hold edits drafted for a staged pick, and a fresh
+        // default model has no remembered settings, so those stay at their
+        // defaults like the cached-candidate path. The GPU pick deliberately
+        // differs from that path (remembered-or-nothing): it's the picker's
+        // current on-screen selection, and the canAutoLoad preflight above
+        // already committed to it.
         gpu_memory_mode: rt.gpuMemoryMode,
-        gpu_layers: rt.gpuLayers,
-        n_cpu_moe: rt.nCpuMoe,
-        tensor_split: rt.splitRatio ?? undefined,
+        gpu_layers: GPU_LAYERS_AUTO,
+        n_cpu_moe: 0,
         gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
@@ -1895,7 +1899,7 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        ...loadedGpuMemoryFields(loadResp),
+        ...loadedGpuMemoryFieldsUnlessStaged(loadResp),
         // Drives the GPU Memory controls' diffusion gate; set alongside the
         // GPU fields on every load path so the gate can't read stale.
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
