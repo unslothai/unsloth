@@ -18,7 +18,9 @@ from core.inference.stt_sidecar import (
     SttAudioDecodeError,
     SttAudioTooLongError,
     SttLanguageError,
+    SttLoadCancelledError,
     SttModelNotDownloadedError,
+    SttUnavailableError,
     WhisperSttSidecar,
     normalize_whisper_language,
     resolve_model_id,
@@ -73,6 +75,30 @@ def test_av_is_required_for_stt_availability(monkeypatch):
     monkeypatch.setitem(sys.modules, "av", None)
 
     assert stt_sidecar_module.is_available() is False
+
+
+def test_transformers_is_required_for_stt_availability(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "av", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "transformers", None)
+
+    assert stt_sidecar_module.is_available() is False
+
+
+@pytest.mark.parametrize("missing", ["transformers", "av"])
+def test_load_rejects_an_incomplete_stt_runtime(monkeypatch, missing):
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    for module in ("torch", "transformers", "av"):
+        monkeypatch.setitem(sys.modules, module, SimpleNamespace())
+    monkeypatch.setitem(sys.modules, missing, None)
+    monkeypatch.setattr(
+        sidecar,
+        "_ensure_model_downloaded",
+        lambda _model: pytest.fail("runtime must be checked before the model cache"),
+    )
+
+    with pytest.raises(SttUnavailableError, match = "needs PyTorch, Transformers, and PyAV"):
+        sidecar.load("small")
 
 
 def test_unknown_model_id_falls_back_to_default():
@@ -357,6 +383,7 @@ def test_missing_model_switch_keeps_resident_model(monkeypatch):
         raise SttModelNotDownloadedError("not downloaded")
 
     monkeypatch.setattr(sidecar, "_ensure_model_downloaded", missing, raising = False)
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
     monkeypatch.setattr(
         sidecar,
         "_build_model",
@@ -381,6 +408,7 @@ def test_loaded_model_stays_warm_until_idle_timer_fires(monkeypatch):
         return timer
 
     sidecar = WhisperSttSidecar(keep_alive_seconds = 300)
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
     monkeypatch.setattr(stt_sidecar_module.threading, "Timer", make_timer)
     monkeypatch.setattr(sidecar, "_build_model", lambda *_args: (object(), object()))
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
@@ -406,6 +434,7 @@ def test_reusing_loaded_model_refreshes_idle_timer(monkeypatch):
         return timer
 
     sidecar = WhisperSttSidecar(keep_alive_seconds = 300)
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
     monkeypatch.setattr(stt_sidecar_module.threading, "Timer", make_timer)
     monkeypatch.setattr(sidecar, "_build_model", lambda *_args: (object(), object()))
     monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
@@ -506,8 +535,9 @@ def test_accelerator_load_failure_retries_on_cpu(monkeypatch):
     fake_torch = _install_fake_torch(monkeypatch)
     calls = []
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
 
-    def build(_repo, device, dtype):
+    def build(_repo, device, dtype, _cancel_event):
         calls.append((device, dtype))
         if device == "cuda":
             raise RuntimeError("accelerator allocation failed")
@@ -520,6 +550,51 @@ def test_accelerator_load_failure_retries_on_cpu(monkeypatch):
 
     assert calls == [("cuda", "float16"), ("cpu", fake_torch.float32)]
     assert sidecar.device == "cpu"
+
+
+def test_pending_load_can_be_cancelled_without_waiting_for_model_lock(monkeypatch):
+    _install_fake_torch(monkeypatch)
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    build_started = threading.Event()
+    release_build = threading.Event()
+    errors = []
+
+    def build(_repo, _device, _dtype, _cancel_event):
+        build_started.set()
+        assert release_build.wait(timeout = 2)
+        return object(), object()
+
+    def run_load():
+        try:
+            sidecar.load("small")
+        except Exception as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cpu", "float32"))
+    monkeypatch.setattr(sidecar, "_build_model", build)
+
+    load_thread = threading.Thread(target = run_load)
+    load_thread.start()
+    assert build_started.wait(timeout = 2)
+
+    result = []
+    cancel_thread = threading.Thread(target = lambda: result.append(sidecar.cancel_pending_load()))
+    cancel_thread.start()
+    cancel_thread.join(timeout = 2)
+
+    assert not cancel_thread.is_alive()
+    assert result == [True]
+    assert load_thread.is_alive()
+
+    release_build.set()
+    load_thread.join(timeout = 2)
+
+    assert not load_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], SttLoadCancelledError)
+    assert sidecar.loaded_model is None
+    assert sidecar.is_loading() is False
 
 
 def _wav_bytes(sample_count: int, sample_rate: int = 16000) -> bytes:

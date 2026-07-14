@@ -93,6 +93,7 @@ def _fake_stt_sidecar(
         device = device,
         is_loading = lambda: loading,
     )
+    sidecar.cancel_pending_load = MagicMock(return_value = loading)
     sidecar.unload = MagicMock()
     return sidecar
 
@@ -490,11 +491,12 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         sidecar.unload.assert_called_once()
         self.assertEqual(freed, ["stt:small"])
 
-    def test_unloads_inflight_load(self):
+    def test_cancels_inflight_load_without_waiting(self):
         sidecar = _fake_stt_sidecar(loading = True)
         with _patch_stt(sidecar):
             freed = tv.free_stt_model_for_training(reason = "test")
-        sidecar.unload.assert_called_once()
+        sidecar.cancel_pending_load.assert_called_once()
+        sidecar.unload.assert_not_called()
         self.assertEqual(freed, ["stt:loading"])
 
     def test_leaves_empty_sidecar_alone(self):
@@ -578,6 +580,15 @@ class TestCoordinateModels(_GpuCacheResetMixin, unittest.TestCase):
         keep.assert_not_called()
         free_stt.assert_called_once()
         free_chat.assert_called_once()
+
+    def test_cancels_loading_stt_without_probe(self):
+        chat = {"any": False, "loading": False}
+        stt = {"any": True, "loading": True}
+        freed, keep, free_stt, free_chat = self._run(chat, stt, [])
+        self.assertEqual(freed, ["stt:small"])
+        keep.assert_not_called()
+        free_stt.assert_called_once()
+        free_chat.assert_not_called()
 
 
 if __name__ == "__main__":

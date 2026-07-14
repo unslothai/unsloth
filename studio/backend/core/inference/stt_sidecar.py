@@ -45,6 +45,10 @@ class SttUnavailableError(RuntimeError):
     """The STT backend (PyTorch/Transformers or PyAV) is not installed."""
 
 
+class SttLoadCancelledError(RuntimeError):
+    """An in-flight STT model load was cancelled for training."""
+
+
 class SttModelNotDownloadedError(RuntimeError):
     """The selected model is not complete in the shared Hub cache."""
 
@@ -95,13 +99,24 @@ def _known_whisper_languages() -> Optional[frozenset[str]]:
     return frozenset(LANGUAGES)
 
 
-def is_available() -> bool:
-    """True when the complete local Whisper backend can be imported."""
+def ensure_stt_available() -> None:
+    """Raise when the complete local Whisper backend cannot be imported."""
     try:
         import av  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
-    except Exception:
+    except Exception as exc:
+        raise SttUnavailableError(
+            "Speech-to-text needs PyTorch, Transformers, and PyAV. "
+            "Run `unsloth studio update` to install them."
+        ) from exc
+
+
+def is_available() -> bool:
+    """True when the complete local Whisper backend can be imported."""
+    try:
+        ensure_stt_available()
+    except SttUnavailableError:
         return False
     return True
 
@@ -138,6 +153,18 @@ def _training_active() -> bool:
         return bool(get_training_backend().is_training_active())
     except Exception:
         return False
+
+
+def _clear_device_cache(device: Optional[str]) -> None:
+    gc.collect()
+    try:
+        import torch
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        elif device == "mps":
+            torch.mps.empty_cache()
+    except Exception:
+        pass
 
 
 def _pick_device():
@@ -250,7 +277,9 @@ class WhisperSttSidecar:
         self._model_id: Optional[str] = None
         self._device: Optional[str] = None
         self._lock = threading.RLock()
+        self._load_state_lock = threading.Lock()
         self._loading = False
+        self._load_cancel_event: Optional[threading.Event] = None
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -264,7 +293,37 @@ class WhisperSttSidecar:
         return self._device
 
     def is_loading(self) -> bool:
-        return self._loading
+        with self._load_state_lock:
+            return self._loading
+
+    def cancel_pending_load(self) -> bool:
+        """Cancel a model load without waiting for the model lock."""
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None:
+                return False
+            event.set()
+            return True
+
+    def _begin_load(self) -> threading.Event:
+        event = threading.Event()
+        with self._load_state_lock:
+            self._load_cancel_event = event
+            self._loading = True
+        return event
+
+    def _end_load(self, event: threading.Event) -> None:
+        with self._load_state_lock:
+            if self._load_cancel_event is event:
+                self._load_cancel_event = None
+                self._loading = False
+
+    @staticmethod
+    def _raise_if_load_cancelled(event: threading.Event) -> None:
+        if event.is_set():
+            raise SttLoadCancelledError(
+                "STT model loading was cancelled so training could start."
+            )
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -306,17 +365,15 @@ class WhisperSttSidecar:
         self._model_id = None
         self._device = None
         del engine
-        try:
-            import torch
-            if device == "cuda":
-                torch.cuda.empty_cache()
-            elif device == "mps":
-                torch.mps.empty_cache()
-        except Exception:
-            pass
-        gc.collect()
+        _clear_device_cache(device)
 
-    def _build_model(self, repo: str, device: str, dtype):
+    def _build_model(
+        self,
+        repo: str,
+        device: str,
+        dtype,
+        cancel_event: threading.Event,
+    ):
         """Load a Whisper model + processor from the local Hub cache.
 
         local_files_only keeps the Model Hub the only download path; a cache
@@ -325,13 +382,24 @@ class WhisperSttSidecar:
         import torch
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-        processor = WhisperProcessor.from_pretrained(repo, local_files_only = True)
-        model = WhisperForConditionalGeneration.from_pretrained(
-            repo, torch_dtype = dtype, local_files_only = True
-        )
-        model.to(torch.device(device))
-        model.eval()
-        return model, processor
+        processor = None
+        model = None
+        try:
+            processor = WhisperProcessor.from_pretrained(repo, local_files_only = True)
+            self._raise_if_load_cancelled(cancel_event)
+            model = WhisperForConditionalGeneration.from_pretrained(
+                repo, torch_dtype = dtype, local_files_only = True
+            )
+            self._raise_if_load_cancelled(cancel_event)
+            model.to(torch.device(device))
+            self._raise_if_load_cancelled(cancel_event)
+            model.eval()
+            return model, processor
+        except SttLoadCancelledError:
+            model = None
+            processor = None
+            _clear_device_cache(device)
+            raise
 
     def _ensure_model_downloaded(self, model_id: str) -> None:
         """Fail before decode or model replacement when the cache is incomplete."""
@@ -359,33 +427,34 @@ class WhisperSttSidecar:
         """
         model_id = resolve_model_id(model)
         with self._lock:
+            ensure_stt_available()
             if self._engine is not None and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return self._engine
-            self._ensure_model_downloaded(model_id)
+            import torch
+
+            cancel_event = self._begin_load()
+            candidate = None
+            device: Optional[str] = None
             try:
-                import torch
-            except Exception as exc:
-                raise SttUnavailableError(
-                    "Speech-to-text needs PyTorch and Transformers. "
-                    "Run `unsloth studio update` to install them."
-                ) from exc
+                self._ensure_model_downloaded(model_id)
+                self._raise_if_load_cancelled(cancel_event)
+                device, dtype = _pick_device()
+                self._release_engine_locked()
+                repo = STT_MODELS[model_id]
+                logger.info("Loading STT model %s (%s) on %s", model_id, repo, device)
 
-            device, dtype = _pick_device()
-            self._release_engine_locked()
-            repo = STT_MODELS[model_id]
-            logger.info("Loading STT model %s (%s) on %s", model_id, repo, device)
+                def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
+                    return SttModelNotDownloadedError(
+                        f"STT model '{model_id}' is not downloaded. "
+                        "Download it in Settings, then Voice, before loading it."
+                    )
 
-            def not_downloaded(cause: BaseException) -> SttModelNotDownloadedError:
-                return SttModelNotDownloadedError(
-                    f"STT model '{model_id}' is not downloaded. "
-                    "Download it in Settings, then Voice, before loading it."
-                )
-
-            self._loading = True
-            try:
                 try:
-                    self._engine = self._build_model(repo, device, dtype)
+                    candidate = self._build_model(repo, device, dtype, cancel_event)
+                    self._raise_if_load_cancelled(cancel_event)
+                except SttLoadCancelledError:
+                    raise
                 except Exception as exc:
                     if _is_missing_local_model_error(exc):
                         raise not_downloaded(exc) from exc
@@ -393,7 +462,15 @@ class WhisperSttSidecar:
                     if device != "cpu":
                         logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
                         try:
-                            self._engine = self._build_model(repo, "cpu", torch.float32)
+                            candidate = self._build_model(
+                                repo,
+                                "cpu",
+                                torch.float32,
+                                cancel_event,
+                            )
+                            self._raise_if_load_cancelled(cancel_event)
+                        except SttLoadCancelledError:
+                            raise
                         except Exception as cpu_exc:
                             if _is_missing_local_model_error(cpu_exc):
                                 raise not_downloaded(cpu_exc) from cpu_exc
@@ -401,13 +478,23 @@ class WhisperSttSidecar:
                         device = "cpu"
                     else:
                         raise
+                with self._load_state_lock:
+                    self._raise_if_load_cancelled(cancel_event)
+                    self._engine = candidate
+                    self._model_id = model_id
+                    self._device = device
+                    self._load_cancel_event = None
+                    self._loading = False
+                self._schedule_idle_unload_locked()
+                logger.info("STT model %s ready on %s", model_id, device)
+                return self._engine
+            except SttLoadCancelledError:
+                candidate = None
+                self._release_engine_locked()
+                _clear_device_cache(device)
+                raise
             finally:
-                self._loading = False
-            self._model_id = model_id
-            self._device = device
-            self._schedule_idle_unload_locked()
-            logger.info("STT model %s ready on %s", model_id, device)
-            return self._engine
+                self._end_load(cancel_event)
 
     def _transcribe_decoded(self, model_id: str, decoded_audio, generate_kwargs: dict) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.

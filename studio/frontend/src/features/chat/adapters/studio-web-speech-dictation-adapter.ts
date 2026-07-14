@@ -321,7 +321,12 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       if (ended) return;
       const errorEvent = event as SpeechRecognitionErrorEvent;
       if (errorEvent.error === "aborted") {
-        finish("cancelled");
+        if (stopping) {
+          promoteInterim();
+          finish("stopped");
+        } else {
+          finish("cancelled");
+        }
         return;
       }
       const description = describeSpeechError(

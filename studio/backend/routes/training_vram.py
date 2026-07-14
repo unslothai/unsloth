@@ -365,10 +365,13 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         from core.inference.stt_sidecar import get_stt_sidecar
 
         sidecar = get_stt_sidecar()
+        if sidecar.is_loading() and sidecar.cancel_pending_load():
+            logger.info("Cancelling STT model load for training (%s)", reason)
+            return ["stt:loading"]
         model = sidecar.loaded_model
-        if not model and not sidecar.is_loading():
+        if not model:
             return []
-        label = model or "loading"
+        label = model
         logger.info("Unloading STT model '%s' for training (%s)", label, reason)
         sidecar.unload()
         return [f"stt:{label}"]
@@ -393,8 +396,13 @@ def coordinate_models_for_training(
 
     freed: List[str] = []
     if resident_stt.get("loading"):
-        freed += free_stt_model_for_training(reason = "STT model still loading")
-        resident_stt = summarize_resident_stt()
+        released_stt = free_stt_model_for_training(reason = "STT model still loading")
+        freed += released_stt
+        resident_stt = (
+            {"model": None, "device": None, "loading": False, "any": False}
+            if released_stt
+            else summarize_resident_stt()
+        )
         if not resident_chat["any"] and not resident_stt["any"]:
             return freed
 
