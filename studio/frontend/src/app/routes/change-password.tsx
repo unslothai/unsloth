@@ -15,7 +15,7 @@ const ChangePasswordPage = lazy(() =>
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/change-password",
-  staticData: { title: "Change Password" },
+  staticData: { title: "Change Password", isAuthFlow: true },
   beforeLoad: () => requirePasswordChangeFlow(),
   component: ChangePasswordPage,
 });
