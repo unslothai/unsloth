@@ -1389,6 +1389,29 @@ _MAX_FETCH_BYTES = 512 * 1024
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
+# Leading bytes of common binary formats that servers sometimes mislabel as
+# text/*; matched by signature because their replacement-char density alone can
+# be low (e.g. a PDF whose first chunk is mostly ASCII object/xref syntax).
+_BINARY_MAGIC = (
+    b"%PDF-",              # PDF
+    b"PK\x03\x04",         # zip / docx / xlsx / pptx / epub / jar
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",       # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"\x1f\x8b",           # gzip
+    b"BZh",                # bzip2
+    b"\xfd7zXZ\x00",       # xz
+    b"\x28\xb5\x2f\xfd",   # zstd
+)
+
+
+def _looks_binary(text: str) -> bool:
+    """True when more than 1/_BINARY_CHAR_DIVISOR of ``text`` is binary chars
+    (control/undecodable, per _BINARY_CHAR_RE), past the _MIN_BINARY_CHARS floor."""
+    return len(_BINARY_CHAR_RE.findall(text)) > max(
+        _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
+    )
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1611,15 +1634,26 @@ def _fetch_page_text(
             safe_type = m.group(0) if m else "unknown type"
             return f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)"
 
-        charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors = "replace")
+        # A PDF/image/archive mislabeled as text/*: catch by signature, since a
+        # text-heavy first chunk can slip past the replacement-char density check.
+        if raw_bytes.startswith(_BINARY_MAGIC):
+            return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
+
+        declared = resp.headers.get_content_charset()
+        raw_html = raw_bytes.decode(declared or "utf-8", errors = "replace")
 
         # Fallback for binary mislabeled as text/* or sent with no Content-Type,
         # including valid-UTF-8 binary (NUL/control-heavy payloads) that decodes
         # without replacement chars: a real text page has few binary chars.
-        binary_chars = len(_BINARY_CHAR_RE.findall(raw_html))
-        if binary_chars > max(_MIN_BINARY_CHARS, len(raw_html) // _BINARY_CHAR_DIVISOR):
-            return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
+        if _looks_binary(raw_html):
+            # An undeclared non-UTF-8 page (latin-1/cp1252) also decodes to many
+            # U+FFFD. Retry as cp1252 (maps almost every byte to a printable
+            # char): if that reads as text it was a charset mismatch, not binary.
+            alt = raw_bytes.decode("cp1252", "replace") if declared is None else None
+            if alt is not None and not _looks_binary(alt):
+                raw_html = alt
+            else:
+                return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:

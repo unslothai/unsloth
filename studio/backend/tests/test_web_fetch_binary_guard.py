@@ -121,6 +121,47 @@ def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
     assert "binary content" in out
 
 
+def test_pdf_mislabeled_as_text_caught_by_magic(monkeypatch):
+    # A PDF served as text/plain: the content-type gate passes, so the magic-byte
+    # sniff must catch it (its ASCII-heavy head can stay under the ratio).
+    pdf = b"%PDF-1.7\n" + b"1 0 obj<</Type/Catalog>>endobj\n" * 300
+    out = _fetch_with(monkeypatch, pdf, "text/plain")
+    assert "binary content" in out
+
+
+def test_zip_mislabeled_as_text_caught_by_magic(monkeypatch):
+    out = _fetch_with(monkeypatch, b"PK\x03\x04" + b"filename.txt content " * 200, "text/plain")
+    assert "binary content" in out
+
+
+@pytest.mark.parametrize(
+    "magic",
+    [b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd"],  # gzip, bzip2, xz, zstd
+)
+def test_compression_mislabeled_as_text_caught_by_magic(monkeypatch, magic):
+    # A small compressed body mislabeled as text can slip past the density check;
+    # the signature must reject it.
+    out = _fetch_with(monkeypatch, magic + b"some short compressed-looking body", "text/plain")
+    assert "binary content" in out
+
+
+def test_latin1_text_without_charset_kept(monkeypatch):
+    # Accent-dense cp1252 text with no declared charset decodes to many U+FFFD as
+    # UTF-8; the cp1252 retry must keep it instead of dropping it as binary.
+    body = ("Muller lauft uber die Strasse: schoene, groesse. MARKERWORD ".replace("ue", "ü")
+            + "äöüß éèà ") * 30
+    out = _fetch_with(monkeypatch, body.encode("cp1252"), "text/plain")
+    assert "binary content" not in out
+    assert "MARKERWORD" in out
+
+
+def test_control_heavy_binary_survives_cp1252_retry(monkeypatch):
+    # Genuine control-heavy binary (no magic) must stay rejected even after the
+    # cp1252 retry, which cannot rescue real binary.
+    out = _fetch_with(monkeypatch, bytes([0, 1, 2, 3, 4, 5, 6, 7]) * 400, "text/plain")
+    assert "binary content" in out
+
+
 def test_ansi_colored_text_log_kept(monkeypatch):
     # A text log with per-token ANSI color codes is text; ESC is excluded from
     # the binary-char set so it isn't dropped as binary.
@@ -164,9 +205,9 @@ def test_content_type_sanitized_in_message(monkeypatch):
     ],
 )
 def test_replacement_ratio_boundary(monkeypatch, n_bad, n_total, expect_binary):
-    # Body of n_total chars: n_bad undecodable bytes + ASCII filler. Labeled
-    # text/plain so only the ratio fallback (not the type check) can fire.
-    body = b"\xff" * n_bad + b"a" * (n_total - n_bad)
+    # Body of n_total chars: n_bad NUL control bytes + ASCII filler. NUL stays
+    # binary through the cp1252 retry, so only the ratio threshold decides here.
+    body = b"\x00" * n_bad + b"a" * (n_total - n_bad)
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert ("binary content" in out) is expect_binary
 
