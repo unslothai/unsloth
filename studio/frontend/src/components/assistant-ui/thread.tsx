@@ -3812,6 +3812,7 @@ const DeleteMessageButton: FC = () => {
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
 
   const handleDelete = async () => {
+    aui.message().stopSpeaking();
     const remoteId = aui.threadListItem().getState().remoteId;
     const thread = aui.thread();
     try {
