@@ -114,7 +114,7 @@ export const en = {
           "Runs locally and works offline. Download once, then load on demand. Model is unloaded after inactivity.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription:
-          "Choose a default STT Whisper model, or search Hugging Face for another.",
+          "Choose a default STT Whisper model for transcription, or search Hugging Face for another model.",
         sttModelSearchPlaceholder: "Search model",
         sttModelSearching: "Searching Hugging Face…",
         sttModelNoResults: "No Whisper models found",
