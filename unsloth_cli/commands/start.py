@@ -175,6 +175,7 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
     has_resume = any(
         arg in ("--resume", "-r", "--continue", "-c")
         or arg.startswith(("--resume=", "--continue="))
+        or (len(arg) > 2 and arg.startswith(("-r", "-c")))
         for arg in args
     )
     if not has_resume:
@@ -184,6 +185,10 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
     for index, arg in enumerate(rewritten):
         if arg in ("-z", "--oneshot"):
             rewritten[index] = "-q"
+        elif len(arg) > 2 and arg.startswith("-z"):
+            # argparse accepts attached short-option values (`-zPROMPT` and
+            # `-z=PROMPT`); preserve the value byte-for-byte when switching to -q.
+            rewritten[index] = f"-q{arg[2:]}"
         elif arg.startswith("--oneshot="):
             rewritten[index] = f"--query={arg.partition('=')[2]}"
         else:
@@ -1249,13 +1254,23 @@ def write_openclaw_config(
         "models": [provider_model],
     }
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
-    defaults = _subdict(_subdict(config, "agents"), "defaults")
+    agents = _subdict(config, "agents")
+    defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
     # OPENCLAW_STATE_DIR does not relocate the workspace. Keep it beside the managed
     # config so ephemeral launches avoid ~/.openclaw and persisted sessions retain it.
     workspace = path.parent / "workspace"
     workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
     defaults["workspace"] = workspace_path or str(workspace)
+    # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This
+    # config is itself an isolated Unsloth copy, so remove stale explicit paths and let
+    # OpenClaw resolve every listed agent beneath the managed defaults/state directory.
+    agent_list = agents.get("list")
+    if isinstance(agent_list, list):
+        for agent_config in agent_list:
+            if isinstance(agent_config, dict):
+                agent_config.pop("workspace", None)
+                agent_config.pop("agentDir", None)
     # Unauthenticated loopback gateway: without auth.mode=none the client won't open
     # the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")

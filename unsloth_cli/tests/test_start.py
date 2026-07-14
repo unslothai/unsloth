@@ -1624,6 +1624,42 @@ def test_write_openclaw_config_fresh(tmp_path):
         assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "list": [
+                        {
+                            "id": "main",
+                            "default": True,
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        {
+                            "id": "reviewer",
+                            "workspace": "/old/reviewer-workspace",
+                            "agentDir": "/old/reviewer-agent",
+                        },
+                    ],
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["list"] == [
+        {"id": "main", "default": True, "model": "keep/me"},
+        {"id": "reviewer"},
+    ]
+
+
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "openclaw.json"
     path.write_text(
@@ -2734,6 +2770,14 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
         (
             ["--resume", "session-id", "-z", "follow up"],
             ["chat", "-Q", "--yolo", "--resume", "session-id", "-q", "follow up"],
+        ),
+        (
+            ["-rsession-id", "-zfollow up"],
+            ["chat", "-Q", "--yolo", "-rsession-id", "-qfollow up"],
+        ),
+        (
+            ["-c=project", "-z=follow up"],
+            ["chat", "-Q", "--yolo", "-c=project", "-q=follow up"],
         ),
         (
             ["-r", "session-id", "--oneshot=follow up"],
