@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-Unit tests for detect_think_prefill.
+Unit tests for local reasoning-stream helpers.
 
 Reasoning templates (Qwen3.6-style) end the generation prompt with an open
 ``<think>\\n`` so the model starts reasoning immediately. skip_prompt
@@ -16,7 +16,11 @@ import sys
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference.chat_template_helpers import detect_think_prefill
+from core.inference.chat_template_helpers import (
+    ReasoningChannelNormalizer,
+    detect_reasoning_channel_markers,
+    detect_think_prefill,
+)
 
 
 QWEN_PROMPT = "<|im_start|>user\nHi!<|im_end|>\n<|im_start|>assistant\n"
@@ -87,3 +91,98 @@ def test_guard_emits_when_think_not_special():
 def test_guard_default_and_empty_keep_emitting():
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", None) == "<think>\n"
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", []) == "<think>\n"
+
+
+def test_gemma_channel_detection_uses_template_or_named_token_metadata():
+    class TemplateTokenizer:
+        chat_template = {"default": "...<|channel>thought\\n{{ eoc_token }}"}
+
+    class LookalikeTokenizer:
+        chat_template = "...<|channel>thoughtful\n...<channel|>..."
+
+    class ChannelTokenizer:
+        soc_token = "<|channel>"
+        eoc_token = "<channel|>"
+        unk_token_id = 0
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|channel>": 100, "<channel|>": 101}.get(token, 0)
+
+        def convert_ids_to_tokens(self, token_id):
+            return {100: "<|channel>", 101: "<channel|>"}.get(token_id, "<unk>")
+
+    class MarkerVocabTokenizer:
+        unk_token_id = 0
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|channel>": 100, "<channel|>": 101}.get(token, 0)
+
+        def convert_ids_to_tokens(self, token_id):
+            return {100: "<|channel>", 101: "<channel|>"}.get(token_id, "<unk>")
+
+    class VocabOnlyTokenizer:
+        def get_vocab(self):
+            return {"<|channel>": 100, "<channel|>": 101}
+
+    class SplitVocabTokenizer:
+        unk_token_id = 0
+
+        def __init__(self, tokens):
+            self._tokens = tokens
+
+        def convert_tokens_to_ids(self, token):
+            return self._tokens.get(token, 0)
+
+        def convert_ids_to_tokens(self, token_id):
+            return {value: key for key, value in self._tokens.items()}.get(token_id, "<unk>")
+
+    class Processor:
+        tokenizer = ChannelTokenizer()
+
+    class SplitProcessor:
+        soc_token = "<|channel>"
+        eoc_token = "<channel|>"
+        tokenizer = MarkerVocabTokenizer()
+
+    class BadSplitProcessor:
+        soc_token = "<|channel>"
+        eoc_token = "<channel|>"
+        tokenizer = SplitVocabTokenizer({"<channel|>": 101})
+
+        def convert_tokens_to_ids(self, token):
+            return {"<|channel>": 100}.get(token, 0)
+
+        def convert_ids_to_tokens(self, token_id):
+            return {100: "<|channel>"}.get(token_id, "<unk>")
+
+    expected = ("<|channel>thought\n", "<channel|>")
+    assert detect_reasoning_channel_markers(TemplateTokenizer()) == expected
+    assert detect_reasoning_channel_markers(Processor()) == expected
+    assert detect_reasoning_channel_markers(SplitProcessor()) == expected
+    assert detect_reasoning_channel_markers(BadSplitProcessor()) is None
+    assert detect_reasoning_channel_markers(LookalikeTokenizer()) is None
+    assert detect_reasoning_channel_markers(VocabOnlyTokenizer()) is None
+    assert detect_reasoning_channel_markers(object()) is None
+
+
+def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
+    parser = ReasoningChannelNormalizer("<|channel>thought\n", "<channel|>")
+    output = ""
+    snapshots = []
+    for chunk in (
+        "<|chan",
+        "nel>thought",
+        "\nReason",
+        "<chan",
+        "nel|><|tool_call>web_search<tool_call|>",
+    ):
+        delta = parser.feed(chunk)
+        if delta:
+            output += delta
+            snapshots.append(output)
+
+    assert snapshots == [
+        "<think>Reason",
+        "<think>Reason</think><|tool_call>web_search<tool_call|>",
+    ]
+    assert snapshots[1].startswith(snapshots[0])

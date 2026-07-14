@@ -14,6 +14,175 @@ from typing import Optional
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
+_GEMMA_CHANNEL_START = "<|channel>"
+_GEMMA_THOUGHT_OPEN = "<|channel>thought\n"
+_GEMMA_THOUGHT_CLOSE = "<channel|>"
+_GEMMA_TEMPLATE_OPENERS = (_GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_OPEN.replace("\n", "\\n"))
+
+
+def _tokenizer_objects(tokenizer) -> tuple:
+    """Return a processor/tokenizer and its distinct nested tokenizer."""
+    if tokenizer is None:
+        return ()
+    nested = getattr(tokenizer, "tokenizer", None)
+    return (tokenizer,) if nested is None or nested is tokenizer else (tokenizer, nested)
+
+
+def _has_token(tokenizer, token: str) -> bool:
+    """Check a vocabulary token without assuming ``get_vocab`` is cheap."""
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if callable(convert):
+        try:
+            token_id = convert(token)
+            if token_id is not None and token_id != getattr(tokenizer, "unk_token_id", None):
+                convert_back = getattr(tokenizer, "convert_ids_to_tokens", None)
+                if callable(convert_back) and convert_back(token_id) == token:
+                    return True
+        except Exception:
+            pass
+    try:
+        return token in tokenizer.get_vocab()
+    except Exception:
+        return False
+
+
+def _has_token_pair(tokenizers: tuple, first: str, second: str) -> bool:
+    """Resolve a marker pair through one processor or nested tokenizer."""
+    return any(
+        _has_token(tokenizer, first) and _has_token(tokenizer, second) for tokenizer in tokenizers
+    )
+
+
+def _chat_template_strings(tokenizer) -> tuple[str, ...]:
+    """Return string templates from scalar or named-template metadata."""
+    template = getattr(tokenizer, "chat_template", None)
+    if isinstance(template, str):
+        return (template,)
+    if isinstance(template, dict):
+        return tuple(value for value in template.values() if isinstance(value, str))
+    return ()
+
+
+def detect_reasoning_channel_markers(tokenizer) -> Optional[tuple[str, str]]:
+    """Return native Gemma thought-channel markers supported by a tokenizer.
+
+    Detection uses tokenizer metadata rather than model names, so local paths
+    and aliases behave like Hub ids. When no template is exposed, named
+    ``soc_token`` / ``eoc_token`` metadata must resolve back to real tokens.
+    """
+    objects = _tokenizer_objects(tokenizer)
+    if any(
+        any(opener in template for opener in _GEMMA_TEMPLATE_OPENERS)
+        for obj in objects
+        for template in _chat_template_strings(obj)
+    ):
+        return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
+    for obj in objects:
+        if (
+            getattr(obj, "soc_token", None) == _GEMMA_CHANNEL_START
+            and getattr(obj, "eoc_token", None) == _GEMMA_THOUGHT_CLOSE
+            and _has_token_pair(objects, _GEMMA_CHANNEL_START, _GEMMA_THOUGHT_CLOSE)
+        ):
+            return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
+    return None
+
+
+def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
+    """Hold the longest suffix that may become ``marker`` in the next chunk."""
+    for length in range(min(len(text), len(marker) - 1), 0, -1):
+        if text.endswith(marker[:length]):
+            return text[:-length], text[-length:]
+    return text, ""
+
+
+class ReasoningChannelNormalizer:
+    """Incrementally convert one native reasoning channel to ``<think>``.
+
+    The parser follows mlx-vlm's streaming boundary behavior but emits Studio's
+    established canonical text contract. Only the configured opening and
+    closing markers are consumed; tool-call and other control markers remain
+    available to downstream parsers.
+    """
+
+    def __init__(self, opening_marker: str, closing_marker: str):
+        self._opening_marker = opening_marker
+        self._closing_marker = closing_marker
+        self._buffer = ""
+        self._in_reasoning = False
+        self._reasoning_done = False
+
+    def feed(self, text: str) -> str:
+        """Consume a raw text delta and return the stable canonical delta."""
+        self._buffer += text or ""
+        output: list[str] = []
+        while self._buffer:
+            if self._reasoning_done:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+
+            marker = self._closing_marker if self._in_reasoning else self._opening_marker
+            index = self._buffer.find(marker)
+            if index < 0:
+                stable, self._buffer = _split_partial_marker(self._buffer, marker)
+                output.append(stable)
+                break
+
+            output.append(self._buffer[:index])
+            self._buffer = self._buffer[index + len(marker) :]
+            if self._in_reasoning:
+                output.append(_THINK_CLOSE)
+                self._in_reasoning = False
+                self._reasoning_done = True
+            else:
+                output.append(_THINK_OPEN)
+                self._in_reasoning = True
+        return "".join(output)
+
+    def finish(self) -> str:
+        """Flush a naturally completed stream and close an open think block."""
+        output = self.drain()
+        if self._in_reasoning:
+            output += _THINK_CLOSE
+            self._in_reasoning = False
+            self._reasoning_done = True
+        return output
+
+    def drain(self) -> str:
+        """Flush buffered literal text without synthesizing a closing tag."""
+        output = self._buffer
+        self._buffer = ""
+        return output
+
+
+def normalize_reasoning_snapshots(
+    stream,
+    tokenizer,
+    cancel_event = None,
+):
+    """Normalize a prefix-monotonic cumulative text stream when supported."""
+    markers = detect_reasoning_channel_markers(tokenizer)
+    if markers is None:
+        yield from stream
+        return
+
+    normalizer = ReasoningChannelNormalizer(*markers)
+    raw_output = ""
+    normalized_output = ""
+    for snapshot in stream:
+        if not snapshot.startswith(raw_output):
+            raise RuntimeError("Reasoning normalization requires cumulative text snapshots")
+        delta = normalizer.feed(snapshot[len(raw_output) :])
+        raw_output = snapshot
+        if delta:
+            normalized_output += delta
+            yield normalized_output
+
+    cancelled = cancel_event is not None and cancel_event.is_set()
+    tail = normalizer.drain() if cancelled else normalizer.finish()
+    if tail:
+        normalized_output += tail
+        yield normalized_output
 
 
 def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
