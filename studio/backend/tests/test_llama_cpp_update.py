@@ -542,7 +542,9 @@ def test_start_update_pinned_tag_mismatch_fails(monkeypatch, tmp_path):
     binary = _write_install(install_dir, "b9595")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906"
+    )
     _patch_installer_popen(
         monkeypatch,
         on_start = lambda cmd: _write_install(install_dir, "b9500", release_tag = "b9500-mix-deadbee"),
@@ -560,7 +562,9 @@ def test_start_update_pinned_reroute_to_other_repo_ok(monkeypatch, tmp_path):
     binary = _write_install(install_dir, "b9595", repo = "unslothai/llama.cpp")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906"
+    )
     _patch_installer_popen(
         monkeypatch,
         on_start = lambda cmd: _write_install(install_dir, "b9601", repo = "ggml-org/llama.cpp"),
