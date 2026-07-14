@@ -867,6 +867,9 @@ _SENSITIVE_GLOB_BASENAMES = frozenset(
         "id_dsa",
         "passwd",
         "shadow",
+        # A project .env holds secrets; the literal path is gated elsewhere, so a
+        # glob that expands to it (cat .e?v) must be too.
+        ".env",
     }
 )
 # A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
@@ -1531,6 +1534,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # f, _ = (open, print)) so an aliased writer call is still checked below.
     # builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
     open_aliases = {"open"}
+    # Attribute names bound to open (box.f = open), so a later box.f('out', 'w')
+    # write is still gated even though the callable is an attribute, not a name.
+    attr_open_aliases: "set[str]" = set()
     builtins_aliases = {"builtins", "__builtins__"}
     # Names bound to a dynamic lookup (rm = getattr(os, "remove");
     # f = globals()["open"]) whose calls cannot be proven read-only, so they
@@ -1731,8 +1737,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             else:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
+            attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
+                attr_open_aliases.update(attr_targets)  # box.f = open
             elif isinstance(value, ast.Name) and value.id in getattr_aliases:
                 getattr_aliases.update(targets)  # g = getattr
             elif isinstance(value, ast.Name) and value.id in partial_aliases:
@@ -1986,6 +1994,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 ):
                     return True
                 func = node.func
+                # x.__call__(args) is just x(args): unwrap so open.__call__('o',
+                # 'w') / save.__call__(...) reach the open/writer checks below
+                # instead of looking like a harmless ".__call__" attribute call.
+                if isinstance(func, ast.Attribute) and func.attr == "__call__":
+                    func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
                 if isinstance(func, ast.Name):
@@ -2062,6 +2075,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     if func.attr == "open" and _attr_open_writes(node):
                         return True
+                    # An open bound onto an attribute (box.f = open; box.f('o','w'))
+                    # writes on 'w'/'a'/'x' like the builtin, so gate the attr name.
+                    if func.attr in attr_open_aliases and _builtin_open_writes(node):
+                        return True
                     # ZipFile/TarFile/GzipFile/BZ2File/LZMAFile take the mode as
                     # the 2nd arg (like builtin open), so ZipFile(name, "w") writes
                     # but ZipFile(name) reads.
@@ -2073,11 +2090,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
 
 
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
-    """True if any string in an MCP call's arguments names a credential path."""
+    """True if any string in an MCP call's arguments names a credential path or a
+    credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"})."""
 
     def walk(value) -> bool:
         if isinstance(value, str):
-            return _references_sensitive_path(value)
+            return _references_sensitive_path(value) or bool(
+                _AUTO_SENSITIVE_MCP_NOUN_RE.search(value)
+            )
         if isinstance(value, dict):
             return any(walk(v) for v in value.values())
         if isinstance(value, (list, tuple)):
@@ -2182,10 +2202,18 @@ _GRAPHQL_MUTATION_RE = re.compile(
 _GRAPHQL_COMMENT_RE = re.compile(r"#[^\n]*")
 
 
+# HTTP verbs that mutate the target resource; a generic HTTP MCP tool
+# (mcp__http__get_url {"method": "DELETE"}) mutates an external service even
+# though its name looks read-only. GET/HEAD/OPTIONS/TRACE only read.
+_MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_HTTP_METHOD_KEYS = frozenset({"method", "http_method", "httpmethod", "verb", "http_verb"})
+
+
 def _mcp_arguments_mutate(arguments) -> bool:
     """True if an MCP call's arguments carry a mutating command, so a read-named
     but write-capable tool (query_database {"query": "DELETE FROM runs"},
-    query_graphql {"query": "mutation { deleteIssue(id: 1) }"}) asks."""
+    query_graphql {"query": "mutation { deleteIssue(id: 1) }"}, or an HTTP tool
+    {"method": "DELETE"}) asks."""
 
     def walk(value) -> bool:
         if isinstance(value, str):
@@ -2197,6 +2225,14 @@ def _mcp_arguments_mutate(arguments) -> bool:
                 or bool(_GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value)))
             )
         if isinstance(value, dict):
+            for k, v in value.items():
+                if (
+                    isinstance(k, str)
+                    and k.lower() in _HTTP_METHOD_KEYS
+                    and isinstance(v, str)
+                    and v.strip().upper() in _MUTATING_HTTP_METHODS
+                ):
+                    return True
             return any(walk(v) for v in value.values())
         if isinstance(value, (list, tuple)):
             return any(walk(v) for v in value)
@@ -2229,6 +2265,12 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
     r"\b(?:src|href|srcset)\s*=\s*[\"']?\s*(?:https?:|/)|"
+    # Self-navigation sinks: location.assign/replace(...), window.open(...), and
+    # assigning a URL to (window.)location(.href). location.reload()/history.back
+    # do not navigate to a new URL, so they stay static.
+    r"\blocation\s*\.\s*(?:assign|replace)\s*\(|"
+    r"\bwindow\s*\.\s*open\s*\(|"
+    r"\b(?:window\s*\.\s*)?location(?:\s*\.\s*href)?\s*=\s*[\"'`]?\s*(?:https?:|/)|"
     r"\bwss?://",
     re.IGNORECASE,
 )
