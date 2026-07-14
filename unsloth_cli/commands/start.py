@@ -898,7 +898,6 @@ def _codex_supports_model_catalog() -> bool:
     )
 
 
-
 def _codex_model_catalog(model: dict) -> dict:
     """Return conservative metadata for a Studio model unknown to Codex's built-in catalog."""
     model_id = model["id"]
@@ -929,7 +928,6 @@ def _codex_model_catalog(model: dict) -> dict:
     return {"models": [entry]}
 
 
-
 def write_codex_config(base: str, model: dict, home: Path) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
@@ -956,7 +954,6 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         # Resolve relative to the profile file. This also survives WSL launching a Windows
         # Codex binary, where a Linux absolute path inside TOML would not be usable.
         profile_text += f"model_catalog_json = {json.dumps(catalog.name)}\n"
-
 
     window = model.get("context_length") or model.get("max_context_length")
     if window:
