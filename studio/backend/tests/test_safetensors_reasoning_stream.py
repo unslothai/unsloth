@@ -215,3 +215,47 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
     swallowed = _replay_sf_reasoning_stream(events, prefilled = True)
     assert swallowed["visible"] == ""
     assert swallowed["reasoning"] == "The capital of France is Paris."
+
+
+def test_native_reasoning_streamer_selected_for_gemma_channels():
+    import threading
+    import torch
+
+    from core.inference import inference as inf
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tok:
+        chat_template = "<|channel>thought\n...<channel|>"
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+        pieces = {10: "<|channel>thought\n", 11: "r", 12: "<channel|>", 13: "a"}
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+        def decode(self, ids, **_kwargs):
+            return "".join(self.pieces.get(int(token_id), "") for token_id in ids)
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+        kwargs = None
+
+        def generate(self, **kwargs):
+            self.kwargs = kwargs
+            streamer = kwargs["streamer"]
+            streamer.put(torch.zeros((1, 1), dtype = torch.long))
+            for token_id in [10, 11, 12, 13]:
+                streamer.put(torch.tensor([token_id]))
+
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "gemma-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
+
+    assert list(backend.generate_stream("prompt", max_new_tokens = 4))[-1] == "<think>r</think>a"
