@@ -6,6 +6,7 @@
 # irm | iex cannot forward arguments, so web installs take options as env vars set
 # before the pipe (flags still work via .\install.ps1):
 #   $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex       # skip PyTorch (GGUF-only)
+#   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
 #   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
 #   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 #   .\install.ps1 --no-torch                                                # equivalent flag
@@ -98,6 +99,7 @@ function Install-UnslothStudio {
     $RepoRoot = ""
     $TauriMode = $false
     $SkipTorch = $false
+    $SkipAutostart = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -130,6 +132,7 @@ function Install-UnslothStudio {
 
     # Env-var equivalent for web installs; an explicit flag still wins.
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
+    if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
 
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
@@ -2612,9 +2615,10 @@ exit 0
         # Diagnostic only; never block install on a probe failure.
     }
 
-    # In interactive terminals, ask the user before starting Studio.
+    # In interactive terminals, ask the user before starting Studio unless the
+    # caller explicitly disabled the post-install prompt.
     # In non-interactive environments (CI, Docker) just print instructions.
-    $IsInteractive = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
     if ($IsInteractive) {
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"

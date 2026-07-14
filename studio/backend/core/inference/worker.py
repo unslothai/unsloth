@@ -918,7 +918,31 @@ def run_inference_process(
                 )
         return
 
-    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # ── Windows: check Triton availability ──
+    # Placed ahead of the torchao stub below (which imports torch on win32 to detect ROCm),
+    # matching the training and export workers' gate-then-stub ordering.
+    if sys.platform == "win32":
+        try:
+            import triton  # noqa: F401
+            logger.info("Triton available — torch.compile enabled")
+        except ImportError:
+            os.environ["TORCHDYNAMO_DISABLE"] = "1"
+            logger.warning(
+                "Triton not found on Windows — torch.compile disabled. "
+                'Install for better performance: pip install "triton-windows<3.7"'
+            )
+
+    # ── Stub torchao on Windows ROCm before ANY transformers import ──
+    # Must precede every path that pulls transformers, not just the ML imports in section 2:
+    # a local LoRA adapter with no recorded base reaches transformers here via
+    # _resolve_base_model -> utils.models. See core/_torchao_stub.py; no-op off Windows ROCm.
+    from core._torchao_stub import install_torchao_windows_rocm_stub
+
+    install_torchao_windows_rocm_stub()
+
+    # ── Resolve the effective base once, before activation/gates/install ──
+    # No ML import on the common path; a local adapter with no recorded base pulls
+    # transformers via utils.models, which is why the stub above precedes this.
     # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
     # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
@@ -956,19 +980,7 @@ def run_inference_process(
         )
         return
 
-    # ── 1b. Windows: check Triton availability (must precede import torch) ──
-    if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
-
-    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
+    # ── 1b. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
     # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
     # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
     # are metadata-only, so run them first and refuse a blocked model before any native build.
