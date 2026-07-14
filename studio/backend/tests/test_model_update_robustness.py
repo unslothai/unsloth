@@ -382,10 +382,11 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
     """Every cached revision's blob for a gguf file is kept as a set, not
     collapsed to one arbitrary blob."""
     repo_info = SimpleNamespace(
+        repo_path = "/",  # real blobs live at <repo_path>/blobs/<etag>
         revisions = [
             _rev(("lfm2-350m-q4_k_m.gguf", "OLDsha")),
             _rev(("lfm2-350m-q4_k_m.gguf", "NEWsha")),
-        ]
+        ],
     )
     assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
 
@@ -438,7 +439,10 @@ def _requirement(*expected):
 def test_repo_gguf_blob_map_uses_size_identity_when_cache_has_no_blob():
     """A snapshot-resident GGUF (no blobs/ entry) must NOT be recorded under its
     filename as if that were a hash -- it gets a size identity instead."""
-    repo_info = SimpleNamespace(revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 4096))])
+    repo_info = SimpleNamespace(
+        repo_path = "/hf/models--org--repo",
+        revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 4096))],
+    )
 
     assert CI._repo_gguf_blob_map(repo_info) == {
         "model-Q4_K_M.gguf": {CI.local_size_identity(4096)}
@@ -448,9 +452,36 @@ def test_repo_gguf_blob_map_uses_size_identity_when_cache_has_no_blob():
 def test_repo_gguf_blob_map_skips_snapshot_file_with_unknown_size():
     """No blob and no readable size means no identity at all, rather than a
     filename masquerading as a hash."""
-    repo_info = SimpleNamespace(revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 0))])
+    repo_info = SimpleNamespace(
+        repo_path = "/hf/models--org--repo",
+        revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 0))],
+    )
 
     assert CI._repo_gguf_blob_map(repo_info) == {}
+
+
+def test_repo_gguf_blob_map_ignores_repo_blobs_subdir_on_no_symlink():
+    """A repo that ships a GGUF under its own blobs/ subdir lands at
+    snapshots/<rev>/blobs/model.gguf on a no-symlink cache. Its parent is named
+    'blobs' but it is NOT the cache blob store, so it gets a size identity rather
+    than having its filename recorded as a hash (which would show a phantom update)."""
+    repo_path = "/hf/models--org--repo"
+    repo_info = SimpleNamespace(
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        blob_path = f"{repo_path}/snapshots/{'a' * 40}/blobs/model-Q4_K_M.gguf",
+                        size_on_disk = 4096,
+                    )
+                ]
+            )
+        ],
+    )
+
+    assert CI._repo_gguf_blob_map(repo_info) == {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
 
 
 def test_no_symlink_cache_matching_remote_size_reports_no_update():

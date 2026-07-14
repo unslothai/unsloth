@@ -141,21 +141,35 @@ def _cached_repo_file_name(file_obj) -> str:
     return str(getattr(file_obj, "file_name", "")).replace("\\", "/")
 
 
-def _cached_blob_hash(blob_path) -> Optional[str]:
+def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
+    """True only for a genuine cache blob at ``<repo_dir>/blobs/<etag>``.
+
+    On a no-symlink cache (Windows without Developer Mode) ``hf_hub_download``
+    MOVES the file into ``snapshots/`` and ``scan_cache_dir`` reports ``blob_path``
+    = that snapshot file, whose name is the FILENAME, not an etag. Anchoring to the
+    repo's real ``blobs/`` dir keeps a repo that merely ships a ``blobs/`` subdir
+    from being misread as the cache blob store.
+    """
+    if blob is None or repo_dir is None:
+        return False
+    try:
+        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+    except OSError:
+        return False
+
+
+def _cached_blob_hash(blob_path, repo_path = None) -> Optional[str]:
     """The HF cache blob hash for a cached file, or None when the cache has no
     blob for it.
 
-    HF names each blob FILE by the file's etag (lfs.sha256 else blob_id), so a
-    blob's name IS the hash -- but ONLY when the file actually lives in the repo
-    cache's ``blobs/`` dir. When symlinks are unavailable (Windows without
-    Developer Mode) ``hf_hub_download`` MOVES the blob into ``snapshots/``
-    instead of symlinking it, leaving ``blobs/`` empty; ``scan_cache_dir`` then
-    reports ``blob_path`` = the snapshot file, whose name is the GGUF FILENAME,
-    not a hash. Treating that filename as a hash makes every remote-vs-local
-    comparison miss, so it is reported as "no blob" instead.
+    HF names each blob FILE by its etag (lfs.sha256 else blob_id), so a blob's
+    name IS the hash, but only for a real blob under the repo cache's ``blobs/``
+    dir (see ``_is_real_cache_blob``). A moved no-symlink ``snapshots/`` file is
+    reported as "no blob" so the caller falls back to a size identity.
     """
     path = Path(blob_path)
-    return path.name if path.parent.name == "blobs" else None
+    repo_dir = Path(repo_path) if repo_path is not None else None
+    return path.name if _is_real_cache_blob(path, repo_dir) else None
 
 
 def local_size_identity(size: int) -> str:
@@ -191,6 +205,7 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
     checks opt into companions so a shared mmproj/MTP blob can be compared too.
     """
     blob_map: dict[str, set[str]] = {}
+    repo_path = getattr(repo_info, "repo_path", None)
     for revision in repo_info.revisions:
         for f in revision.files:
             if include_companions:
@@ -202,7 +217,7 @@ def _repo_gguf_blob_map(repo_info, *, include_companions: bool = False) -> dict[
             if not blob_path:
                 continue
             name = _cached_repo_file_name(f)
-            identity = _cached_blob_hash(blob_path)
+            identity = _cached_blob_hash(blob_path, repo_path)
             if identity is None:
                 size = int(getattr(f, "size_on_disk", 0) or 0)
                 if size <= 0:
