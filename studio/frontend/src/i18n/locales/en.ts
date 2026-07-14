@@ -102,7 +102,7 @@ export const en = {
     },
     voice: {
       title: "Voice",
-      description: "Microphone, dictation, and read-aloud",
+      description: "Microphone, dictation, speech-to-text and read-aloud",
       dictation: {
         sectionTitle: "Dictation",
         engineLabel: "Dictation engine",
@@ -114,7 +114,7 @@ export const en = {
           "Runs locally and works offline. Download once, then load on demand; memory is released after dictation.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription:
-          "Converts your speech to text; it is not a voice. Smaller models are faster, while larger models are more accurate.",
+          "Converts your speech to text. Smaller models are faster, while larger models are more accurate.",
         sttModelFailed: "Could not load the STT model",
         sttModelUnsupported: "Recording is not supported in this browser",
         sttChecking: "Checking…",
