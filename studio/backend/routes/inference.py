@@ -8314,7 +8314,9 @@ async def openai_chat_completions(
                         )
                         return
                     if not isinstance(event, dict):
-                        continue
+                        raise RuntimeError(
+                            f"Invalid safetensors tool event: {type(event).__name__}"
+                        )
 
                     if event["type"] == "status":
                         if not event["text"]:
@@ -8446,7 +8448,9 @@ async def openai_chat_completions(
                             detail = _friendly_gen_stream_error(event),
                         )
                     if not isinstance(event, dict):
-                        continue
+                        raise RuntimeError(
+                            f"Invalid safetensors tool event: {type(event).__name__}"
+                        )
                     if event.get("type") == "content":
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),

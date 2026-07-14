@@ -508,6 +508,24 @@ def test_streaming_gen_stream_error_is_not_model_text(monkeypatch):
     assert errors == ["An internal error occurred."]
 
 
+def test_server_tool_streaming_invalid_event_is_error(monkeypatch):
+    class _InvalidEventBackend(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed())
+
+        def generate_chat_completion_with_tools(self, **_kwargs):
+            yield {"type": "content", "text": "partial"}
+            yield "not-an-event"
+
+    backend = _InvalidEventBackend()
+    payload = _request(tools = [LOOKUP_TOOL], enable_tools = True, stream = True)
+    response = _call(payload, monkeypatch, backend)
+    objs = _sse_objects(_collect_sse(response))
+
+    errors = [o["error"]["message"] for o in objs if "error" in o]
+    assert errors == ["An internal error occurred."]
+
+
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
     # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))

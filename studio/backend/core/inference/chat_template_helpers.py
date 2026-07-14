@@ -29,14 +29,19 @@ def _tokenizer_objects(tokenizer) -> tuple:
     return (tokenizer,) if nested is None or nested is tokenizer else (tokenizer, nested)
 
 
-def _selected_template_strings_from_value(template, tools = None) -> tuple[str, ...]:
+def _selected_template_strings_from_value(
+    template,
+    tools = None,
+    *,
+    prefer_tool_use: bool = True,
+) -> tuple[str, ...]:
     """Return the named chat template matching HF's default selection rules."""
     tools = tools or None
     if isinstance(template, str):
         return (template,)
     if not isinstance(template, dict):
         return ()
-    if tools and isinstance(template.get("tool_use"), str):
+    if prefer_tool_use and tools and isinstance(template.get("tool_use"), str):
         return (template["tool_use"],)
     if isinstance(template.get("default"), str):
         return (template["default"],)
@@ -59,7 +64,16 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
             if isinstance(selected, str):
                 return (selected,)
             break
-    return _selected_template_strings_from_value(getattr(tokenizer, "chat_template", None), tools)
+    # ProcessorMixin.apply_chat_template does not switch to "tool_use" implicitly;
+    # it uses "default" unless chat_template= names another template.
+    is_processor = getattr(tokenizer, "tokenizer", None) is not None and callable(
+        getattr(tokenizer, "apply_chat_template", None)
+    )
+    return _selected_template_strings_from_value(
+        getattr(tokenizer, "chat_template", None),
+        tools,
+        prefer_tool_use = not is_processor,
+    )
 
 
 def _detect_reasoning_channel_markers_from_templates(

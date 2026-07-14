@@ -1012,8 +1012,7 @@ class InferenceBackend:
         thread can toggle adapters under the generation lock.
         """
         if not self.active_model_name:
-            yield "Error: No active model"
-            return
+            raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
@@ -1372,15 +1371,13 @@ class InferenceBackend:
                     )
 
             if err.get("msg"):
-                if output:
-                    raise _GenerationThreadError(err["msg"])
-                yield f"Error: {err['msg']}"
+                raise _GenerationThreadError(err["msg"])
 
         except _GenerationThreadError:
             raise
         except Exception as e:
             logger.error(f"Vision generation error: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     def generate_audio_input_response(
         self,
@@ -1505,11 +1502,13 @@ class InferenceBackend:
                     )
 
             if err.get("msg"):
-                yield f"Error: {err['msg']}"
+                raise _GenerationThreadError(err["msg"])
 
+        except _GenerationThreadError:
+            raise
         except Exception as e:
             logger.error(f"Audio input generation error: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     def generate_whisper_response(
         self,
@@ -1644,8 +1643,7 @@ class InferenceBackend:
         ``presence_penalty`` matches the GGUF sampling path via a logits processor (0 disables it).
         """
         if not self.active_model_name:
-            yield "Error: No active model"
-            return
+            raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -1790,15 +1788,13 @@ class InferenceBackend:
                     logger.warning("Generation thread did not exit after cancel/join timeout")
 
             if err.get("msg"):
-                if output:
-                    raise _GenerationThreadError(err["msg"])
-                yield f"Error: {err['msg']}"
+                raise _GenerationThreadError(err["msg"])
 
         except _GenerationThreadError:
             raise
         except Exception as e:
             logger.error(f"Error during generation: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     # ── Audio (TTS) Generation ────────────────────────────────────
 

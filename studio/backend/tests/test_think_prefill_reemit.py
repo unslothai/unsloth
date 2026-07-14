@@ -109,6 +109,16 @@ def test_gemma_channel_detection_uses_active_template_not_token_metadata():
         soc_token = "<|channel>"
         eoc_token = "<channel|>"
 
+    class NamedTemplateProcessor:
+        chat_template = {
+            "default": "plain processor default",
+            "tool_use": "<|channel>thought\nprocessor tool template<channel|>",
+        }
+        tokenizer = TokenMetadataOnly()
+
+        def apply_chat_template(self, *_args, **_kwargs):
+            raise NotImplementedError
+
     expected = ("<|channel>thought\n", "<channel|>")
     assert detect_reasoning_channel_markers(TemplateTokenizer()) == expected
     assert detect_reasoning_channel_markers(NamedTemplateTokenizer()) is None
@@ -119,12 +129,11 @@ def test_gemma_channel_detection_uses_active_template_not_token_metadata():
         == expected
     )
     assert detect_reasoning_channel_markers(NamedTemplateTokenizer(), tools = []) is None
-    assert detect_reasoning_channel_markers(GetterTokenizer(), tools = []) is None
     assert (
         detect_reasoning_channel_markers(
-            GetterTokenizer(), tools = [{"function": {"name": "web_search"}}]
+            NamedTemplateProcessor(), tools = [{"function": {"name": "web_search"}}]
         )
-        == expected
+        is None
     )
     assert detect_reasoning_channel_markers(TokenMetadataOnly()) is None
 

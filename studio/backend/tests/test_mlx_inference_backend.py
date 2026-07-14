@@ -413,7 +413,7 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     assert render["kwargs"]["preserve_thinking"] is True
 
 
-def test_mlx_text_normalizes_native_reasoning_channels(monkeypatch):
+def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -462,6 +462,16 @@ def test_mlx_text_normalizes_native_reasoning_channels(monkeypatch):
             max_new_tokens = 4,
         )
     ) == ["<think>", "<think>r", "<think>r</think>", "<think>r</think>a"]
+
+    gen = backend.generate_chat_response(
+        messages = [{"role": "user", "content": "ping"}],
+        max_new_tokens = 4,
+    )
+    assert next(gen) == "<think>"
+    assert backend._generation_lock.locked()
+    gen.close()
+    assert not backend._generation_lock.locked()
+
 
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     _install_fake_mlx(monkeypatch)

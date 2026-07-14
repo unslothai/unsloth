@@ -615,16 +615,6 @@ class MLXInferenceBackend:
                 raise
             finally:
                 # Latch final cumulative stats for the usage/timings chunk.
-                if normalizer is not None:
-                    cancelled = cancel_event is not None and cancel_event.is_set()
-                    tail = (
-                        normalizer.drain()
-                        if cancelled or generation_failed
-                        else normalizer.finish()
-                    )
-                    if tail:
-                        normalized_output += tail
-                        yield normalized_output
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
                         getattr(final_response, "prompt_tokens", 0),
@@ -632,6 +622,12 @@ class MLXInferenceBackend:
                         getattr(final_response, "generation_tokens", 0),
                         getattr(final_response, "generation_tps", 0.0),
                     )
+        if normalizer is not None:
+            cancelled = cancel_event is not None and cancel_event.is_set()
+            tail = normalizer.drain() if cancelled or generation_failed else normalizer.finish()
+            if tail:
+                normalized_output += tail
+                yield normalized_output
 
     def _generate_vlm(
         self,
