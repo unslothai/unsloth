@@ -1541,6 +1541,7 @@ class LlamaCppBackend:
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
+        self._effective_parallel_slots: int = 1
         self._chat_template: Optional[str] = None
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
@@ -1727,6 +1728,15 @@ class LlamaCppBackend:
         return self._effective_context_length or self._context_length
 
     @property
+    def effective_parallel_slots(self) -> int:
+        """Return the serving-slot count the active llama-server actually uses."""
+        try:
+            slots = int(getattr(self, "_effective_parallel_slots", 1))
+        except (TypeError, ValueError):
+            slots = 1
+        return max(1, slots)
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -1741,6 +1751,16 @@ class LlamaCppBackend:
     def native_context_length(self) -> Optional[int]:
         """Return the model's native context length from GGUF metadata."""
         return self._context_length
+
+    def _commit_effective_parallel_slots(self, n_parallel: int) -> None:
+        try:
+            slots = int(n_parallel)
+        except (TypeError, ValueError):
+            slots = 1
+        self._effective_parallel_slots = max(1, slots)
+
+    def _reset_effective_parallel_slots(self) -> None:
+        self._effective_parallel_slots = 1
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -7187,6 +7207,7 @@ class LlamaCppBackend:
                         )
 
                 self._healthy = True
+                self._commit_effective_parallel_slots(n_parallel)
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -7724,6 +7745,7 @@ class LlamaCppBackend:
             self._context_length = None
             self._effective_context_length = None
             self._max_context_length = None
+            self._reset_effective_parallel_slots()
             self._chat_template = None
             self._chat_template_override = None
             self._supports_reasoning = False
@@ -7779,6 +7801,7 @@ class LlamaCppBackend:
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
+        self._reset_effective_parallel_slots()
         if self._process is None:
             return
         try:
@@ -8938,6 +8961,7 @@ class LlamaCppBackend:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
@@ -9960,6 +9984,7 @@ class LlamaCppBackend:
                             cancel_event = cancel_event,
                             timeout = _effective_timeout,
                             session_id = session_id,
+                            thread_id = thread_id,
                             rag_scope = rag_scope,
                             disable_sandbox = bypass_permissions,
                         )

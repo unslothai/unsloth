@@ -20,6 +20,7 @@ import re
 import shutil
 import site
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -2355,10 +2356,9 @@ def pinned_published_release_bundle(
     return bundle
 
 
-def validated_checksums_for_bundle(
-    repo: str, bundle: PublishedReleaseBundle
+def _validate_checksums_against_bundle(
+    repo: str, bundle: PublishedReleaseBundle, checksums: ApprovedReleaseChecksums
 ) -> ApprovedReleaseChecksums:
-    checksums = load_approved_release_checksums(repo, bundle.release_tag)
     manifest_hash = checksums.artifacts.get(bundle.manifest_asset_name)
     if manifest_hash is not None and bundle.manifest_sha256 is not None:
         if manifest_hash.sha256 != bundle.manifest_sha256:
@@ -2380,6 +2380,129 @@ def validated_checksums_for_bundle(
             "exact source archive without a source repo to clone it from"
         )
     return checksums
+
+
+def validated_checksums_for_bundle(
+    repo: str, bundle: PublishedReleaseBundle
+) -> ApprovedReleaseChecksums:
+    checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    return _validate_checksums_against_bundle(repo, bundle, checksums)
+
+
+def _download_host_resolve_enabled() -> bool:
+    """Escape hatch to force the legacy GitHub API path instead of the
+    download-host fast path (which avoids the api.github.com rate limit)."""
+    return os.environ.get(
+        "UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}
+
+
+def _release_asset_download_url(repo: str, tag: str, asset_name: str) -> str:
+    """Tag-pinned asset URL on the release-assets CDN (not api.github.com, so no
+    rate limit)."""
+    return (
+        f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/download/"
+        f"{urllib.parse.quote(tag, safe = '')}/"
+        f"{urllib.parse.quote(asset_name, safe = '')}"
+    )
+
+
+def _download_host_latest_release_tag(repo: str) -> str | None:
+    """Authoritative latest tag from GitHub's /releases/latest redirect target
+    (github.com, no api.github.com rate limit); the fast path pins URLs to it rather
+    than the checksum asset's self-reported release_tag. /releases/latest resolves by
+    created_at/make_latest, which can lag the published_at newest the freshness
+    detection uses. None on 404 so the caller falls back to the API."""
+    url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
+    request = urllib.request.Request(
+        url,
+        method = "HEAD",
+        headers = {"User-Agent": "unsloth-studio-llama-prebuilt"},
+    )
+    try:
+        with _URL_OPENER.open(request, timeout = 30) as response:
+            final_url = response.geturl()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    marker = "/releases/tag/"
+    index = final_url.find(marker)
+    if index == -1:
+        return None
+    tag = urllib.parse.unquote(final_url[index + len(marker) :]).strip("/")
+    return tag or None
+
+
+def _fetch_download_host_json(url: str) -> Any:
+    # Public CDN asset: plain unauthenticated GET, not the rate-limited API.
+    data = download_bytes(
+        url,
+        timeout = 30,
+        headers = {"User-Agent": "unsloth-studio-llama-prebuilt"},
+    )
+    return json.loads(data.decode("utf-8"))
+
+
+def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
+    """Resolve the latest fork release from the download host with zero
+    api.github.com calls, reusing the API path's parsing and validation. The latest
+    tag is the authoritative /releases/latest redirect tag, and the checksum asset's
+    self-reported release_tag is cross-checked against it. Returns None (caller falls
+    back to the API) on a missing JSON asset or a tag mismatch."""
+    release_tag = _download_host_latest_release_tag(repo)
+    if not release_tag:
+        return None
+    sha_url = _release_asset_download_url(repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET)
+    try:
+        sha_payload = _fetch_download_host_json(sha_url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    if not isinstance(sha_payload, dict):
+        return None
+    # Cross-check the asset's self-reported release_tag against the authoritative
+    # redirect tag: parse_approved_release_checksums raises on a mismatch.
+    checksums = parse_approved_release_checksums(repo, release_tag, sha_payload)
+    # Synthesize the API release payload with tag-pinned CDN URLs for every named
+    # asset; parse_published_release_bundle then reads the manifest, still no API.
+    asset_names = set(checksums.artifacts) | {
+        DEFAULT_PUBLISHED_MANIFEST_ASSET,
+        DEFAULT_PUBLISHED_SHA256_ASSET,
+    }
+    synthetic_release: dict[str, Any] = {
+        "tag_name": release_tag,
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": name,
+                "browser_download_url": _release_asset_download_url(repo, release_tag, name),
+            }
+            for name in sorted(asset_names)
+        ],
+    }
+    try:
+        bundle = parse_published_release_bundle(repo, synthetic_release)
+    except urllib.error.HTTPError as exc:
+        # In-progress release: the checksum asset can land before the manifest;
+        # treat a manifest 404 like the sha256 404 above and fall back to the API.
+        if exc.code == 404:
+            return None
+        raise
+    if bundle is None:
+        return None
+    # A manifest artifact can be keyed in the checksum JSON under an upstream-tag
+    # alias, so add a tag-pinned URL for any manifest artifact missing above (the
+    # API path gets these from the real asset list); sha256 is still verified.
+    for artifact in bundle.artifacts:
+        bundle.assets.setdefault(
+            artifact.asset_name,
+            _release_asset_download_url(repo, release_tag, artifact.asset_name),
+        )
+    _validate_checksums_against_bundle(repo, bundle, checksums)
+    return ResolvedPublishedRelease(bundle = bundle, checksums = checksums)
 
 
 def published_release_matches_request(bundle: PublishedReleaseBundle, requested_ref: str) -> bool:
@@ -2448,6 +2571,8 @@ def iter_resolved_published_releases(
     requested_tag: str | None,
     published_repo: str,
     published_release_tag: str = "",
+    *,
+    allow_download_host_fast_path: bool = True,
 ) -> Iterable[ResolvedPublishedRelease]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
@@ -2465,6 +2590,29 @@ def iter_resolved_published_releases(
             checksums = validated_checksums_for_bundle(repo, bundle),
         )
         return
+
+    # Fast path: resolve the fork's latest release from the download host (no
+    # api.github.com rate limit). It surfaces only the single latest release, so the
+    # caller disables it when the multi-release walk-back is needed (macOS skipping
+    # too-new prebuilts); a broken latest then drops to source build, not an older
+    # release. Any rejection/network error is non-fatal and falls through to the API.
+    if (
+        allow_download_host_fast_path
+        and repo == DEFAULT_PUBLISHED_REPO
+        and normalized_requested == "latest"
+        and _download_host_resolve_enabled()
+    ):
+        try:
+            resolved = _download_host_resolved_release(repo)
+        except PrebuiltFallback as exc:
+            log(f"download-host latest release rejected for {repo} ({exc}); trying GitHub API")
+            resolved = None
+        except Exception as exc:
+            log(f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API")
+            resolved = None
+        if resolved is not None:
+            yield resolved
+            return
 
     matched_any = False
     skipped_invalid = 0
@@ -2762,6 +2910,64 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     return _tokens[0]
 
 
+# Display-adapter device class: one NNNN subkey per installed display driver
+# config, each carrying the driver's DriverDesc and PCI MatchingDeviceId.
+_WINDOWS_DISPLAY_CLASS_KEY = (
+    r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+)
+
+
+def windows_intel_gpu_in_registry() -> bool:
+    """Whether the Windows registry lists an Intel display adapter.
+
+    In-process Windows counterpart of the Linux DRM vendor-id check (0x8086),
+    with weaker semantics: the class key lists installed display-driver
+    configs, which can outlive removed hardware, where sysfs lists present
+    devices. A stale Intel entry at worst routes to the upstream Vulkan
+    prebuilt instead of the fork CPU bundle: inference still works (the
+    Vulkan build runs on CPU when no Vulkan device exists), at the cost of
+    fork-only extras such as the DiffusionGemma visual server. detect_host's
+    PowerShell + WMI probe can silently miss a real Intel GPU: a cold
+    powershell.exe start plus the first CIM query routinely exceeds the 15s
+    budget on hosts with slow AV scanning or a degraded WMI repository, and
+    the probe swallows the timeout (#4452, Arc A770 routed to the CPU
+    prebuilt). Reading the display-adapter class key needs no subprocess and
+    answers in microseconds. Matches the PCI vendor id in MatchingDeviceId
+    (ven_8086) or an Intel DriverDesc.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WINDOWS_DISPLAY_CLASS_KEY) as class_key:
+            for index in range(winreg.QueryInfoKey(class_key)[0]):
+                try:
+                    name = winreg.EnumKey(class_key, index)
+                    if not name.isdigit():
+                        # "Properties" is ACL-restricted and not an adapter.
+                        continue
+                    with winreg.OpenKey(class_key, name) as adapter_key:
+                        for value_name, needle in (
+                            ("MatchingDeviceId", "ven_8086"),
+                            ("DriverDesc", "intel"),
+                        ):
+                            try:
+                                value, _ = winreg.QueryValueEx(adapter_key, value_name)
+                            except OSError:
+                                continue
+                            if needle in str(value).lower():
+                                return True
+                except OSError:
+                    continue
+    except Exception:
+        # Advisory probe: any unexpected failure must degrade to the CIM
+        # fallback, never crash the installer (mirrors detect_host's own
+        # swallow around the CIM probe).
+        return False
+    return False
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -2974,9 +3180,10 @@ def detect_host() -> HostInfo:
         # since the HIP SDK can be installed without an AMD GPU.
 
     # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM sysfs
-    # vendor id (0x8086); Windows queries the WMI video controller list. Only
-    # probed with no usable NVIDIA and no ROCm (matching the Vulkan branches),
-    # keeping the probe (notably the Windows powershell call) off that path.
+    # vendor id (0x8086); Windows reads the display-adapter registry class,
+    # then falls back to the WMI video controller list. Only probed with no
+    # usable NVIDIA and no ROCm (matching the Vulkan branches), keeping the
+    # probe (notably the Windows powershell call) off that path.
     has_intel_gpu = False
     if not has_usable_nvidia and not has_rocm:
         if is_linux:
@@ -2989,23 +3196,28 @@ def detect_host() -> HostInfo:
                 except OSError:
                     continue
         elif is_windows:
-            _ps = shutil.which("powershell") or shutil.which("pwsh")
-            if _ps:
-                try:
-                    _result = run_capture(
-                        [
-                            _ps,
-                            "-NoProfile",
-                            "-Command",
-                            "Get-CimInstance Win32_VideoController | "
-                            "Select-Object -ExpandProperty Name",
-                        ],
-                        timeout = 15,
-                    )
-                    if _result.returncode == 0 and "intel" in _result.stdout.lower():
-                        has_intel_gpu = True
-                except Exception:
-                    pass
+            # Registry first (in-process; see windows_intel_gpu_in_registry).
+            # The CIM query stays as the fallback when the registry shows no
+            # Intel adapter.
+            has_intel_gpu = windows_intel_gpu_in_registry()
+            if not has_intel_gpu:
+                _ps = shutil.which("powershell") or shutil.which("pwsh")
+                if _ps:
+                    try:
+                        _result = run_capture(
+                            [
+                                _ps,
+                                "-NoProfile",
+                                "-Command",
+                                "Get-CimInstance Win32_VideoController | "
+                                "Select-Object -ExpandProperty Name",
+                            ],
+                            timeout = 15,
+                        )
+                        if _result.returncode == 0 and "intel" in _result.stdout.lower():
+                            has_intel_gpu = True
+                    except Exception:
+                        pass
 
     return HostInfo(
         system = system,
@@ -4321,6 +4533,48 @@ def copy_directory_contents(source_dir: Path, destination: Path) -> None:
             shutil.copy2(item, target)
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    """Return whether ``path`` redirects to another filesystem location."""
+    if os.name == "nt":
+        try:
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        except OSError:
+            return True
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    try:
+        return path.is_symlink()
+    except OSError:
+        return True
+
+
+def remove_agent_instruction_files(root: Path) -> int:
+    """Best-effort removal inside a managed tree without following links."""
+    if _is_link_or_junction(root) or not root.is_dir():
+        return 0
+
+    removed = 0
+    for current_dir, dirnames, filenames in os.walk(root, topdown = True, followlinks = False):
+        current_path = Path(current_dir)
+        # followlinks=False still follows Windows junctions.
+        if current_path != root and _is_link_or_junction(current_path):
+            dirnames.clear()
+            continue
+        dirnames[:] = [
+            dirname for dirname in dirnames if not _is_link_or_junction(current_path / dirname)
+        ]
+        for filename in sorted({"AGENTS.md", "CLAUDE.md"}.intersection(filenames)):
+            candidate = current_path / filename
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                log(f"could not remove contributor-only instruction {candidate}: {exc}")
+            else:
+                removed += 1
+    return removed
+
+
 def hydrate_source_tree(
     source_ref: str,
     install_dir: Path,
@@ -4383,6 +4637,9 @@ def hydrate_source_tree(
                 "upstream source archive was missing required repo files: " + ", ".join(missing)
             )
         copy_directory_contents(source_root, install_dir)
+        removed = remove_agent_instruction_files(install_dir)
+        if removed:
+            log(f"removed {removed} contributor-only agent instruction file(s) from staged source")
     except PrebuiltFallback:
         raise
     except Exception as exc:
@@ -6126,6 +6383,9 @@ def _fork_manifest_release_plans(
         llama_tag,
         published_repo,
         published_release_tag,
+        # macOS relies on the multi-release walk-back to skip too-new prebuilts,
+        # which the single-latest download-host path cannot provide.
+        allow_download_host_fast_path = not host.is_macos,
     ):
         bundle = resolved_release.bundle
         checksums = resolved_release.checksums
@@ -6760,6 +7020,7 @@ def install_prebuilt(
     override_has_rocm: bool = False,
     override_rocm_gfx: str | None = None,
     force_cpu: bool = False,
+    instruction_cleanup_root: Path | None = None,
 ) -> None:
     host = detect_host()
     host = _apply_host_overrides(
@@ -6772,8 +7033,15 @@ def install_prebuilt(
         host, published_repo, published_release_tag, force_cpu = force_cpu
     )
     choice: AssetChoice | None = None
+    cleanup_root = install_dir if instruction_cleanup_root is None else instruction_cleanup_root
     try:
         with install_lock(install_lock_path(install_dir)):
+            if (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
+                removed = remove_agent_instruction_files(cleanup_root)
+                if removed:
+                    log(
+                        f"removed {removed} contributor-only agent instruction file(s) from install"
+                    )
             if install_dir.exists():
                 log(
                     f"existing llama.cpp install detected at {install_dir}; validating staged prebuilt update before replacement"
@@ -7104,14 +7372,16 @@ def main() -> int:
     # Install path only: route status logs to stdout (see _LOG_TO_STDOUT note).
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
+    install_arg = Path(args.install_dir).expanduser()
     install_prebuilt(
-        install_dir = Path(args.install_dir).expanduser().resolve(),
+        install_dir = install_arg.resolve(),
         llama_tag = args.llama_tag,
         published_repo = args.published_repo,
         published_release_tag = args.published_release_tag or "",
         override_has_rocm = args.has_rocm,
         override_rocm_gfx = args.rocm_gfx,
         force_cpu = args.cpu_fallback,
+        instruction_cleanup_root = install_arg.absolute(),
     )
     return EXIT_SUCCESS
 
