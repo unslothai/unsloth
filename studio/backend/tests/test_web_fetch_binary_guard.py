@@ -148,8 +148,10 @@ def test_compression_mislabeled_as_text_caught_by_magic(monkeypatch, magic):
 def test_latin1_text_without_charset_kept(monkeypatch):
     # Accent-dense cp1252 text with no declared charset decodes to many U+FFFD as
     # UTF-8; the cp1252 retry must keep it instead of dropping it as binary.
-    body = ("Muller lauft uber die Strasse: schoene, groesse. MARKERWORD ".replace("ue", "ü")
-            + "äöüß éèà ") * 30
+    body = (
+        "Muller lauft uber die Strasse: schoene, groesse. MARKERWORD ".replace("ue", "ü")
+        + "äöüß éèà "
+    ) * 30
     out = _fetch_with(monkeypatch, body.encode("cp1252"), "text/plain")
     assert "binary content" not in out
     assert "MARKERWORD" in out

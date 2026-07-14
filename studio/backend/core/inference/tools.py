@@ -1393,16 +1393,16 @@ _BINARY_CHAR_DIVISOR = 8
 # text/*; matched by signature because their replacement-char density alone can
 # be low (e.g. a PDF whose first chunk is mostly ASCII object/xref syntax).
 _BINARY_MAGIC = (
-    b"%PDF-",              # PDF
-    b"PK\x03\x04",         # zip / docx / xlsx / pptx / epub / jar
+    b"%PDF-",  # PDF
+    b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
     b"\x89PNG\r\n\x1a\n",  # PNG
-    b"\xff\xd8\xff",       # JPEG
+    b"\xff\xd8\xff",  # JPEG
     b"GIF87a",
     b"GIF89a",
-    b"\x1f\x8b",           # gzip
-    b"BZh",                # bzip2
-    b"\xfd7zXZ\x00",       # xz
-    b"\x28\xb5\x2f\xfd",   # zstd
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"\x28\xb5\x2f\xfd",  # zstd
 )
 
 
@@ -1412,6 +1412,7 @@ def _looks_binary(text: str) -> bool:
     return len(_BINARY_CHAR_RE.findall(text)) > max(
         _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
     )
+
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
