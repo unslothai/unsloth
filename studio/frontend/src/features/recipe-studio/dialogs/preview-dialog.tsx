@@ -17,10 +17,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
-  ArrowDown01Icon,
   CheckmarkCircle02Icon,
   CookBookIcon,
   TestTube01Icon,
@@ -413,7 +413,7 @@ function RunDialogBody({
             className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
           >
             <HugeiconsIcon
-              icon={ArrowDown01Icon}
+              icon={ChevronDownStandardIcon}
               className={cn(
                 "size-3.5 transition-transform",
                 advancedOpen && "rotate-180",
@@ -615,7 +615,9 @@ function RunDialogBody({
                     0,
                     MAX_RETRY_STEPS,
                     (value) =>
-                      onSettingsChange({ maxConversationCorrectionSteps: value }),
+                      onSettingsChange({
+                        maxConversationCorrectionSteps: value,
+                      }),
                     setCorrectionsDraft,
                   )
                 }
@@ -624,7 +626,8 @@ function RunDialogBody({
                 <div className="space-y-0.5">
                   <p className="font-medium">Keep running through failures</p>
                   <p className="text-xs text-muted-foreground">
-                    Useful for longer runs when you want as many rows as possible.
+                    Useful for longer runs when you want as many rows as
+                    possible.
                   </p>
                 </div>
                 <Switch

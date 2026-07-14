@@ -39,6 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
@@ -942,7 +943,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -1068,7 +1069,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -1111,7 +1112,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                         data-test-id="speculative-type-select"
                       >
                         <SelectValue />
@@ -1171,7 +1172,7 @@ export function ChatSettingsPanel({
                         3 on CPU/Mac.
                       </InfoHint>
                     </div>
-                    <input
+                    <Input
                       type="number"
                       disabled={modelControlsDisabled}
                       min={1}
@@ -1193,7 +1194,7 @@ export function ChatSettingsPanel({
                       }}
                       data-test-id="spec-draft-n-max-input"
                       aria-label="Speculative decoding draft tokens"
-                      className="h-7 w-[76px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                      className="h-7 w-[88px] rounded-full border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.1] pl-3 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
                     />
                   </div>
                 )}

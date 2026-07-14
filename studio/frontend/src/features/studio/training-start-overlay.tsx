@@ -228,7 +228,7 @@ function DownloadRow({ label, state }: DownloadRowProps): ReactElement | null {
       {state.totalBytes > 0 ? (
         <Progress
           value={state.percent}
-          indicatorClassName="bg-[linear-gradient(90deg,oklch(0.66_0.142_166.6)_0%,oklch(0.705_0.132_166.6)_55%,oklch(0.75_0.122_166.6)_100%)]"
+          indicatorClassName="bg-[linear-gradient(90deg,var(--control-accent)_0%,color-mix(in_oklab,var(--control-accent)_72%,white)_100%)]"
         />
       ) : null}
       {state.cachePath ? (
