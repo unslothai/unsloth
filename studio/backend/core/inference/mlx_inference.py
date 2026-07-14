@@ -9,6 +9,10 @@ import os
 import threading
 from typing import Optional, Generator
 from core.inference.runtime_context import runtime_context_length
+from core.inference.chat_template_helpers import (
+    detect_reasoning_channel_markers,
+    normalize_reasoning_snapshots,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -430,7 +434,7 @@ class MLXInferenceBackend:
                     break
 
         if self._is_vlm:
-            yield from self._generate_vlm(
+            stream = self._generate_vlm(
                 full_messages,
                 image,
                 temperature,
@@ -447,7 +451,7 @@ class MLXInferenceBackend:
                 presence_penalty = presence_penalty,
             )
         else:
-            yield from self._generate_text(
+            stream = self._generate_text(
                 full_messages,
                 temperature,
                 top_p,
@@ -462,6 +466,8 @@ class MLXInferenceBackend:
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
             )
+        protocol_source = self._processor if self._is_vlm else self._tokenizer
+        yield from normalize_reasoning_snapshots(stream, protocol_source, cancel_event)
 
     def _generate_text(
         self,
@@ -551,7 +557,9 @@ class MLXInferenceBackend:
         if not logits_processors:
             logits_processors = None
 
+        preserve_native_channels = detect_reasoning_channel_markers(self._tokenizer) is not None
         token_ids = []
+        generated_text = ""
         logger.info(
             "Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
             len(prompt),
@@ -575,11 +583,15 @@ class MLXInferenceBackend:
                     **gen_kwargs,
                 ):
                     final_response = response
-                    token_ids.append(response.token)
-                    cumulative = self._tokenizer.decode(
-                        token_ids,
-                        skip_special_tokens = True,
-                    )
+                    if preserve_native_channels:
+                        generated_text += getattr(response, "text", None) or ""
+                        cumulative = generated_text
+                    else:
+                        token_ids.append(response.token)
+                        cumulative = self._tokenizer.decode(
+                            token_ids,
+                            skip_special_tokens = True,
+                        )
                     yield think_prefix + cumulative
 
                     if cancel_event and cancel_event.is_set():
