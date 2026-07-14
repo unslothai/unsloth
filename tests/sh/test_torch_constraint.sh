@@ -108,14 +108,13 @@ assert_eq "\$TORCH_CONSTRAINT used in pip install" "yes" "$_has_var"
 _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
-# A fresh CUDA install must widen the ceiling to <2.12.0 so cu12x/cu13x land
-# torch 2.11.x (matching the torch 2.11.0 base image and _CUDA_TORCH_PKG_SPEC).
+# A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x land torch
+# 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC).
 _cuda_widen=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
 assert_eq "CUDA TORCH_CONSTRAINT widened to <2.12.0" "1" "$_cuda_widen"
 
-# The widening must key off the final index leaf (_torch_index_leaf), not the
-# full URL, so a mirror whose base path contains cu*/rocm7.2 but ends in a
-# cpu / older-rocm leaf is not mis-widened.
+# Widening keys off the final leaf (_torch_index_leaf), not the full URL, so a
+# mirror base path with cu*/rocm7.2 but a cpu/older-rocm leaf is not mis-widened.
 _cuda_case=$(grep -c 'cu\[0-9\]\*)' "$INSTALL_SH" || true)
 _has_cuda_case=$([ "$_cuda_case" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "cu* index case adjusts TORCH_CONSTRAINT" "yes" "$_has_cuda_case"

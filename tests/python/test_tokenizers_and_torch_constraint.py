@@ -70,15 +70,14 @@ class TestStructuralTorchConstraint:
         assert 'TORCH_CONSTRAINT="torch>=2.6,<2.11.0"' in self._sh
 
     def test_cuda_constraint_widened_to_2_12(self):
-        """A fresh CUDA install must widen the ceiling to <2.12.0 so cu12x/cu13x
-        indexes land torch 2.11.x (matching the torch 2.11.0 base image and the
-        _CUDA_TORCH_PKG_SPEC repair spec in studio/install_python_stack.py).
-        Without this a fresh cu128/cu130 install resolves torch 2.10.x."""
+        """A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x
+        land torch 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC);
+        without it cu128/cu130 resolves torch 2.10.x."""
         assert 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' in self._sh
 
     def test_cuda_case_widens_via_index_leaf(self):
-        """The cu* branch of the _torch_index_leaf case must set the widened
-        constraint (parallel to the rocm7.2 branch), anchored on the leaf."""
+        """The cu* branch of the _torch_index_leaf case sets the widened
+        constraint (parallel to rocm7.2), anchored on the leaf."""
         m = re.search(
             r'cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.12\.0"',
             self._sh,
@@ -400,12 +399,10 @@ class TestTorchConstraintShell:
         logged = log_file.read_text()
         assert "torch>=2.4,<2.11.0" in logged, f"uv log: {logged}"
 
-    # -- Backend/index constraint selection (the _torch_index_leaf case block) --
-    # Mirrors the real block in install.sh: rocm7.2 -> 2.11.x floor, any CUDA
-    # index -> widened <2.12.0 ceiling, everything else (CPU / older ROCm) ->
-    # unchanged default. Matches on the final path segment (_torch_index_leaf)
-    # so a mirror whose base path contains cu*/rocm7.2 but ends in a cpu /
-    # older-rocm leaf keeps the default.
+    # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor,
+    # CUDA -> widened <2.12.0 ceiling, else (CPU/older ROCm) -> default. Anchored
+    # on the final path segment, so a mirror base path containing cu*/rocm7.2 but
+    # ending in a cpu/older-rocm leaf keeps the default.
     _INDEX_SNIPPET = textwrap.dedent(r"""
         #!/bin/bash
         set -e
@@ -463,9 +460,8 @@ class TestTorchConstraintShell:
         ],
     )
     def test_cuda_in_mirror_path_but_noncuda_leaf_keeps_default(self, tmp_path, url):
-        # A UNSLOTH_PYTORCH_MIRROR base path may contain cu128, but if the final
-        # index leaf is cpu / an older ROCm tag the constraint must NOT widen:
-        # the case anchors on _torch_index_leaf, not anywhere in the URL.
+        # A cu128 in the mirror base path must not widen when the leaf is cpu /
+        # older ROCm: the case anchors on _torch_index_leaf, not the whole URL.
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
 
 

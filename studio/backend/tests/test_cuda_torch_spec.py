@@ -3,12 +3,10 @@
 
 """Tests for _CUDA_TORCH_PKG_SPEC in install_python_stack.py.
 
-The CUDA torch repair path installs torch/torchvision/torchaudio from an
-exclusive --index-url (no PyPI fallback), so the pinned version ranges decide
-exactly which torch the Studio venv gets. This locks the upper bound to the
-torch 2.11.x family so the CUDA install path matches the torch 2.11.0 base image
-(and the rocm7.2 spec), and keeps the torchvision/torchaudio companions from
-resolving a torch-2.12-era wheel that would ABI-mismatch at runtime.
+The CUDA repair path installs the torch trio from an exclusive --index-url (no
+PyPI fallback), so these pinned ranges decide which torch the venv gets. The
+upper bound is locked to the 2.11.x family to match the base image and rocm7.2
+spec and to keep the companions off a torch-2.12 wheel that would ABI-mismatch.
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py
 
 
 def _load_module(monkeypatch):
-    """(Re-)import install_python_stack and return it (mirrors test_torchao_select)."""
+    """(Re-)import and return install_python_stack (mirrors test_torchao_select)."""
     sys.modules.pop("install_python_stack", None)
     monkeypatch.syspath_prepend(str(_INSTALL_SCRIPT.parent))
     import install_python_stack
@@ -40,8 +38,7 @@ def _spec_of(pkg_spec: str):
 @pytest.mark.parametrize(
     "index, allowed, rejected",
     [
-        # torch: 2.11.x now allowed (matches the base image); 2.12.x excluded so
-        # the exclusive index cannot silently jump a torch major.
+        # torch: 2.11.x allowed (matches base image); 2.12.x excluded.
         (0, ["2.11.0", "2.11.2", "2.10.0", "2.4.0"], ["2.12.0", "2.3.0", "1.13.1"]),
         # torchvision: 0.26.x (torch 2.11 companion) allowed; 0.27.x (torch 2.12) out.
         (1, ["0.26.0", "0.26.1", "0.19.0"], ["0.27.0", "0.18.0"]),
@@ -59,8 +56,8 @@ def test_cuda_spec_bounds(monkeypatch, index, allowed, rejected):
 
 
 def test_cuda_spec_matches_rocm72_upper_bound(monkeypatch):
-    """The CUDA and rocm7.2 specs target the same torch 2.11.x family, so their
-    upper bounds must stay in lockstep (bump both together at 2.12.x)."""
+    """CUDA and rocm7.2 target the same torch 2.11.x family, so their upper
+    bounds must stay in lockstep (bump both together at 2.12.x)."""
     mod = _load_module(monkeypatch)
     rocm72 = mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]
 

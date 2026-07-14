@@ -2,11 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Tests for the torch-trio --overrides guard on the Step-2 unsloth installs in
-# install.sh. Released unsloth wheels can pin an older torch (unsloth 2026.7.2
-# declares torch<2.11.0); without the overrides file a with-deps resolve from
-# PyPI silently downgrades the torch trio Step 1 just installed, and the flavor
-# guard cannot see it (PyPI's torch 2.10 default is itself cu128-flavored).
-# Follows the same assertion pattern as test_torch_constraint.sh.
+# install.sh. A released unsloth wheel can pin an older torch (2026.7.2 declares
+# torch<2.11.0); without the overrides file a with-deps PyPI resolve downgrades
+# the trio Step 1 installed, and the flavor guard misses it (PyPI's torch 2.10
+# default is itself cu128-flavored). Same assertion pattern as test_torch_constraint.sh.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,9 +26,8 @@ assert_true() {
 
 echo "=== test_unsloth_torch_override ==="
 
-# 1. Every with-deps unsloth install carries the overrides expansion (fresh
-#    local, fresh generic, and migrated). The no-torch paths install --no-deps
-#    and need no guard.
+# 1. Every with-deps unsloth install carries the overrides expansion (local,
+#    generic, migrated); the --no-deps no-torch paths need no guard.
 _local_block=$(grep -A2 '"install unsloth (local)"' "$INSTALL_SH")
 printf '%s' "$_local_block" | grep -q -- '--overrides "\$_UNSLOTH_TORCH_OVERRIDES"'
 assert_true "local (with-deps) unsloth install passes --overrides" "$?"
@@ -55,7 +53,7 @@ grep -B2 '_torch_trio_pins=\$(' "$INSTALL_SH" | grep -q 'SKIP_TORCH" = false'
 assert_true "overrides file build is gated on SKIP_TORCH=false" "$?"
 
 # 3. The pin-collection snippet emits exact ==pins for the installed trio (run
-#    the embedded python against this test's own interpreter).
+#    the embedded python against this test's interpreter).
 _snippet=$(sed -n '/_torch_trio_pins=\$("\$_VENV_PY" -c "/,/^" 2>\/dev\/null)/p' "$INSTALL_SH" \
     | sed '1s/.*-c "//' | sed '$d')
 _out=$(python3 -c "$_snippet" 2>&1) || true
@@ -72,24 +70,22 @@ assert_true "pin snippet emits only exact trio ==pins (or nothing)" "$_rc"
 grep -q 'rm -f "\$_UNSLOTH_TORCH_OVERRIDES"' "$INSTALL_SH"
 assert_true "overrides temp file is removed after the unsloth installs" "$?"
 
-# 5. Any UV_OVERRIDE env file is folded into the temp overrides file (the CLI
-#    --overrides flag would otherwise replace it, dropping e.g. the macOS arm64
-#    darwin overrides on the generic install path).
+# 5. Any UV_OVERRIDE env file is folded in (the CLI --overrides flag would
+#    otherwise replace it, dropping e.g. the macOS arm64 darwin overrides).
 grep -q 'for _ov_file in \${UV_OVERRIDE:-}' "$INSTALL_SH"
 assert_true "UV_OVERRIDE env files are merged into the overrides file" "$?"
 
-# 6. The EXIT trap also removes the overrides file, so a failed or interrupted
-#    Step 2 (set -e fires before the normal-path rm) cannot leak it.
+# 6. The EXIT trap also removes the overrides file, so a failed Step 2 (set -e
+#    fires before the normal-path rm) cannot leak it.
 sed -n '/_on_install_exit() {/,/^}/p' "$INSTALL_SH" \
     | grep -q 'rm -f "\$_UNSLOTH_TORCH_OVERRIDES"'
 assert_true "EXIT trap removes the overrides temp file on failure" "$?"
 
 # 7. The UV_OVERRIDE fold filters inherited files instead of cat-ing them (run
-#    the extracted awk program against sample files): (a) inherited torch-trio
-#    lines are dropped -- uv intersects duplicate overrides, so a conflicting
-#    inherited pin makes resolution unsatisfiable and the generated exact pins
-#    must win; (b) every line is newline-terminated, so a file without a
-#    trailing newline cannot join two requirements into one.
+#    the extracted awk program on sample files): (a) inherited torch-trio lines
+#    are dropped so the generated exact pins win (uv intersects duplicates);
+#    (b) every line is newline-terminated so an unterminated file cannot join
+#    two requirements into one.
 _awk_prog=$(sed -n "s/.*awk '\(.*\)' \"\$_ov_file\".*/\1/p" "$INSTALL_SH")
 [ -n "$_awk_prog" ]
 assert_true "UV_OVERRIDE fold uses the trio-filtering awk program" "$?"

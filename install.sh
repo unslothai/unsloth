@@ -472,9 +472,8 @@ _on_install_exit() {
     [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
     exit "$_status"
 }
-# Empty so an inherited value can never reach the trap's rm; only temp paths
-# this script creates below (Apple Silicon spaced-path dir, torch-trio
-# overrides file) are ever removed.
+# Empty so an inherited value never reaches the trap's rm; only temp paths this
+# script creates below (spaced-path dir, torch-trio overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
@@ -2477,15 +2476,12 @@ case "$_torch_index_leaf" in
     *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
 esac
 
-# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it. The CUDA
-# indexes (cu12x/cu13x) now publish torch 2.11.x too, so widen the CUDA
-# ceiling to <2.12.0 to match the torch 2.11.0 base image and the
-# _CUDA_TORCH_PKG_SPEC repair spec in studio/install_python_stack.py. The
-# >=2.4 floor is kept so an older CUDA index (e.g. cu118) that tops out below
-# 2.11 still resolves. Match on _torch_index_leaf (the final path segment
-# classified just above), not the full URL, so a custom UNSLOTH_PYTORCH_MIRROR
-# whose base path contains cu*/rocm7.2 but resolves to a cpu / older-rocm leaf
-# keeps the default <2.11.0.
+# rocm7.2 and the CUDA cu12x/cu13x indexes now ship torch 2.11.x, so widen the
+# ceiling to <2.12.0 (matches the base image and _CUDA_TORCH_PKG_SPEC in
+# studio/install_python_stack.py). Keep the >=2.4 floor so an older CUDA index
+# (e.g. cu118) still resolves. Match on _torch_index_leaf, not the full URL, so
+# a mirror whose base path contains cu*/rocm7.2 but resolves to a cpu/older-rocm
+# leaf keeps the default <2.11.0.
 case "$_torch_index_leaf" in
     rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
     cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
@@ -2713,17 +2709,14 @@ esac
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 
-# Released unsloth wheels can pin an older torch than the one installed (e.g.
-# unsloth 2026.7.2 declares torch<2.11.0), and a with-deps resolve from PyPI
-# then silently DOWNGRADES the whole torch trio -- swapping the pinned
-# +cuXXX/+rocm build for PyPI's default wheel. The flavor guard below cannot
-# catch every such swap (PyPI's torch 2.10 default is itself cu128-flavored,
-# so the cuXXX tag comparison still matches), so freeze the trio via uv's
-# --overrides: overrides REPLACE dependency requirements during resolution,
-# keeping the installed wheels in place while unsloth's other dependencies
-# resolve normally. Sets _UNSLOTH_TORCH_OVERRIDES from the trio installed in
-# the venv at call time; every with-deps unsloth install (migrated and fresh)
-# must call this right before resolving and rm the file after.
+# A released unsloth wheel can pin an older torch (unsloth 2026.7.2 declares
+# torch<2.11.0); a with-deps PyPI resolve then downgrades the whole trio,
+# swapping the pinned +cuXXX/+rocm build for PyPI's default. The flavor guard
+# below misses this (PyPI's torch 2.10 default is itself cu128-flavored), so
+# freeze the trio via uv --overrides (overrides replace dependency requirements
+# during resolution) while unsloth's other deps resolve normally. Sets
+# _UNSLOTH_TORCH_OVERRIDES from the trio in the venv; every with-deps unsloth
+# install (migrated and fresh) must call this before resolving and rm it after.
 _build_unsloth_torch_overrides() {
     _UNSLOTH_TORCH_OVERRIDES=""
     [ "$SKIP_TORCH" = false ] || return 0
@@ -2739,15 +2732,12 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
         torch==*)
             _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
             printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
-            # The CLI --overrides flag REPLACES any UV_OVERRIDE env file (uv
-            # treats them as the same setting; macOS arm64 exports one for
-            # this very install path). Fold those pins into the temp file so
-            # they keep applying alongside the torch trio. awk, not cat: it
-            # drops inherited torch/torchvision/torchaudio lines (uv
-            # intersects duplicate overrides, so a conflicting inherited pin
-            # would make resolution unsatisfiable -- the exact pins above must
-            # win) and newline-terminates the last line so a file without a
-            # trailing newline cannot join two requirements into one.
+            # The CLI --overrides flag replaces any UV_OVERRIDE env file (same
+            # uv setting; macOS arm64 exports one here), so fold its pins in.
+            # awk, not cat: it drops inherited torch-trio lines (uv intersects
+            # duplicate overrides, so a conflicting pin would make resolution
+            # unsatisfiable) and newline-terminates the last line so an
+            # unterminated file cannot join two requirements into one.
             for _ov_file in ${UV_OVERRIDE:-}; do
                 [ -f "$_ov_file" ] && awk '!/^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
             done
