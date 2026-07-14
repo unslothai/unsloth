@@ -116,12 +116,6 @@ function sttModelSize(model: SttModel): string {
   return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
 }
 
-// Combined name and size for the text input; the list shows them separately.
-function displaySttModel(model: SttModel): string {
-  const size = sttModelSize(model);
-  return size ? `${sttModelName(model)} · ${size}` : sttModelName(model);
-}
-
 function SttModelCombobox({
   value,
   language,
@@ -137,18 +131,18 @@ function SttModelCombobox({
   // Set while a pick is in flight so the input keeps the model's display text
   // instead of the combobox writing the raw value back as a search query.
   const selectingRef = useRef(false);
-  const [inputValue, setInputValue] = useState(() => displaySttModel(value));
+  const [inputValue, setInputValue] = useState(() => sttModelName(value));
   // A pick fills the input with the model's display text. Treat that text as a
   // selection, not a search, so choosing a model never triggers a lookup.
   const trimmedInput = inputValue.trim();
   const isSelectedText =
-    trimmedInput === displaySttModel(value) ||
-    STT_MODELS.some((model) => displaySttModel(model) === trimmedInput);
+    trimmedInput === sttModelName(value) ||
+    STT_MODELS.some((model) => sttModelName(model) === trimmedInput);
   const query = isSelectedText ? "" : trimmedInput;
   const debouncedQuery = useDebouncedValue(query);
 
   useEffect(() => {
-    setInputValue(displaySttModel(value));
+    setInputValue(sttModelName(value));
   }, [value]);
 
   const { results, isLoading } = useHubModelSearch(debouncedQuery, {
@@ -200,7 +194,7 @@ function SttModelCombobox({
     }
     selectingRef.current = true;
     onChange(model);
-    setInputValue(displaySttModel(model));
+    setInputValue(sttModelName(model));
   };
 
   return (
@@ -235,8 +229,8 @@ function SttModelCombobox({
           }
           setInputValue(next);
         }}
-        itemToStringLabel={displaySttModel}
-        itemToStringValue={displaySttModel}
+        itemToStringLabel={sttModelName}
+        itemToStringValue={sttModelName}
         autoHighlight={true}
       >
         <ComboboxInput
@@ -284,7 +278,7 @@ function SttModelCombobox({
                     ) : null}
                   </span>
                   {sttModelSize(model) ? (
-                    <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
                       {sttModelSize(model)}
                     </span>
                   ) : null}
