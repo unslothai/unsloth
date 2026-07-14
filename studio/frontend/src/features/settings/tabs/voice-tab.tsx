@@ -135,8 +135,13 @@ function SttModelCombobox({
   const hfToken = useHfTokenStore((state) => state.token);
   const anchorRef = useRef<HTMLDivElement>(null);
   const [inputValue, setInputValue] = useState(() => displaySttModel(value));
-  const selectedDisplay = displaySttModel(value);
-  const query = inputValue.trim() === selectedDisplay ? "" : inputValue.trim();
+  // A pick fills the input with the model's display text. Treat that text as a
+  // selection, not a search, so choosing a model never triggers a lookup.
+  const trimmedInput = inputValue.trim();
+  const isSelectedText =
+    trimmedInput === displaySttModel(value) ||
+    STT_MODELS.some((model) => displaySttModel(model) === trimmedInput);
+  const query = isSelectedText ? "" : trimmedInput;
   const debouncedQuery = useDebouncedValue(query);
 
   useEffect(() => {
@@ -253,7 +258,7 @@ function SttModelCombobox({
                   <span className="min-w-0 flex-1 truncate">
                     {sttModelName(model)}
                     {curated ? (
-                      <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                      <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
                         {getSttModelRepo(model)}
                       </span>
                     ) : null}
