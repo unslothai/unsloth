@@ -105,17 +105,13 @@ def linux_run_media_mount_roots(
 
 
 def _active_windows_drive_bitmask() -> int:
-    """Bitmask of active logical drives from ``GetLogicalDrives`` (bit 0 = ``A:``),
-    or ``0`` when the call is unavailable.
+    """Active-logical-drive bitmask from ``GetLogicalDrives`` (bit 0 = ``A:``), or ``0`` when unavailable.
 
-    This is a fast, non-blocking OS call. It lets :func:`windows_drive_roots`
-    skip the ``os.path.isdir`` probe on drive letters with no mapping at all.
-    A letter mapped to a *disconnected* network share stays set in this bitmask
-    (``GetLogicalDrives`` includes mapped network drives), so it does not guard
-    against the reconnect stall on its own — :func:`windows_drive_roots` bounds
-    each surviving probe as well (see :func:`_readable_dir_within`). Returns
-    ``0`` (probe every letter) when ctypes/``windll`` is unavailable, so the
-    helper degrades gracefully.
+    A fast non-blocking call that lets :func:`windows_drive_roots` skip the
+    ``os.path.isdir`` probe on unmapped letters. A disconnected network mapping
+    stays set here, so it does not guard the reconnect stall on its own;
+    :func:`windows_drive_roots` bounds each surviving probe too. Returns ``0``
+    (probe every letter) when ctypes/``windll`` is missing.
     """
     try:
         import ctypes
@@ -124,26 +120,21 @@ def _active_windows_drive_bitmask() -> int:
         return 0
 
 
-# A disconnected but still-mapped network drive stays set in the
-# GetLogicalDrives bitmask, so ``os.path.isdir`` on it can block for tens of
-# seconds while Windows tries to reconnect. Bound each drive probe with this
-# timeout so one stale mapping cannot stall a whole folder-browser request.
+# A disconnected mapped drive stays set in the GetLogicalDrives bitmask, so
+# ``os.path.isdir`` on it can block for tens of seconds. Bound each drive probe
+# so one stale mapping cannot stall a whole folder-browser request.
 _DRIVE_PROBE_TIMEOUT_S = 2.0
 
 
 def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
-    """Which of *paths* are readable directories, probed concurrently under a
-    single overall *timeout* (seconds).
+    """Which of *paths* are readable directories, probed concurrently under one overall *timeout* (seconds).
 
-    Each path is checked (``os.path.isdir`` and ``os.access(R_OK)``) in its own
-    daemon thread; the call then waits at most *timeout* seconds total -- not
-    per path -- for them to answer. So N disconnected-but-mapped network drives,
-    whose ``os.path.isdir`` each stalls for tens of seconds, add ~timeout to a
-    folder-browser request instead of N*timeout. A path whose probe has not
-    answered ``True`` by the deadline is omitted (treated as unreadable). The
-    threads are daemons that are never joined past the deadline, so a stuck OS
-    call cannot delay interpreter exit or block the caller afterwards
-    (``os.path.isdir`` releases the GIL during the syscall).
+    Each path is checked (``os.path.isdir`` + ``os.access(R_OK)``) in its own
+    daemon thread and the call waits at most *timeout* total, not per path, so N
+    stalled network drives add ~timeout instead of N*timeout. A path not
+    answering ``True`` by the deadline is treated as unreadable. The daemon
+    threads are never joined past the deadline, so a stuck OS call cannot delay
+    interpreter exit or block the caller (``os.path.isdir`` releases the GIL).
     """
     results: dict[str, bool] = {}
 
@@ -167,25 +158,20 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
 
 
 def _readable_dir_within(path: str, timeout: float) -> bool:
-    """``os.path.isdir(path) and os.access(path, R_OK)``, bounded by *timeout*
-    seconds. Thin single-path wrapper over :func:`_readable_dirs_within`."""
+    """``os.path.isdir(path) and os.access(path, R_OK)``, bounded by *timeout* seconds; single-path wrapper over :func:`_readable_dirs_within`."""
     return path in _readable_dirs_within((path,), timeout)
 
 
 def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -> list[Path]:
-    """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser.
+    """Readable logical drive roots (``C:\\``, ``D:\\`` ...) for the folder browser; the Windows analog of :func:`linux_run_media_mount_roots`.
 
-    The Windows analog of :func:`linux_run_media_mount_roots`. Without it the
-    browser's allowlist and suggestion chips only reach roots on the home drive,
-    so a user cannot navigate from ``C:`` to ``D:``/``E:`` to pick a model
-    directory. ``GetLogicalDrives`` first drops letters with no mapping; the
-    remaining candidates are then probed *concurrently* under a single overall
-    timeout and each is included only if it resolves to a readable directory in
-    time. The timeout matters because a mapped-but-disconnected network drive
-    stays active in the bitmask and its ``os.path.isdir`` can otherwise hang for
-    tens of seconds; probing in parallel keeps the added delay at ~one timeout
-    even when several drives are disconnected, instead of one timeout per drive.
-    Returns ``[]`` off Windows, so callers on Linux/macOS are unaffected.
+    Without it the allowlist and chips only reach the home drive, so a user
+    cannot navigate from ``C:`` to ``D:``/``E:``. ``GetLogicalDrives`` drops
+    unmapped letters; the rest are probed concurrently under a single timeout
+    and kept only if readable in time. A disconnected mapped drive stays active
+    in the bitmask and its ``os.path.isdir`` can hang for tens of seconds, so
+    parallel probing bounds the added delay at ~one timeout rather than one per
+    drive. Returns ``[]`` off Windows.
     """
     if platform.system() != "Windows":
         return []
@@ -206,8 +192,7 @@ def windows_drive_roots(drive_letters: Iterable[str] = string.ascii_uppercase) -
         seen.add(key)
         candidates.append(root_text)
 
-    # Bounded, concurrent probe: an active bitmask bit can still be a
-    # disconnected network mapping whose os.path.isdir blocks for tens of
-    # seconds, so probe every candidate at once under a single deadline.
+    # Bounded concurrent probe: an active bitmask bit can still be a
+    # disconnected mapping whose os.path.isdir blocks, so probe all at once.
     readable = _readable_dirs_within(candidates, _DRIVE_PROBE_TIMEOUT_S)
     return [Path(root_text) for root_text in candidates if root_text in readable]

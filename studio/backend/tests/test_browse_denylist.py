@@ -3,14 +3,11 @@
 
 """System-directory denylist enforcement for the folder browser.
 
-Guards the fix for the two path-traversal holes exposed once the browser
-allowlist can contain a whole Windows drive root (C:\\) or a legacy-registered
-filesystem root (/): the browse endpoints must re-apply the same
-``_denied_path_prefixes()`` policy that ``add_scan_folder`` enforces, so
-``/etc``, ``/proc``, ``C:\\Windows`` and ``C:\\Program Files`` stay unbrowseable
-even when they descend from an allowlisted root. Windows/macOS branches are
-exercised on this POSIX host by AST-extracting the pure helper and backing it
-with ``ntpath`` / a mocked ``platform``.
+Once the allowlist can hold a whole Windows drive root (C:\\) or a legacy /
+root, the browse endpoints must re-apply the ``_denied_path_prefixes()`` policy
+``add_scan_folder`` enforces, so /etc, /proc, C:\\Windows, C:\\Program Files stay
+unbrowseable even under an allowlisted root. Windows/macOS branches run on this
+POSIX host by AST-extracting the pure helper with ``ntpath`` / a mocked ``platform``.
 """
 
 from __future__ import annotations
@@ -39,8 +36,7 @@ class _HTTPException(Exception):
 
 
 def _extract_is_denied_windows():
-    """is_denied_system_path (+ _denied_path_prefixes) from studio_db.py run
-    under faithful Windows semantics (ntpath) on a POSIX host."""
+    """is_denied_system_path (+ _denied_path_prefixes) from studio_db.py under Windows semantics (ntpath) on a POSIX host."""
     src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     funcs = [
@@ -71,9 +67,7 @@ def _extract_is_denied_windows():
     return ns["is_denied_system_path"]
 
 
-# --------------------------------------------------------------------------- #
 # is_denied_system_path -- Linux (real helper, this host)
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "path",
     [
@@ -100,8 +94,7 @@ def test_is_denied_system_path_linux_denies_system_dirs(monkeypatch, path):
     ["/run/media/dspofu/nvmeB", "/run/media/dspofu/nvmeB/models"],
 )
 def test_is_denied_system_path_linux_allows_run_media_mounts(monkeypatch, path):
-    # The removable-media carve-out keeps /run/media/<user>/<volume> browseable.
-    # is_linux_run_media_path already keys off the (Linux) host platform.
+    # The /run/media/<user>/<volume> carve-out keeps removable media browseable.
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     assert studio_db.is_denied_system_path(path) is False
 
@@ -122,9 +115,7 @@ def test_legacy_and_hub_denylist_agree(monkeypatch):
         assert studio_db.is_denied_system_path(p) == scan_folders.is_denied_system_path(p)
 
 
-# --------------------------------------------------------------------------- #
 # is_denied_system_path -- Windows (ntpath-backed), case-insensitive + collisions
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "path",
     [
@@ -160,12 +151,9 @@ def test_is_denied_system_path_windows_allows_non_system(path):
     assert is_denied(path) is False
 
 
-# --------------------------------------------------------------------------- #
 # _resolve_browse_target -- real-FS integration (legacy browser)
-# --------------------------------------------------------------------------- #
 def _extract_resolver():
-    """Extract the legacy browse resolver; its inline imports resolve to the
-    real storage.studio_db (so is_denied_system_path is the real policy)."""
+    """Extract the legacy browse resolver; its inline imports use the real storage.studio_db policy."""
     src = (_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     names = {
@@ -198,11 +186,10 @@ def test_resolve_browse_target_blocks_etc_via_root():
 
 
 def test_resolve_browse_target_blocks_stale_denied_root(tmp_path, monkeypatch):
-    # A stale scan-folder row pointing straight at a denied dir is refused by
-    # the browse-time denylist even though it is its own allowlist root. Uses a
-    # tmp-based denied prefix (+ Linux compare) so the assertion is OS-agnostic:
-    # on macOS a literal /etc resolves to /private/etc and tmp lives under the
-    # already-denied /private/var, which would mask the specific message.
+    # A stale scan-folder row pointing at a denied dir is refused by the
+    # browse-time denylist even though it is its own allowlist root. A tmp-based
+    # denied prefix (+ Linux compare) keeps the assertion OS-agnostic: on macOS
+    # tmp lives under the already-denied /private/var, masking the message.
     denied = (tmp_path / "sysfake").resolve()
     denied.mkdir()
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
@@ -220,9 +207,8 @@ def test_resolve_browse_target_allows_root_itself():
 
 
 def test_resolve_browse_target_allows_legit_nested_dir(tmp_path, monkeypatch):
-    # Force the Linux denylist so the macOS temp location (under the
-    # legitimately-denied /private/var) doesn't reject the tmp fixture; the
-    # point here is that a normal nested dir is not over-blocked.
+    # Force the Linux denylist so the macOS temp location (under the denied
+    # /private/var) doesn't reject the tmp fixture; a normal nested dir must not be over-blocked.
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     resolve = _extract_resolver()
     base = tmp_path / "allowed"
@@ -245,13 +231,9 @@ def test_resolve_browse_target_symlink_escape_blocked(tmp_path):
     assert exc.value.status_code == 403
 
 
-# --------------------------------------------------------------------------- #
 # _is_path_inside_allowlist -- bare POSIX root parity (legacy == hub)
-# --------------------------------------------------------------------------- #
 def _extract_is_inside(rel_parts):
-    """Extract a standalone _is_path_inside_allowlist (depends only on os/Path)
-    from the given backend module, so both browsers' copies can be compared
-    without importing their heavy modules."""
+    """Extract a standalone _is_path_inside_allowlist (os/Path only) so both browsers' copies compare without importing their heavy modules."""
     src = _BACKEND_ROOT.joinpath(*rel_parts).read_text(encoding = "utf-8")
     tree = ast.parse(src)
     funcs = [
@@ -267,10 +249,9 @@ def _extract_is_inside(rel_parts):
 
 
 def test_legacy_and_hub_allowlist_agree_on_posix_root():
-    # A bare "/" allowlist entry (e.g. a legacy-registered scan folder) must
-    # authorize only "/" itself in BOTH browsers, never descend into /var,
-    # /root, /home -- which the system-directory denylist does not cover. Guards
-    # against the hub browser regressing to authorize every absolute path.
+    # A bare "/" allowlist entry must authorize only "/" itself in BOTH
+    # browsers, never descend into /var, /root, /home (which the denylist does
+    # not cover). Guards the hub browser against authorizing every absolute path.
     legacy = _extract_is_inside(["routes", "models.py"])
     hub = _extract_is_inside(["hub", "services", "models", "folder_browser.py"])
     roots = [Path("/")]
@@ -283,8 +264,7 @@ def test_legacy_and_hub_allowlist_agree_on_posix_root():
 
 
 def test_hub_allowlist_authorizes_normal_nested_dir(tmp_path):
-    # The bare-root special case must not over-block a normal (non
-    # filesystem-root) allowlist root's descendants.
+    # The bare-root special case must not over-block a normal allowlist root's descendants.
     hub = _extract_is_inside(["hub", "services", "models", "folder_browser.py"])
     base = tmp_path / "allowed"
     sub = base / "models" / "gguf"
@@ -293,9 +273,7 @@ def test_hub_allowlist_authorizes_normal_nested_dir(tmp_path):
     assert hub(base, [base]) is True
 
 
-# --------------------------------------------------------------------------- #
 # add_scan_folder -- filesystem-root rejection parity (legacy == hub)
-# --------------------------------------------------------------------------- #
 def test_legacy_add_scan_folder_rejects_filesystem_root(monkeypatch):
     monkeypatch.setattr(studio_db.platform, "system", lambda: "Linux")
     with pytest.raises(ValueError, match = "filesystem root"):

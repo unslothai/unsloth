@@ -73,12 +73,10 @@ def is_denied_system_path(path: str) -> bool:
     """True if *path* is, or descends from, a denied system directory.
 
     Mirrors the denylist add_scan_folder() enforces at registration so the
-    folder browser refuses to descend into /etc, /proc, C:\\Windows,
-    C:\\Program Files, etc. even when the allowlist contains a broad root such
-    as a Windows drive root (C:\\) or a legacy-registered filesystem root (/).
-    The /run carve-out keeps Linux removable-media mounts
-    (/run/media/<user>/<volume>) browseable. Expects an already-resolved
-    (realpath) path so symlinks/junctions cannot escape into a denied subtree.
+    browser refuses /etc, /proc, C:\\Windows, etc. even when the allowlist holds
+    a broad root (a Windows drive root C:\\ or a legacy-registered / root). The
+    /run carve-out keeps Linux removable-media mounts browseable. Expects an
+    already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
     """
     is_win = platform.system() == "Windows"
     check = os.path.normcase(path) if is_win else path
@@ -952,10 +950,9 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
-    # Reject a filesystem root ("/", or a bare Windows drive root like "C:\\",
-    # for which dirname() == the path itself). Registering one would seed the
-    # browse allowlist with a root that sits above denied system dirs; mirrors
-    # the guard hub/storage/scan_folders.py already enforces.
+    # Reject a filesystem root ("/", or a bare Windows drive root "C:\\", for
+    # which dirname() == the path). Registering one would seed the browse
+    # allowlist with a root above denied system dirs; mirrors the scan_folders.py guard.
     if os.path.dirname(normalized) == normalized:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):

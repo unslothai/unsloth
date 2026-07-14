@@ -167,10 +167,9 @@ def _build_browse_allowlist(
 ) -> list[Path]:
     """Root directories the browser may walk (also seeds the suggestion chips): HOME, resolved HF cache dirs, Studio outputs/exports/root, registered scan folders, and well-known local-LLM dirs. Each is added only if it resolves to a real directory so the sandbox has no dead boundary.
 
-    *media_roots* / *drive_roots* let the caller pass the already-probed
-    removable-media and Windows drive roots so they are not scanned again for
-    the suggestion chips (a disconnected mapped drive can make each probe slow);
-    when ``None`` they are probed here."""
+    *media_roots* / *drive_roots* let the caller pass already-probed
+    removable-media and Windows drive roots so they aren't scanned again (a
+    disconnected mapped drive can make each probe slow); probed here when ``None``."""
     from hub.storage.scan_folders import list_scan_folders
 
     candidates: list[Path] = []
@@ -237,12 +236,11 @@ def _build_browse_allowlist(
 def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
     """True if *target* equals or descends from any allowed root; uses ``os.path.realpath`` so symlinks cannot escape the sandbox.
 
-    A Windows drive root (``D:\\``) legitimately authorizes its descendants, but
-    a bare POSIX filesystem root (``/``) must NOT -- otherwise a single ``/``
-    allowlist entry (e.g. a legacy-registered scan folder) would authorize every
-    absolute path, letting the browser descend into ``/var``, ``/root``, etc.
-    that the system-directory denylist does not cover. This mirrors the legacy
-    browser's containment check so both browsers treat ``/`` identically.
+    A Windows drive root (``D:\\``) authorizes its descendants, but a bare POSIX
+    root (``/``) must NOT: a single ``/`` allowlist entry (e.g. a legacy scan
+    folder) would otherwise authorize every absolute path, reaching ``/var``,
+    ``/root``, etc. the denylist does not cover. Mirrors the legacy browser so
+    both treat ``/`` identically.
     """
     try:
         target_real = os.path.normcase(os.path.realpath(str(target)))
@@ -389,8 +387,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 status_code = 403,
                 detail = "Credential or configuration directories are not browseable.",
             )
-        # Catches the zero-component case where the requested path IS an
-        # allowlist root (e.g. a legacy-registered "/" or a Windows drive root).
+        # Zero-component case: the requested path IS an allowlist root
+        # (e.g. a legacy-registered "/" or a Windows drive root).
         if is_denied_system_path(str(current)):
             raise HTTPException(
                 status_code = 403,
@@ -424,9 +422,8 @@ def browse_folders_response(
     """
     from hub.storage.scan_folders import list_scan_folders
 
-    # Probe removable-media and Windows drive roots once; the allowlist and the
-    # suggestion chips reuse the result so a disconnected mapped drive is not
-    # scanned twice per request.
+    # Probe removable-media and Windows drive roots once; the allowlist and
+    # chips reuse the result so a disconnected mapped drive isn't scanned twice.
     media_roots = linux_run_media_mount_roots()
     drive_roots = windows_drive_roots()
     # Build the allowlist once -- the sandbox check and suggestion chips share
@@ -487,10 +484,9 @@ def browse_folders_response(
             # descending into them is refused and registration rejects them.
             if contains_sensitive_path_component(name):
                 continue
-            # Same for denied system dirs (C:\Windows, /etc, ...): descent is
-            # refused, so don't render them as clickable rows that then 403.
-            # Resolve first (like the suggestion chips) so a symlink/junction
-            # into a denied dir is hidden too, not just a literal denied name.
+            # Same for denied system dirs (C:\Windows, /etc, ...): descent 403s,
+            # so don't render them as clickable rows. Resolve first so a
+            # symlink/junction into a denied dir is hidden too, not just a literal name.
             try:
                 resolved_child = os.path.realpath(str(child))
             except (OSError, ValueError):
@@ -545,8 +541,8 @@ def browse_folders_response(
         if resolved in seen_sug:
             return
         # Drop a denied system dir (e.g. a stale scan-folder row) so it never
-        # becomes a chip that 403s on click. Drive roots stay: a drive root is
-        # not itself denied, only its system subdirectories are.
+        # becomes a chip that 403s on click. Drive roots stay: only their
+        # system subdirectories are denied, not the root itself.
         if is_denied_system_path(resolved):
             return
         if _safe_is_dir(resolved):

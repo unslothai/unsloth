@@ -24,8 +24,7 @@ class _HTTPException(Exception):
 
 
 def _extract_routes_function(name: str, ns_extra: Optional[dict] = None) -> dict:
-    """Exec a single top-level function out of routes/models.py without importing
-    the module (which pulls in FastAPI and the rest of the backend)."""
+    """Exec one top-level function from routes/models.py without importing the module (which pulls in FastAPI)."""
     tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
     fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
     module = ast.Module(body = [fn], type_ignores = [])
@@ -38,12 +37,10 @@ def _extract_routes_function(name: str, ns_extra: Optional[dict] = None) -> dict
 
 
 def _stub_windows(monkeypatch, existing_drives):
-    """Simulate Windows exposing only *existing_drives* (e.g. {"C", "D"}) as
-    readable drive roots, so the test does not depend on the host's real FS.
+    """Simulate Windows exposing only *existing_drives* (e.g. {"C", "D"}) as readable roots, independent of the host FS.
 
-    Overriding _active_windows_drive_bitmask keeps the test deterministic even on
-    a real Windows host, where the live GetLogicalDrives call would otherwise
-    return the host's actual drive layout."""
+    Overriding _active_windows_drive_bitmask keeps it deterministic even on a
+    real Windows host, where live GetLogicalDrives would return the actual layout."""
     monkeypatch.setattr(external_media.platform, "system", lambda: "Windows")
     mask = sum(1 << (ord(d.upper()) - ord("A")) for d in existing_drives)
     monkeypatch.setattr(external_media, "_active_windows_drive_bitmask", lambda: mask)
@@ -53,8 +50,7 @@ def _stub_windows(monkeypatch, existing_drives):
 
 
 def test_windows_drive_roots_empty_off_windows(monkeypatch):
-    # Regression guard: the helper is a no-op on Linux/macOS so it can never
-    # change the folder-browser allowlist on the platforms CI actually runs on.
+    # Regression guard: the helper is a no-op on Linux/macOS so it can't change the allowlist on the platforms CI runs on.
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
     assert external_media.windows_drive_roots() == []
     monkeypatch.setattr(external_media.platform, "system", lambda: "Darwin")
@@ -109,10 +105,9 @@ def test_readable_dir_within_reports_fast_probe(monkeypatch):
 
 
 def test_windows_drive_roots_skips_hung_drive(monkeypatch):
-    # A disconnected-but-mapped network drive stays set in the GetLogicalDrives
-    # bitmask; its os.path.isdir stalls. It must be skipped without stalling the
-    # whole enumeration -- C answers, D hangs, so only C is listed and the call
-    # returns bounded by the per-drive timeout, not the stall.
+    # A disconnected mapped drive stays set in the bitmask and its os.path.isdir
+    # stalls; it must be skipped without stalling enumeration. C answers, D hangs,
+    # so only C is listed, bounded by the per-drive timeout, not the stall.
     import time
 
     monkeypatch.setattr(external_media.platform, "system", lambda: "Windows")
@@ -141,9 +136,9 @@ def test_windows_drive_roots_skips_hung_drive(monkeypatch):
 
 
 def test_windows_drive_roots_probes_hung_drives_in_parallel(monkeypatch):
-    # Several disconnected mapped drives must add ~one timeout total, not one per
-    # drive: C answers fast, D/E/F all stall. Serial probing would cost ~4x the
-    # timeout; the concurrent probe stays bounded by a single deadline.
+    # Several disconnected mapped drives must add ~one timeout total, not one
+    # per drive: C answers fast, D/E/F stall. The concurrent probe stays bounded
+    # by a single deadline where serial probing would cost ~4x the timeout.
     import time
 
     monkeypatch.setattr(external_media.platform, "system", lambda: "Windows")
@@ -169,15 +164,13 @@ def test_windows_drive_roots_probes_hung_drives_in_parallel(monkeypatch):
     elapsed = time.monotonic() - start
 
     assert roots == [Path("C:\\")]
-    # 3 stalled drives probed in parallel finish within ~1 timeout, well under
-    # the ~3*timeout a serial probe would take (and far under the 5s stall).
+    # 3 stalled drives probed in parallel finish within ~1 timeout, well under the ~3*timeout a serial probe would take.
     assert elapsed < 3 * timeout
 
 
 def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
-    # End-to-end wiring: prove windows_drive_roots() output actually flows into
-    # the browse allowlist built by routes/models.py, mirroring the Linux side's
-    # test_legacy_browse_allowlist_includes_linux_run_media_mounts.
+    # End-to-end wiring: windows_drive_roots() output flows into the browse
+    # allowlist built by routes/models.py, mirroring the Linux media-mounts test.
     tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
     function_names = {
         "_build_browse_allowlist",
@@ -216,8 +209,7 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = lambda _p: False,
-        # The simulated D:\ drive root maps to a tmp_path dir that is not a
-        # denied system path, so nothing is filtered here.
+        # The simulated D:\ root maps to a tmp_path dir, not a denied system path.
         is_denied_system_path = lambda _p: False,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
@@ -243,10 +235,9 @@ def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
 
 
 def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
-    # Regression guard for the double-probe fix: a browse request probes the
-    # drive/media roots once and passes them in, so _build_browse_allowlist must
-    # NOT scan windows_drive_roots() again (a disconnected mapped drive would
-    # otherwise double the per-request stall).
+    # Double-probe fix: a browse request probes the drive/media roots once and
+    # passes them in, so _build_browse_allowlist must NOT scan
+    # windows_drive_roots() again (a disconnected drive would double the stall).
     tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
     functions = [
         node
@@ -309,8 +300,8 @@ def test_build_browse_allowlist_reuses_passed_roots(monkeypatch, tmp_path):
 
 def test_is_path_inside_allowlist_real_descendants_and_siblings(tmp_path):
     # Component-wise containment (commonpath): a genuine descendant is allowed,
-    # but a sibling that only shares a string prefix ("models_root_evil" vs
-    # "models_root") is not -- the property the old startswith check could miss.
+    # but a sibling sharing only a string prefix ("models_root_evil" vs
+    # "models_root") is not, which the old startswith check could miss.
     ns = _extract_routes_function("_is_path_inside_allowlist")
     root = tmp_path / "models_root"
     child = root / "gguf" / "qwen"
@@ -337,11 +328,9 @@ def test_is_path_inside_allowlist_posix_root_does_not_authorize_descendants(monk
 
 
 def test_is_path_inside_allowlist_windows_drive_root_descendants():
-    # Faithfully exercise the Windows drive-root branch on a POSIX CI host by
-    # backing os.path with ntpath (drive-letter parsing, case-insensitive
-    # normcase, backslash sep) and an identity realpath (the simulated drive
-    # paths do not exist on the test host). A drive root authorizes its
-    # descendants; a different drive does not.
+    # Exercise the Windows drive-root branch on a POSIX host by backing os.path
+    # with ntpath and an identity realpath (the simulated drives don't exist
+    # here). A drive root authorizes its descendants; a different drive does not.
     import ntpath
 
     win_os = SimpleNamespace(

@@ -1199,10 +1199,9 @@ def _build_browse_allowlist(
     local-LLM dirs (LM Studio, Ollama, ``~/models``); each added only if
     it resolves to a real directory.
 
-    *media_roots* / *drive_roots* let the caller pass the already-probed
-    removable-media and Windows drive roots so they are not scanned again for
-    the suggestion chips (a disconnected mapped drive can make each probe slow);
-    when ``None`` they are probed here.
+    *media_roots* / *drive_roots* let the caller pass already-probed
+    removable-media and Windows drive roots so they aren't scanned again (a
+    disconnected mapped drive can make each probe slow); probed here when ``None``.
     """
     from utils.paths import (
         hf_default_cache_dir,
@@ -1287,12 +1286,11 @@ def _is_path_inside_allowlist(target: Path, allowed_roots: list[Path]) -> bool:
 
     Uses ``os.path.realpath`` (symlinks can't escape the sandbox) and
     ``os.path.commonpath`` for a component-wise containment test, so a string
-    prefix like ``/home/u`` never matches a sibling ``/home/user2`` and a
-    Windows drive root ``D:\\`` correctly contains ``D:\\models``.  A Windows
-    drive root legitimately authorizes its descendants, but a bare POSIX
-    filesystem root ``/`` must NOT -- otherwise a single ``/`` allowlist entry
-    would authorize every absolute path.  ``normcase`` keeps the Windows
-    drive-letter comparison case-insensitive, matching the hub browser.
+    prefix like ``/home/u`` never matches a sibling ``/home/user2`` while a
+    drive root ``D:\\`` still contains ``D:\\models``. A Windows drive root
+    authorizes its descendants, but a bare POSIX root ``/`` must NOT, else one
+    ``/`` allowlist entry would authorize every absolute path. ``normcase`` keeps
+    the drive-letter comparison case-insensitive, matching the hub browser.
     """
     try:
         target_real = os.path.normcase(os.path.realpath(str(target)))
@@ -1445,8 +1443,8 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
                 status_code = 403,
                 detail = "Credential or configuration directories are not browseable.",
             )
-        # Catches the zero-component case where the requested path IS an
-        # allowlist root (e.g. a legacy-registered "/" or a Windows drive root).
+        # Zero-component case: the requested path IS an allowlist root
+        # (e.g. a legacy-registered "/" or a Windows drive root).
         if is_denied_system_path(str(current)):
             raise HTTPException(
                 status_code = 403,
@@ -1469,11 +1467,10 @@ def _resolve_browse_target(path: Optional[str], allowed_roots: list[Path]) -> Pa
     )
 
 
-# Declared sync (def, not async) so FastAPI runs it in the threadpool: the whole
-# handler does blocking filesystem I/O (drive probes, iterdir, realpath), and a
-# disconnected mapped drive can make the drive probe wait out its timeout -- on
-# the event loop that would stall every other request. Matches the hub browse
-# endpoint, which is also sync.
+# Sync (def, not async) so FastAPI runs the blocking filesystem I/O (drive
+# probes, iterdir, realpath) in the threadpool: a disconnected mapped drive can
+# make the probe wait out its timeout, which on the event loop would stall every
+# other request. Matches the hub browse endpoint.
 @router.get("/browse-folders", response_model = BrowseFoldersResponse)
 def browse_folders(
     path: Optional[str] = Query(
@@ -1514,9 +1511,8 @@ def browse_folders(
         list_scan_folders,
     )
 
-    # Probe removable-media and Windows drive roots once; the allowlist and the
-    # suggestion chips reuse the result so a disconnected mapped drive is not
-    # scanned twice per request.
+    # Probe removable-media and Windows drive roots once; the allowlist and
+    # chips reuse the result so a disconnected mapped drive isn't scanned twice.
     media_roots = linux_run_media_mount_roots()
     drive_roots = windows_drive_roots()
     # Build once; the sandbox check and suggestion chips share it.
@@ -1572,10 +1568,9 @@ def browse_folders(
                 continue
             if contains_sensitive_path_component(name):
                 continue
-            # Hide denied system dirs (C:\Windows, /etc, ...) so they never
+            # Hide denied system dirs (C:\Windows, /etc, ...) so they don't
             # render as clickable rows that then 403 on descent. Resolve first
-            # (like the suggestion chips) so a symlink/junction pointing into a
-            # denied dir is hidden too, not just a literal denied name.
+            # so a symlink/junction into a denied dir is hidden too, not just a literal name.
             try:
                 resolved_child = os.path.realpath(str(child))
             except (OSError, ValueError):
@@ -1630,8 +1625,8 @@ def browse_folders(
         if resolved in seen_sug:
             return
         # Drop a denied system dir (e.g. a stale scan-folder row) so it never
-        # becomes a chip that 403s on click. Drive roots stay: a drive root is
-        # not itself denied, only its system subdirectories are.
+        # becomes a chip that 403s on click. Drive roots stay: only their
+        # system subdirectories are denied, not the root itself.
         if is_denied_system_path(resolved):
             return
         if _safe_is_dir(resolved):
