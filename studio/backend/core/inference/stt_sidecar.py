@@ -39,9 +39,7 @@ STT_MODELS: dict[str, str] = {
 }
 DEFAULT_STT_MODEL = "small"
 STT_KEEP_ALIVE_SECONDS = 5 * 60
-_HF_REPO_ID = re.compile(
-    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$"
-)
+_HF_REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 
 # Bound decoded audio so a crafted upload cannot exhaust memory. Callers also
 # cap the encoded bytes; this bounds the decoded PCM length.
