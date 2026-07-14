@@ -399,7 +399,7 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
 # Flags that turn an otherwise read-only command into a writer or executor
 # (sort -o FILE, tree -o FILE, xxd -r IN OUT, find -exec/-delete/...).
 _AUTO_UNSAFE_COMMAND_FLAGS = {
-    "sort": frozenset({"-o", "--output", "--compress-program"}),
+    "sort": frozenset({"-o", "--output", "--compress-program", "-T", "--temporary-directory"}),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
     # GNU time -o/--output/-a/--append FILE writes timing output; time is a
@@ -442,9 +442,10 @@ _AUTO_ARG_SENSITIVE_COMMANDS = frozenset({"hostname", "date"})
 # date display flags taking a value token (-d STRING, -r FILE, -f FILE); the
 # value is not a clock-setting positional, so it is skipped.
 _DATE_DISPLAY_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f", "--file"})
-# Commands that write their 2nd positional (uniq [INPUT [OUTPUT]]): `uniq file`
-# reads to stdout, but a second file positional overwrites it, like `sort -o`.
-_AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq"})
+# Commands that write their 2nd positional (uniq [INPUT [OUTPUT]], xxd [infile
+# [outfile]]): the 1st file reads to stdout, but a second file positional
+# overwrites it, like `sort -o`.
+_AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq", "xxd"})
 # find/fd group with (...) which resets command context, so scan every token for
 # these once find/fd appears anywhere.
 _AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
@@ -703,10 +704,11 @@ _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
-    # Hugging Face stores the login token at ~/.cache/huggingface/token (and the
-    # multi-token store stored_tokens); the rest of that cache is model data, so
-    # only the credential files match, not the whole huggingface dir.
-    r"|(?:^|[/\\])huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    # Hugging Face stores the login token at ~/.cache/huggingface/token and the
+    # legacy ~/.huggingface/token (plus the multi-token store stored_tokens); the
+    # rest of that cache is model data, so only the credential files match. The
+    # optional leading dot covers the .huggingface dotdir form.
+    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys (ssh_host_*_key); the whole dir is
     # sensitive, not just passwd/shadow/sudoers.
     r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$))"

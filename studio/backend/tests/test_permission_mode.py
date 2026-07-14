@@ -59,6 +59,8 @@ def _clear_pending():
         ("sort -o out.txt in.txt", True),  # -o writes a file
         ("sort --output=out in", True),
         ("sort --compress-program=sh big.txt", True),  # runs an external program
+        ("sort -T ./scratch large.txt", True),  # -T writes temporaries to a chosen dir
+        ("sort --temporary-directory=./s big.txt", True),
         ("sort in.txt", False),  # plain sort stays read only
         ("rg --pre sh needle f.sh", True),  # rg preprocessor runs a command
         ("rg --pre=/tmp/x needle .", True),
@@ -76,6 +78,10 @@ def _clear_pending():
         ("time ls", False),  # plain time wrapper stays safe
         ("time -p ls", False),  # POSIX time -p (no file) stays safe
         ("xxd -r dump.hex out.bin", True),  # -r can write
+        ("xxd input.bin dump.hex", True),  # 2nd positional is the outfile
+        ("xxd -c 16 in.bin out.hex", True),  # outfile past a numeric flag value
+        ("xxd input.bin", False),  # single positional reads to stdout
+        ("xxd -c 16 input.bin", False),  # flag value is not a second file
         ("awk '{print}' file", True),  # awk can system()/write
         ("grep -o x file", False),  # grep -o is stdout only
         ("ls\nrm -rf x", True),  # newline separates commands
@@ -95,6 +101,8 @@ def _clear_pending():
         ("cat ~/.config/app/settings.json", False),  # ordinary config stays safe
         ("cat /home/alice/.cache/huggingface/token", True),  # HF login token
         ("cat ~/.cache/huggingface/stored_tokens", True),  # HF multi-token store
+        ("cat /home/alice/.huggingface/token", True),  # legacy HF token location
+        ("cat /home/alice/myhuggingface/token", False),  # unrelated dir stays safe
         (
             "cat /home/alice/.cache/huggingface/hub/models--x/config.json",
             False,
