@@ -1210,8 +1210,7 @@ def test_unknown_permission_mode_normalizes_to_ask_on_request_models():
             )
             assert req.permission_mode == "ask", (cls.__name__, unknown)
         assert (
-            cls(messages = [{"role": "user", "content": "hi"}], permission_mode = None)
-            .permission_mode
+            cls(messages = [{"role": "user", "content": "hi"}], permission_mode = None).permission_mode
             is None
         )
         for known in ("ask", "auto", "off", "full"):
