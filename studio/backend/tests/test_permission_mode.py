@@ -1197,6 +1197,32 @@ def test_bypass_permissions_folds_to_full_on_request_models():
         assert req.bypass_permissions is True
 
 
+def test_unknown_permission_mode_normalizes_to_ask_on_request_models():
+    # An unrecognized mode from a newer UI/client must degrade to the safest gate
+    # ("ask") at the API boundary instead of a 422, so the forward-compat fallback
+    # the tool loops already apply (unknown -> ask) is reachable. None stays unset;
+    # the four known modes pass through untouched.
+    for cls in (ChatCompletionRequest, AnthropicMessagesRequest):
+        for unknown in ("paranoid", "readonly", "bogus", ""):
+            req = cls(
+                messages = [{"role": "user", "content": "hi"}],
+                permission_mode = unknown,
+            )
+            assert req.permission_mode == "ask", (cls.__name__, unknown)
+        assert (
+            cls(messages = [{"role": "user", "content": "hi"}], permission_mode = None)
+            .permission_mode
+            is None
+        )
+        for known in ("ask", "auto", "off", "full"):
+            req = cls(
+                messages = [{"role": "user", "content": "hi"}],
+                permission_mode = known,
+            )
+            # 'full' folds to bypass but the mode string is preserved.
+            assert req.permission_mode == known, (cls.__name__, known)
+
+
 def test_ask_auto_self_enable_confirm_on_chat_request():
     # "Ask" gates every call, so a direct /chat/completions caller that requests
     # ask but omits the legacy confirm flag self-enables it when Studio's own tool
