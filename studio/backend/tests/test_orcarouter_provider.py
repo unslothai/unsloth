@@ -153,7 +153,12 @@ def test_orcarouter_strips_sampling_for_reasoning_ids(monkeypatch):
     # Reasoning-class upstreams (and `auto`, which can route to one) 400 on a
     # non-default temperature/top_p/presence_penalty, so those must not reach
     # the wire.
-    for model in ("orcarouter/auto", "openai/gpt-5.5", "anthropic/claude-opus-4.8", "deepseek/deepseek-v4-pro"):
+    for model in (
+        "orcarouter/auto",
+        "openai/gpt-5.5",
+        "anthropic/claude-opus-4.8",
+        "deepseek/deepseek-v4-pro",
+    ):
         body = _capture_orcarouter_body(monkeypatch, model)
         assert body["model"] == model
         assert "temperature" not in body, model
