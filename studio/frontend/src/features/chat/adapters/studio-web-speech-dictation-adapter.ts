@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyDictationDictionary,
   recordRecentDictation,
@@ -10,6 +11,9 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
+
+// Reused id so repeated network failures replace, not stack, the same toast.
+const NETWORK_TOAST_ID = "dictation-network-offline";
 
 // Give the browser a short chance to turn its latest interim hypothesis into a
 // final result. If it does not, promote that already-produced text instead of
@@ -323,7 +327,22 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         errorEvent.message,
       );
       console.error("Dictation error:", errorEvent.error, errorEvent.message);
-      toast.error(description);
+      if (errorEvent.error === "network") {
+        // Browser dictation can't reach the online speech service. Point the
+        // user to the offline local engine; the toast opens Voice settings.
+        toast.error("No internet connection", {
+          id: NETWORK_TOAST_ID,
+          description:
+            "Browser dictation needs the online speech service. Switch to Local in Voice settings and pick a local STT model to dictate offline.",
+          action: {
+            label: "Open Voice settings",
+            onClick: () =>
+              useSettingsDialogStore.getState().openDialog("voice"),
+          },
+        });
+      } else {
+        toast.error(description);
+      }
       finish("error");
     });
 
