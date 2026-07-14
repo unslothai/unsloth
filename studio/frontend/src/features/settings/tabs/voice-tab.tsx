@@ -316,6 +316,9 @@ export function VoiceTab() {
   const dictationSupported = StudioDictationAdapter.isSupported();
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
+  const systemTtsSupported =
+    StudioSpeechSynthesisAdapter.systemVoicesSupported();
+  const effectiveTtsEngine = systemTtsSupported ? ttsEngine : "studio";
 
   // Local STT stays on-demand. Track its phase without fetching model weights.
   type SttPhase =
@@ -576,7 +579,7 @@ export function VoiceTab() {
       stopPreview();
       return;
     }
-    if (ttsEngine === "studio") {
+    if (effectiveTtsEngine === "studio") {
       const controller = new AbortController();
       previewAbortRef.current = controller;
       ownsSystemPreviewRef.current = false;
@@ -1031,13 +1034,13 @@ export function VoiceTab() {
             <SettingsRow
               label={t("settings.voice.readAloud.engineLabel")}
               description={
-                ttsEngine === "studio"
+                effectiveTtsEngine === "studio"
                   ? t("settings.voice.readAloud.engineStudioDescription")
                   : t("settings.voice.readAloud.engineSystemDescription")
               }
             >
               <Select
-                value={ttsEngine}
+                value={effectiveTtsEngine}
                 onValueChange={(value) =>
                   setTtsEngine(value === "studio" ? "studio" : "system")
                 }
@@ -1050,9 +1053,11 @@ export function VoiceTab() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="system">
-                    {t("settings.voice.readAloud.engineSystem")}
-                  </SelectItem>
+                  {systemTtsSupported ? (
+                    <SelectItem value="system">
+                      {t("settings.voice.readAloud.engineSystem")}
+                    </SelectItem>
+                  ) : null}
                   <SelectItem value="studio">
                     {t("settings.voice.readAloud.engineStudio")}
                   </SelectItem>
@@ -1060,7 +1065,7 @@ export function VoiceTab() {
               </Select>
             </SettingsRow>
 
-            {ttsEngine === "studio" ? (
+            {effectiveTtsEngine === "studio" ? (
               <SettingsRow
                 label={t("settings.voice.readAloud.modelLabel")}
                 description={t("settings.voice.readAloud.modelDescription")}
@@ -1107,7 +1112,7 @@ export function VoiceTab() {
               />
             </SettingsRow>
 
-            {ttsEngine === "system" && (
+            {effectiveTtsEngine === "system" && (
               <SettingsRow
                 label={t("settings.voice.readAloud.pitchLabel")}
                 description={`${ttsPitch.toFixed(2)}`}
