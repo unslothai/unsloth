@@ -298,20 +298,48 @@ def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
         _probe_cooloff_until.pop(server_id, None)
 
 
+MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"
+MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
+
+
 def _flatten_result(result: Any) -> str:
     parts = []
+    images = []
+    omitted = 0
+    budget = MAX_IMAGE_PAYLOAD_CHARS
     for block in getattr(result, "content", None) or []:
         text = getattr(block, "text", None)
         if text:
             parts.append(str(text))
+            continue
+        data = getattr(block, "data", None)
+        mime = getattr(block, "mimeType", None)
+        if data and isinstance(mime, str) and mime.startswith("image/"):
+            data = str(data)
+            if len(data) > budget:
+                omitted += 1
+                continue
+            budget -= len(data)
+            images.append({"data": data, "mimeType": mime})
     body = "\n".join(parts)
     if not body:
         structured = getattr(result, "structured_content", None)
         body = str(structured) if structured is not None else ""
+    if images or omitted:
+        notes = []
+        if images:
+            n = len(images)
+            notes.append(f"{n} image{'s' if n > 1 else ''} attached; displayed to the user")
+        if omitted:
+            notes.append(f"{omitted} image{'s' if omitted > 1 else ''} omitted (too large)")
+        note = f"[{'; '.join(notes)}]"
+        body = f"{body}\n{note}" if body else note
 
     if getattr(result, "is_error", False):
         # "Error: " prefix triggers tool_call_parser's TOOL_ERROR_PREFIXES nudge.
-        return f"Error: {body}" if body else "Error: tool returned no content"
+        body = f"Error: {body}" if body else "Error: tool returned no content"
+    if images:
+        body += "\n" + MCP_IMAGES_SENTINEL + json.dumps(images)
     return body
 
 
@@ -333,7 +361,10 @@ def call_tool_sync(
 
     async def _call() -> Any:
         async with _client(url, headers, use_oauth) as client:
-            return await client.call_tool(name, args)
+            # raise_on_error=False lets an is_error result (which may still carry
+            # image content) reach _flatten_result instead of FastMCP raising ToolError
+            # and dropping the images. Transport failures still raise (handled below).
+            return await client.call_tool(name, args, raise_on_error = False)
 
     async def _watch_cancel() -> None:
         # 50 ms cadence keeps cancellation responsive without busy-looping;

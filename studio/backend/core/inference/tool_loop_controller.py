@@ -233,9 +233,33 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
+def _strip_mcp_image_suffix(result: str) -> str:
+    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
+    image array appended by _flatten_result, so legit tool text that merely
+    mentions the marker is not truncated."""
+    head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
+    if not sep:
+        return result
+    try:
+        images = json.loads(payload)
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(images, list) or not images:
+        return result
+    if not all(
+        isinstance(img, dict)
+        and isinstance(img.get("data"), str)
+        and isinstance(img.get("mimeType"), str)
+        for img in images
+    ):
+        return result
+    return head.rstrip()
+
+
 def strip_result_for_model(result: str) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
+    result = _strip_mcp_image_suffix(result)
     for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
         if sentinel in result:
             result = result.split(sentinel, 1)[0].rstrip()
