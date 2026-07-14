@@ -261,8 +261,10 @@ def _chat_template_from_dir(
             return None
         return read_gguf_chat_template(str(gguf))
 
-    if gguf_variant:
-        return from_gguf() or _chat_template_from_tokenizer_dir(dir_path, allow_roots)
+    # Sidecar tokenizer files (chat_template.jinja / tokenizer_config.json) are
+    # the model author's maintained template and supersede the GGUF's embedded
+    # copy, which can be stale. The variant only selects which GGUF to fall back
+    # to, so keep tokenizer-first precedence whether or not a variant is given.
     return _chat_template_from_tokenizer_dir(dir_path, allow_roots) or from_gguf()
 
 

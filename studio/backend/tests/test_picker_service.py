@@ -118,5 +118,28 @@ def test_chat_template_from_dir_without_variant_prefers_tokenizer(tmp_path):
     assert _chat_template_from_dir(tmp_path) == "FROM_CONFIG"
 
 
+def test_chat_template_from_dir_with_variant_still_prefers_tokenizer(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+    )
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
+    monkeypatch.setattr(
+        "picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF"
+    )
+    # Selecting a variant must not flip precedence to the embedded GGUF template.
+    assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_CONFIG"
+
+
+def test_chat_template_from_dir_with_variant_falls_back_to_gguf(tmp_path, monkeypatch):
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
+    monkeypatch.setattr(
+        "picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF"
+    )
+    # With no tokenizer sidecar, the embedded GGUF template is still the fallback.
+    assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_GGUF"
+
+
 def test_chat_template_from_dir_returns_none_when_absent(tmp_path):
     assert _chat_template_from_dir(tmp_path) is None
