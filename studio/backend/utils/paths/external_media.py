@@ -136,6 +136,7 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
     threads are never joined past the deadline, so a stuck OS call cannot delay
     interpreter exit or block the caller (``os.path.isdir`` releases the GIL).
     """
+    paths = list(paths)  # fixed input we can iterate twice; one probe per path
     results: dict[str, bool] = {}
 
     def _probe(path: str) -> None:
@@ -154,7 +155,10 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
     for thread in threads:
         thread.join(max(0.0, deadline - time.monotonic()))
 
-    return {path for path, ok in results.items() if ok}
+    # Iterate the fixed input, not results.items(): a probe that timed out is
+    # still alive and may insert its key here, which would raise "dictionary
+    # changed size during iteration". results.get() is an atomic read.
+    return {path for path in paths if results.get(path)}
 
 
 def _readable_dir_within(path: str, timeout: float) -> bool:
