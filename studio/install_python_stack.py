@@ -1784,10 +1784,10 @@ def _ensure_cuda_torch() -> None:
     if not _cuda_pinned and not _has_usable_nvidia_gpu():
         return
 
-    # Classify the installed torch: "hip" (ROCm build -- the poisoning
-    # signature), "cuda" (healthy), or "cpu" (deliberate CPU wheel). A
-    # non-zero exit means torch is missing or un-importable; the base install
-    # step handles that, so leave it alone.
+    # Classify the installed torch: "hip" (ROCm build -- the poisoning signature),
+    # "cuda" (healthy), or "cpu" (deliberate CPU wheel). A non-zero exit means torch is
+    # missing or un-importable: with no CUDA pin the base install step owns it, but a
+    # pinned CUDA index reinstalls it below (the base update won't repair a broken build).
     try:
         probe = subprocess.run(
             [
@@ -1810,6 +1810,32 @@ def _ensure_cuda_torch() -> None:
     except (OSError, subprocess.TimeoutExpired):
         return
     if probe.returncode != 0:
+        # torch is present but cannot import. Without a pin the base install step owns a
+        # missing/broken torch, so leave it. But an explicit CUDA pin forces this pass via
+        # _torch_pin_needs_apply's failed probe, and the base update does NOT force-reinstall
+        # an already-installed torch, so returning would strand the broken torch and rerun
+        # the pass every update. Treat it as drift and reinstall from the pin; the reinstall
+        # rewrites the marker and the next probe imports, so no loop.
+        if not _cuda_pinned:
+            return
+        index_url = _detect_cuda_torch_index_url()
+        _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+        print(
+            f"   torch cannot import but an explicit CUDA index is pinned -- reinstalling "
+            f"CUDA torch from {_strip_index_url_credentials(index_url)}"
+        )
+        pip_install(
+            "CUDA torch repair",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            index_url,
+            constrain = False,
+        )
+        _write_torch_index_marker(index_url)
         return
     # Take the last non-empty stdout line: stray output from sitecustomize or
     # an import hook must not mask the marker (fail-closed either way).
@@ -1882,8 +1908,9 @@ def _ensure_cpu_torch() -> None:
     if pin is None:
         return
 
-    # Classify the installed torch family. A non-zero exit means torch is missing
-    # or un-importable; the base install step handles that, so leave it alone.
+    # Classify the installed torch family. A non-zero exit means torch is missing or
+    # un-importable: the explicit CPU pin reinstalls it below (the base update won't
+    # repair a broken already-installed build).
     try:
         probe = subprocess.run(
             [
@@ -1905,6 +1932,28 @@ def _ensure_cpu_torch() -> None:
     except (OSError, subprocess.TimeoutExpired):
         return
     if probe.returncode != 0:
+        # torch is present but cannot import. The explicit CPU pin (pin is not None here)
+        # forces this pass via _torch_pin_needs_apply's failed probe, and the base update
+        # does NOT force-reinstall an already-installed torch, so returning would strand the
+        # broken torch and rerun the pass every update. Reinstall from the pin instead; the
+        # reinstall rewrites the marker and the next probe imports, so no loop.
+        _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
+        print(
+            f"   torch cannot import but an explicit CPU index is pinned -- reinstalling "
+            f"CPU torch from {_strip_index_url_credentials(pin)}"
+        )
+        pip_install(
+            "CPU torch repair",
+            "--force-reinstall",
+            "--no-cache-dir",
+            _torch_pkg,
+            _vision_pkg,
+            _audio_pkg,
+            "--index-url",
+            pin,
+            constrain = False,
+        )
+        _write_torch_index_marker(pin)
         return
     _lines = [
         line.strip() for line in probe.stdout.decode(errors = "replace").splitlines() if line.strip()
@@ -3010,9 +3059,11 @@ def install_python_stack() -> int:
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
-        base_total += 1  # ROCm torch check (line 1526) -- all non-macOS platforms
+        base_total += 1  # ROCm torch check (step 2b) -- all non-macOS platforms
         if not IS_WINDOWS:
-            base_total += 2  # flash-attn (line 1620) + ROCm torch final (line 1705) -- Linux only
+            base_total += 2  # flash-attn + torch final repair (step 13) -- Linux only
+    if not NO_TORCH and (IS_WINDOWS or IS_MAC_ARM):
+        base_total += 1  # final known-family/verbatim pin repair (step 13) -- Win/macOS ARM
     _TOTAL = (base_total - 1) if skip_base else base_total
 
     # 1. Try uv for faster installs (before pip upgrade -- uv venvs don't

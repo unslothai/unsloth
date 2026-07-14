@@ -125,6 +125,11 @@ assert_eq "token stripped from rocm"  "rocm7.2" "$(_tauri_torch_index_family 'ht
 assert_eq "token-bearing cu classifies" "cu128" "$(_tauri_torch_index_family 'https://m/whl/cu128?token=x')"
 assert_eq "fragment stripped cpu"     "cpu"     "$(_tauri_torch_index_family 'https://m/whl/cpu#frag')"
 assert_eq "plain rocm7.2 unchanged"   "rocm7.2" "$(_tauri_torch_index_family 'https://download.pytorch.org/whl/rocm7.2')"
+# A trailing slash must be stripped too (like _torch_index_url_leaf), or the exact-suffix
+# */cu128 and */cpu arms miss .../cu128/ and it falls through to "auto".
+assert_eq "trailing slash cu128"      "cu128"   "$(_tauri_torch_index_family 'https://download.pytorch.org/whl/cu128/')"
+assert_eq "slash + token cu128"       "cu128"   "$(_tauri_torch_index_family 'https://m/whl/cu128/?token=x')"
+assert_eq "trailing slash cpu"        "cpu"     "$(_tauri_torch_index_family 'https://m/whl/cpu/')"
 # Regression guard: no secret token substring may survive in any classification.
 _leak=$(_tauri_torch_index_family 'https://mirror/whl/rocm7.2?token=SECRET')
 case "$_leak" in

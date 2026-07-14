@@ -1051,6 +1051,26 @@ class TestEnsureRocmTorch:
         assert _run(False) is False  # marker matches the pin -> no reinstall (no loop)
         assert _run(None) is False  # no usable marker -> no blind reinstall
 
+    @patch.object(stack_mod, "_write_torch_index_marker")
+    @patch.object(stack_mod, "pip_install")
+    def test_ensure_cpu_torch_broken_probe_reinstalls(self, mock_pip, mock_marker):
+        """_ensure_cpu_torch: torch present but unimportable (probe exit != 0) under an
+        explicit CPU pin must reinstall from the pin, not return. _torch_pin_needs_apply
+        forces the pass on the failed probe and the base update does not repair a broken
+        installed torch, so returning would strand it and force the pass forever (Codex P2)."""
+        mock_probe = MagicMock()
+        mock_probe.returncode = 1  # torch present but cannot import
+        mock_probe.stdout = b""
+        env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/cpu"}
+        with patch.dict(stack_mod.os.environ, env, clear = False):
+            stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
+            with patch("subprocess.run", return_value = mock_probe):
+                with patch.object(stack_mod, "NO_TORCH", False):
+                    stack_mod._ensure_cpu_torch()
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/cpu" in str(mock_pip.call_args)
+        mock_marker.assert_called_once()
+
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -3835,6 +3855,56 @@ class TestWindowsRocmTorchaoGuard:
 
         installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
         assert not any("torchao" in arg for arg in installed_specs)
+
+
+class TestProgressStepCountMatchesTotal:
+    """The progress bar must reach exactly _TOTAL: every _progress() step is counted in
+    base_total. Regression for the Windows / macOS-ARM final repair step (3403), added
+    without incrementing base_total, which pushed _STEP past _TOTAL (Codex P2)."""
+
+    def _run_stack(self, tmp_path, *, is_windows, is_macos, is_mac_arm):
+        unstructured_plugin = tmp_path / "unstructured"
+        github_plugin = tmp_path / "github"
+        unstructured_plugin.mkdir()
+        github_plugin.mkdir()
+        sub = MagicMock()
+        sub.returncode = 0
+        sub.stdout = ""
+        with (
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.object(stack_mod, "IS_WINDOWS", is_windows),
+            patch.object(stack_mod, "IS_MACOS", is_macos),
+            patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "_rocm_windows_torch_installed", False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
+            patch.object(stack_mod, "_repair_bad_anyio"),
+            patch.object(stack_mod, "_ensure_cuda_torch"),
+            patch.object(stack_mod, "_ensure_rocm_torch"),
+            patch.object(stack_mod, "_ensure_cpu_torch"),
+            patch.object(stack_mod, "_ensure_pinned_known_family_torch"),
+            patch.object(stack_mod, "_ensure_verbatim_torch_index"),
+            patch.object(stack_mod, "_record_torch_index_pin_baseline"),
+            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            patch.object(stack_mod.subprocess, "run", return_value = sub),
+        ):
+            assert stack_mod.install_python_stack() == 0
+            return stack_mod._STEP, stack_mod._TOTAL
+
+    def test_windows_progress_reaches_total(self, tmp_path):
+        step, total = self._run_stack(
+            tmp_path, is_windows = True, is_macos = False, is_mac_arm = False
+        )
+        assert step == total, f"Windows progress {step} != total {total} (final step uncounted)"
+
+    def test_linux_progress_reaches_total(self, tmp_path):
+        step, total = self._run_stack(
+            tmp_path, is_windows = False, is_macos = False, is_mac_arm = False
+        )
+        assert step == total, f"Linux progress {step} != total {total}"
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)

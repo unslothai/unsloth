@@ -309,11 +309,13 @@ _tauri_torch_index_family() {
         return
     fi
     _diag_url="${1:-}"
-    # Strip query/fragment before classifying so a token-authenticated pin
-    # (.../rocm7.2?token=SECRET) isn't echoed into the [TAURI:DIAG] line and
-    # .../cu128?token=x still classifies as cu128 instead of "auto".
+    # Strip query/fragment AND a trailing slash before classifying, mirroring
+    # _torch_index_url_leaf, so a token-authenticated pin (.../rocm7.2?token=SECRET) is
+    # not echoed into the [TAURI:DIAG] line and .../cu128/?token=x still classifies as
+    # cu128 (the exact-suffix */cu128 arms would otherwise miss the trailing slash).
     _diag_url="${_diag_url%%\?*}"
     _diag_url="${_diag_url%%#*}"
+    _diag_url="${_diag_url%/}"
     case "$_diag_url" in
         */cu118) echo "cu118" ;;
         */cu124) echo "cu124" ;;

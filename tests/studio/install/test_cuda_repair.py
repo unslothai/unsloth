@@ -199,6 +199,24 @@ class TestCudaRepairFires:
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
 
+    def test_broken_probe_with_cuda_pin_repairs(self):
+        # torch present but unimportable (probe exit != 0) under an explicit CUDA pin:
+        # _torch_pin_needs_apply forces the pass on the failed probe and the base update
+        # does not repair a broken already-installed torch, so reinstall from the pin
+        # instead of stranding it (Codex P2, Linux counterpart of the known-family fix).
+        mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1, index_family = "cu128")
+        assert mock_pip.call_count == 1
+        assert "cu128" in _index_url(mock_pip)
+
+    def test_broken_probe_with_cuda_url_pin_repairs(self):
+        mock_pip = _run_cuda_repair(
+            torch_state = "cpu",
+            torch_rc = 1,
+            index_url = "https://mirror.local/cu128",
+        )
+        assert mock_pip.call_count == 1
+        assert "https://mirror.local/cu128" in _index_url(mock_pip)
+
 
 # No-op cases.
 
@@ -228,8 +246,10 @@ class TestCudaRepairSkips:
         mock_pip = _run_cuda_repair(nvidia = False, torch_state = "hip")
         mock_pip.assert_not_called()
 
-    def test_torch_missing_skips(self):
-        # Non-zero probe exit = torch missing / un-importable.
+    def test_torch_missing_no_pin_skips(self):
+        # Non-zero probe exit = torch missing / un-importable. With NO CUDA pin the base
+        # install step owns it, so leave it alone (a pinned build reinstalls -- see
+        # test_broken_probe_with_cuda_pin_repairs).
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1)
         mock_pip.assert_not_called()
 
