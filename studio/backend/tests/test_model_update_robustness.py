@@ -564,3 +564,42 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
     assert sibling_snap.exists() is True
     assert sibling_blob.exists() is True
     assert invalidated == [True]
+
+
+def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch, tmp_path):
+    """No-symlink cache (Windows without Developer Mode): the moved GGUF lives
+    directly in snapshots/ and blobs/ is empty, so scan_cache_dir reports
+    blob_path == the snapshot file and its name is the FILENAME, not an etag.
+    Reclaim must NOT mistake that filename for a stale hash and delete the
+    freshly-downloaded current file."""
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    snap = repo_path / "snapshots" / ("a" * 40) / "model-Q4_K_M.gguf"
+    snap.parent.mkdir(parents = True, exist_ok = True)
+    snap.write_bytes(b"current-download")
+    (repo_path / "blobs").mkdir(parents = True, exist_ok = True)  # empty: moved, not linked
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        file_path = str(snap),
+                        blob_path = str(snap),  # no-symlink: blob_path == the snapshot file
+                    )
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(repo_id, "Q4_K_M", frozenset({"REMOTEsha256"}))
+
+    assert snap.exists() is True  # the current file must survive
+    assert result["removed_snapshots"] == 0
+    assert result["deleted_blobs"] == 0

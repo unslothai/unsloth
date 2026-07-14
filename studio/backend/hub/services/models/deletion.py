@@ -69,6 +69,21 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
     return name
 
 
+def _is_real_cache_blob(blob: Optional[Path], repo_dir: Optional[Path]) -> bool:
+    """True only for a genuine cache blob at ``<repo_dir>/blobs/<etag>``.
+
+    On a no-symlink cache (Windows without Developer Mode) the file is MOVED into
+    ``snapshots/`` and ``blob_path`` is that snapshot file, whose name is the
+    filename, not an etag; pruning by it would delete the just-downloaded file.
+    """
+    if blob is None or repo_dir is None:
+        return False
+    try:
+        return blob.parent.resolve(strict = False) == (repo_dir / "blobs").resolve(strict = False)
+    except OSError:
+        return False
+
+
 def _path_exists_or_symlink(path: Path) -> bool:
     try:
         return path.is_symlink() or path.exists()
@@ -408,7 +423,9 @@ def reclaim_replaced_gguf_variant(
             and extract_quant_label(name).lower() == variant_key,
         )
         for snap, blob, name in matches:
-            blob_hash = _blob_hash_from_path(blob) if blob is not None else None
+            # Prune only a file we can identify as a real, stale cache blob. A
+            # no-symlink snapshot file has no identifiable blob hash, so keep it.
+            blob_hash = _blob_hash_from_path(blob) if _is_real_cache_blob(blob, repo_dir) else None
             if blob_hash is None or blob_hash in keep_main_hashes:
                 continue
             stale_matches.append((snap, blob, name))
