@@ -927,11 +927,9 @@ class TestEnsureRocmTorch:
         assert f(f"{base}/rocm7.2", "2.11.0+rocm7.2") is False
         assert f(f"{base}/rocm7.2", "2.10.0+rocm6.4") is True
         assert f(f"{base}/rocm6.4", "2.10.0+rocm6.4") is False
-        # rocm7.2 is a KNOWN-2.11 index (torch>=2.11,<2.12). A +rocm7.2 wheel whose
-        # RELEASE drifted off 2.11 -- e.g. 2.12/2.13+rocm7.2 from an out-of-band upgrade
-        # or a custom rocm7.2 mirror -- shares the rocm tag but violates the spec, so it
-        # is a mismatch that must reinstall to floor (Codex P2). The ROCm-version compare
-        # alone (7.2 == 7.2) would wrongly accept it, and >=2.11 accepts 2.12 too.
+        # rocm7.2 is KNOWN-2.11 (torch>=2.11,<2.12). A +rocm7.2 wheel whose RELEASE drifted
+        # off 2.11 (2.12/2.13+rocm7.2) shares the tag but violates the spec -> mismatch
+        # (the version compare alone would accept it, and >=2.11 accepts 2.12 too).
         assert f(f"{base}/rocm7.2", "2.12.0+rocm7.2") is True
         assert f(f"{base}/rocm7.2", "2.13.0+rocm7.2") is True
         assert f(f"{base}/rocm7.2", "2.11.5+rocm7.2") is False  # patch on 2.11 is in-spec

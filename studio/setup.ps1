@@ -403,10 +403,9 @@ function Get-PytorchCudaTag {
 }
 
 # Explicit torch-index pin (UNSLOTH_TORCH_INDEX_URL / _FAMILY), shared by the
-# stale-venv check and the install selection below so a pinned wheel index wins
-# over GPU probing -- matching install.sh, install.ps1 and install_python_stack.py.
-# UNSLOTH_TORCH_INDEX_URL is verbatim (full URL); _FAMILY is the leaf (cpu, cu128,
-# rocm6.4, ...) joined to the mirror base so UNSLOTH_PYTORCH_MIRROR is honoured.
+# stale-venv check and install selection so a pinned index wins over GPU probing
+# (matches install.sh / install.ps1 / install_python_stack.py). URL is verbatim;
+# _FAMILY is the leaf joined to the mirror base so UNSLOTH_PYTORCH_MIRROR is honoured.
 function Get-PinnedTorchIndexUrl {
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
         return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
@@ -418,13 +417,11 @@ function Get-PinnedTorchIndexUrl {
     return $null
 }
 
-# The last path segment of a wheel index URL (cu128 / cpu / rocm6.4 / gfx1151).
-# Query string / fragment are dropped first: a token-authenticated pin
-# (.../cu128?token=x) must classify as the cu128 family, not as an opaque
-# "cu128?token=x" leaf that can never equal the installed cu128 tag (which
-# would force a reinstall on every update). Classification only; installs and
-# the marker keep the full URL. Mirrors _torch_index_leaf in
-# install_python_stack.py / _torch_index_url_leaf in install.sh.
+# Last path segment of a wheel index URL, query/fragment dropped first so a
+# token-authenticated pin (.../cu128?token=x) classifies as cu128, not an opaque
+# leaf that never equals the installed tag (a reinstall every update). Classification
+# only; installs/marker keep the full URL. Mirrors _torch_index_leaf (py) /
+# _torch_index_url_leaf (install.sh).
 function Get-TorchIndexLeaf {
     param([string]$Url)
     if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
@@ -433,13 +430,11 @@ function Get-TorchIndexLeaf {
     return ($path.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
 }
 
-# Remove credentials from a wheel index URL. An authenticated pin like
-# https://user:token@mirror.local/simple or https://mirror.local/simple?token=SECRET
-# must not persist its secret in the marker file or leak it through logged output.
-# Both userinfo (up to the LAST @ before the first path slash) AND a query/fragment
-# (which some private feeds use to carry an auth token) are dropped; scheme, host,
-# and path stay so the comparison identity is otherwise exact. Mirrors
-# _strip_index_url_credentials in install.sh / install_python_stack.py.
+# Remove credentials from a wheel index URL so an authenticated pin
+# (user:token@mirror/simple or mirror/simple?token=SECRET) never persists in the
+# marker or leaks through logged output. Drops userinfo AND query/fragment; scheme,
+# host and path stay so the identity is exact. Mirrors _strip_index_url_credentials
+# (install.sh / install_python_stack.py).
 function Remove-IndexUrlCredentials {
     param([string]$Url)
     $sep = $Url.IndexOf('://')
@@ -458,21 +453,17 @@ function Remove-IndexUrlCredentials {
 }
 
 # ── Torch-index marker ───────────────────────────────────────────────────────
-# After a successful torch install this records the exact wheel --index-url used
-# at a stable per-venv path so a later `unsloth studio update` can detect a pin
-# change by an EXACT string compare rather than the wheel version-tag heuristic
-# (which cannot encode the AMD per-arch gfx family). Path/format MUST match
-# install.sh, install.ps1 and install_python_stack.py:
+# Records the exact wheel --index-url used at a stable per-venv path so a later
+# `unsloth studio update` detects a pin change by EXACT string compare instead of the
+# version-tag heuristic (which can't encode the AMD gfx family). Path/format MUST
+# match install.sh, install.ps1 and install_python_stack.py:
 #   <VenvDir>\.unsloth-torch-index   (single line = the resolved index URL)
 $TorchIndexMarkerName = ".unsloth-torch-index"
 
-# Normalise a wheel index URL for exact marker/pin comparison: trim whitespace,
-# strip ALL trailing slashes, lowercase ONLY the final path segment (the leaf).
 # Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX); a
-# custom mirror leaf keeps its case so a verbatim URL pin is not falsely matched
-# equal. The cu leaf is matched EXACTLY (cu + digits): cu128 is a family leaf, but
-# cu128-private is a verbatim pin whose case must survive.
-# Mirrors _normalize_family_leaf in install.sh / install_python_stack.py.
+# custom mirror leaf keeps its case so a verbatim URL pin isn't falsely matched equal
+# (cu128 is a family, cu128-private a verbatim pin). Mirrors _normalize_family_leaf
+# (install.sh / install_python_stack.py).
 function Get-NormalizedFamilyLeaf {
     param([string]$Leaf)
     $low = $Leaf.ToLowerInvariant()
@@ -517,10 +508,9 @@ function Read-TorchIndexMarker {
     return $line
 }
 
-# Record the resolved torch wheel --index-url at the marker path, atomically
-# (temp file + Move). Best-effort: a write failure never aborts the install. A
-# blank URL is ignored (nothing to record). Userinfo credentials are stripped
-# before persisting: the marker only needs a comparison identity, never a secret.
+# Record the resolved torch --index-url at the marker path, atomically (temp + Move).
+# Best-effort: a write failure never aborts the install. A blank URL is ignored;
+# credentials are stripped before persisting.
 function Write-TorchIndexMarker {
     param([string]$VenvDir, [string]$IndexUrl)
     if ([string]::IsNullOrWhiteSpace($VenvDir)) { return }
@@ -551,67 +541,49 @@ function Test-MarkerPinMismatch {
     return (Get-NormalizedIndexUrl $PinUrl) -cne (Get-NormalizedIndexUrl $marker)
 }
 
-# The AMD per-arch index leaves that need the torch 2.11 floor (the _grouped_mm
-# null-ptr bug lives in the <2.11 wheels for these arches). MUST match the
-# $_pinGfx211 allowlist in the install-spec path below (and install.ps1 /
-# install_python_stack.py). Other per-arch leaves (gfx110X-all/gfx90a/gfx908)
-# publish <2.11 wheels and stay on default specs, so a pin to one of those must
-# NOT be judged stale against the 2.11 line.
+# AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug). MUST
+# match the install-spec path below and install.ps1 / install_python_stack.py. Other
+# leaves (gfx110X-all/gfx90a/gfx908) publish <2.11 wheels and stay on default specs.
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
     return @('gfx120x-all', 'gfx1151', 'gfx1150') -contains $Leaf
 }
 
-# The pytorch.org rocmX.Y versions KNOWN to ship torch 2.11 (verified against
-# download.pytorch.org): rocm7.2 is the ONLY stable 2.11 rocm index today. Do NOT
-# treat an unknown newer rocm (rocm7.3, rocm8.0, ...) as 2.11 speculatively -- it
-# does not exist yet, and that speculative floor is the mismatch bug being fixed.
-# MUST match _ROCM_KNOWN_TORCH211_VERSIONS (Python) and the rocm7.2 KNOWN-2.11 leaf
-# in install.sh / install.ps1. $Major / $Minor are integers.
+# rocmX.Y versions KNOWN to ship torch 2.11: rocm7.2 is the only stable one today.
+# Do NOT floor an unknown newer rocm (rocm7.3, ...) speculatively. MUST match
+# _ROCM_KNOWN_TORCH211_VERSIONS (Python) and the rocm7.2 leaf in install.sh / install.ps1.
 function Test-RocmKnown211Version {
     param([int]$Major, [int]$Minor)
     return ($Major -eq 7 -and $Minor -eq 2)
 }
 
-# True only for a real CUDA wheel-family leaf: "cu" followed by digits (cu118,
-# cu126, cu128, cu130, ...). Mirrors install_python_stack.py::_is_cuda_family_leaf.
-# A bare -like 'cu*' wrongly matches arbitrary mirror leaves like "custom" /
-# "current", which would set an expected tag no installed flavor can equal and
-# rebuild the venv on every run instead of trusting the unknown custom index.
+# True only for a real CUDA family leaf: "cu" + digits (cu118, cu128, ...). Mirrors
+# _is_cuda_family_leaf. A bare -like 'cu*' would match "custom"/"current" and set an
+# expected tag no flavor equals, rebuilding the venv every run.
 function Test-CudaFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
-    # EXACT cu+digits: a custom leaf like cu128-private is NOT a CUDA family leaf,
-    # so it must not become the expected tag (cu128-private != installed cu128 would
-    # rebuild the venv on every update). It routes through the unknown-leaf path.
+    # EXACT cu+digits: cu128-private is NOT a family leaf (it never equals the installed
+    # cu128 tag), so it routes through the unknown-leaf path.
     return $Leaf -match '^cu[0-9]+$'
 }
 
-# True only for a real pip --index-url ROCm family leaf: EXACT rocm<digits> /
-# rocm<digits>.<digits> (rocm7.2), or a repo.amd.com per-arch gfx leaf (gfx120x-all).
-# A leaf that merely STARTS with rocm (rocm-current, rocm-rel-7.2.1, rocm7.2-private)
-# is a custom pin the verbatim path owns, NOT a family, so an unanchored '^rocm\d'
-# prefix is not enough -- anchor the match so a suffixed leaf routes to the verbatim
-# path. Mirrors install_python_stack.py::_is_pip_rocm_family_leaf and install.sh.
+# True only for a real pip ROCm family leaf: EXACT rocm<digits>[.<digits>] (rocm7.2),
+# or a repo.amd.com gfx leaf (gfx120x-all). A leaf that merely STARTS with rocm
+# (rocm-current, rocm-rel-7.2.1, rocm7.2-private) is a custom pin the verbatim path
+# owns, so anchor the match. Mirrors _is_pip_rocm_family_leaf / install.sh.
 function Test-PipRocmFamilyLeaf {
     param([string]$Leaf)
     if ([string]::IsNullOrWhiteSpace($Leaf)) { return $false }
     return ($Leaf -like 'gfx*') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
 }
 
-# Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns a hashtable
-# @{ Expected = <tag>; Installed = <tag> } so the caller rebuilds when they
-# differ. Mirrors install_python_stack.py::_rocm_pin_family_mismatch:
-#   * rocmX.Y pin  -> compare exact rocm versions when both readable, else the
-#     torch 2.11 line (rocm>=7.2 serves 2.11, older rocm does not).
-#   * gfx pin in the 2.11 allowlist -> expect AMD's per-arch wheel (three-part
-#     +rocmA.B.C local version). A generic (two-part +rocmA.B) or pre-2.11 wheel
-#     is stale; an already-installed per-arch wheel is NOT (no rebuild loop).
-#   * gfx pin NOT in the allowlist (gfx110X-all/gfx90a/gfx908) -> default <2.11
-#     specs, so a 2.10+rocm wheel is correct; only a 2.11+ build is stale.
-# A ROCm pin (gfx* or rocmX.Y) is satisfied ONLY by an installed wheel carrying a
-# +rocm local tag: an untagged CPU/CUDA wheel (e.g. 2.10.0 / 2.11.0) never
-# satisfies a ROCm pin, so it is reported stale and the pin is (re)applied.
+# Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns
+# @{ Expected; Installed } so the caller rebuilds when they differ. Mirrors
+# _rocm_pin_family_mismatch: rocmX.Y -> exact version compare (else the 2.11 line);
+# a 2.11-allowlist gfx pin -> expect AMD's per-arch (three-part) wheel, a generic or
+# pre-2.11 wheel is stale; a non-allowlist gfx pin -> default <2.11, only a 2.11+
+# build is stale. An untagged (no +rocm) wheel never satisfies a ROCm pin -> stale.
 function Get-RocmPinStaleTags {
     param([string]$PinLeaf, [string]$TorchVersion)
     $_pinRocm = [regex]::Match($PinLeaf, '^rocm(\d+)\.(\d+)')
@@ -648,13 +620,10 @@ function Get-RocmPinStaleTags {
 
     # rocmX.Y pin.
     if ($_pinVer -and $_instVer) {
-        # Both rocm versions readable: exact comparison. A readable $_instVer already
-        # implies a +rocm tag, so no separate tag check is needed here. When the rocm
-        # versions match AND the pin is a KNOWN-2.11 index (rocm7.2 -> torch>=2.11,<2.12),
-        # the installed torch RELEASE must also be on the 2.11 line: a +rocm7.2 wheel that
-        # drifted to 2.12 (an out-of-band upgrade or a custom rocm7.2 mirror) shares the
-        # rocm tag but violates the spec, so fold the release into the tag to report it
-        # stale. Mirrors _rocm_pin_family_mismatch's KNOWN-2.11 release check.
+        # Both readable: exact compare. When they match AND the pin is KNOWN-2.11
+        # (rocm7.2 -> torch 2.11), the installed RELEASE must also be 2.11: a +rocm7.2
+        # wheel drifted to 2.12 shares the tag but violates the spec, so fold the release
+        # into the tag to report it stale. Mirrors _rocm_pin_family_mismatch.
         $_pinKnown211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
         $_instOn211 = $_instRel.Success -and [int]$_instRel.Groups[1].Value -eq 2 -and [int]$_instRel.Groups[2].Value -eq 11
         if ($_pinKnown211 -and -not $_instOn211) {
@@ -2776,8 +2745,8 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
     $shouldRebuild = $false
-    # Set when a stale venv under an explicit torch-index pin is repaired in place
-    # (force-reinstall torch from the pin) instead of wiped -- see the rebuild block.
+    # Set when a stale venv under an explicit pin is repaired in place (force-reinstall
+    # from the pin) instead of wiped -- see the rebuild block.
     $script:PinChangedForceReinstall = $false
 
     if (Test-Path -LiteralPath $VenvPyExe) {
@@ -2823,77 +2792,50 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $_expectedKnown = $true
         if ($_pinnedIdx) {
             $_pinLeaf = Get-TorchIndexLeaf $_pinnedIdx
-            # Torch-index marker compare: an EXACT compare of the pin against the index
-            # the last install recorded. This is the only signal that catches a per-arch
-            # switch between two 2.11 gfx indexes (gfx1151 -> gfx120X-all -- both install
-            # a +rocm7.13.0 wheel, so the tag heuristic sees no difference) and a
-            # custom-URL change (/simple -> /current). It is an ADDITIONAL rebuild
-            # trigger, NOT a substitute for validating the installed flavor: a matching
-            # marker must not hide a stale wheel (e.g. torch later swapped to a +cpu
-            # build while the marker still records the cuXXX pin), so the flavor check
-            # below still runs for known cu*/cpu/rocm leaves. $null = no usable marker ->
-            # flavor heuristic only (old venv; backward compatible).
+            # Marker compare: an EXACT compare of the pin against the last recorded
+            # index. Only this catches a per-arch switch between two 2.11 gfx indexes
+            # (gfx1151 -> gfx120X-all, both +rocm7.13.0) and a custom-URL change. It is an
+            # ADDITIONAL trigger, NOT a substitute for the flavor check (a matching marker
+            # must not hide a wheel swapped to +cpu), so that still runs for cu*/cpu/rocm
+            # leaves. $null = no marker -> flavor heuristic only (backward compatible).
             $_markerMismatch = Test-MarkerPinMismatch -VenvDir $VenvDir -PinUrl $_pinnedIdx
             if ($_markerMismatch -eq $true) { $shouldRebuild = $true }
-            # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds.
-            # Digit-gated like the install selection below: a custom rocm-* leaf
-            # (rocm-current / rocm-rel-7.2.1) is NOT a PyTorch ROCm family, stays on
-            # the verbatim/marker path, and must not be stale-compared as one (that
-            # reported not-rocm vs rocm(torch<2.11) and force-reinstalled on every
-            # studio update even though the pin never changed).
+            # Digit-gated like the install selection: a custom rocm-* leaf (rocm-current /
+            # rocm-rel-7.2.1) is NOT a ROCm family, stays on the verbatim/marker path, and
+            # must not be stale-compared (that force-reinstalled every update).
             if (Test-PipRocmFamilyLeaf $_pinLeaf) {
-                # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that
-                # would match any installed +rocm wheel and mask a pin change from
-                # one ROCm family to another (e.g. rocm6.4 -> gfx1151, or rocm6.4
-                # -> rocm6.3), leaving the requested index unapplied. Get-RocmPinStaleTags
-                # compares what the wheel tag exposes and uses the SAME 2.11 allowlist
-                # (Test-RocmGfx211Leaf) as the install-spec path, so a gfx110X-all /
-                # gfx90a / gfx908 pin on a valid <2.11 wheel is NOT judged stale, and a
-                # 2.11-allowlist gfx pin over a generic (two-part +rocm) wheel IS.
+                # Do NOT collapse a pinned ROCm/gfx leaf to a generic "rocm": that would
+                # match any +rocm wheel and mask a family change (rocm6.4 -> gfx1151).
+                # Get-RocmPinStaleTags uses the SAME 2.11 allowlist as the install path,
+                # so a gfx110X-all/gfx90a/gfx908 pin on a valid <2.11 wheel is NOT stale.
                 $_rocmTags = Get-RocmPinStaleTags -PinLeaf $_pinLeaf -TorchVersion $torchVer
                 $expectedTorchTag  = $_rocmTags.Expected
                 $installedTorchTag = $_rocmTags.Installed
             } elseif ((Test-CudaFamilyLeaf $_pinLeaf) -or $_pinLeaf -eq 'cpu') {
-                # Require digits after "cu" (cu118/cu128/...) so a mirror leaf like
-                # /custom or /current is NOT treated as a CUDA flavor -- otherwise the
-                # expected tag would be an arbitrary word no installed flavor equals,
-                # rebuilding the venv every run. Such leaves fall through to the
-                # trust-unknown-index branch below.
+                # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds;
+                # /custom and /current fall through to the unknown-index branch below.
                 $expectedTorchTag = $_pinLeaf
             } else {
-                # Custom index whose final segment is not a torch flavor (e.g. a
-                # PEP 503 mirror ending in /simple). We cannot infer the flavor from
-                # the wheel tag, so the marker compare above is the only signal; do
-                # not also rebuild on a bogus tag comparison here.
+                # Custom index whose leaf is not a torch flavor (a /simple mirror). The
+                # flavor can't be inferred, so the marker compare above is the only
+                # signal; don't also rebuild on a bogus tag comparison.
                 $_expectedKnown = $false
                 $expectedTorchTag = $installedTorchTag
-                # A venv predating the marker feature has $_markerMismatch = $null.
-                # The user has now explicitly set an unknown-family URL pin, but the
-                # flavor heuristic cannot judge it, so without the marker the pin would
-                # be silently ignored on this first update (the fast path keeps
-                # $SkipPythonDeps true and the --index-url install never runs). Apply
-                # it ONCE in place: PinChangedForceReinstall forces the dependency pass
-                # so the torch block reinstalls from $PinnedTorchIndexUrl and writes the
-                # marker, making later updates no-ops. Do NOT set $shouldRebuild here --
-                # that wipes the venv and delegates to install.ps1, stranding a direct
-                # `studio update` at "Virtual environment not found".
+                # A pre-marker venv has $_markerMismatch = $null: the flavor heuristic
+                # can't judge an unknown-family pin, so apply it ONCE in place via
+                # PinChangedForceReinstall (the torch block reinstalls and writes the
+                # marker). Do NOT set $shouldRebuild -- that wipes the venv and strands a
+                # direct `studio update` at "Virtual environment not found".
                 if ($null -eq $_markerMismatch) { $script:PinChangedForceReinstall = $true }
             }
         } elseif ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag
         } elseif ($HasROCm -or $script:ROCmGfxArch) {
-            # AMD/ROCm host with no explicit pin: an existing +rocm wheel is the
-            # correct build, not stale. (gfx arch counts even when $HasROCm is
-            # false -- name-inferred Adrenalin hosts still get ROCm torch below.)
-            # Without this an unpinned ROCm venv compares "rocm" != "cpu" and is
-            # needlessly rebuilt, and an installer-managed setup exits as stale.
-            # But only the arches the install path below maps to a repo.amd.com
-            # wheel index (the $archFamilyMap set) actually get ROCm torch; an
-            # unmapped/unknown arch (e.g. name-inferred RDNA 2 gfx103X) or an
-            # unreadable arch -- even with $HasROCm -- falls back to CPU torch
-            # there (see the $archFamily null branch below). For those, expect
-            # "cpu" so a correct CPU venv is not marked stale and rebuilt on every
-            # update (or aborted under installer-managed setup).
+            # AMD/ROCm host with no explicit pin: an existing +rocm wheel is correct,
+            # not stale (gfx arch counts even when $HasROCm is false). But only the arches
+            # the install path maps to a repo.amd.com index actually get ROCm torch; an
+            # unmapped/unreadable arch falls back to CPU torch there, so expect "cpu" for
+            # those or a correct CPU venv is rebuilt every update.
             $_rocmWheelArches = @(
                 "gfx1201", "gfx1200",           # RDNA 4
                 "gfx1151", "gfx1150",           # RDNA 3.5 (Strix Halo/Point)
@@ -2901,14 +2843,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 "gfx90a", "gfx908"              # MI200 / MI100
             )
             if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
-                # A correct +rocm wheel is not stale. A CPU wheel on a supported AMD
-                # arch is NOT wiped here either: the AMD Windows ROCm override below
-                # (the `$CuTag -eq "cpu"` reinstall block, plus the CPU-torch force in
-                # the version fast-path) upgrades CPU torch to ROCm in place. Forcing a
-                # rebuild would delete the venv and then hit "Virtual environment not
-                # found", so an older CPU-only install would be lost instead of
-                # repaired. Expect "cpu" for that case and let the override upgrade it.
-                # A genuinely wrong CUDA wheel (cu*) still mismatches "rocm" -> rebuild.
+                # A correct +rocm wheel is not stale. A CPU wheel on a supported AMD arch
+                # is NOT wiped either: the AMD Windows ROCm override below upgrades it in
+                # place (a rebuild would delete the venv and hit "Virtual environment not
+                # found"). Expect "cpu" for that case; a wrong CUDA wheel still rebuilds.
                 if ($installedTorchTag -eq "cpu") {
                     $expectedTorchTag = "cpu"
                 } else {
@@ -2925,13 +2863,10 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         }
     }
 
-    # A stale venv under an explicit torch-index pin, whose torch still imports, is
-    # repaired IN PLACE: the dependency pass below force-reinstalls torch from the pin
-    # instead of wiping. setup.ps1's rebuild path only removes the venv and delegates
-    # to install.ps1, so on a direct `unsloth studio update` a wipe would strand the
-    # user at "Virtual environment not found" rather than applying the new pin. Only a
-    # broken venv (torch unimportable) or an unpinned GPU-detected drift falls through
-    # to the wipe/delegate path below.
+    # A stale venv under an explicit pin, whose torch still imports, is repaired IN PLACE
+    # (the dependency pass force-reinstalls from the pin). The rebuild path only wipes the
+    # venv and delegates to install.ps1, which would strand a direct `studio update` at
+    # "Virtual environment not found". Only a broken venv or an unpinned drift wipes.
     if ($shouldRebuild -and $_pinnedIdx -and $installedTorchTag) {
         substep "Torch-index pin changed ($installedTorchTag) -- reinstalling torch from the pin in place." "Cyan"
         $script:PinChangedForceReinstall = $true
@@ -3015,17 +2950,12 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
-    # An explicit --index-url must win. Inherited uv index env vars otherwise
-    # override it and pull CPU torch over the CUDA/ROCm build (#6898), so drop
-    # them only for index-pinned installs; mirrors still apply elsewhere. The
-    # scrub must cover the WHOLE function, not just the uv attempt: the pip
-    # fallback honours PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS in addition to the
-    # pinned --index-url, so restoring before the fallback reopens the hole.
-    # UV_TORCH_BACKEND / UV_FIND_LINKS likewise reroute a pinned uv resolve.
-    # UV_NO_CONFIG=1 (with UV_CONFIG_FILE dropped) disables uv's config-file
-    # discovery for the pinned install: a project/user uv.toml or pyproject
-    # [tool.uv] index (or pip.torch-backend) otherwise outranks the CLI pin
-    # (verified with uv 0.10).
+    # An explicit --index-url must win. Inherited uv index env vars otherwise override
+    # it and pull CPU torch over the CUDA/ROCm build (#6898), so drop them for pinned
+    # installs. The scrub must cover the WHOLE function: the pip fallback honours
+    # PIP_EXTRA_INDEX_URL / PIP_FIND_LINKS too, so restoring before it reopens the hole.
+    # UV_TORCH_BACKEND / UV_FIND_LINKS also reroute a pinned resolve. UV_NO_CONFIG=1
+    # (+ dropping UV_CONFIG_FILE) stops a uv.toml/pyproject index outranking the pin (uv 0.10).
     $saved = @{}
     $pinned = @($Args_) -contains '--index-url'
     if ($pinned) {
@@ -3036,12 +2966,9 @@ function Fast-Install {
             Remove-Item "Env:$n" -ErrorAction SilentlyContinue
         }
         $env:UV_NO_CONFIG = '1'
-        # The env strips cover only pip's environment channel: a
-        # `pip config set global.extra-index-url` in a user/site pip config file
-        # still adds indexes to the pinned pip FALLBACK below. pip loads NO
-        # configuration files when PIP_CONFIG_FILE is the platform devnull
-        # ('nul' on Windows). uv does not read pip config, so this only affects
-        # the fallback.
+        # The env strips cover only pip's env channel; a `pip config` global.extra-index-url
+        # still adds indexes to the pip FALLBACK. PIP_CONFIG_FILE = devnull ('nul' on
+        # Windows) loads NO config files. uv ignores pip config, so this only affects the fallback.
         $env:PIP_CONFIG_FILE = 'nul'
     }
     try {
@@ -3123,12 +3050,10 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
     }
 }
 
-# Honor an explicit torch-index pin even when unsloth is current: the fast path above
-# skips install_python_stack.py, which owns the marker-driven torch reinstall/record.
-# Only force the pass when the pin is not already applied (marker absent or different),
-# so a persistent, already-applied pin keeps the fast path. Exit 0 -> apply; 1 -> keep
-# the fast path; any other code (probe error) -> fail safe and run. Parity with
-# setup.sh; the stale-venv pre-check above already handles the reinstall decisions.
+# Honor an explicit pin even when unsloth is current: the fast path skips
+# install_python_stack.py, which owns the marker-driven torch reinstall. Force the pass
+# only when the pin isn't already applied. Exit 0 -> apply; 1 -> keep the fast path;
+# other -> fail safe and run. Parity with setup.sh.
 if ($SkipPythonDeps -and ($env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_INDEX_FAMILY)) {
     & python "$PSScriptRoot\install_python_stack.py" --torch-pin-needs-apply 2>$null
     if ($LASTEXITCODE -ne 1) {
@@ -3156,8 +3081,7 @@ if ($SkipPythonDeps -and ($env:UNSLOTH_TORCH_INDEX_URL -or $env:UNSLOTH_TORCH_IN
 # }
 
 # A torch-index pin change repairs in place: force the dependency pass so the torch
-# install below force-reinstalls from the new pin (the fast "up to date" path would
-# otherwise skip it and leave the old wheel under the changed pin).
+# install below force-reinstalls from the new pin (else the fast path leaves the old wheel).
 if ($script:PinChangedForceReinstall) { $SkipPythonDeps = $false }
 
 if (-not $SkipPythonDeps) {
@@ -3264,11 +3188,10 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
     }
 }
 
-# A pinned gfx*/rocm index skips the auto-reroute above; route it through the
-# ROCm install path with the same floor/companions the unpinned AMD path uses
-# (mirrors install.ps1). Otherwise the CUDA branch below installs bare torch /
-# torchvision / torchaudio from the ROCm index and resolves a known-bad <2.11
-# wheel or ABI-mismatched companions for gfx115x / gfx120x / rocm>=7.2.
+# A pinned gfx*/rocm index skips the auto-reroute above; route it through the ROCm
+# install path with the same floor/companions the unpinned AMD path uses (mirrors
+# install.ps1). Otherwise the CUDA branch installs bare torch from the ROCm index and
+# resolves a known-bad <2.11 wheel or ABI-mismatched companions for gfx115x/gfx120x/rocm>=7.2.
 if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
     $_pinLeaf = Get-TorchIndexLeaf $PinnedTorchIndexUrl
     $_pinRocm211 = $false
@@ -3276,17 +3199,13 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
     # family here, or its rocm7.2 prefix would apply the 2.11 floor and route it through
     # the ROCm path before the exact-match elseif below can send it verbatim.
     if ($_pinLeaf -match '^rocm(\d+)\.(\d+)$') {
-        # Only KNOWN-2.11 rocm indexes (rocm7.2) get the 2.11 floor; do not floor an
-        # unknown newer rocm speculatively. Matches install.sh's rocm7.2 KNOWN-2.11
-        # leaf and Test-RocmKnown211Version / _ROCM_KNOWN_TORCH211_VERSIONS.
+        # Only KNOWN-2.11 rocm (rocm7.2) gets the floor; don't floor an unknown newer
+        # rocm speculatively. Matches Test-RocmKnown211Version / _ROCM_KNOWN_TORCH211_VERSIONS.
         $_pinRocm211 = Test-RocmKnown211Version -Major ([int]$Matches[1]) -Minor ([int]$Matches[2])
     }
-    # Only the gfx families the AMD arch map above pins to torch 2.11 need the
-    # floor here (gfx120X-all, gfx1151, gfx1150 -- the _grouped_mm bug arches).
-    # Other per-arch indexes (gfx110X-all, gfx90a, gfx908) publish <2.11 wheels
-    # and the automatic path leaves them bare, so an override to one of those
-    # must NOT force a 2.11 floor the normal path intentionally avoids. Reuse
-    # Test-RocmGfx211Leaf so this allowlist and the stale-venv check never diverge.
+    # Only the 2.11 gfx arches (gfx120X-all/gfx1151/gfx1150) need the floor; others
+    # (gfx110X-all/gfx90a/gfx908) publish <2.11 and stay bare. Reuse Test-RocmGfx211Leaf
+    # so this allowlist and the stale-venv check never diverge.
     $_pinGfx211 = Test-RocmGfx211Leaf $_pinLeaf
     if ($_pinGfx211 -or $_pinRocm211) {
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
@@ -3295,14 +3214,10 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
         $ROCmAudioSpec  = "torchaudio>=2.11.0,<2.12.0"
         substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchSpec" "Cyan"
     } elseif (Test-PipRocmFamilyLeaf $_pinLeaf) {
-        # Other gfx per-arch indexes and older rocm (<=7.1) ship torch <2.11;
-        # route via the ROCm path with bare specs (matches the automatic path's
-        # bare floor for these arches).
-        # EXACT rocm<digits> (rocm7.1, not rocm-rel-7.2.1 / rocm-current / rocm7.2-private):
-        # only an exact rocm<digit> and gfx* are pip --index-url (PEP 503) families; a
-        # suffixed or rocm-<nondigit> leaf is a custom/find-links URL that must stay on the
-        # verbatim unknown-pin path. Mirrors install.ps1 and
-        # install_python_stack.py's _is_pip_rocm_family_leaf.
+        # Other gfx and older rocm (<=7.1) ship torch <2.11; route via the ROCm path
+        # with bare specs. Only EXACT rocm<digits> and gfx* are pip --index-url families;
+        # a suffixed/rocm-<nondigit> leaf stays on the verbatim path. Mirrors install.ps1
+        # / _is_pip_rocm_family_leaf.
         $ROCmIndexUrl   = $PinnedTorchIndexUrl
         $ROCmTorchSpec  = "torch"
         $ROCmVisionSpec = "torchvision"
@@ -3312,11 +3227,9 @@ if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
-# A full UNSLOTH_TORCH_INDEX_URL pin is used verbatim; a family pin already set
-# $CuTag, so $PyTorchWhlBase/$CuTag is the requested family index. The CPU/CUDA
-# install branches below pull from this instead of re-joining mirror + tag.
-# A pinned ROCm install goes through $ROCmIndexUrl; if that fails, the fallback
-# must use the CPU wheel index, not retry the ROCm mirror left in the pin.
+# A full URL pin is used verbatim; a family pin already set $CuTag. The CPU/CUDA
+# branches pull from this. A pinned ROCm install goes through $ROCmIndexUrl; on failure
+# the fallback must use the CPU index, not retry the ROCm mirror left in the pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
 $ROCmCpuFallback = $false
@@ -3347,13 +3260,11 @@ if ($ROCmIndexUrl) {
 
 if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     substep "installing PyTorch (CPU-only)..."
-    # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
-    # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
-    # the forced reinstall on a genuine CPU-only host so the common path stays fast.
-    # The $ROCmCpuFallback term matters when a PINNED ROCm index failed: $CuTag is
-    # still the rocm/gfx leaf (not "cpu"), so without it execution would fall through
-    # to the CUDA branch and install from the CPU index WITHOUT --force-reinstall,
-    # leaving the partial ROCm torch in place.
+    # After an AMD ROCm fallback, force-reinstall so a partial ROCm torch (which still
+    # satisfies the CPU torch>= range) is replaced by the CPU build; skip it on a genuine
+    # CPU host to stay fast. The $ROCmCpuFallback term matters when a PINNED ROCm index
+    # failed ($CuTag is still the rocm leaf): without it, this branch is skipped and the
+    # CUDA branch installs without --force-reinstall, leaving the partial ROCm torch.
     # Build the array directly: an if-expression collapses @("x") to a scalar string,
     # which @splat would then enumerate char-by-char into broken single-letter args.
     $cpuForce = @()
@@ -3382,13 +3293,10 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # keep the old build and the changed CUDA pin (e.g. cu126 -> cu128) never applies.
     $cudaForce = @()
     if ($script:PinChangedForceReinstall) { $cudaForce = @("--force-reinstall") }
-    # An unknown-leaf custom pin (/simple, /current) routes through this branch
-    # with $CuTag set to that leaf. Bound the WHOLE trio like install.ps1's fresh
-    # pinned install, install.sh, and install_python_stack.py's verbatim path
-    # (_CUSTOM_INDEX_TORCH_PKG_SPEC): a private mirror that also serves newer
-    # torchvision/torchaudio must not pull a companion built for a newer torch ABI
-    # while the marker records the pin as applied. Known cu* leaves keep bare specs
-    # (the family index itself bounds what can resolve).
+    # An unknown-leaf custom pin (/simple, /current) routes through this branch with
+    # $CuTag as that leaf. Bound the trio like the verbatim path (_CUSTOM_INDEX_TORCH_PKG_SPEC):
+    # a mirror serving newer companions must not pull an ABI-newer one against the capped
+    # torch. Known cu* leaves keep bare specs (the family index bounds resolution).
     $cudaTorchSpec = "torch"
     $cudaVisionSpec = "torchvision"
     $cudaAudioSpec = "torchaudio"
@@ -3430,12 +3338,9 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
 }
 
 # ── Record the resolved torch wheel index (marker) ──
-# Torch was just installed; write the exact --index-url used so a later `unsloth
-# studio update` can detect a pin change by an EXACT string compare (see the
-# stale-venv check above) instead of the version-tag heuristic. Reflects the actual
-# installed family: $ROCmIndexUrl when the ROCm path ran, else $TorchInstallIndexUrl
-# (which is the pinned/CUDA/CPU index, or the CPU index after a ROCm fallback).
-# Path/format matches install.sh, install.ps1 and install_python_stack.py.
+# Write the exact --index-url used so a later `unsloth studio update` detects a pin
+# change by string compare (see the stale-venv check above). Source: $ROCmIndexUrl when
+# the ROCm path ran, else $TorchInstallIndexUrl. Matches install.sh / install.ps1 / py.
 $MarkerIndexUrl = if ($ROCmIndexUrl) { $ROCmIndexUrl } else { $TorchInstallIndexUrl }
 Write-TorchIndexMarker -VenvDir $VenvDir -IndexUrl $MarkerIndexUrl
 

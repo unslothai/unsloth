@@ -68,22 +68,19 @@ assert_eq "empty url"          ""      "$(_expected_torch_flavor_tag '')"
 # never equal the installed cu128 tag (which would reinstall on every run).
 assert_eq "query-bearing cu128" "cu128" "$(_expected_torch_flavor_tag 'https://m/whl/cu128?token=x')"
 assert_eq "fragment-bearing cpu" "cpu"  "$(_expected_torch_flavor_tag 'https://m/whl/cpu#frag')"
-# A cu-suffixed CUSTOM leaf (cu128-private, cu128x) is NOT the cu128 family: exact
-# cu+digits only, else a correct +cu128 wheel is force-reinstalled every run against a
-# leaf it can never equal. Mirrors the Python re.fullmatch(cu[0-9]+) / PowerShell.
+# A cu-suffixed CUSTOM leaf (cu128-private, cu128x) is NOT the cu128 family (exact
+# cu+digits only). Mirrors the Python re.fullmatch(cu[0-9]+) / PowerShell.
 assert_eq "cu-suffix custom leaf" ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128-private')"
 assert_eq "cu-alnum custom leaf"  ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128x')"
 assert_eq "bare cu digits stays"  "cu126" "$(_expected_torch_flavor_tag 'https://m/whl/cu126')"
-# A custom leaf that merely STARTS with rocm (a private rocm-current mirror, a Radeon
-# find-links rocm-rel-7.2.1) is NOT a pip rocm family: digit-gate to rocm[0-9]* so it
-# returns "" (custom) and the custom-index companion bounds apply. Real families
-# (rocm7.2) and gfx per-arch indexes stay "rocm".
+# A custom leaf that merely STARTS with rocm (rocm-current, rocm-rel-7.2.1) is NOT a
+# pip rocm family -> "" (custom), so the companion bounds apply. Real families (rocm7.2)
+# and gfx indexes stay "rocm".
 assert_eq "custom rocm-current"   ""    "$(_expected_torch_flavor_tag 'https://mirror/whl/rocm-current')"
 assert_eq "radeon rocm-rel leaf"  ""    "$(_expected_torch_flavor_tag 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1')"
 assert_eq "real rocm7.2 stays"    "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7.2')"
-# A rocm<digit>-SUFFIX private mirror (rocm7.2-private, rocm7-current) shares the family
-# prefix but is a custom pin: it must return "" (custom) so the companion bounds apply,
-# not "rocm" which skips them. Prefix rocm[0-9]* is not enough -- match the family exactly.
+# A rocm<digit>-SUFFIX private mirror (rocm7.2-private, rocm7-current) shares the prefix
+# but is a custom pin -> "" (custom); match the family exactly, not just the prefix.
 assert_eq "suffixed rocm7.2-private" "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2-private')"
 assert_eq "suffixed rocm7-current"   "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7-current')"
 assert_eq "two-dot rocm7.2.1"        "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2.1')"

@@ -212,11 +212,9 @@ class TestTorchIndexOverrideParity:
         ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
 
     def test_cuda_pin_overrides_cvd_hide_gate(self):
-        # A pinned cu* index skips ALL host-GPU probing (parity with install.sh's
-        # get_torch_index_url override), so the Python CUDA repair must let the pin
-        # clear the CUDA_VISIBLE_DEVICES hide gate, not just the NVIDIA-presence
-        # gate. Otherwise CVD=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128 studio update
-        # (the GPU-less CI case) would bail before repairing.
+        # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must let it
+        # clear the CUDA_VISIBLE_DEVICES hide gate too (else CVD=-1 +
+        # UNSLOTH_TORCH_INDEX_FAMILY=cu128 studio update, the GPU-less CI case, bails).
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
@@ -231,10 +229,9 @@ class TestTorchIndexOverrideParity:
         ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
 
     def test_cpu_repair_pins_supported_torch_range(self):
-        # The explicit-CPU repair must not install a bare torch trio: the /cpu
-        # index now also serves torch 2.11+, so a bare install off the exclusive
-        # --index-url can resolve outside the repo's supported <2.11 range or pull
-        # an ABI-mismatched companion. It must use the bounded CPU/CUDA spec.
+        # The explicit-CPU repair must not install a bare trio: the /cpu index serves
+        # torch 2.11+, so a bare install off the exclusive --index-url could resolve out
+        # of range or ABI-mismatched. It must use the bounded CPU/CUDA spec.
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cpu_torch"
@@ -245,11 +242,9 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_verbatim_update_pins_supported_torch_range(self):
-        # The unknown-family verbatim UPDATE must keep the SAME torch ceiling a
-        # FRESH install.sh / install.ps1 install from the same unknown-leaf pin
-        # applies (default TORCH_CONSTRAINT, torch<2.11.0), not the wider cu*
-        # ceiling (<2.12.0). Otherwise a custom mirror publishing torch 2.11 would
-        # upgrade a `studio update` to a state the fresh installer never produces.
+        # The unknown-family verbatim UPDATE must keep the SAME torch<2.11.0 ceiling a
+        # FRESH install from the same pin applies, not the wider cu* ceiling (<2.12.0),
+        # else a mirror publishing torch 2.11 upgrades to a state fresh installs never produce.
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_verbatim_torch_index\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_verbatim_torch_index"
@@ -267,11 +262,9 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
-        # The stale-venv check must only expect ROCm torch for arches the install
-        # path actually maps to a repo.amd.com wheel index. An unmapped arch
-        # (name-inferred RDNA 2 gfx103X) or an unreadable arch installs CPU torch,
-        # so expecting "rocm" there marks a correct CPU venv stale and rebuilds it
-        # every update (or aborts under installer-managed setup).
+        # The stale-venv check must expect ROCm torch only for arches the install path
+        # maps to a repo.amd.com index; an unmapped/unreadable arch installs CPU torch,
+        # so expecting "rocm" there marks a correct CPU venv stale every update.
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "_rocmWheelArches" in text, (
             "setup.ps1 stale check should restrict the ROCm expected-tag to the "
@@ -362,10 +355,8 @@ class TestCudaLeafDigitParity:
 
     def test_install_sh_backend_export_requires_cu_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The UNSLOTH_TORCH_BACKEND export must brand CUDA only on cu[0-9]* -- a
-        # bare catch-all *) -> cuda would mis-brand /current, /custom mirror pins
-        # as CUDA and make the stack skip ROCm repair on AMD hosts (comment #2's
-        # bug via install.sh instead of standalone studio update).
+        # The backend export must brand CUDA only on cu[0-9]*; a bare catch-all *) -> cuda
+        # would mis-brand /current, /custom pins and skip ROCm repair on AMD hosts.
         assert re.search(
             r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
         ), "install.sh backend export must brand cuda only on cu[0-9]*"

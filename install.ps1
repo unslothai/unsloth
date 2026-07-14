@@ -62,10 +62,8 @@ function Install-UnslothStudio {
     function Get-TauriGpuBranch {
         param([string]$TorchIndexFamily)
         if ($SkipTorch) { return "no_torch" }
-        # Require digits after "cu" (cu118/cu128/...) so an odd mirror leaf like
-        # "custom"/"current" is not mis-branded CUDA. $TorchIndexFamily is already
-        # normalised by Get-TauriTorchIndexFamily today, but keep the guard narrow
-        # to match the ^cu[0-9] rule in setup.ps1 / install_python_stack.py.
+        # Require digits after "cu" so an odd mirror leaf (custom/current) isn't
+        # mis-branded CUDA -- matches the ^cu[0-9] rule in setup.ps1 / install_python_stack.py.
         if ($TorchIndexFamily -match '^cu[0-9]') { return "cuda" }
         if ($TorchIndexFamily -like "rocm*") { return "rocm" }
         if ($TorchIndexFamily -eq "cpu") { return "cpu" }
@@ -476,11 +474,9 @@ function Install-UnslothStudio {
         )
         # Installer-pinned index installs (torch) must beat an inherited uv mirror
         # (#6898): when the command pins an index, clear every uv index env var so
-        # it wins, then restore in finally. UV_NO_CONFIG=1 (with UV_CONFIG_FILE
-        # dropped) also disables uv's config-file discovery for the pinned
-        # install: a project/user uv.toml or pyproject [tool.uv] index (or
-        # pip.torch-backend) otherwise outranks the CLI pin (verified with uv
-        # 0.10). Other installs keep the user's mirror and configuration.
+        # it wins, then restore in finally. UV_NO_CONFIG=1 (+ dropping UV_CONFIG_FILE)
+        # also stops a uv.toml/pyproject index outranking the CLI pin (uv 0.10).
+        # Other installs keep the user's mirror and configuration.
         $savedUvIndex = $null
         if ($Command.ToString() -match '--default-index') {
             $savedUvIndex = @{}
@@ -1974,10 +1970,9 @@ exit 0
     function Get-TorchIndexUrl {
         $baseUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
         # Explicit pin -- skip ALL GPU probing when the caller names the wheel index
-        # (headless / CI / cross-install). Matches install.sh::get_torch_index_url and
-        # install_python_stack.py: UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim);
-        # UNSLOTH_TORCH_INDEX_FAMILY is the convenience leaf (cpu, cu128, rocm6.4, ...)
-        # appended to the mirror base so UNSLOTH_PYTORCH_MIRROR is still honoured.
+        # (headless / CI / cross-install). Matches install.sh / install_python_stack.py:
+        # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); UNSLOTH_TORCH_INDEX_FAMILY
+        # is the convenience leaf (cpu, cu128, ...) appended to the mirror base.
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
             return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
         }
@@ -2005,19 +2000,15 @@ exit 0
     }
 
     # ── Torch-index marker ───────────────────────────────────────────────────
-    # After a successful torch install, record the exact wheel --index-url used at
-    # a stable per-venv path so a later `unsloth studio update` (setup.ps1 /
-    # install_python_stack.py) can detect a pin change by an EXACT string compare
-    # rather than the wheel version-tag heuristic. Path/format MUST match
-    # install.sh, studio/setup.ps1 and install_python_stack.py:
+    # Records the exact wheel --index-url used at a stable per-venv path so a later
+    # `unsloth studio update` detects a pin change by EXACT string compare instead of
+    # the version-tag heuristic. Path/format MUST match install.sh, setup.ps1 and
+    # install_python_stack.py:
     #   <VenvDir>\.unsloth-torch-index   (single line = the resolved index URL)
-    # install.ps1 only WRITES the marker; setup.ps1 reads it during stale detection.
-    # Remove credentials from a wheel index URL before it is persisted or printed:
-    # an authenticated pin must not leave its secret in the marker file or in
-    # logged output. Both userinfo (user:password@) AND a query/fragment (which
-    # some private feeds use to carry an auth token) are dropped. Mirrors
-    # _strip_index_url_credentials in install.sh / install_python_stack.py and
-    # setup.ps1's helper.
+    # install.ps1 only WRITES it; setup.ps1 reads it during stale detection.
+    # Remove-IndexUrlCredentials strips userinfo AND query/fragment before the URL is
+    # persisted or printed so an authenticated pin never leaks its secret. Mirrors
+    # _strip_index_url_credentials (install.sh / install_python_stack.py / setup.ps1).
     function Remove-IndexUrlCredentials {
         param([string]$Url)
         $sep = $Url.IndexOf('://')
@@ -2043,8 +2034,8 @@ exit 0
         $marker = Join-Path $VenvDir ".unsloth-torch-index"
         $tmp = "$marker.$PID.tmp"
         try {
-            # Single LF-terminated line, no BOM (parity with the sh/py writers).
-            # Credentials never persist: the marker is a comparison identity only.
+            # Single LF-terminated line, no BOM (parity with sh/py writers); the
+            # marker is a comparison identity only, so credentials never persist.
             [System.IO.File]::WriteAllText($tmp, ((Remove-IndexUrlCredentials $IndexUrl.Trim()) + "`n"), (New-Object System.Text.UTF8Encoding($false)))
             Move-Item -LiteralPath $tmp -Destination $marker -Force -ErrorAction Stop
         } catch {
@@ -2070,8 +2061,8 @@ exit 0
         param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
         if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
         if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return $null }
-        # Drop query/fragment first: a .../cu128?token=x pin must classify as cu128,
-        # or the expected-vs-installed tag compare reinstalls on every run.
+        # Drop query/fragment first so .../cu128?token=x classifies as cu128 (else the
+        # expected-vs-installed tag compare reinstalls on every run).
         $leaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLowerInvariant()
         if ($leaf -match '^cu\d+$') { return $leaf }
         if ($leaf -eq 'cpu')        { return 'cpu' }
@@ -2112,8 +2103,7 @@ exit 0
     }
 
     # An explicit UNSLOTH_TORCH_INDEX_URL / _FAMILY pin is authoritative: the AMD
-    # ROCm reroute below must not rewrite it (e.g. a deliberate cpu pin on an AMD
-    # host, or a pinned ROCm family we already resolved in Get-TorchIndexUrl).
+    # ROCm reroute below must not rewrite it (e.g. a deliberate cpu pin on an AMD host).
     $TorchIndexPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
@@ -2127,10 +2117,9 @@ exit 0
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
-    # Set when a pinned ROCm install fails and a CPU base is installed instead; the
-    # marker must then record the CPU index actually used, not the ROCm pin left in
-    # $TorchIndexUrl (else the next managed setup sees CPU torch under a ROCm pin and
-    # aborts as stale rather than continuing with the intended CPU base/retry path).
+    # Set when a pinned ROCm install fails over to a CPU base; the marker must then
+    # record the CPU index used, not the ROCm pin left in $TorchIndexUrl (else the
+    # next managed setup sees CPU torch under a ROCm pin and aborts as stale).
     $RocmCpuFallbackIndexUrl = $null
     $PinnedRocmVisionSpec = $null
     $PinnedRocmAudioSpec = $null
@@ -2185,29 +2174,23 @@ exit 0
     }
 
     # An explicit gfx*/rocm pin skips the auto-reroute above, but the generic
-    # CPU/CUDA install below would use torch>=2.4,<2.11 and pull a known-bad wheel
-    # on the gfx115x/gfx120x/rocm>=7.2 indexes (the torch._C._grouped_mm null-ptr
-    # bug). Route a pinned ROCm index through the ROCm install path with the same
-    # 2.11 floor/companions the unpinned reroute derives from the gfx arch.
+    # CPU/CUDA install below would use torch>=2.4,<2.11 and pull a known-bad wheel on
+    # the gfx115x/gfx120x/rocm>=7.2 indexes (the torch._C._grouped_mm null-ptr bug).
+    # Route a pinned ROCm index through the ROCm path with the same 2.11 floor.
     if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {
         $_pinLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
         $_pinRocm211 = $false
-        # Anchor the match ($): a suffixed custom leaf (rocm7.2-private) must NOT match
-        # the family here, or its rocm7.2 prefix would apply the 2.11 floor and route it
-        # through the ROCm path before the exact-match elseif below can send it verbatim.
+        # Anchor the match ($) so a suffixed custom leaf (rocm7.2-private) doesn't match
+        # the family and get floored before the exact-match elseif can send it verbatim.
         if ($_pinLeaf -match '^rocm(\d+)\.(\d+)$') {
-            # Only KNOWN-2.11 rocm indexes (rocm7.2) get the 2.11 floor; do not floor
-            # an unknown newer rocm speculatively (rocm7.3 does not exist). Matches
-            # install.sh's rocm7.2 KNOWN-2.11 leaf, setup.ps1's Test-RocmKnown211Version
-            # and _ROCM_KNOWN_TORCH211_VERSIONS in install_python_stack.py.
+            # Only KNOWN-2.11 rocm (rocm7.2) gets the floor; don't floor an unknown newer
+            # rocm speculatively. Matches setup.ps1 Test-RocmKnown211Version /
+            # _ROCM_KNOWN_TORCH211_VERSIONS in install_python_stack.py.
             $_pinRocm211 = ([int]$Matches[1] -eq 7 -and [int]$Matches[2] -eq 2)
         }
-        # Only the gfx families the AMD arch map above pins to torch 2.11 need the
-        # floor here (gfx120X-all, gfx1151, gfx1150 -- the _grouped_mm bug arches).
-        # Other per-arch indexes (gfx110X-all, gfx90a, gfx908) publish <2.11 wheels
-        # and the automatic path leaves them bare, so an override to one of those
-        # must NOT force a 2.11 floor the normal path intentionally avoids (which
-        # would fail resolution or drag in mismatched companions).
+        # Only the gfx families the arch map pins to torch 2.11 need the floor
+        # (gfx120X-all, gfx1151, gfx1150 -- the _grouped_mm bug arches). Others
+        # (gfx110X-all, gfx90a, gfx908) publish <2.11 wheels and stay bare.
         $_pinGfx211 = @('gfx120x-all', 'gfx1151', 'gfx1150') -contains $_pinLeaf
         if ($_pinGfx211 -or $_pinRocm211) {
             $ROCmIndexUrl = $TorchIndexUrl
@@ -2216,15 +2199,10 @@ exit 0
             $PinnedRocmAudioSpec = "torchaudio>=2.11.0,<2.12.0"
             substep "pinned ROCm index ($_pinLeaf) -- enforcing $ROCmTorchFloor" "Cyan"
         } elseif ($_pinLeaf -like 'gfx*' -or $_pinLeaf -match '^rocm[0-9]+(\.[0-9]+)?$') {
-            # Other gfx per-arch indexes and older rocm (<=7.1) ship torch <2.11;
-            # route via the ROCm path with bare specs so the pinned family resolves
-            # its own wheels (matches the automatic path's bare floor for these).
-            # EXACT rocm<digits> (rocm7.1, not rocm-rel-7.2.1 / rocm-current / rocm7.2-private):
-            # only an exact rocm<digit> and gfx* are pip --default-index (PEP 503) families.
-            # A suffixed or rocm-<nondigit> leaf is a custom/find-links URL that must fall
-            # through to the verbatim --default-index install below, not this ROCm path (which
-            # silently falls back to CPU on failure). Mirrors install.sh's exact rocm gate
-            # (_is_pip_rocm_family_leaf) and install_python_stack.py's _is_pip_rocm_family_leaf.
+            # Other gfx and older rocm (<=7.1) ship torch <2.11; route via the ROCm path
+            # with bare specs. Only EXACT rocm<digits> and gfx* are pip --default-index
+            # families; a suffixed/rocm-<nondigit> leaf must fall through to the verbatim
+            # install below. Mirrors _is_pip_rocm_family_leaf (install.sh / py).
             $ROCmIndexUrl = $TorchIndexUrl
         }
     }
@@ -2290,20 +2268,17 @@ exit 0
         return $installed
     }
 
-    # Track whether THIS run actually installed or repaired torch, so the marker
-    # write below reflects the real wheel source. A migrated venv that keeps its
-    # existing torch (no reinstall) must NOT rewrite its marker to the newly
-    # requested pin, or a later update compares the new pin against a marker that
-    # already matches and skips the reinstall the pin needs (e.g. a per-arch
-    # gfx1151 -> gfx120X-all switch, identical +rocm tag). Fresh installs below
-    # always install torch; the shared flavor repair re-lands it when wrong.
+    # Track whether THIS run installed or repaired torch, so the marker write below
+    # reflects the real wheel source. A migrated venv that keeps its torch must NOT
+    # rewrite its marker to the new pin, or a later update compares the pin against an
+    # already-matching marker and skips the reinstall it needs (e.g. gfx1151 ->
+    # gfx120X-all, same +rocm tag). Fresh installs always install torch.
     $_TorchInstalledThisRun = $true
 
     if ($_Migrated) {
-        # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
-        # in the new venv location, while preserving existing torch/CUDA. Torch is
-        # preserved unless the shared flavor repair below re-lands it, so the marker
-        # must stay as the migrated venv recorded it for the preserved case.
+        # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state in the
+        # new venv location, preserving existing torch/CUDA. Torch stays (marker
+        # unchanged) unless the shared flavor repair below re-lands it.
         $_TorchInstalledThisRun = $false
         Write-TauriLog "STEP" "Installing unsloth"
         substep "upgrading unsloth in migrated environment..."
@@ -2358,10 +2333,9 @@ exit 0
             $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
                 # Transient AMD-index failure: fall back to a CPU base so the install
-                # still completes; Studio setup retries ROCm afterwards.
-                # Use an explicit CPU index: in the unpinned AMD path $TorchIndexUrl is
-                # already */cpu, but for a pinned ROCm index it IS the ROCm mirror, so
-                # reusing it here would just retry the failing ROCm index, not fall back.
+                # still completes; Studio setup retries ROCm afterwards. Use an explicit
+                # CPU index: for a pinned ROCm index $TorchIndexUrl IS the ROCm mirror,
+                # so reusing it would just retry the failing index, not fall back.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Studio setup retries ROCm." "Yellow"
                 # --force-reinstall: a failed ROCm install can leave an unpinned ROCm
@@ -2378,18 +2352,18 @@ exit 0
                 # reinstalls ROCm afterwards (recomputes its own index URL).
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
-                # Record the CPU index actually installed from, so the marker below
-                # reflects the CPU base rather than the ROCm pin still in $TorchIndexUrl.
+                # Record the CPU index installed from, so the marker reflects the CPU
+                # base rather than the ROCm pin still in $TorchIndexUrl.
                 $RocmCpuFallbackIndexUrl = $CpuFallbackIndexUrl
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
-            # Bound the companions for a CUSTOM pin: a private mirror that also serves a
-            # newer torchvision/torchaudio must not pull a companion built for a newer
-            # torch ABI while the marker records the pin as applied. A cu<digits> family
-            # index bounds its own resolution, so it keeps bare companions. Mirrors
-            # setup.ps1's Test-CudaFamilyLeaf gate and _CUSTOM_INDEX_TORCH_PKG_SPEC.
+            # Bound the companions for a CUSTOM pin: a private mirror serving newer
+            # torchvision/torchaudio must not pull an ABI-newer companion against the
+            # capped torch. A cu<digits> family index bounds its own resolution, so it
+            # keeps bare companions. Mirrors setup.ps1 Test-CudaFamilyLeaf /
+            # _CUSTOM_INDEX_TORCH_PKG_SPEC.
             $_pinCuLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
             $_pinVisionSpec = "torchvision"
             $_pinAudioSpec = "torchaudio"
@@ -2502,8 +2476,8 @@ exit 0
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
                     }
                     $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
-                    # torch was re-landed from $ROCmIndexUrl, so record it (the
-                    # gfx-switch case keeps the same rocm flavor and never reaches here).
+                    # torch re-landed from $ROCmIndexUrl, so record it (the gfx-switch
+                    # case keeps its rocm flavor and never reaches here).
                     $_TorchInstalledThisRun = $true
                 } elseif ($expectedTorchTag -ne 'rocm') {
                     # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
@@ -2528,12 +2502,10 @@ exit 0
     }
 
     # ── Record the resolved torch wheel index (marker) ──
-    # Torch is now resolved; write the exact --index-url used so setup.ps1 /
-    # install_python_stack.py can detect a later pin change by an EXACT string
-    # compare instead of the version-tag heuristic. Reflects the installed family:
-    # $ROCmIndexUrl when the ROCm path ran, the CPU fallback index when a pinned
-    # ROCm install failed over to a CPU base, else the CUDA/CPU/pinned $TorchIndexUrl.
-    # Skipped for --no-torch (nothing installed). Matches install.sh / setup.ps1.
+    # Write the exact --index-url used so setup.ps1 / install_python_stack.py detect a
+    # later pin change by string compare. Reflects the installed family: $ROCmIndexUrl
+    # when the ROCm path ran, the CPU fallback when a pinned ROCm failed to CPU, else
+    # $TorchIndexUrl. Skipped for --no-torch. Matches install.sh / setup.ps1.
     if ((-not $SkipTorch) -and $_TorchInstalledThisRun) {
         $MarkerIndexUrl = if ($ROCmIndexUrl) { $ROCmIndexUrl } elseif ($RocmCpuFallbackIndexUrl) { $RocmCpuFallbackIndexUrl } else { $TorchIndexUrl }
         Write-TorchIndexMarker -VenvDir $VenvDir -IndexUrl $MarkerIndexUrl
