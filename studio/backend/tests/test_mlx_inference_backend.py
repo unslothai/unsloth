@@ -463,7 +463,6 @@ def test_mlx_text_normalizes_native_reasoning_channels(monkeypatch):
         )
     ) == ["<think>", "<think>r", "<think>r</think>", "<think>r</think>a"]
 
-
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend

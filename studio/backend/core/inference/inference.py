@@ -1101,6 +1101,7 @@ class InferenceBackend:
             template_messages = [{"role": "system", "content": system_prompt}] + messages
         else:
             template_messages = messages
+        reasoning_channel_markers_resolved = False
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1110,6 +1111,7 @@ class InferenceBackend:
                     f"Please use a model that includes a chat template, or manually set "
                     f"one via tokenizer.chat_template before inference."
                 )
+            reasoning_channel_markers = None
             formatted_prompt = self._apply_chat_template_for_generation(
                 tokenizer,
                 template_messages,
@@ -1125,7 +1127,7 @@ class InferenceBackend:
                 render_with_native_template_fallback,
             )
 
-            formatted_prompt = render_with_native_template_fallback(
+            render_result = render_with_native_template_fallback(
                 formatted_prompt = formatted_prompt,
                 tokenizer = tokenizer,
                 model_info = model_info,
@@ -1137,13 +1139,19 @@ class InferenceBackend:
                 preserve_thinking = preserve_thinking,
                 apply_fn = self._apply_chat_template_for_generation,
                 hf_token = model_info.get("hf_token"),
+                return_metadata = True,
             )
+            formatted_prompt = render_result.prompt
+            reasoning_channel_markers = render_result.reasoning_channel_markers
+            reasoning_channel_markers_resolved = True
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")
             # Fall back to manual formatting
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+            reasoning_channel_markers = None
+            reasoning_channel_markers_resolved = True
 
         # Step 3: generate
         yield from self.generate_stream(
@@ -1157,6 +1165,8 @@ class InferenceBackend:
             cancel_event = cancel_event,
             _adapter_state = _adapter_state,
             presence_penalty = presence_penalty,
+            reasoning_channel_markers = reasoning_channel_markers,
+            reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
         )
 
     def _generate_vision_response(
@@ -1537,6 +1547,8 @@ class InferenceBackend:
         tokenizer,
         *,
         protocol_source = None,
+        reasoning_channel_markers = None,
+        reasoning_channel_markers_resolved: bool = False,
         skip_prompt: bool = True,
         timeout: float = 0.2,
         cancel_event = None,
@@ -1559,7 +1571,12 @@ class InferenceBackend:
                     timeout = timeout,
                 )
 
-        markers = detect_reasoning_channel_markers(protocol_source or tokenizer)
+        markers = (
+            reasoning_channel_markers
+            if reasoning_channel_markers_resolved
+            else reasoning_channel_markers
+            or detect_reasoning_channel_markers(protocol_source or tokenizer)
+        )
         if markers is not None:
             return ReasoningTextIteratorStreamer(
                 tokenizer,
@@ -1617,6 +1634,8 @@ class InferenceBackend:
         cancel_event = None,
         _adapter_state = None,
         presence_penalty: float = 0.0,
+        reasoning_channel_markers = None,
+        reasoning_channel_markers_resolved: bool = False,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1653,6 +1672,8 @@ class InferenceBackend:
             streamer = self._make_text_streamer(
                 tokenizer,
                 protocol_source = model_info.get("tokenizer"),
+                reasoning_channel_markers = reasoning_channel_markers,
+                reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
                 skip_prompt = True,
                 timeout = 0.2,
                 cancel_event = cancel_event,

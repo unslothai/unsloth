@@ -217,7 +217,7 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
     assert swallowed["reasoning"] == "The capital of France is Paris."
 
 
-def test_native_reasoning_streamer_selected_for_gemma_channels():
+def test_native_reasoning_streamer_selected_and_errors_raise():
     import threading
     import torch
 
@@ -244,7 +244,10 @@ def test_native_reasoning_streamer_selected_for_gemma_channels():
         device = "cpu"
         generation_config = type("Cfg", (), {"eos_token_id": 1})()
         config = generation_config
-        kwargs = None
+
+        def __init__(self, fail = False):
+            self.fail = fail
+            self.kwargs = None
 
         def generate(self, **kwargs):
             self.kwargs = kwargs
@@ -252,6 +255,8 @@ def test_native_reasoning_streamer_selected_for_gemma_channels():
             streamer.put(torch.zeros((1, 1), dtype = torch.long))
             for token_id in [10, 11, 12, 13]:
                 streamer.put(torch.tensor([token_id]))
+                if self.fail:
+                    raise RuntimeError("boom")
 
     backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
     backend.active_model_name = "gemma-test"
@@ -259,3 +264,9 @@ def test_native_reasoning_streamer_selected_for_gemma_channels():
     backend.models = {"gemma-test": {"model": Model(), "tokenizer": Tok()}}
 
     assert list(backend.generate_stream("prompt", max_new_tokens = 4))[-1] == "<think>r</think>a"
+
+    backend.models["gemma-test"]["model"] = Model(fail = True)
+    import pytest
+
+    with pytest.raises(inf._GenerationThreadError, match = "boom"):
+        list(backend.generate_stream("prompt", max_new_tokens = 4))

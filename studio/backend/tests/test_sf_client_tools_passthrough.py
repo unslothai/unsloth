@@ -485,6 +485,29 @@ def test_streaming_no_tools_verbatim(monkeypatch):
     assert finishes == ["stop"]
 
 
+def test_streaming_gen_stream_error_is_not_model_text(monkeypatch):
+    from core.inference.orchestrator import GenStreamError
+
+    class _ErrorAfterPartial(_ScriptedBackend):
+        def __init__(self):
+            super().__init__(_fixed())
+
+        def generate_chat_response(self, **_kwargs):
+            yield "<think>partial"
+            yield GenStreamError("Error: /tmp/secret traceback")
+
+    backend = _ErrorAfterPartial()
+    payload = _request(stream = True)
+    response = _call(payload, monkeypatch, backend, supports_tools = False)
+    objs = _sse_objects(_collect_sse(response))
+
+    deltas = [o.get("choices", [{}])[0].get("delta", {}) for o in objs if o.get("choices")]
+    assert any("partial" in json.dumps(delta) for delta in deltas)
+    assert not any("/tmp/secret" in json.dumps(delta) for delta in deltas)
+    errors = [o["error"]["message"] for o in objs if "error" in o]
+    assert errors == ["An internal error occurred."]
+
+
 def test_streaming_repeated_snapshot_no_duplicate_call(monkeypatch):
     # Repeated then shrunk cumulative snapshots must not double-heal.
     backend = _ScriptedBackend(_fixed(_CALL_XML, _CALL_XML, _CALL_XML[:5], _CALL_XML))

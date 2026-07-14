@@ -20,6 +20,7 @@ from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    render_with_native_template_fallback,
 )
 
 
@@ -93,76 +94,68 @@ def test_guard_default_and_empty_keep_emitting():
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", []) == "<think>\n"
 
 
-def test_gemma_channel_detection_uses_template_or_named_token_metadata():
+def test_gemma_channel_detection_uses_active_template_not_token_metadata():
     class TemplateTokenizer:
         chat_template = {"default": "...<|channel>thought\\n{{ eoc_token }}"}
 
-    class LookalikeTokenizer:
-        chat_template = "...<|channel>thoughtful\n...<channel|>..."
+    class NamedTemplateTokenizer:
+        chat_template = {
+            "default": "plain assistant template",
+            "tool_use": "...<|channel>thought\\n{{ eoc_token }}",
+        }
 
-    class ChannelTokenizer:
+    class TokenMetadataOnly:
+        chat_template = None
         soc_token = "<|channel>"
         eoc_token = "<channel|>"
-        unk_token_id = 0
-
-        def convert_tokens_to_ids(self, token):
-            return {"<|channel>": 100, "<channel|>": 101}.get(token, 0)
-
-        def convert_ids_to_tokens(self, token_id):
-            return {100: "<|channel>", 101: "<channel|>"}.get(token_id, "<unk>")
-
-    class MarkerVocabTokenizer:
-        unk_token_id = 0
-
-        def convert_tokens_to_ids(self, token):
-            return {"<|channel>": 100, "<channel|>": 101}.get(token, 0)
-
-        def convert_ids_to_tokens(self, token_id):
-            return {100: "<|channel>", 101: "<channel|>"}.get(token_id, "<unk>")
-
-    class VocabOnlyTokenizer:
-        def get_vocab(self):
-            return {"<|channel>": 100, "<channel|>": 101}
-
-    class SplitVocabTokenizer:
-        unk_token_id = 0
-
-        def __init__(self, tokens):
-            self._tokens = tokens
-
-        def convert_tokens_to_ids(self, token):
-            return self._tokens.get(token, 0)
-
-        def convert_ids_to_tokens(self, token_id):
-            return {value: key for key, value in self._tokens.items()}.get(token_id, "<unk>")
-
-    class Processor:
-        tokenizer = ChannelTokenizer()
-
-    class SplitProcessor:
-        soc_token = "<|channel>"
-        eoc_token = "<channel|>"
-        tokenizer = MarkerVocabTokenizer()
-
-    class BadSplitProcessor:
-        soc_token = "<|channel>"
-        eoc_token = "<channel|>"
-        tokenizer = SplitVocabTokenizer({"<channel|>": 101})
-
-        def convert_tokens_to_ids(self, token):
-            return {"<|channel>": 100}.get(token, 0)
-
-        def convert_ids_to_tokens(self, token_id):
-            return {100: "<|channel>"}.get(token_id, "<unk>")
 
     expected = ("<|channel>thought\n", "<channel|>")
     assert detect_reasoning_channel_markers(TemplateTokenizer()) == expected
-    assert detect_reasoning_channel_markers(Processor()) == expected
-    assert detect_reasoning_channel_markers(SplitProcessor()) == expected
-    assert detect_reasoning_channel_markers(BadSplitProcessor()) is None
-    assert detect_reasoning_channel_markers(LookalikeTokenizer()) is None
-    assert detect_reasoning_channel_markers(VocabOnlyTokenizer()) is None
-    assert detect_reasoning_channel_markers(object()) is None
+    assert detect_reasoning_channel_markers(NamedTemplateTokenizer()) is None
+    assert (
+        detect_reasoning_channel_markers(
+            NamedTemplateTokenizer(), tools = [{"function": {"name": "web_search"}}]
+        )
+        == expected
+    )
+    assert detect_reasoning_channel_markers(NamedTemplateTokenizer(), tools = []) is None
+    assert detect_reasoning_channel_markers(GetterTokenizer(), tools = []) is None
+    assert (
+        detect_reasoning_channel_markers(
+            GetterTokenizer(), tools = [{"function": {"name": "web_search"}}]
+        )
+        == expected
+    )
+    assert detect_reasoning_channel_markers(TokenMetadataOnly()) is None
+
+
+def test_native_template_fallback_returns_selected_reasoning_metadata():
+    from types import SimpleNamespace
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    def render(tokenizer, msgs, *, tools, **_kw):
+        body = "".join(message["content"] for message in msgs)
+        suffix = "|TOOLS" if tools else ""
+        return body + suffix if tokenizer.chat_template == "NATIVE <|channel>thought\n" else body
+
+    result = render_with_native_template_fallback(
+        formatted_prompt = "hi",
+        tokenizer = SimpleNamespace(chat_template = "OVERRIDE"),
+        model_info = {
+            "native_chat_template": "NATIVE <|channel>thought\n",
+            "tokenizer": SimpleNamespace(chat_template = "OVERRIDE"),
+        },
+        active_model_name = "gemma-test",
+        messages = messages,
+        tools = tools,
+        apply_fn = render,
+        return_metadata = True,
+    )
+
+    assert result.prompt == "hi|TOOLS"
+    assert result.reasoning_channel_markers == ("<|channel>thought\n", "<channel|>")
 
 
 def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():

@@ -10,7 +10,7 @@ import threading
 from typing import Optional, Generator
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
-    detect_reasoning_channel_markers,
+    ReasoningChannelNormalizer,
     normalize_reasoning_snapshots,
 )
 from loggers import get_logger
@@ -466,8 +466,7 @@ class MLXInferenceBackend:
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
             )
-        protocol_source = self._processor if self._is_vlm else self._tokenizer
-        yield from normalize_reasoning_snapshots(stream, protocol_source, cancel_event)
+        yield from stream
 
     def _generate_text(
         self,
@@ -512,7 +511,7 @@ class MLXInferenceBackend:
         # probe and native render share a renderer. (VLM renders via the
         # processor for image tokens and is not wired here.)
         model_info = self.models.get(self.active_model_name, {})
-        prompt = render_with_native_template_fallback(
+        render_result = render_with_native_template_fallback(
             formatted_prompt = prompt,
             tokenizer = self._tokenizer,
             model_info = model_info,
@@ -523,7 +522,10 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             hf_token = model_info.get("hf_token"),
+            return_metadata = True,
         )
+        prompt = render_result.prompt
+        reasoning_channel_markers = render_result.reasoning_channel_markers
 
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
@@ -557,9 +559,14 @@ class MLXInferenceBackend:
         if not logits_processors:
             logits_processors = None
 
-        preserve_native_channels = detect_reasoning_channel_markers(self._tokenizer) is not None
+        preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
-        generated_text = ""
+        normalizer = (
+            ReasoningChannelNormalizer(*reasoning_channel_markers)
+            if reasoning_channel_markers is not None
+            else None
+        )
+        normalized_output = ""
         logger.info(
             "Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
             len(prompt),
@@ -569,6 +576,7 @@ class MLXInferenceBackend:
         )
         with self._generation_lock:
             final_response = None
+            generation_failed = False
             try:
                 gen_kwargs = dict(
                     prompt = prompt,
@@ -584,24 +592,39 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     if preserve_native_channels:
-                        generated_text += getattr(response, "text", None) or ""
-                        cumulative = generated_text
+                        piece = getattr(response, "text", None) or ""
+                        delta = normalizer.feed(piece)
+                        if delta:
+                            normalized_output += delta
+                            yield normalized_output
                     else:
                         token_ids.append(response.token)
                         cumulative = self._tokenizer.decode(
                             token_ids,
                             skip_special_tokens = True,
                         )
-                    yield think_prefix + cumulative
+                        yield think_prefix + cumulative
 
                     if cancel_event and cancel_event.is_set():
                         break
             except Exception as e:
                 import traceback
+
+                generation_failed = True
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
                 raise
             finally:
                 # Latch final cumulative stats for the usage/timings chunk.
+                if normalizer is not None:
+                    cancelled = cancel_event is not None and cancel_event.is_set()
+                    tail = (
+                        normalizer.drain()
+                        if cancelled or generation_failed
+                        else normalizer.finish()
+                    )
+                    if tail:
+                        normalized_output += tail
+                        yield normalized_output
                 if final_response is not None:
                     self.last_generation_stats = _build_generation_stats(
                         getattr(final_response, "prompt_tokens", 0),
@@ -697,31 +720,37 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        with self._generation_lock:
-            final_response = None
-            try:
-                for response in vlm_stream(
-                    self._model,
-                    self._processor,
-                    prompt,
-                    images,
-                    **vlm_kwargs,
-                ):
-                    final_response = response
-                    token_text = response.text if hasattr(response, "text") else str(response)
-                    cumulative += token_text
-                    yield cumulative
-                    if cancel_event and cancel_event.is_set():
-                        break
-            finally:
-                # mlx_vlm exposes the same stats fields as mlx_lm.
-                if final_response is not None:
-                    self.last_generation_stats = _build_generation_stats(
-                        getattr(final_response, "prompt_tokens", 0),
-                        getattr(final_response, "prompt_tps", 0.0),
-                        getattr(final_response, "generation_tokens", 0),
-                        getattr(final_response, "generation_tps", 0.0),
-                    )
+        def _stream_vlm_snapshots():
+            nonlocal cumulative
+            with self._generation_lock:
+                final_response = None
+                try:
+                    for response in vlm_stream(
+                        self._model,
+                        self._processor,
+                        prompt,
+                        images,
+                        **vlm_kwargs,
+                    ):
+                        final_response = response
+                        token_text = response.text if hasattr(response, "text") else str(response)
+                        cumulative += token_text
+                        yield cumulative
+                        if cancel_event and cancel_event.is_set():
+                            break
+                finally:
+                    # mlx_vlm exposes the same stats fields as mlx_lm.
+                    if final_response is not None:
+                        self.last_generation_stats = _build_generation_stats(
+                            getattr(final_response, "prompt_tokens", 0),
+                            getattr(final_response, "prompt_tps", 0.0),
+                            getattr(final_response, "generation_tokens", 0),
+                            getattr(final_response, "generation_tps", 0.0),
+                        )
+
+        yield from normalize_reasoning_snapshots(
+            _stream_vlm_snapshots(), chat_target, cancel_event, tools = tools
+        )
 
     def generate_with_adapter_control(
         self,

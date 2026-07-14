@@ -28,6 +28,7 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -210,6 +211,14 @@ def _friendly_error(exc: Exception) -> str:
     if template_msg:
         return f"An internal error occurred: {template_msg}"
     return "An internal error occurred"
+
+
+def _friendly_gen_stream_error(value) -> str:
+    """Return a client-safe message for typed local generation errors."""
+    text = str(value)
+    if getattr(value, "public", False):
+        return text
+    return safe_error_detail(RuntimeError(text), fallback = "An internal error occurred.")
 
 
 def _friendly_upstream_error(text: str) -> str:
@@ -4974,6 +4983,9 @@ async def generate_stream(
                 if chunk is _DONE:
                     completed = True
                     break
+                if isinstance(chunk, GenStreamError):
+                    yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    return
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             if completed:
                 yield "data: [DONE]\n\n"
@@ -6554,6 +6566,13 @@ async def openai_chat_completions(
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
                                 break
+                            if isinstance(chunk_text, GenStreamError):
+                                _msg = _friendly_gen_stream_error(chunk_text)
+                                api_monitor.fail(monitor_id, _msg)
+                                yield _openai_stream_error_sse(
+                                    {"error": {"message": _msg, "type": "server_error"}}
+                                )
+                                return
                             if chunk_text:
                                 api_monitor.append_reply(monitor_id, chunk_text)
                                 yield _chat_content_chunk(
@@ -6587,7 +6606,15 @@ async def openai_chat_completions(
                 )
             else:
                 try:
-                    full_text = "".join(audio_input_generate())
+                    full_text = ""
+                    for chunk_text in audio_input_generate():
+                        if isinstance(chunk_text, GenStreamError):
+                            _msg = _friendly_gen_stream_error(chunk_text)
+                            api_monitor.fail(monitor_id, _msg)
+                            raise HTTPException(status_code = 500, detail = _msg)
+                        full_text += chunk_text
+                except HTTPException:
+                    raise
                 except Exception as e:
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     raise
@@ -8278,6 +8305,16 @@ async def openai_chat_completions(
                     event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
                     if event is _sf_tool_sentinel:
                         break
+                    if isinstance(event, GenStreamError):
+                        backend.reset_generation_state()
+                        _msg = _friendly_gen_stream_error(event)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
+                        return
+                    if not isinstance(event, dict):
+                        continue
 
                     if event["type"] == "status":
                         if not event["text"]:
@@ -8355,6 +8392,11 @@ async def openai_chat_completions(
                 backend.reset_generation_state()
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
+            except GenStreamErrorRaised as exc:
+                backend.reset_generation_state()
+                _msg = _friendly_gen_stream_error(exc)
+                api_monitor.fail(monitor_id, _msg)
+                yield _openai_stream_error_sse({"error": {"message": _msg, "type": "server_error"}})
             except Exception:
                 backend.reset_generation_state()
                 # Generic wire message; full trace stays in the log (CWE-209:
@@ -8398,6 +8440,13 @@ async def openai_chat_completions(
                 for event in gen:
                     if cancel_event.is_set():
                         break
+                    if isinstance(event, GenStreamError):
+                        raise HTTPException(
+                            status_code = 500,
+                            detail = _friendly_gen_stream_error(event),
+                        )
+                    if not isinstance(event, dict):
+                        continue
                     if event.get("type") == "content":
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
@@ -8437,6 +8486,15 @@ async def openai_chat_completions(
             cancel_event.set()
             backend.reset_generation_state()
             api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except GenStreamErrorRaised as exc:
+            backend.reset_generation_state()
+            _msg = _friendly_gen_stream_error(exc)
+            api_monitor.fail(monitor_id, _msg)
+            raise HTTPException(status_code = 500, detail = _msg)
+        except HTTPException as exc:
+            backend.reset_generation_state()
+            api_monitor.fail(monitor_id, str(exc.detail))
             raise
         except Exception:
             backend.reset_generation_state()
@@ -8595,6 +8653,14 @@ async def openai_chat_completions(
                     cumulative = await loop.run_in_executor(None, next, gen, _DONE)
                     if cumulative is _DONE:
                         break
+                    if isinstance(cumulative, GenStreamError):
+                        backend.reset_generation_state()
+                        _msg = _friendly_gen_stream_error(cumulative)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
+                        return
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
@@ -8733,6 +8799,11 @@ async def openai_chat_completions(
         try:
             full_text = ""
             for token in generate():
+                if isinstance(token, GenStreamError):
+                    backend.reset_generation_state()
+                    _msg = _friendly_gen_stream_error(token)
+                    api_monitor.fail(monitor_id, _msg)
+                    raise HTTPException(status_code = 500, detail = _msg)
                 full_text = token
 
             # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
@@ -8831,6 +8902,8 @@ async def openai_chat_completions(
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
+        except HTTPException:
+            raise
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
