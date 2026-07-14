@@ -231,7 +231,7 @@ function SttModelCombobox({
         <ComboboxInput
           aria-label="Speech recognition model"
           placeholder={t("settings.voice.dictation.sttModelSearchPlaceholder")}
-          className="h-8 w-full [&_input]:text-xs"
+          className="h-8 w-full [&_input]:text-sm"
           startAddon={
             <HugeiconsIcon
               icon={Search01Icon}

@@ -126,6 +126,22 @@ export function curateSystemVoices(
   return curated;
 }
 
+/**
+ * Best voice when none is chosen. The browser default on macOS is often a
+ * robotic legacy voice, so fall back to the top curated voice instead.
+ */
+function defaultTtsVoice(): SpeechSynthesisVoice | undefined {
+  if (typeof window === "undefined" || !window.speechSynthesis) {
+    return undefined;
+  }
+  const voices = window.speechSynthesis.getVoices();
+  return (
+    curateSystemVoices(voices)[0] ??
+    voices.find((voice) => voice.default) ??
+    voices[0]
+  );
+}
+
 /** Build an utterance from the current Voice settings. */
 export function createConfiguredUtterance(
   text: string,
@@ -133,7 +149,7 @@ export function createConfiguredUtterance(
   const { ttsVoiceURI, ttsRate, ttsPitch, ttsVolume } =
     useVoiceSettingsStore.getState();
   const utterance = new SpeechSynthesisUtterance(text);
-  const voice = findTtsVoice(ttsVoiceURI);
+  const voice = findTtsVoice(ttsVoiceURI) ?? defaultTtsVoice();
   if (voice) {
     utterance.voice = voice;
     utterance.lang = voice.lang;
