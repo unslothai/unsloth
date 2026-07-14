@@ -124,7 +124,9 @@ def _record_force_terminate(monkeypatch, b):
     """Replace force_terminate + escalation finalize with recorders (no DB/OS)."""
     calls: list = []
     monkeypatch.setattr(b, "force_terminate", lambda target_proc = None: calls.append("force"))
-    monkeypatch.setattr(b, "_finalize_stopped_after_escalation", lambda: calls.append("final"))
+    monkeypatch.setattr(
+        b, "_finalize_stopped_after_escalation", lambda target_proc = None: calls.append("final")
+    )
     return calls
 
 
@@ -317,7 +319,9 @@ def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
 
     finalized: list = []
     monkeypatch.setattr(b, "force_terminate", _boom)
-    monkeypatch.setattr(b, "_finalize_stopped_after_escalation", lambda: finalized.append(True))
+    monkeypatch.setattr(
+        b, "_finalize_stopped_after_escalation", lambda target_proc = None: finalized.append(True)
+    )
 
     b._proc = _FakeProc(alive = True)
     b._complete_seen.set()
@@ -374,3 +378,166 @@ def test_stop_training_starts_watchdog_only_when_worker_alive(monkeypatch):
     b._proc = None
     assert b.stop_training(save = True) is True
     assert b._stop_watchdog is None
+
+
+# ----------------------------------------------------------------------------
+# (d) A stale watchdog must never clobber a run that replaced its worker.
+# ----------------------------------------------------------------------------
+
+
+def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
+    # A /start can slip in while the watchdog is force-terminating the old worker
+    # (is_training_active() is False once _should_stop is set and the old proc is
+    # dead). The escalation finalize must then leave the NEW run untouched instead
+    # of dropping its handle and marking it stopped.
+    b = TrainingBackend()
+    finalized: list = []
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.append(kw))
+
+    old_proc = _FakeProc(alive = False)  # force-terminated worker we were watching
+    new_proc = _FakeProc(alive = True)  # a new run already took over
+    b._proc = new_proc
+    b.current_job_id = "job_new"
+    b._progress.is_training = True
+
+    b._finalize_stopped_after_escalation(target_proc = old_proc)
+
+    assert b._proc is new_proc, "must not drop the new run's handle"
+    assert b._progress.is_training is True, "must not mark the new run stopped"
+    assert finalized == [], "must not finalize the new run in the DB"
+
+
+def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
+    # The common case: the worker we watched is still current, so finalize proceeds.
+    b = TrainingBackend()
+    finalized: list = []
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.append(kw))
+
+    proc = _FakeProc(alive = False)
+    b._proc = proc
+    b.current_job_id = "job_a"
+    b._progress.is_training = True
+
+    b._finalize_stopped_after_escalation(target_proc = proc)
+
+    assert b._proc is None
+    assert b._progress.is_training is False
+    assert finalized and finalized[0].get("status") == "stopped"
+    assert finalized[0].get("expected_job_id") == "job_a"
+
+
+# ----------------------------------------------------------------------------
+# (e) A later cancel (save=False) tightens an in-flight save watchdog.
+# ----------------------------------------------------------------------------
+
+
+def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)  # never trips (no complete)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
+    monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+
+    b._proc = _FakeProc(alive = True)
+    b._start_stop_watchdog(cancel = False)  # started as a save-stop with the long cap
+    time.sleep(0.15)
+    assert calls == [], "a save-stop must not escalate on the short cancel cap yet"
+
+    # The user now cancels the in-flight stop: the watchdog must tighten its cap.
+    b._cancel_requested = True
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "a later cancel must tighten the watchdog to the shorter cancel cap"
+    b._stop_watchdog.join(timeout = 5)
+
+
+# ----------------------------------------------------------------------------
+# (f) DB finalize/flush are safe when the watchdog and pump race (see Item 4).
+# ----------------------------------------------------------------------------
+
+
+def _install_fake_db(monkeypatch):
+    """Stub storage.studio_db + utils.downsample so the real DB helpers run without
+    SQLite. Returns the recorder dict."""
+    recs = {"created": [], "finished": [], "inserted": []}
+    fake_storage = _types.ModuleType("storage")
+    fake_db = _types.ModuleType("storage.studio_db")
+    fake_db.create_run = lambda **kw: recs["created"].append(kw)
+    fake_db.finish_run = lambda **kw: recs["finished"].append(kw)
+    fake_db.insert_metrics_batch = lambda job_id, batch: recs["inserted"].extend(batch)
+    fake_db.update_run_progress = lambda **kw: None
+    fake_storage.studio_db = fake_db
+    monkeypatch.setitem(sys.modules, "storage", fake_storage)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
+    fake_ds = _types.ModuleType("utils.downsample")
+    fake_ds.downsample = lambda seq, n: list(seq)[:n]
+    monkeypatch.setitem(sys.modules, "utils.downsample", fake_ds)
+    return recs
+
+
+def test_finalize_run_in_db_single_winner_under_concurrency(monkeypatch):
+    # The watchdog and pump can both finalize; only one call may reach finish_run.
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id = "job_x"
+    b._db_run_created = True
+    b._run_finalized = False
+
+    start = threading.Barrier(8)
+
+    def worker():
+        start.wait()
+        b._finalize_run_in_db(status = "stopped")
+
+    threads = [threading.Thread(target = worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 5)
+
+    assert len(recs["finished"]) == 1, f"finalize must run once, got {len(recs['finished'])}"
+    assert b._run_finalized is True
+
+
+def test_finalize_run_in_db_no_ops_on_job_mismatch(monkeypatch):
+    # A finalize captured for an old job must not finalize the run that replaced it.
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id = "job_new"
+    b._db_run_created = True
+    b._run_finalized = False
+
+    b._finalize_run_in_db(status = "stopped", expected_job_id = "job_old")
+
+    assert recs["finished"] == [], "a superseded job id must not finalize the current run"
+    assert b._run_finalized is False
+
+
+def test_concurrent_flush_claims_each_metric_once(monkeypatch):
+    # Concurrent flushes (pump periodic flush vs watchdog finalize flush) must not
+    # double-remove or drop buffered metrics.
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id = "job_y"
+    b._db_run_created = True
+    b._metric_buffer[:] = [{"step": i} for i in range(200)]
+
+    start = threading.Barrier(6)
+
+    def worker():
+        start.wait()
+        for _ in range(50):
+            b._flush_metrics_to_db()
+
+    threads = [threading.Thread(target = worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 5)
+    b._flush_metrics_to_db()  # drain any remainder
+
+    steps = sorted(m["step"] for m in recs["inserted"])
+    assert steps == list(range(200)), "each metric must be inserted exactly once"
+    assert b._metric_buffer == [], "the buffer must be fully drained"
