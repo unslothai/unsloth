@@ -10,6 +10,7 @@ import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
+import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import {
@@ -1896,13 +1897,11 @@ export function createOpenAIStreamAdapter(
         }
       };
       const notifyPreStreamRunFinished = () => {
-        // Prompt queues reserve capacity when dispatching. Some validation/load
-        // gates fail before the streaming path marks the thread running, so
-        // pulse running on->off to release queue capacity and compare waits.
-        const threadKey = resolvedThreadId || "__default";
-        const store = useChatRuntimeStore.getState();
-        store.setThreadRunning(threadKey, true);
-        store.setThreadRunning(threadKey, false);
+        // Prompt queues reserve global capacity before adapter validation and
+        // model-load gates run. Release only that failed dispatch; do not pulse
+        // running state, because queues treat a real running on->off transition
+        // as a completed generation and would advance remaining prompts.
+        notifyPromptQueueRunFailed(resolvedThreadId ?? null);
       };
 
       // Wait for in-progress model load before inferring.

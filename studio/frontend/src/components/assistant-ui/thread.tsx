@@ -89,12 +89,15 @@ import {
 } from "@/features/chat/stores/prompt-queue-ui-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
+  type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "@/features/chat/utils/prompt-queue-boundary";
 import {
   PLUS_MENU_ORDER,
   composerDraftKey,
+  markThreadIncognito,
   readComposerDraft,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
@@ -964,6 +967,22 @@ function stopAllPromptQueueRuns() {
   }
 }
 
+function handlePromptQueueRunFailed(threadId?: string | null) {
+  if (!threadId) {
+    return;
+  }
+  const failedRun = findPromptQueueRunByThreadIds([threadId]);
+  if (!failedRun || !promptQueueActiveRunIds.has(failedRun.id)) {
+    return;
+  }
+  const activeItem = getActivePromptQueueItem(failedRun);
+  if (!activeItem?.dispatched) {
+    return;
+  }
+  deletePromptQueueRun(failedRun);
+  requestPromptQueuePumpIfReady();
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
     const { threadIds } =
@@ -973,6 +992,11 @@ if (typeof window !== "undefined") {
       return;
     }
     stopAllPromptQueueRuns();
+  });
+  window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, (event) => {
+    const { threadId } =
+      (event as CustomEvent<PromptQueueRunFailedEventDetail>).detail ?? {};
+    handlePromptQueueRunFailed(threadId);
   });
 }
 
@@ -1868,6 +1892,7 @@ const Composer: FC<{
   const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
     const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
     const initialState = aui.threadListItem().getState();
+    const incognitoAtQueueStart = useChatRuntimeStore.getState().incognito;
     const initialRunningThreadIds = [
       initialState.id,
       initialState.remoteId,
@@ -1927,6 +1952,11 @@ const Composer: FC<{
         const thread = getThreadRuntime();
         if (!thread) {
           throw new Error("Prompt queue thread runtime is unavailable");
+        }
+        if (incognitoAtQueueStart) {
+          for (const id of getQueueThreadIds()) {
+            markThreadIncognito(id);
+          }
         }
         thread.append(appendTextToThread(prompt));
       },

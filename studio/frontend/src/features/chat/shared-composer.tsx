@@ -85,6 +85,7 @@ import {
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { usePromptQueueUI } from "./stores/prompt-queue-ui-store";
 import {
   getExternalReasoningCapabilities,
   providerSupportsBuiltinCodeExecution,
@@ -130,6 +131,14 @@ function compactIds(ids: Array<string | null | undefined>): string[] {
 
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
+
+function compareSendAtGlobalCapacity() {
+  const chatState = useChatRuntimeStore.getState();
+  return (
+    Object.values(chatState.runningByThreadId).some(Boolean) ||
+    usePromptQueueUI.getState().isRunning
+  );
+}
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
@@ -928,6 +937,14 @@ export function SharedComposer({
       content.push({ type: "text", text: msg });
     }
     if (content.length === 0) return;
+
+    if (compareSendAtGlobalCapacity()) {
+      toast.error("Wait for the current response to finish", {
+        description:
+          "Compare runs share the same global generation capacity as chat prompts.",
+      });
+      return;
+    }
 
     setText("");
     setPendingImages([]);

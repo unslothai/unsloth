@@ -970,6 +970,7 @@ function useStudioRuntimeAdapters(
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
+        const localThreadId = aui.threadListItem().getState().id;
         const initializeThread = aui.threadListItem().initialize();
         trackRunStartReady(message.id, initializeThread.then(() => undefined));
         const write = (async () => {
@@ -982,7 +983,11 @@ function useStudioRuntimeAdapters(
           // persisted. Compare panes intentionally don't write global activeThreadId.
           if (modelType === "base" && !pairId) {
             const store = useChatRuntimeStore.getState();
-            if (store.activeThreadId !== remoteId) {
+            const visibleThreadId = aui.threads().getState().mainThreadId;
+            if (
+              visibleThreadId === localThreadId &&
+              store.activeThreadId !== remoteId
+            ) {
               store.setActiveThreadId(remoteId);
             }
           }
@@ -992,7 +997,11 @@ function useStudioRuntimeAdapters(
           }
           if (thread?.modelType === "base" && !thread.pairId) {
             const store = useChatRuntimeStore.getState();
-            if (store.activeThreadId !== remoteId) {
+            const visibleThreadId = aui.threads().getState().mainThreadId;
+            if (
+              visibleThreadId === localThreadId &&
+              store.activeThreadId !== remoteId
+            ) {
               store.setActiveThreadId(remoteId);
             }
           }
