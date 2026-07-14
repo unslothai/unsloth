@@ -340,7 +340,6 @@ class WhisperSttSidecar:
                 return
         try:
             from huggingface_hub import snapshot_download
-
             snapshot_download(
                 repo_id = STT_MODELS[model_id],
                 local_files_only = True,

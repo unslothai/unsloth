@@ -69,9 +69,7 @@ _HIDDEN_STT_REPO_IDS = frozenset(
         "unsloth/whisper-large-v3",
     }
 )
-_HIDDEN_STT_CACHE_NAMES = tuple(
-    repo_id.replace("/", "--") for repo_id in _HIDDEN_STT_REPO_IDS
-)
+_HIDDEN_STT_CACHE_NAMES = tuple(repo_id.replace("/", "--") for repo_id in _HIDDEN_STT_REPO_IDS)
 
 
 def _is_hidden_model(*values: str | None) -> bool:

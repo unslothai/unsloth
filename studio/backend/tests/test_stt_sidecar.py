@@ -289,12 +289,7 @@ def test_model_cache_preflight_is_local_only(monkeypatch):
 
     WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded("small")
 
-    assert calls == [
-        {
-            "repo_id": "unsloth/whisper-small",
-            "local_files_only": True,
-        }
-    ]
+    assert calls == [{"repo_id": "unsloth/whisper-small", "local_files_only": True}]
 
 
 def test_model_cache_preflight_reports_missing_snapshot(monkeypatch):
