@@ -1768,8 +1768,14 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 elif (
                     isinstance(_default, ast.Call)
                     and (
-                        (isinstance(_default.func, ast.Name) and _default.func.id in partial_aliases)
-                        or (isinstance(_default.func, ast.Attribute) and _default.func.attr == "partial")
+                        (
+                            isinstance(_default.func, ast.Name)
+                            and _default.func.id in partial_aliases
+                        )
+                        or (
+                            isinstance(_default.func, ast.Attribute)
+                            and _default.func.attr == "partial"
+                        )
                     )
                     and _default.args
                     and _wraps_write_callable(_default.args[0])
