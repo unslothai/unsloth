@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSubjectKey } from "@/features/auth";
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
 import {
   createServerRecipe,
@@ -17,7 +18,27 @@ import { useCallback, useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
+const recipeRecordSubjects = new WeakMap<RecipeRecord, string>();
 const repositoryListeners = new Set<() => void>();
+
+function recipeCacheKey(subject: string, id: string): string {
+  return `${subject}\u0000${id}`;
+}
+
+function assertSubjectUnchanged(subject: string): void {
+  if (getAuthSubjectKey() !== subject) {
+    throw new Error("Recipe persistence account changed.");
+  }
+}
+
+function primeRecipeCacheForSubject(
+  subject: string,
+  record: RecipeRecord,
+): void {
+  recipeRecordSubjects.set(record, subject);
+  recentRecipeCache.set(recipeCacheKey(subject, record.id), record);
+}
+
 function normalizeSecretKey(key: string): string {
   return key
     .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
@@ -91,7 +112,11 @@ function sanitizeRecipeForPersistence(
 ): unknown {
   if (Array.isArray(value)) {
     return value.map((entry, index) =>
-      sanitizeRecipeForPersistence(entry, [...path, String(index)], removedPaths),
+      sanitizeRecipeForPersistence(
+        entry,
+        [...path, String(index)],
+        removedPaths,
+      ),
     );
   }
   if (!value || typeof value !== "object") {
@@ -118,16 +143,22 @@ function notifyRepositoryChanged(): void {
   for (const listener of repositoryListeners) listener();
 }
 
-export function listRecipes(): Promise<RecipeRecord[]> {
-  return listServerRecipes<RecipeRecord["payload"]>();
+export async function listRecipes(): Promise<RecipeRecord[]> {
+  const subject = getAuthSubjectKey();
+  const records = await listServerRecipes<RecipeRecord["payload"]>();
+  assertSubjectUnchanged(subject);
+  return records;
 }
 
 export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
+  const subject = getAuthSubjectKey();
   try {
     const record = await getServerRecipe<RecipeRecord["payload"]>(id);
-    primeRecipeCache(record);
+    assertSubjectUnchanged(subject);
+    primeRecipeCacheForSubject(subject, record);
     return record;
   } catch (error) {
+    assertSubjectUnchanged(subject);
     if (error instanceof Error && "status" in error && error.status === 404) {
       return undefined;
     }
@@ -136,16 +167,22 @@ export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
 }
 
 export function getCachedRecipe(id: string): RecipeRecord | null {
-  return recentRecipeCache.get(id) ?? null;
+  return recentRecipeCache.get(recipeCacheKey(getAuthSubjectKey(), id)) ?? null;
 }
 
 export function primeRecipeCache(record: RecipeRecord): void {
-  recentRecipeCache.set(record.id, record);
+  const subject = getAuthSubjectKey();
+  const recordSubject = recipeRecordSubjects.get(record);
+  if (recordSubject && recordSubject !== subject) {
+    return;
+  }
+  primeRecipeCacheForSubject(subject, record);
 }
 
 export async function saveRecipe(
   input: SaveRecipeInput,
 ): Promise<RecipeRecord> {
+  const subject = getAuthSubjectKey();
   const name = normalizeNonEmptyName(input.name);
   const removedCredentialPaths: string[] = [];
   const payload = sanitizeRecipeForPersistence(
@@ -170,8 +207,9 @@ export async function saveRecipe(
           learningRecipeId: input.learningRecipeId,
           learningRecipeTitle: input.learningRecipeTitle,
         });
+  assertSubjectUnchanged(subject);
   const authoritativeRecord = { ...record, removedCredentialPaths };
-  primeRecipeCache(authoritativeRecord);
+  primeRecipeCacheForSubject(subject, authoritativeRecord);
   notifyRepositoryChanged();
   return authoritativeRecord;
 }
@@ -180,8 +218,10 @@ export async function deleteRecipe(
   id: string,
   revision: number,
 ): Promise<void> {
+  const subject = getAuthSubjectKey();
   await deleteServerRecipe(id, revision);
-  recentRecipeCache.delete(id);
+  assertSubjectUnchanged(subject);
+  recentRecipeCache.delete(recipeCacheKey(subject, id));
   notifyRepositoryChanged();
 }
 
@@ -224,18 +264,27 @@ export function useRecipes(): {
     };
   }, [refresh]);
 
+  // refreshVersion is intentionally an imperative reload trigger.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     let active = true;
+    const subject = getAuthSubjectKey();
     listRecipes()
       .then((records) => {
-        if (!active) return;
-        for (const recipe of records) primeRecipeCache(recipe);
+        if (!active || getAuthSubjectKey() !== subject) {
+          return;
+        }
+        for (const recipe of records) {
+          primeRecipeCacheForSubject(subject, recipe);
+        }
         setRecipes(records);
         setError(null);
         setReady(true);
       })
       .catch((caught: unknown) => {
-        if (!active) return;
+        if (!active || getAuthSubjectKey() !== subject) {
+          return;
+        }
         setRecipes([]);
         setError(
           caught instanceof Error

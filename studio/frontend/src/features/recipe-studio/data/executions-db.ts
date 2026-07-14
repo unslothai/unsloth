@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSubjectKey } from "@/features/auth";
 import {
   type RecipeExecutionPage,
   UserAssetApiError,
   listServerRecipeExecutions,
   upsertServerRecipeExecution,
 } from "@/features/user-assets";
-import { getAuthSubjectKey } from "@/features/auth";
 // Shared persistence policy is infrastructure, not a feature UI dependency.
 // eslint-disable-next-line no-restricted-imports
 import { MAX_EXECUTION_JSON_BYTES } from "@/features/user-assets/persistence-policy";
@@ -20,6 +20,7 @@ import type {
 
 const revisions = new Map<string, number>();
 type WriteState = {
+  subject: string;
   latest: RecipeExecutionRecord | null;
   running: boolean;
   timer: ReturnType<typeof setTimeout> | null;
@@ -50,8 +51,14 @@ function syncSubject(): string {
   return subject;
 }
 
-function executionKey(id: string): string {
-  return `${syncSubject()}\u0000${id}`;
+function assertSubjectUnchanged(subject: string): void {
+  if (getAuthSubjectKey() !== subject) {
+    throw new Error("Execution persistence account changed.");
+  }
+}
+
+function executionKey(subject: string, id: string): string {
+  return `${subject}\u0000${id}`;
 }
 
 function truncateUtf8(value: unknown, maxBytes: number): string | null {
@@ -202,22 +209,31 @@ function incomingWins(
 
 async function persistOnce(
   record: RecipeExecutionRecord,
-  key = executionKey(record.id),
+  key: string,
+  subject: string,
 ): Promise<void> {
   const metadata = serializeExecutionMetadata(record);
   let expectedRevision = revisions.get(key) ?? record.revision;
   let lastConflict: UserAssetApiError | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>({
-        recipeId: record.recipeId,
-        executionId: record.id,
-        metadata,
-        revision: expectedRevision,
-      });
+      // A debounced write may wake after logout/account switch. Check the
+      // captured owner at the last possible point before authFetch reads the
+      // current token, and again before accepting the response.
+      assertSubjectUnchanged(subject);
+      const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>(
+        {
+          recipeId: record.recipeId,
+          executionId: record.id,
+          metadata,
+          revision: expectedRevision,
+        },
+      );
+      assertSubjectUnchanged(subject);
       revisions.set(key, saved.revision);
       return;
     } catch (error) {
+      assertSubjectUnchanged(subject);
       if (!(error instanceof UserAssetApiError) || error.status !== 409)
         throw error;
       const current = error.detail.current as
@@ -237,14 +253,19 @@ export async function listRecipeExecutionPage(
   recipeId: string,
   options: { cursor?: string | null; limit?: number } = {},
 ): Promise<RecipeExecutionPage<PersistedRecipeExecution>> {
+  const subject = syncSubject();
   const page = await listServerRecipeExecutions<PersistedRecipeExecution>(
     recipeId,
     { cursor: options.cursor, limit: options.limit ?? 100 },
   );
+  assertSubjectUnchanged(subject);
   for (const execution of page.executions)
-    revisions.set(executionKey(execution.id), execution.revision);
+    revisions.set(executionKey(subject, execution.id), execution.revision);
   if (page.resumable)
-    revisions.set(executionKey(page.resumable.id), page.resumable.revision);
+    revisions.set(
+      executionKey(subject, page.resumable.id),
+      page.resumable.revision,
+    );
   return page;
 }
 
@@ -267,7 +288,9 @@ export async function listRecipeExecutions(
     }
     resumable ??= page.resumable ?? null;
     if (page.nextCursor && seenCursors.has(page.nextCursor)) {
-      throw new Error("Execution history pagination returned a repeated cursor.");
+      throw new Error(
+        "Execution history pagination returned a repeated cursor.",
+      );
     }
     if (page.nextCursor) seenCursors.add(page.nextCursor);
     cursor = page.nextCursor;
@@ -287,7 +310,8 @@ async function drainWrites(key: string, state: WriteState): Promise<void> {
     while (state.latest) {
       const next = state.latest;
       state.latest = null;
-      await persistOnce(next, key);
+      assertSubjectUnchanged(state.subject);
+      await persistOnce(next, key, state.subject);
     }
     for (const waiter of state.waiters.splice(0)) waiter.resolve();
   } catch (error) {
@@ -305,8 +329,10 @@ async function drainWrites(key: string, state: WriteState): Promise<void> {
 export function saveRecipeExecution(
   execution: RecipeExecutionRecord,
 ): Promise<void> {
-  const key = executionKey(execution.id);
+  const subject = syncSubject();
+  const key = executionKey(subject, execution.id);
   const state = writeStates.get(key) ?? {
+    subject,
     latest: null,
     running: false,
     timer: null,

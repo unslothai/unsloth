@@ -486,6 +486,7 @@ def job_status(job_id: str, current_subject: str = Depends(get_current_subject))
 
 @router.get("/jobs/current")
 def current_job(current_subject: str = Depends(get_current_subject)):
+    """Return this owner's job, or a detail-free global busy signal."""
     mgr = get_job_manager()
     state = mgr.get_current_status(current_subject)
     if state is None:

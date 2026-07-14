@@ -157,6 +157,10 @@ class JobManager:
         self._pump_thread: threading.Thread | None = None
         self._seq: int = 0
 
+    def _has_blocking_job_locked(self) -> bool:
+        """Mirror the process-global admission check while ``_lock`` is held."""
+        return self._proc is not None and self._proc.is_alive()
+
     def start(
         self,
         *,
@@ -187,7 +191,7 @@ class JobManager:
             llm_column_count = 1
 
         with self._lock:
-            if self._proc is not None and self._proc.is_alive():
+            if self._has_blocking_job_locked():
                 raise RuntimeError("job already running")
 
             # A completed job's client may deliberately keep its SSE request
@@ -341,10 +345,21 @@ class JobManager:
             }
 
     def get_current_status(self, owner_subject: str) -> dict | None:
-        """Single-job convenience (last/current)."""
-        job_id = self.get_current_job_id(owner_subject)
-        if job_id is None:
-            return None
+        """Return owner details, or only global busy state to another owner.
+
+        The runner is process-global and ``start`` rejects while its child is
+        alive. Other authenticated subjects therefore need that one bit to
+        avoid treating a predictable 409 as an idle backend, but must not learn
+        the current job id, status details, progress, or artifacts.
+        """
+        with self._lock:
+            if self._job is None:
+                return None
+            if self._job.owner_subject != owner_subject:
+                if self._has_blocking_job_locked():
+                    return {"busy": True}
+                return None
+            job_id = self._job.job_id
         return self.get_status(job_id, owner_subject)
 
     def get_current_job_id(self, owner_subject: str) -> str | None:
