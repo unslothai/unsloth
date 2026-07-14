@@ -346,7 +346,7 @@ export function ProfilePersonalizationPanel() {
                 className={cn(
                   // No transition here: animating the ring makes the old
                   // icon's selection border linger when switching sloths.
-                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border hover:ring-ring focus-visible:outline-none",
+                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border hover:ring-ring focus-visible:outline-none focus-visible:ring-ring",
                   // Selection keeps the 1px weight, only darker.
                   selected && "ring-ring-strong hover:ring-ring-strong",
                 )}
@@ -362,7 +362,7 @@ export function ProfilePersonalizationPanel() {
             aria-label={t("settings.profile.noPicture")}
             title={t("settings.profile.noPicture")}
             className={cn(
-              "relative flex aspect-square items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground ring-1 ring-border hover:ring-ring focus-visible:outline-none",
+              "relative flex aspect-square items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground ring-1 ring-border hover:ring-ring focus-visible:outline-none focus-visible:ring-ring",
               shownAvatar === null && "ring-ring-strong hover:ring-ring-strong",
             )}
           >

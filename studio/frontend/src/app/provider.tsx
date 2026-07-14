@@ -20,8 +20,8 @@ import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain
 import {
   applyCustomizationToDocument,
   useAppearanceCustomStore,
-} from "@/features/settings/stores/appearance-custom-store";
-import { useTheme } from "@/features/settings/stores/theme-store";
+  useTheme,
+} from "@/features/settings";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";

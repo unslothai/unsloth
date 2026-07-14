@@ -28,7 +28,7 @@ import {
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { motion, useReducedMotion } from "motion/react";
+import { motion, useReducedMotionConfig } from "motion/react";
 import {
   useEffect,
   useRef,
@@ -924,7 +924,7 @@ export function ReduceMotionSegmented() {
     (s) => s.customization.reduceMotion,
   );
   const patch = useAppearanceCustomStore((s) => s.patch);
-  const reduced = useReducedMotion();
+  const reduced = useReducedMotionConfig();
   return (
     <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
       {REDUCE_MOTION_OPTIONS.map((opt) => {

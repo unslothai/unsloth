@@ -2,8 +2,37 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
+
+// Persisting appearance is best-effort. localStorage can be full or blocked
+// (private browsing), and unlike the theme store zustand's persist write path
+// is not guarded, so a throw here would bubble out of a store action (patch,
+// setColor, ...) and break the UI. Swallow storage errors and keep the
+// in-memory state instead.
+const guardedLocalStorage: StateStorage = {
+  getItem: (name) => {
+    try {
+      return window.localStorage.getItem(name);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name, value) => {
+    try {
+      window.localStorage.setItem(name, value);
+    } catch {
+      // ignore: the customization stays in memory for this session
+    }
+  },
+  removeItem: (name) => {
+    try {
+      window.localStorage.removeItem(name);
+    } catch {
+      // ignore
+    }
+  },
+};
 
 export type ReduceMotionSetting = "system" | "on" | "off";
 
@@ -328,6 +357,7 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     {
       name: "unsloth_appearance_customization",
       version: 2,
+      storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         return {

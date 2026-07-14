@@ -132,13 +132,16 @@ export function SettingsDialog() {
     }).filter((r) => r.tabMatches || r.entries.length > 0);
   }, [query, t]);
 
-  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
+  const [pendingScroll, setPendingScroll] = useState<{
+    tab: SettingsTab;
+    entry: string;
+  } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
     setQuery("");
-    setPendingScroll(entry ?? null);
+    setPendingScroll(entry ? { tab, entry } : null);
   };
 
   // Scroll to the row/section a search result points at once the tab has
@@ -147,6 +150,12 @@ export function SettingsDialog() {
   // racing a single fixed delay (which silently missed under render lag).
   useEffect(() => {
     if (!pendingScroll) return;
+    // The panel renders from the deferred tab, so wait until the destination
+    // tab is actually mounted before matching. Otherwise a same-named row in
+    // the previous tab (for example "Storage" in both General and Resources)
+    // is found first, and pendingScroll is cleared without ever scrolling to
+    // the requested result.
+    if (panelTab !== pendingScroll.tab) return;
     let frame = 0;
     let tries = 0;
     const attempt = () => {
@@ -154,7 +163,7 @@ export function SettingsDialog() {
       const target = root
         ? [
             ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
-          ].find((el) => el.dataset.settingsLabel === pendingScroll)
+          ].find((el) => el.dataset.settingsLabel === pendingScroll.entry)
         : undefined;
       if (target) {
         target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -172,7 +181,7 @@ export function SettingsDialog() {
     };
     frame = window.requestAnimationFrame(attempt);
     return () => window.cancelAnimationFrame(frame);
-  }, [pendingScroll]);
+  }, [pendingScroll, panelTab]);
 
   useEffect(() => {
     if (!open) setQuery("");

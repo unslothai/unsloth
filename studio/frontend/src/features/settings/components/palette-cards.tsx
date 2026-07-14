@@ -131,7 +131,7 @@ export function PaletteCards() {
             // .palette-card in index.css) so it moves in the same style
             // pass that swaps the tokens; keying it off React state leaves
             // the ring on the old card until the app finishes re-rendering.
-            className="palette-card flex flex-col gap-2 rounded-xl border border-border p-2.5 text-left transition-colors"
+            className="palette-card flex flex-col gap-2 rounded-xl border border-border p-2.5 text-left transition-colors focus-visible:border-ring focus-visible:outline-none"
           >
             <PalettePreview colors={PREVIEWS[opt.value][resolved]} />
             <div className="flex items-center gap-2 px-0.5">

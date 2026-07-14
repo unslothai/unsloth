@@ -192,6 +192,24 @@ export function ColorPickerSwatch({
             onPointerMove={(e) => {
               if (e.buttons === 1) moveFromPointer(e);
             }}
+            onKeyDown={(e) => {
+              // Arrow keys move the saturation (x) / value (y) selection so the
+              // area is operable without a pointer; Shift takes coarser steps.
+              const step = e.shiftKey ? 0.1 : 0.01;
+              let next: Hsv | null = null;
+              if (e.key === "ArrowLeft")
+                next = { ...hsv, s: Math.max(0, hsv.s - step) };
+              else if (e.key === "ArrowRight")
+                next = { ...hsv, s: Math.min(1, hsv.s + step) };
+              else if (e.key === "ArrowDown")
+                next = { ...hsv, v: Math.max(0, hsv.v - step) };
+              else if (e.key === "ArrowUp")
+                next = { ...hsv, v: Math.min(1, hsv.v + step) };
+              if (next) {
+                e.preventDefault();
+                emit(next);
+              }
+            }}
           >
             <span
               className="pointer-events-none absolute size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
