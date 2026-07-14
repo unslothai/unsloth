@@ -68,7 +68,7 @@ def get_scan_folders(current_subject: str = Depends(get_current_subject)):
 def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
-    return local_inventory.add_scan_folder_response(body.path)
+    return local_inventory.add_scan_folder_response(body.path, body.recursive)
 
 
 @router.delete("/scan-folders/{folder_id}", response_model = RemoveScanFolderResponse)

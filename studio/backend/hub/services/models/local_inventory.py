@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
 _MAX_CUSTOM_FOLDER_ENTRIES = 2000
 _MODEL_SIGNAL_PROBE_LIMIT = 200
+_MAX_RECURSIVE_SCAN_DEPTH = 8
 
 # Local aliases keep the extracted code close to the original implementation.
 _is_model_directory = model_common._is_model_directory
@@ -102,6 +103,63 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
     except OSError:
         return False
     return has_config and _has_immediate_model_weight(path)
+
+
+def _is_scan_leaf_dir(path: Path, *, entry_limit: int | None) -> bool:
+    if _is_model_directory_for_scan(path, entry_limit = entry_limit):
+        return True
+    probe = entry_limit if entry_limit is not None else _MODEL_SIGNAL_PROBE_LIMIT
+    try:
+        for index, entry in enumerate(path.iterdir(), start = 1):
+            if index > probe:
+                break
+            try:
+                if (
+                    entry.is_file()
+                    and entry.suffix.lower() == ".gguf"
+                    and _is_main_gguf_filename(entry.name)
+                ):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return True
+    return False
+
+
+def scan_result_within_folder(path: str, folder_path: Path) -> bool:
+    candidate = Path(path)
+    if not path_is_same_or_child(candidate, folder_path):
+        return False
+    try:
+        if not candidate.is_dir():
+            return True
+        # Loaders may read any file in a model directory (weights, companion
+        # GGUFs such as mmproj, configs, tokenizers), so reject the row if any
+        # immediate entry is a symlink resolving outside the registered folder.
+        # Non-symlink entries are physically inside and need no check. This
+        # runs only on classified model directories, so it stays cheap.
+        for entry in candidate.iterdir():
+            try:
+                if entry.is_symlink() and not path_is_same_or_child(entry, folder_path):
+                    return False
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return True
+
+
+def _dir_has_loadable_weights(path: Path) -> bool:
+    try:
+        if path.is_file():
+            suffix = path.suffix.lower()
+            if suffix == ".gguf":
+                return _is_main_gguf_filename(path.name)
+            return suffix in (".safetensors", ".bin")
+        return _has_immediate_model_weight(path, probe_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+    except OSError:
+        return False
 
 
 def _resolve_hf_cache_dir() -> Path:
@@ -532,22 +590,87 @@ async def _collect_models_from_default_sources(
     return local_models
 
 
-def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
+def iter_recursive_scan_dirs(
+    folder_path: Path,
+    *,
+    max_depth: int = _MAX_RECURSIVE_SCAN_DEPTH,
+    entry_limit: int | None = _MAX_CUSTOM_FOLDER_ENTRIES,
+):
+    """Yield sub-directories of *folder_path* that should themselves be scanned.
+
+    Directories the parent scan already classifies as models (config plus weights,
+    or a main GGUF file) are not yielded and are never descended into.
+    Symlinks are never followed; depth and visited-entry caps bound the walk."""
+    base_depth = len(folder_path.parts)
+    visited = 0
+    for dirpath, dirnames, _filenames in os.walk(folder_path, topdown = True, followlinks = False):
+        current = Path(dirpath)
+        depth = len(current.parts) - base_depth
+        if entry_limit is not None:
+            visited += len(_filenames)
+        if depth >= max_depth or (entry_limit is not None and visited > entry_limit):
+            dirnames[:] = []
+            continue
+        keep: list[str] = []
+        for name in sorted(dirnames):
+            visited += 1
+            if entry_limit is not None and visited > entry_limit:
+                break
+            if name.startswith(".") or name == "ollama_links":
+                continue
+            child = current / name
+            try:
+                if child.is_symlink() or _is_scan_leaf_dir(child, entry_limit = entry_limit):
+                    continue
+            except OSError:
+                continue
+            keep.append(name)
+        dirnames[:] = keep
+        for name in keep:
+            yield current / name
+
+
+def _scan_custom_folder(folder_path: Path, recursive: bool = False) -> List[LocalModelInfo]:
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
-    generic = [
-        m
-        for m in (
-            _scan_models_dir(
-                folder_path,
-                limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
-                entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
-            )
-            + _scan_hf_cache(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
-            + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+
+    def _filtered(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+        return [
+            m
+            for m in models
+            if m.model_format in supported_formats
+            if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+        ]
+
+    generic = _filtered(
+        _scan_models_dir(
+            folder_path,
+            limit = _MAX_MODELS_PER_CUSTOM_FOLDER,
+            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
         )
-        if m.model_format in supported_formats
-        if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-    ]
+        + _scan_hf_cache(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+        + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
+    )
+    if recursive:
+        seen = {(m.path, m.model_format, m.format_variant) for m in generic}
+        for subdir in iter_recursive_scan_dirs(folder_path):
+            if len(generic) >= _MAX_MODELS_PER_CUSTOM_FOLDER:
+                break
+            for m in _filtered(
+                _scan_models_dir(
+                    subdir,
+                    limit = _MAX_MODELS_PER_CUSTOM_FOLDER - len(generic),
+                    entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+                )
+            ):
+                key = (m.path, m.model_format, m.format_variant)
+                if (
+                    key in seen
+                    or not scan_result_within_folder(m.path, folder_path)
+                    or not _dir_has_loadable_weights(Path(m.path))
+                ):
+                    continue
+                seen.add(key)
+                generic.append(m)
     return generic[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
@@ -585,7 +708,11 @@ async def _collect_models_from_custom_folders() -> List[LocalModelInfo]:
     for folder in custom_folders:
         folder_path = Path(normalize_path(folder["path"])).expanduser()
         try:
-            custom_models = await asyncio.to_thread(_scan_custom_folder, folder_path)
+            custom_models = await asyncio.to_thread(
+                _scan_custom_folder,
+                folder_path,
+                bool(folder.get("recursive")),
+            )
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             continue
@@ -699,9 +826,9 @@ def get_scan_folders_response() -> dict:
     return {"folders": list_scan_folders()}
 
 
-def add_scan_folder_response(path: str) -> dict:
+def add_scan_folder_response(path: str, recursive: bool | None = None) -> dict:
     try:
-        folder = add_scan_folder(_coerce_scan_folder_path(path))
+        folder = add_scan_folder(_coerce_scan_folder_path(path), recursive)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
         raise HTTPException(status_code = 400, detail = str(e))

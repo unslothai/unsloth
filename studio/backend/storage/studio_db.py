@@ -204,10 +204,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS scan_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL UNIQUE {collation},
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            recursive INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    existing_scan_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(scan_folders)").fetchall()
+    }
+    if "recursive" not in existing_scan_cols:
+        conn.execute("ALTER TABLE scan_folders ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_projects (
@@ -911,14 +917,14 @@ def list_scan_folders() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
+            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
     """Add a directory to the custom scan folder list. Returns the row."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
@@ -931,6 +937,8 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    if os.path.dirname(normalized) == normalized:
+        raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
 
@@ -950,29 +958,36 @@ def add_scan_folder(path: str) -> dict:
         # Windows: case-insensitive lookup so C:\Models and c:\models dedup.
         if is_win:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE",
                 (normalized,),
             ).fetchone()
         else:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
         if existing is not None:
+            if recursive is not None and bool(existing["recursive"]) != bool(recursive):
+                conn.execute(
+                    "UPDATE scan_folders SET recursive = ? WHERE id = ?",
+                    (1 if recursive else 0, existing["id"]),
+                )
+                conn.commit()
+                return {**dict(existing), "recursive": 1 if recursive else 0}
             return dict(existing)
         try:
             conn.execute(
-                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
-                (normalized, now),
+                "INSERT INTO scan_folders (path, created_at, recursive) VALUES (?, ?, ?)",
+                (normalized, now, 1 if recursive else 0),
             )
             conn.commit()
         except sqlite3.IntegrityError:
             pass  # duplicate; fall through to SELECT
         # Same collation as the pre-check to catch concurrent writes (Windows).
         fallback_sql = (
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
-            else "SELECT id, path, created_at FROM scan_folders WHERE path = ?"
+            else "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?"
         )
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:

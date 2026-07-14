@@ -188,9 +188,52 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
+                before = len(found)
                 found += (
-                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                    _scan_models_dir(fp, limit = 200, entry_limit = 2000)
+                    + _scan_hf_once(fp)
+                    + _scan_lmstudio_dir(fp)
                 )
+                if folder.get("recursive"):
+                    from hub.services.models.local_inventory import (
+                        iter_recursive_scan_dirs,
+                        scan_result_within_folder,
+                    )
+                    from routes.models import _dir_has_loadable_weights
+
+                    seen = {
+                        (
+                            m.path,
+                            getattr(m, "model_format", None),
+                            getattr(m, "format_variant", None),
+                        )
+                        for m in found
+                    }
+                    recursive_budget = max(0, 200 - (len(found) - before))
+                    for subdir in iter_recursive_scan_dirs(fp):
+                        if recursive_budget <= 0:
+                            break
+                        for m in _scan_models_dir(subdir, limit = recursive_budget, entry_limit = 2000):
+                            key = (
+                                m.path,
+                                getattr(m, "model_format", None),
+                                getattr(m, "format_variant", None),
+                            )
+                            if (
+                                key in seen
+                                or not scan_result_within_folder(m.path, fp)
+                                or not _dir_has_loadable_weights(Path(m.path))
+                                or any(
+                                    seg in (".studio_links", "ollama_links")
+                                    for seg in Path(m.path).parts
+                                )
+                            ):
+                                continue
+                            seen.add(key)
+                            found.append(m)
+                            recursive_budget -= 1
+                            if recursive_budget <= 0:
+                                break
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
     except Exception as exc:

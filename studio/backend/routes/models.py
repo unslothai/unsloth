@@ -294,7 +294,26 @@ def _has_non_gguf_weights(path: Path) -> bool:
         return False
 
 
-def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
+def _dir_has_loadable_weights(path: Path) -> bool:
+    from hub.services.models.common import _is_main_gguf_filename
+    try:
+        if path.is_file():
+            if path.suffix.lower() == ".gguf":
+                return _is_main_gguf_filename(path.name)
+            return True
+        if any(_is_main_gguf_filename(f.name) for f in path.glob("*.gguf")):
+            return True
+        return _has_non_gguf_weights(path)
+    except OSError:
+        return False
+
+
+def _scan_models_dir(
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+    entry_limit: int | None = None,
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -317,8 +336,12 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         ]
 
     found: List[LocalModelInfo] = []
+    visited = 0
     for child in models_dir.iterdir():
         if limit is not None and len(found) >= limit:
+            break
+        visited += 1
+        if entry_limit is not None and visited > entry_limit:
             break
         try:
             if not child.is_dir():
@@ -356,6 +379,9 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     if limit is None or len(found) < limit:
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
+                break
+            visited += 1
+            if entry_limit is not None and visited > entry_limit:
                 break
             if gguf_file.is_file():
                 try:
@@ -822,13 +848,42 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
             _generic = [
                 m
                 for m in (
-                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER, entry_limit = 2000)
                     + _scan_hf_cache(folder_path)
                     + _scan_lmstudio_dir(folder_path)
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
             custom_models = _generic
+            if folder.get("recursive"):
+                from hub.services.models.local_inventory import (
+                    iter_recursive_scan_dirs,
+                    scan_result_within_folder,
+                )
+                seen = {
+                    (m.path, m.model_format, getattr(m, "format_variant", None))
+                    for m in custom_models
+                }
+                for subdir in iter_recursive_scan_dirs(folder_path):
+                    if len(custom_models) >= _MAX_MODELS_PER_FOLDER:
+                        break
+                    for m in _scan_models_dir(
+                        subdir,
+                        limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                        entry_limit = 2000,
+                    ):
+                        key = (m.path, m.model_format, getattr(m, "format_variant", None))
+                        if (
+                            key in seen
+                            or not scan_result_within_folder(m.path, folder_path)
+                            or not _dir_has_loadable_weights(Path(m.path))
+                            or any(
+                                p in (".studio_links", "ollama_links") for p in Path(m.path).parts
+                            )
+                        ):
+                            continue
+                        seen.add(key)
+                        custom_models.append(m)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -937,7 +992,7 @@ async def add_scan_folder_endpoint(
     from storage.studio_db import add_scan_folder
 
     try:
-        folder = add_scan_folder(body.path)
+        folder = add_scan_folder(body.path, body.recursive)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
