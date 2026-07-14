@@ -111,10 +111,10 @@ export const en = {
         engineBrowserDescription:
           "Transcribes audio using your browser speech service. Select 'Local' to use a STT model.",
         engineModelDescription:
-          "Runs locally and works offline. Download once, then load on demand; memory is released after dictation.",
+          "Runs locally and works offline. Download once, then load on demand. Model is unloaded after inactivity.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription:
-          "Choose one of five curated Whisper models, or search Hugging Face for another Transformers-compatible Whisper model.",
+          "Choose a default STT Whisper model, or search Hugging Face for another.",
         sttModelSearchPlaceholder: "Search model",
         sttModelSearching: "Searching Hugging Face…",
         sttModelNoResults: "No Whisper models found",
