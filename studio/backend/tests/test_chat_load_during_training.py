@@ -476,22 +476,27 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
 
         request = ValidateModelRequest(model_path = "unsloth/Qwen3-1.7B", max_seq_length = 4096)
         cfg = SimpleNamespace(
-            identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B",
-            is_gguf = False, is_lora = False, is_vision = False, path = None, base_model = None,
+            identifier = "unsloth/Qwen3-1.7B",
+            display_name = "Qwen3-1.7B",
+            is_gguf = False,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
         )
         captured = {}
         with (
             patch.object(
-                self.route, "_resolve_model_identifier_for_request",
+                self.route,
+                "_resolve_model_identifier_for_request",
                 return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(self.route, "_resolve_inherited_extra_args", return_value = ["-c", "32768"]),
             patch.object(
-                self.route, "_resolve_inherited_extra_args", return_value = ["-c", "32768"]
-            ),
-            patch.object(
-                self.route, "_guard_chat_load_against_training",
+                self.route,
+                "_guard_chat_load_against_training",
                 lambda config, **kw: captured.update(kw),
             ),
         ):
@@ -506,23 +511,31 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
-            model_path = "unsloth/Qwen3-1.7B", max_seq_length = 4096,
+            model_path = "unsloth/Qwen3-1.7B",
+            max_seq_length = 4096,
             include_context_length = True,
         )
         cfg = SimpleNamespace(
-            identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B",
-            is_gguf = False, is_lora = False, is_vision = False, path = None, base_model = None,
+            identifier = "unsloth/Qwen3-1.7B",
+            display_name = "Qwen3-1.7B",
+            is_gguf = False,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
         )
         guard_called = []
         with (
             patch.object(
-                self.route, "_resolve_model_identifier_for_request",
+                self.route,
+                "_resolve_model_identifier_for_request",
                 return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
             patch.object(
-                self.route, "_guard_chat_load_against_training",
+                self.route,
+                "_guard_chat_load_against_training",
                 lambda *a, **kw: guard_called.append(True),
             ),
         ):
