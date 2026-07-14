@@ -532,9 +532,17 @@ export function useChatModelRuntime() {
             previousModel?.isGguf === true
             || previousVariant != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+          // Roll back to the previous model's own context. previousConfig was
+          // snapshotted before this load pre-applied the next model's config to
+          // the shared store, so params.maxSeqLength may already be the next
+          // model's value; fall back to it only when no snapshot exists.
+          const previousMaxSeqLength =
+            (typeof selection !== "string"
+              ? selection.previousConfig?.maxSeqLength
+              : null) ?? maxSeqLength;
           const rollbackMaxSeqLength = previousIsGguf
             ? (stateBeforeUnload.ggufContextLength ?? 0)
-            : maxSeqLength;
+            : previousMaxSeqLength;
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;

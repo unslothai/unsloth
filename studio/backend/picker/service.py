@@ -137,9 +137,14 @@ def _chat_template_from_processor_payload(payload: object) -> Optional[str]:
     if template:
         return template
     if isinstance(payload, dict):
+        # Named-template map: prefer "default", else the first non-empty entry
+        # (mirrors the tokenizer-config list fallback).
         default = payload.get("default")
         if isinstance(default, str) and default.strip():
             return default
+        for value in payload.values():
+            if isinstance(value, str) and value.strip():
+                return value
     return None
 
 
@@ -312,7 +317,19 @@ def read_default_chat_template(
             if template and template.strip():
                 return template
 
-        for rel in (*_TOKENIZER_CONFIG_PATHS, *_PROCESSOR_TEMPLATE_PATHS):
+        for rel in _TOKENIZER_CONFIG_PATHS:
+            raw = _download_text(rel)
+            if not raw:
+                continue
+            try:
+                config = json.loads(raw)
+            except Exception:
+                continue
+            template = _chat_template_from_tokenizer_config(config)
+            if template:
+                return template
+
+        for rel in _PROCESSOR_TEMPLATE_PATHS:
             raw = _download_text(rel)
             if not raw:
                 continue
