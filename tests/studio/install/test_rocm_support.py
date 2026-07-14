@@ -1708,7 +1708,12 @@ class TestEnsureRocmTorchMarker:
         mock_pip.assert_not_called()
 
     # --- _capture_verbatim_baseline (pre-update baseline for custom pins) ------
-    def _capture(self, marker, flavor, snap = ("torch==2.10.0",)):
+    def _capture(
+        self,
+        marker,
+        flavor,
+        snap = ("torch==2.10.0",),
+    ):
         """Run _capture_verbatim_baseline for a custom pin, returning the resulting
         module-level _VERBATIM_TRIO_SNAPSHOT."""
         stack_mod._VERBATIM_TRIO_SNAPSHOT = None
@@ -1759,9 +1764,13 @@ class TestEnsureRocmTorchMarker:
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
                 with patch.object(stack_mod, "IS_MAC_INTEL", False):
-                    with patch.object(stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.13.0")):
+                    with patch.object(
+                        stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.13.0")
+                    ):
                         with patch.object(
-                            stack_mod, "_installed_trio_snapshot", side_effect = lambda: next(snapshots)
+                            stack_mod,
+                            "_installed_trio_snapshot",
+                            side_effect = lambda: next(snapshots),
                         ):
                             with patch.dict(stack_mod.os.environ, env, clear = False):
                                 stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
