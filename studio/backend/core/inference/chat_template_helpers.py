@@ -16,7 +16,7 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 
 
-def detect_think_prefill(prompt: Optional[str], special_tokens=None) -> str:
+def detect_think_prefill(prompt: Optional[str], special_tokens = None) -> str:
     """Return the trailing open ``<think>`` prefill of a rendered prompt.
 
     Reasoning templates (Qwen3.6, DeepSeek-R1-style) end the generation
@@ -129,8 +129,8 @@ def apply_chat_template_for_generation(
             try:
                 return tokenizer.apply_chat_template(
                     msgs,
-                    tokenize=False,
-                    add_generation_prompt=True,
+                    tokenize = False,
+                    add_generation_prompt = True,
                     **kwargs,
                 )
             except TypeError as e:
@@ -164,7 +164,7 @@ def render_native_template(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
-    apply_fn=None,
+    apply_fn = None,
     hf_token: Optional[str] = None,
 ) -> Optional[str]:
     """Render ``messages`` + ``tools`` with the model's NATIVE chat template.
@@ -202,11 +202,10 @@ def render_native_template(
         trust_remote_code = bool(model_info.get("trust_remote_code", False))
         try:
             from transformers import AutoTokenizer
-
             nt = AutoTokenizer.from_pretrained(
                 template_source,
-                token=hf_token if hf_token and hf_token.strip() else None,
-                trust_remote_code=trust_remote_code,
+                token = hf_token if hf_token and hf_token.strip() else None,
+                trust_remote_code = trust_remote_code,
             )
             native_tpl = nt.chat_template or False
         except Exception as exc:
@@ -242,18 +241,18 @@ def render_native_template(
         with_tools = apply_fn(
             render_tokenizer,
             messages,
-            tools=tools,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
-            preserve_thinking=preserve_thinking,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
         no_tools = apply_fn(
             render_tokenizer,
             messages,
-            tools=None,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
-            preserve_thinking=preserve_thinking,
+            tools = None,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
     except Exception as exc:
         logger.warning(
@@ -276,7 +275,7 @@ def render_with_native_template_fallback(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
-    apply_fn=None,
+    apply_fn = None,
     hf_token: Optional[str] = None,
 ) -> str:
     """Return ``formatted_prompt``, swapping in a native-template render when an
@@ -297,10 +296,10 @@ def render_with_native_template_fallback(
         probe_no_tools = apply_fn(
             tokenizer,
             messages,
-            tools=None,
-            enable_thinking=enable_thinking,
-            reasoning_effort=reasoning_effort,
-            preserve_thinking=preserve_thinking,
+            tools = None,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
         )
     except Exception as exc:
         logger.warning(
@@ -312,15 +311,15 @@ def render_with_native_template_fallback(
     if formatted_prompt != probe_no_tools:
         return formatted_prompt  # template already emits the tools schema
     native_prompt = render_native_template(
-        model_info=model_info,
-        active_model_name=active_model_name,
-        messages=messages,
-        tools=tools,
-        enable_thinking=enable_thinking,
-        reasoning_effort=reasoning_effort,
-        preserve_thinking=preserve_thinking,
-        apply_fn=apply_fn,
-        hf_token=hf_token,
+        model_info = model_info,
+        active_model_name = active_model_name,
+        messages = messages,
+        tools = tools,
+        enable_thinking = enable_thinking,
+        reasoning_effort = reasoning_effort,
+        preserve_thinking = preserve_thinking,
+        apply_fn = apply_fn,
+        hf_token = hf_token,
     )
     if native_prompt:
         logger.info(

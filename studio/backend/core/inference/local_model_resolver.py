@@ -24,7 +24,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _LocalGgufEntry:
     loader_id: str  # advertised id (repo id / folder name), also the override key
     load_path: str  # concrete on-disk dir/file passed to /load so it never downloads
@@ -40,7 +40,6 @@ def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio
     scanners use the on-disk path as the id) rather than a repo id like org/name."""
     from pathlib import Path
-
     try:
         return Path(value).is_absolute()
     except Exception:
@@ -70,7 +69,6 @@ def _resolve_load_dir(p):
     try:
         if (p / "snapshots").is_dir():
             from routes.models import _resolve_hf_cache_realpath
-
             real = _resolve_hf_cache_realpath(p)
             if real:
                 return Path(real)
@@ -187,12 +185,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
     try:
         from storage.studio_db import list_scan_folders
-
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
                 found += (
-                    _scan_models_dir(fp, limit=200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)

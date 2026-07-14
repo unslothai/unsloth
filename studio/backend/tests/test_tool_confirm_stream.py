@@ -44,7 +44,7 @@ from state.tool_approvals import (
 _EXECUTED_RESULT = "tool executed: 2"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clear_pending():
     with tool_approvals._lock:
         tool_approvals._pending.clear()
@@ -69,7 +69,7 @@ def _build_app() -> FastAPI:
             "approval_id": approval_id,
             "awaiting_confirmation": True,
         }
-        denied = wait_tool_decision(slot, approval_id, cancel_event=cancel_event) == "deny"
+        denied = wait_tool_decision(slot, approval_id, cancel_event = cancel_event) == "deny"
         result = TOOL_REJECTED_MESSAGE if denied else _EXECUTED_RESULT
         yield {"type": "tool_end", "tool_name": "python", "result": result}
 
@@ -88,7 +88,7 @@ def _build_app() -> FastAPI:
                     break
                 yield f"data: {json.dumps(event)}\n\n"
 
-        return StreamingResponse(wrapper(), media_type="text/event-stream")
+        return StreamingResponse(wrapper(), media_type = "text/event-stream")
 
     @app.post("/tool-confirm")
     async def tool_confirm(req: Request):
@@ -96,7 +96,7 @@ def _build_app() -> FastAPI:
         resolved = resolve_tool_decision(
             body.get("approval_id"),
             body.get("decision"),
-            session_id=body.get("session_id"),
+            session_id = body.get("session_id"),
         )
         return {"resolved": resolved}
 
@@ -116,9 +116,9 @@ class _Server:
 
     def __init__(self, app):
         self.port = _free_port()
-        config = uvicorn.Config(app, host="127.0.0.1", port=self.port, log_level="warning")
+        config = uvicorn.Config(app, host = "127.0.0.1", port = self.port, log_level = "warning")
         self.server = uvicorn.Server(config)
-        self._thread = threading.Thread(target=self.server.run, daemon=True)
+        self._thread = threading.Thread(target = self.server.run, daemon = True)
 
     def __enter__(self):
         self._thread.start()
@@ -131,7 +131,7 @@ class _Server:
 
     def __exit__(self, *exc):
         self.server.should_exit = True
-        self._thread.join(timeout=10.0)
+        self._thread.join(timeout = 10.0)
 
     @property
     def base_url(self) -> str:
@@ -158,8 +158,8 @@ async def _drive(base_url, session_id, decision):
     events = []
     resolved = None
     timeout = httpx.Timeout(10.0)
-    async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
-        async with client.stream("POST", "/stream", json={"session_id": session_id}) as resp:
+    async with httpx.AsyncClient(base_url = base_url, timeout = timeout) as client:
+        async with client.stream("POST", "/stream", json = {"session_id": session_id}) as resp:
             assert resp.status_code == 200
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
@@ -174,7 +174,7 @@ async def _drive(base_url, session_id, decision):
                     await _gate_is_blocking(approval_id)
                     r = await client.post(
                         "/tool-confirm",
-                        json={
+                        json = {
                             "session_id": session_id,
                             "approval_id": approval_id,
                             "decision": decision,
@@ -187,7 +187,7 @@ async def _drive(base_url, session_id, decision):
 def _run(session_id, decision):
     with _Server(_build_app()) as srv:
         return asyncio.run(
-            asyncio.wait_for(_drive(srv.base_url, session_id, decision), timeout=15.0)
+            asyncio.wait_for(_drive(srv.base_url, session_id, decision), timeout = 15.0)
         )
 
 

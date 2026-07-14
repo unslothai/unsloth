@@ -67,18 +67,17 @@ class _JinjaTokenizer:
     def apply_chat_template(
         self,
         messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        tools=None,
+        tokenize = False,
+        add_generation_prompt = True,
+        tools = None,
         **kwargs,
     ):
         from jinja2 import BaseLoader, Environment
-
-        env = Environment(loader=BaseLoader())
+        env = Environment(loader = BaseLoader())
         return env.from_string(self.chat_template).render(
-            messages=messages,
-            tools=tools,
-            add_generation_prompt=add_generation_prompt,
+            messages = messages,
+            tools = tools,
+            add_generation_prompt = add_generation_prompt,
         )
 
 
@@ -94,8 +93,8 @@ def _install_custom_code_tokenizer(monkeypatch):
     def fake_from_pretrained(
         model_id,
         *args,
-        trust_remote_code=False,
-        token=None,
+        trust_remote_code = False,
+        token = None,
         **kwargs,
     ):
         calls["trust_remote_code"] = trust_remote_code
@@ -130,13 +129,13 @@ def test_native_reload_passes_stored_trust_remote_code(monkeypatch):
     succeeds and the tools-advertising native prompt is returned. This FAILS before
     the fix (reload omits the flag, raises, is swallowed, returns None)."""
     calls = _install_custom_code_tokenizer(monkeypatch)
-    model_info = _model_info(trust_remote_code=True)
+    model_info = _model_info(trust_remote_code = True)
 
     out = render_native_template(
-        model_info=model_info,
-        active_model_name="acme/custom-tokenizer-model",
-        messages=_MESSAGES,
-        tools=_TOOLS,
+        model_info = model_info,
+        active_model_name = "acme/custom-tokenizer-model",
+        messages = _MESSAGES,
+        tools = _TOOLS,
     )
 
     assert out is not None, "native fallback should render the tools prompt with consent"
@@ -152,13 +151,13 @@ def test_native_reload_without_consent_returns_none(monkeypatch):
     ``render_native_template`` returns None (no unconsented code execution). Proves
     the stored flag -- not a hard-coded True -- drives the reload."""
     calls = _install_custom_code_tokenizer(monkeypatch)
-    model_info = _model_info(trust_remote_code=False)
+    model_info = _model_info(trust_remote_code = False)
 
     out = render_native_template(
-        model_info=model_info,
-        active_model_name="acme/custom-tokenizer-model",
-        messages=_MESSAGES,
-        tools=_TOOLS,
+        model_info = model_info,
+        active_model_name = "acme/custom-tokenizer-model",
+        messages = _MESSAGES,
+        tools = _TOOLS,
     )
 
     assert out is None

@@ -89,7 +89,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
 
     def _ensure_writable_dir(path: Path) -> Optional[Path]:
         try:
-            path.mkdir(parents=True, exist_ok=True)
+            path.mkdir(parents = True, exist_ok = True)
             probe = path / f".write-test-{uuid.uuid4().hex[:8]}"
             probe.mkdir()
             probe.rmdir()
@@ -127,7 +127,7 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
 def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Optional[str]:
     """Create a .gguf-named link to an Ollama blob: tries symlink then hardlink, skips the model if neither works (a full multi-GB copy would block the API). Idempotent."""
     try:
-        link_dir.mkdir(parents=True, exist_ok=True)
+        link_dir.mkdir(parents = True, exist_ok = True)
     except OSError as e:
         logger.warning(
             "Could not create Ollama link directory %s: %s",
@@ -290,17 +290,17 @@ def _ollama_model_info_from_manifest(
     path = gguf_link_path if materialize_links and gguf_link_path else str(model_blob)
     load_id = path if materialize_links else _ollama_manifest_ref(tag_file)
     return LocalModelInfo(
-        id=load_id,
-        inventory_id=_local_inventory_id("ollama", "gguf", model_id),
-        load_id=load_id,
-        model_id=model_id,
-        display_name=display + suffix,
-        path=path,
-        source="ollama",
-        updated_at=updated_at,
-        model_format="gguf",
-        runtime="llama_cpp",
-        capabilities=_capabilities_for_format("gguf", "ollama"),
+        id = load_id,
+        inventory_id = _local_inventory_id("ollama", "gguf", model_id),
+        load_id = load_id,
+        model_id = model_id,
+        display_name = display + suffix,
+        path = path,
+        source = "ollama",
+        updated_at = updated_at,
+        model_format = "gguf",
+        runtime = "llama_cpp",
+        capabilities = _capabilities_for_format("gguf", "ollama"),
     )
 
 
@@ -342,8 +342,8 @@ def scan_ollama_dir(
             info = _ollama_model_info_from_manifest(
                 ollama_dir,
                 tag_file,
-                materialize_links=materialize_links,
-                links_root=links_root,
+                materialize_links = materialize_links,
+                links_root = links_root,
             )
             if info is None:
                 continue
@@ -386,8 +386,8 @@ def materialize_ollama_model_ref(ref: str) -> str:
     info = _ollama_model_info_from_manifest(
         ollama_dir,
         tag_file,
-        materialize_links=True,
-        links_root=links_root,
+        materialize_links = True,
+        links_root = links_root,
     )
     if info is None or not info.path:
         raise ValueError("Could not materialize Ollama model from manifest")

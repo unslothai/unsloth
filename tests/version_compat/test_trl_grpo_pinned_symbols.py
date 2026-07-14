@@ -330,7 +330,6 @@ def test_trl_models_utils_disable_gradient_checkpointing(tag: str):
     else:
         try:
             from packaging.version import Version
-
             require = Version(tag.lstrip("v")) >= Version("1.0.0")
         except Exception:
             require = False

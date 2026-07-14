@@ -57,13 +57,13 @@ def _ensure_export_supported() -> None:
     cap = export_capability()
     if not cap.get("export_supported", True):
         raise HTTPException(
-            status_code=400,
-            detail=cap.get("export_unsupported_message")
+            status_code = 400,
+            detail = cap.get("export_unsupported_message")
             or "Export is not supported on this platform.",
         )
 
 
-@router.post("/load-checkpoint", response_model=ExportOperationResponse)
+@router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -81,30 +81,30 @@ async def load_checkpoint(
         # minutes) so the event loop stays free to serve the live log SSE stream.
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
-            checkpoint_path=request.checkpoint_path,
-            max_seq_length=request.max_seq_length,
-            load_in_4bit=request.load_in_4bit,
-            trust_remote_code=request.trust_remote_code,
-            approved_remote_code_fingerprint=request.approved_remote_code_fingerprint,
-            hf_token=request.hf_token,
-            subject=current_subject,
+            checkpoint_path = request.checkpoint_path,
+            max_seq_length = request.max_seq_length,
+            load_in_4bit = request.load_in_4bit,
+            trust_remote_code = request.trust_remote_code,
+            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
+            hf_token = request.hf_token,
+            subject = current_subject,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(success=True, message=message)
+        return ExportOperationResponse(success = True, message = message)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error loading checkpoint: {e}", exc_info=True)
+        logger.error(f"Error loading checkpoint: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to load checkpoint",
+            status_code = 500,
+            detail = "Failed to load checkpoint",
         )
 
 
-@router.post("/cleanup", response_model=ExportOperationResponse)
+@router.post("/cleanup", response_model = ExportOperationResponse)
 async def cleanup_export_memory(current_subject: str = Depends(get_current_subject)):
     """Cleanup export-related models from memory (ExportBackend.cleanup_memory)."""
     try:
@@ -113,25 +113,25 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
 
         if not success:
             raise HTTPException(
-                status_code=500,
-                detail="Memory cleanup failed. See server logs for details.",
+                status_code = 500,
+                detail = "Memory cleanup failed. See server logs for details.",
             )
 
         return ExportOperationResponse(
-            success=True,
-            message="Memory cleanup completed successfully",
+            success = True,
+            message = "Memory cleanup completed successfully",
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error during export memory cleanup: {e}", exc_info=True)
+        logger.error(f"Error during export memory cleanup: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to cleanup export memory",
+            status_code = 500,
+            detail = "Failed to cleanup export memory",
         )
 
 
-@router.post("/cancel", response_model=ExportOperationResponse)
+@router.post("/cancel", response_model = ExportOperationResponse)
 async def cancel_export(current_subject: str = Depends(get_current_subject)):
     """Cancel the in-flight export by terminating its worker subprocess.
 
@@ -142,18 +142,18 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
         backend = get_export_backend()
         cancelled = await asyncio.to_thread(backend.cancel_export)
         return ExportOperationResponse(
-            success=True,
-            message="Export cancelled" if cancelled else "No active export to cancel",
+            success = True,
+            message = "Export cancelled" if cancelled else "No active export to cancel",
         )
     except Exception as e:
-        logger.error(f"Error cancelling export: {e}", exc_info=True)
+        logger.error(f"Error cancelling export: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to cancel export",
+            status_code = 500,
+            detail = "Failed to cancel export",
         )
 
 
-@router.get("/status", response_model=ExportStatusResponse)
+@router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     try:
@@ -166,22 +166,22 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
             details = _export_details(last_op["output_path"])
             last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
-            current_checkpoint=backend.current_checkpoint,
-            is_vision=bool(getattr(backend, "is_vision", False)),
-            is_peft=bool(getattr(backend, "is_peft", False)),
-            is_export_active=bool(backend.is_export_active()),
-            active_op_kind=backend.get_active_op_kind(),
-            last_op_seq=int(last_op["seq"]) if last_op else 0,
-            last_op_kind=last_op.get("kind") if last_op else None,
-            last_op_status=last_op.get("status") if last_op else None,
-            last_op_output_path=last_op_output_path,
-            last_op_error=last_op.get("error") if last_op else None,
+            current_checkpoint = backend.current_checkpoint,
+            is_vision = bool(getattr(backend, "is_vision", False)),
+            is_peft = bool(getattr(backend, "is_peft", False)),
+            is_export_active = bool(backend.is_export_active()),
+            active_op_kind = backend.get_active_op_kind(),
+            last_op_seq = int(last_op["seq"]) if last_op else 0,
+            last_op_kind = last_op.get("kind") if last_op else None,
+            last_op_status = last_op.get("status") if last_op else None,
+            last_op_output_path = last_op_output_path,
+            last_op_error = last_op.get("error") if last_op else None,
         )
     except Exception as e:
-        logger.error(f"Error getting export status: {e}", exc_info=True)
+        logger.error(f"Error getting export status: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to get export status",
+            status_code = 500,
+            detail = "Failed to get export status",
         )
 
 
@@ -189,7 +189,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
 async def get_export_logs(
     since: Optional[int] = Query(
         None,
-        description="Return log entries with seq strictly greater than this cursor.",
+        description = "Return log entries with seq strictly greater than this cursor.",
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -231,10 +231,10 @@ async def get_export_logs(
             "active": bool(backend.is_export_active()),
         }
     except Exception as e:
-        logger.error(f"Error getting export logs: {e}", exc_info=True)
+        logger.error(f"Error getting export logs: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to get export logs",
+            status_code = 500,
+            detail = "Failed to get export logs",
         )
 
 
@@ -242,7 +242,6 @@ def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
         from storage.studio_db import add_scan_folder
-
         folder = add_scan_folder(str(path))
         return True, str(folder.get("path") or path)
     except Exception as exc:
@@ -276,7 +275,7 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
         return {"output_path": output_path}
 
 
-@router.post("/export/merged", response_model=ExportOperationResponse)
+@router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -289,34 +288,34 @@ async def export_merged_model(
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_merged_model,
-            save_directory=request.save_directory,
-            format_type=request.format_type,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            private=request.private,
-            compressed_method=request.compressed_method,
+            save_directory = request.save_directory,
+            format_type = request.format_type,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
+            compressed_method = request.compressed_method,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
         return ExportOperationResponse(
-            success=True,
-            message=message,
-            details=_export_details(output_path),
+            success = True,
+            message = message,
+            details = _export_details(output_path),
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting merged model: {e}", exc_info=True)
+        logger.error(f"Error exporting merged model: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to export merged model",
+            status_code = 500,
+            detail = "Failed to export merged model",
         )
 
 
-@router.post("/export/base", response_model=ExportOperationResponse)
+@router.post("/export/base", response_model = ExportOperationResponse)
 async def export_base_model(
     request: ExportBaseModelRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -329,33 +328,33 @@ async def export_base_model(
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_base_model,
-            save_directory=request.save_directory,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            private=request.private,
-            base_model_id=request.base_model_id,
+            save_directory = request.save_directory,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
+            base_model_id = request.base_model_id,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
         return ExportOperationResponse(
-            success=True,
-            message=message,
-            details=_export_details(output_path),
+            success = True,
+            message = message,
+            details = _export_details(output_path),
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting base model: {e}", exc_info=True)
+        logger.error(f"Error exporting base model: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to export base model",
+            status_code = 500,
+            detail = "Failed to export base model",
         )
 
 
-@router.post("/export/gguf", response_model=ExportOperationResponse)
+@router.post("/export/gguf", response_model = ExportOperationResponse)
 async def export_gguf(
     request: ExportGGUFRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -370,33 +369,33 @@ async def export_gguf(
         imatrix_file = request.imatrix_path or (True if request.imatrix else None)
         success, message, output_path = await asyncio.to_thread(
             backend.export_gguf,
-            save_directory=request.save_directory,
-            quantization_method=request.quantization_method,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            imatrix_file=imatrix_file,
+            save_directory = request.save_directory,
+            quantization_method = request.quantization_method,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            imatrix_file = imatrix_file,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
         return ExportOperationResponse(
-            success=True,
-            message=message,
-            details=_export_details(output_path),
+            success = True,
+            message = message,
+            details = _export_details(output_path),
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting GGUF model: {e}", exc_info=True)
+        logger.error(f"Error exporting GGUF model: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to export GGUF model",
+            status_code = 500,
+            detail = "Failed to export GGUF model",
         )
 
 
-@router.post("/export/lora", response_model=ExportOperationResponse)
+@router.post("/export/lora", response_model = ExportOperationResponse)
 async def export_lora_adapter(
     request: ExportLoRAAdapterRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -409,30 +408,30 @@ async def export_lora_adapter(
         backend = get_export_backend()
         success, message, output_path = await asyncio.to_thread(
             backend.export_lora_adapter,
-            save_directory=request.save_directory,
-            push_to_hub=request.push_to_hub,
-            repo_id=request.repo_id,
-            hf_token=request.hf_token,
-            private=request.private,
-            gguf=request.gguf,
-            gguf_outtype=request.gguf_outtype,
+            save_directory = request.save_directory,
+            push_to_hub = request.push_to_hub,
+            repo_id = request.repo_id,
+            hf_token = request.hf_token,
+            private = request.private,
+            gguf = request.gguf,
+            gguf_outtype = request.gguf_outtype,
         )
 
         if not success:
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code = 400, detail = message)
 
         return ExportOperationResponse(
-            success=True,
-            message=message,
-            details=_export_details(output_path),
+            success = True,
+            message = message,
+            details = _export_details(output_path),
         )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error exporting LoRA adapter: {e}", exc_info=True)
+        logger.error(f"Error exporting LoRA adapter: {e}", exc_info = True)
         raise HTTPException(
-            status_code=500,
-            detail="Failed to export LoRA adapter",
+            status_code = 500,
+            detail = "Failed to export LoRA adapter",
         )
 
 
@@ -468,7 +467,7 @@ async def stream_export_logs(
     request: Request,
     since: Optional[int] = Query(
         None,
-        description="Return log entries with seq strictly greater than this cursor.",
+        description = "Return log entries with seq strictly greater than this cursor.",
     ),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -527,8 +526,8 @@ async def stream_export_logs(
                         )
                         yield _format_sse(
                             payload,
-                            event="log",
-                            event_id=int(entry.get("seq", 0)),
+                            event = "log",
+                            event_id = int(entry.get("seq", 0)),
                         )
                     cursor = new_cursor
                     last_yield = time.monotonic()
@@ -536,7 +535,7 @@ async def stream_export_logs(
                 else:
                     now = time.monotonic()
                     if now - last_yield > 10.0:
-                        yield _format_sse("{}", event="heartbeat")
+                        yield _format_sse("{}", event = "heartbeat")
                         last_yield = now
                     if not backend.is_export_active():
                         # Let the reader thread drain trailing lines printed just
@@ -546,8 +545,8 @@ async def stream_export_logs(
                         elif now - idle_since > 1.0:
                             yield _format_sse(
                                 "{}",
-                                event="complete",
-                                event_id=cursor,
+                                event = "complete",
+                                event_id = cursor,
                             )
                             return
                     else:
@@ -558,19 +557,19 @@ async def stream_export_logs(
             # Client disconnected mid-yield: end cleanly so StreamingResponse finalizes.
             return
         except Exception as exc:
-            logger.error("Export log stream failed: %s", exc, exc_info=True)
+            logger.error("Export log stream failed: %s", exc, exc_info = True)
             try:
                 yield _format_sse(
                     json.dumps({"error": safe_error_detail(exc)}),
-                    event="error",
+                    event = "error",
                 )
             except Exception:
                 pass
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream",
-        headers={
+        media_type = "text/event-stream",
+        headers = {
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",

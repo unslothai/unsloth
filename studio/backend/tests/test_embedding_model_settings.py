@@ -29,7 +29,7 @@ def settings_store(monkeypatch):
 
     store: dict = {}
     monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback=None: store.get(key, fallback)
+        studio_db, "get_app_setting", lambda key, fallback = None: store.get(key, fallback)
     )
     monkeypatch.setattr(
         studio_db, "upsert_app_settings", lambda settings: store.update(settings) or store
@@ -43,7 +43,7 @@ def test_custom_model_overrides_default_and_derives_gguf(settings_store, monkeyp
     """The core contract: with nothing stored the default is in effect; a saved
     custom model becomes the effective embedding model and derives its -GGUF
     companion (what the llama-server backend loads); reset clears the override."""
-    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising=False)
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     assert ems.get_rag_embedding_model() == rag_config.EMBEDDING_MODEL
     assert rag_config.effective_gguf_repo() == rag_config.EMBED_GGUF_REPO
 

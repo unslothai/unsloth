@@ -51,8 +51,8 @@ import yaml
 def _git_show(rev: str, path: str) -> str:
     return subprocess.check_output(
         ["git", "show", f"{rev}:{path}"],
-        text=True,
-        stderr=subprocess.DEVNULL,
+        text = True,
+        stderr = subprocess.DEVNULL,
     )
 
 
@@ -135,7 +135,7 @@ def _walk_yaml_diff(
         )
         return
     if isinstance(b, dict):
-        keys = sorted((set(b.keys()) | set(a.keys())), key=lambda x: str(x))
+        keys = sorted((set(b.keys()) | set(a.keys())), key = lambda x: str(x))
         for k in keys:
             if k not in b:
                 print(f"     added key {prefix}/{k}")
@@ -172,9 +172,9 @@ def _verify_python(path: str, before: str, after: str) -> bool:
         difflib.unified_diff(
             norm_before.splitlines(),
             norm_after.splitlines(),
-            fromfile=f"{path}@before",
-            tofile=f"{path}@after",
-            n=2,
+            fromfile = f"{path}@before",
+            tofile = f"{path}@after",
+            n = 2,
         )
     )
     print(f"FAIL {path}: AST differs after docstring strip:")
@@ -211,12 +211,12 @@ def _verify_yaml(path: str, before: str, after: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify each path's diff between BASE and HEAD is "
+        description = "Verify each path's diff between BASE and HEAD is "
         "strictly comments / docstrings.",
     )
-    parser.add_argument("--base", default="origin/main", help="base git ref")
-    parser.add_argument("--head", default="HEAD", help="head git ref")
-    parser.add_argument("paths", nargs="+", help="repo-relative paths")
+    parser.add_argument("--base", default = "origin/main", help = "base git ref")
+    parser.add_argument("--head", default = "HEAD", help = "head git ref")
+    parser.add_argument("paths", nargs = "+", help = "repo-relative paths")
     args = parser.parse_args(argv)
 
     rc = 0

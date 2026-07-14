@@ -29,16 +29,16 @@ def _require_node():
         pytest.skip("studio chat sources not present")
     result = subprocess.run(
         ["node", "--experimental-strip-types", "--version"],
-        capture_output=True,
-        text=True,
-        timeout=5,
+        capture_output = True,
+        text = True,
+        timeout = 5,
     )
     if result.returncode != 0:
         pytest.skip("node --experimental-strip-types not available")
 
 
 def _ensure_harness():
-    TEMP.mkdir(parents=True, exist_ok=True)
+    TEMP.mkdir(parents = True, exist_ok = True)
     (TEMP / "register.mjs").write_text(
         "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n"
     )
@@ -55,7 +55,7 @@ def _run(script: str):
     _ensure_harness()
     script_path = TEMP / "run.mts"
     script_path.write_text(script)
-    env = dict(os.environ, NODE_NO_WARNINGS="1")
+    env = dict(os.environ, NODE_NO_WARNINGS = "1")
     result = subprocess.run(
         [
             "node",
@@ -64,11 +64,11 @@ def _run(script: str):
             "--no-warnings",
             "run.mts",
         ],
-        cwd=str(TEMP),
-        capture_output=True,
-        text=True,
-        timeout=30,
-        env=env,
+        cwd = str(TEMP),
+        capture_output = True,
+        text = True,
+        timeout = 30,
+        env = env,
     )
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
     last = [line for line in result.stdout.strip().splitlines() if line.strip()][-1]

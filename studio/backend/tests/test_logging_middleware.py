@@ -30,7 +30,7 @@ def logs(monkeypatch):
     return capture
 
 
-def _http_scope(path, method="GET"):
+def _http_scope(path, method = "GET"):
     return {"type": "http", "path": path, "method": method}
 
 
@@ -86,7 +86,7 @@ def test_exception_logs_real_status_and_reraises(logs):
     async def send(message):
         pass
 
-    with pytest.raises(RuntimeError, match="stream failed"):
+    with pytest.raises(RuntimeError, match = "stream failed"):
         _run(LoggingMiddleware(app)(_http_scope("/api/health"), _noop_receive, send))
 
     assert logs.events[0][1] == "request_failed"
@@ -158,7 +158,7 @@ def test_mutations_and_errors_are_never_deduped(logs, monkeypatch):
 
     mw = LoggingMiddleware(post_ok)
     for _ in range(2):
-        _run(mw(_http_scope("/api/chat/threads", method="POST"), _noop_receive, send))
+        _run(mw(_http_scope("/api/chat/threads", method = "POST"), _noop_receive, send))
     mw_404 = LoggingMiddleware(get_404)
     for _ in range(2):
         _run(mw_404(_http_scope("/api/models"), _noop_receive, send))
@@ -220,7 +220,7 @@ def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
 def test_fastapi_static_asset_success_skips_log(tmp_path, logs):
     assets_dir = tmp_path / "assets"
     assets_dir.mkdir()
-    (assets_dir / "app.css").write_text("body { color: black; }", encoding="utf-8")
+    (assets_dir / "app.css").write_text("body { color: black; }", encoding = "utf-8")
 
     app = FastAPI()
     app.add_middleware(LoggingMiddleware)
@@ -229,7 +229,7 @@ def test_fastapi_static_asset_success_skips_log(tmp_path, logs):
     async def health():
         return {"ok": True}
 
-    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
     client = TestClient(app)
 
     response = client.get("/api/health")

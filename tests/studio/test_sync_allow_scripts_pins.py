@@ -22,7 +22,7 @@ def write_fixture(tmp: Path, policy: dict, lock_packages: dict) -> None:
                 "dependencies": {"a": "^1.0.0"},
                 "allowScripts": policy,
             },
-            indent=2,
+            indent = 2,
         )
         + "\n"
     )

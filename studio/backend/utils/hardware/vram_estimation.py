@@ -96,7 +96,7 @@ class ModelArchConfig:
     use_double_wide_mlp: bool = False
     vocab_size_per_layer_input: int = 0
     hidden_size_per_layer_input: int = 0
-    quantization_skip_modules: list = field(default_factory=list)
+    quantization_skip_modules: list = field(default_factory = list)
     quant_4bit_factor: float = QUANT_4BIT_FACTOR
     moe_has_dense_mlp: bool = False
     dense_layer_indices: tuple = ()
@@ -109,7 +109,7 @@ class TrainingVramConfig:
     batch_size: int = 4
     max_seq_length: int = 2048
     lora_rank: int = 16
-    target_modules: list = field(default_factory=lambda: list(DEFAULT_TARGET_MODULES))
+    target_modules: list = field(default_factory = lambda: list(DEFAULT_TARGET_MODULES))
     gradient_checkpointing: str = "unsloth"
     optimizer: str = "adamw_8bit"
     load_in_4bit: bool = True
@@ -330,52 +330,52 @@ def extract_arch_config(hf_config) -> Optional[ModelArchConfig]:
     v_head_dim = getattr(text_config, "v_head_dim", None)
 
     return ModelArchConfig(
-        hidden_size=hidden_size,
-        num_hidden_layers=num_layers,
-        num_attention_heads=num_heads,
-        num_key_value_heads=num_kv_heads,
-        intermediate_size=intermediate_size,
-        vocab_size=vocab_size,
-        tie_word_embeddings=getattr(text_config, "tie_word_embeddings", True),
-        num_experts=num_experts,
-        moe_intermediate_size=moe_intermediate,
-        n_shared_experts=n_shared_experts,
-        shared_expert_intermediate_size=shared_expert_intermediate_size,
-        num_experts_per_tok=int(num_experts_per_tok),
-        num_dense_layers=num_dense_layers,
-        q_lora_rank=q_lora_rank,
-        kv_lora_rank=kv_lora_rank,
-        qk_nope_head_dim=qk_nope_head_dim,
-        qk_rope_head_dim=qk_rope_head_dim,
-        v_head_dim=v_head_dim,
-        head_dim=getattr(text_config, "head_dim", None),
-        global_head_dim=getattr(text_config, "global_head_dim", None),
-        num_global_key_value_heads=getattr(
+        hidden_size = hidden_size,
+        num_hidden_layers = num_layers,
+        num_attention_heads = num_heads,
+        num_key_value_heads = num_kv_heads,
+        intermediate_size = intermediate_size,
+        vocab_size = vocab_size,
+        tie_word_embeddings = getattr(text_config, "tie_word_embeddings", True),
+        num_experts = num_experts,
+        moe_intermediate_size = moe_intermediate,
+        n_shared_experts = n_shared_experts,
+        shared_expert_intermediate_size = shared_expert_intermediate_size,
+        num_experts_per_tok = int(num_experts_per_tok),
+        num_dense_layers = num_dense_layers,
+        q_lora_rank = q_lora_rank,
+        kv_lora_rank = kv_lora_rank,
+        qk_nope_head_dim = qk_nope_head_dim,
+        qk_rope_head_dim = qk_rope_head_dim,
+        v_head_dim = v_head_dim,
+        head_dim = getattr(text_config, "head_dim", None),
+        global_head_dim = getattr(text_config, "global_head_dim", None),
+        num_global_key_value_heads = getattr(
             text_config,
             "num_global_key_value_heads",
             None,
         ),
-        attention_k_eq_v=bool(getattr(text_config, "attention_k_eq_v", False)),
-        layer_types=getattr(text_config, "layer_types", None),
-        num_kv_shared_layers=getattr(text_config, "num_kv_shared_layers", None) or 0,
-        use_double_wide_mlp=bool(getattr(text_config, "use_double_wide_mlp", False)),
-        vocab_size_per_layer_input=getattr(
+        attention_k_eq_v = bool(getattr(text_config, "attention_k_eq_v", False)),
+        layer_types = getattr(text_config, "layer_types", None),
+        num_kv_shared_layers = getattr(text_config, "num_kv_shared_layers", None) or 0,
+        use_double_wide_mlp = bool(getattr(text_config, "use_double_wide_mlp", False)),
+        vocab_size_per_layer_input = getattr(
             text_config,
             "vocab_size_per_layer_input",
             None,
         )
         or 0,
-        hidden_size_per_layer_input=getattr(
+        hidden_size_per_layer_input = getattr(
             text_config,
             "hidden_size_per_layer_input",
             None,
         )
         or 0,
-        quantization_skip_modules=list(quantization_config.get("llm_int8_skip_modules", []) or []),
-        quant_4bit_factor=quant_4bit_factor,
-        moe_has_dense_mlp=bool(getattr(text_config, "enable_moe_block", False)),
-        dense_layer_indices=dense_layer_indices,
-        dense_intermediate_size=dense_intermediate_size,
+        quantization_skip_modules = list(quantization_config.get("llm_int8_skip_modules", []) or []),
+        quant_4bit_factor = quant_4bit_factor,
+        moe_has_dense_mlp = bool(getattr(text_config, "enable_moe_block", False)),
+        dense_layer_indices = dense_layer_indices,
+        dense_intermediate_size = dense_intermediate_size,
     )
 
 
@@ -1173,8 +1173,8 @@ def estimate_training_vram(arch: ModelArchConfig, config: TrainingVramConfig) ->
         config.batch_size,
         config.max_seq_length,
         config.gradient_checkpointing,
-        is_lora=is_lora,
-        attention_implementation=config.attention_implementation,
+        is_lora = is_lora,
+        attention_implementation = config.attention_implementation,
     )
     raw_gradient_bytes = compute_gradient_bytes(trainable_params)
     gradient_floor = int(model_weights * 0.15)
@@ -1187,11 +1187,11 @@ def estimate_training_vram(arch: ModelArchConfig, config: TrainingVramConfig) ->
     activation_bytes = activations_computed
 
     return VramBreakdown(
-        model_weights=model_weights,
-        lora_adapters=lora_adapter_bytes,
-        optimizer_states=optimizer_bytes,
-        gradients=gradient_bytes,
-        activations=activation_bytes,
-        cuda_overhead=CUDA_OVERHEAD_BYTES,
-        activations_computed=activations_computed,
+        model_weights = model_weights,
+        lora_adapters = lora_adapter_bytes,
+        optimizer_states = optimizer_bytes,
+        gradients = gradient_bytes,
+        activations = activation_bytes,
+        cuda_overhead = CUDA_OVERHEAD_BYTES,
+        activations_computed = activations_computed,
     )

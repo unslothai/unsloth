@@ -26,11 +26,11 @@ print(f"{'='*80}")
 
 
 model, tokenizer = FastModel.from_pretrained(
-    model_name="unsloth/csm-1b",
-    max_seq_length=2048,
-    dtype=None,
-    auto_model=CsmForConditionalGeneration,
-    load_in_4bit=False,
+    model_name = "unsloth/csm-1b",
+    max_seq_length = 2048,
+    dtype = None,
+    auto_model = CsmForConditionalGeneration,
+    load_in_4bit = False,
 )
 
 
@@ -39,8 +39,8 @@ base_model_class = model.__class__.__name__
 
 model = FastModel.get_peft_model(
     model,
-    r=32,
-    target_modules=[
+    r = 32,
+    target_modules = [
         "q_proj",
         "k_proj",
         "v_proj",
@@ -49,13 +49,13 @@ model = FastModel.get_peft_model(
         "up_proj",
         "down_proj",
     ],
-    lora_alpha=32,
-    lora_dropout=0,
-    bias="none",
-    use_gradient_checkpointing="unsloth",
-    random_state=3407,
-    use_rslora=False,
-    loftq_config=None,
+    lora_alpha = 32,
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth",
+    random_state = 3407,
+    use_rslora = False,
+    loftq_config = None,
 )
 
 print("✅ Model and LoRA adapters loaded successfully!")
@@ -109,11 +109,11 @@ print(f"{'='*80}")
 
 
 model, processor = FastModel.from_pretrained(
-    model_name="./csm",
-    max_seq_length=2048,
-    dtype=None,
-    auto_model=CsmForConditionalGeneration,
-    load_in_4bit=False,
+    model_name = "./csm",
+    max_seq_length = 2048,
+    dtype = None,
+    auto_model = CsmForConditionalGeneration,
+    load_in_4bit = False,
 )
 
 from transformers import AutoProcessor
@@ -135,17 +135,17 @@ output_audio_path = "csm_audio.wav"
 try:
     text = "We just finished fine tuning a text to speech model... and it's pretty good!"
     speaker_id = 0
-    inputs = processor(f"[{speaker_id}]{text}", add_special_tokens=True).to("cuda")
+    inputs = processor(f"[{speaker_id}]{text}", add_special_tokens = True).to("cuda")
     audio_values = model.generate(
         **inputs,
-        max_new_tokens=125,  # ~10 seconds of audio
-        depth_decoder_temperature=0.6,
-        depth_decoder_top_k=0,
-        depth_decoder_top_p=0.9,
-        temperature=0.8,
-        top_k=50,
-        top_p=1.0,
-        output_audio=True,
+        max_new_tokens = 125,  # ~10 seconds of audio
+        depth_decoder_temperature = 0.6,
+        depth_decoder_top_k = 0,
+        depth_decoder_top_p = 0.9,
+        temperature = 0.8,
+        top_k = 50,
+        top_p = 1.0,
+        output_audio = True,
     )
     audio = audio_values[0].to(torch.float32).cpu().numpy()
     sf.write("example_without_context.wav", audio, 24000)

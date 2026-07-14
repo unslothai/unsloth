@@ -101,10 +101,10 @@ def _local_inventory_id(
     parts = [
         source,
         model_format,
-        quote(semantic_id, safe=""),
+        quote(semantic_id, safe = ""),
     ]
     if variant:
-        parts.append(quote(variant, safe=""))
+        parts.append(quote(variant, safe = ""))
     return ":".join(parts)
 
 
@@ -129,13 +129,13 @@ def _capabilities_for_format(
     can_chat = model_format in {"gguf", "safetensors", "adapter", "checkpoint"}
     can_train = model_format in {"safetensors", "checkpoint"} and is_complete
     return LocalModelCapabilities(
-        can_train=can_train,
-        can_chat=can_chat and is_complete,
-        can_delete=source == "hf_cache",
-        can_download=False,
-        requires_variant=requires_variant,
-        supports_lora=model_format in {"safetensors", "checkpoint"} and is_complete,
-        supports_vision=False,
+        can_train = can_train,
+        can_chat = can_chat and is_complete,
+        can_delete = source == "hf_cache",
+        can_download = False,
+        requires_variant = requires_variant,
+        supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,
+        supports_vision = False,
     )
 
 
@@ -196,14 +196,14 @@ def _apply_format_aware_partial(
         partial_transport = None if row.model_format == "gguf" else snapshot_partial_transport
         rewritten.append(
             row.model_copy(
-                update={
+                update = {
                     "partial": True,
                     "partial_transport": partial_transport,
                     "capabilities": _capabilities_for_format(
                         row.model_format,
                         row.source,
-                        partial=True,
-                        requires_variant=row.capabilities.requires_variant,
+                        partial = True,
+                        requires_variant = row.capabilities.requires_variant,
                     ),
                 }
             )
@@ -316,7 +316,7 @@ def _iter_immediate_files(path: Path, *, include_symlinks: bool = False) -> list
 
 
 def _iter_hf_cache_model_files(path: Path) -> list[Path]:
-    files = _iter_immediate_files(path, include_symlinks=True)
+    files = _iter_immediate_files(path, include_symlinks = True)
     if not path.is_dir():
         return files
     if any(
@@ -328,7 +328,7 @@ def _iter_hf_cache_model_files(path: Path) -> list[Path]:
         return files
     try:
         bounded: list[Path] = []
-        for index, entry in enumerate(path.rglob("*"), start=1):
+        for index, entry in enumerate(path.rglob("*"), start = 1):
             if index > _HF_CACHE_MODEL_FILE_PROBE_LIMIT:
                 break
             if entry.is_file() or entry.is_symlink():
@@ -354,7 +354,7 @@ def _sum_file_sizes(paths) -> int:
 def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
     return [
         entry
-        for entry in _iter_immediate_files(path, include_symlinks=include_symlinks)
+        for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
         if _is_main_gguf_filename(entry.name)
     ]
 
@@ -375,7 +375,7 @@ def _read_adapter_config(path: Path) -> dict:
     if not path.is_dir():
         return {}
     try:
-        with (path / "adapter_config.json").open("r", encoding="utf-8") as f:
+        with (path / "adapter_config.json").open("r", encoding = "utf-8") as f:
             data = json.load(f)
     except Exception:
         return {}
@@ -436,33 +436,33 @@ def _local_model_info(
     load_id = model_id if source == "hf_cache" and model_id else str(load_path)
     semantic_id = model_id or str(load_path)
     return LocalModelInfo(
-        id=load_id,
-        inventory_id=_local_inventory_id(
+        id = load_id,
+        inventory_id = _local_inventory_id(
             source,
             model_format,
             semantic_id,
             format_variant,
         ),
-        load_id=load_id,
-        model_id=model_id,
-        display_name=display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
-        path=str(load_path),
-        size_bytes=max(0, int(size_bytes or 0)),
-        source=source,
-        base_model=base_model,
-        base_model_source=base_model_source,
-        adapter_type=adapter_type,
-        training_method=training_method,
-        updated_at=updated_at,
-        partial=partial,
-        model_format=model_format,
-        runtime=_runtime_for_format(model_format),
-        format_variant=format_variant,
-        capabilities=_capabilities_for_format(
+        load_id = load_id,
+        model_id = model_id,
+        display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
+        path = str(load_path),
+        size_bytes = max(0, int(size_bytes or 0)),
+        source = source,
+        base_model = base_model,
+        base_model_source = base_model_source,
+        adapter_type = adapter_type,
+        training_method = training_method,
+        updated_at = updated_at,
+        partial = partial,
+        model_format = model_format,
+        runtime = _runtime_for_format(model_format),
+        format_variant = format_variant,
+        capabilities = _capabilities_for_format(
             model_format,
             source,
-            partial=partial,
-            requires_variant=requires_variant,
+            partial = partial,
+            requires_variant = requires_variant,
         ),
     )
 
@@ -490,7 +490,7 @@ def _classify_local_path(
     include_broken_snapshot_symlinks = source == "hf_cache"
     gguf_files = _main_gguf_files(
         scan_path,
-        include_symlinks=include_broken_snapshot_symlinks,
+        include_symlinks = include_broken_snapshot_symlinks,
     )
     if gguf_files:
         gguf_size_bytes = _sum_file_sizes(gguf_files)
@@ -501,17 +501,17 @@ def _classify_local_path(
         )
         rows.append(
             _local_model_info(
-                scan_path=scan_path,
-                load_path=load_path,
-                source=source,
-                model_format="gguf",
-                display_name=display_name,
-                model_id=model_id,
-                updated_at=updated_at,
-                partial=partial,
-                requires_variant=scan_path.is_dir(),
-                format_variant=variant,
-                size_bytes=gguf_size_bytes,
+                scan_path = scan_path,
+                load_path = load_path,
+                source = source,
+                model_format = "gguf",
+                display_name = display_name,
+                model_id = model_id,
+                updated_at = updated_at,
+                partial = partial,
+                requires_variant = scan_path.is_dir(),
+                format_variant = variant,
+                size_bytes = gguf_size_bytes,
             )
         )
 
@@ -535,13 +535,13 @@ def _classify_local_path(
     trusted_hf_cache_repo = source == "hf_cache" and bool(model_id)
 
     model_format = _classify_non_gguf_model_format(
-        has_config=has_config,
-        has_adapter_config=has_adapter_config,
-        has_adapter_weights=has_adapter_weights,
-        has_safetensors=has_safetensors,
-        has_transformers_safetensors=has_transformers_safetensors,
-        has_checkpoint_weights=has_checkpoint_weights,
-        trusted_hf_cache_repo=trusted_hf_cache_repo,
+        has_config = has_config,
+        has_adapter_config = has_adapter_config,
+        has_adapter_weights = has_adapter_weights,
+        has_safetensors = has_safetensors,
+        has_transformers_safetensors = has_transformers_safetensors,
+        has_checkpoint_weights = has_checkpoint_weights,
+        trusted_hf_cache_repo = trusted_hf_cache_repo,
     )
 
     if model_format is not None:
@@ -557,23 +557,23 @@ def _classify_local_path(
             size_bytes = _sum_file_sizes(f for f in files if _is_checkpoint_weight_file(f))
         rows.append(
             _local_model_info(
-                scan_path=scan_path,
-                load_path=load_path,
-                source=source,
-                model_format=model_format,
-                display_name=display_name,
-                model_id=model_id,
-                updated_at=updated_at,
-                partial=partial,
-                size_bytes=size_bytes,
-                base_model=adapter_base_model if model_format == "adapter" else None,
-                base_model_source=(
+                scan_path = scan_path,
+                load_path = load_path,
+                source = source,
+                model_format = model_format,
+                display_name = display_name,
+                model_id = model_id,
+                updated_at = updated_at,
+                partial = partial,
+                size_bytes = size_bytes,
+                base_model = adapter_base_model if model_format == "adapter" else None,
+                base_model_source = (
                     _base_model_source(adapter_base_model, scan_path)
                     if model_format == "adapter"
                     else None
                 ),
-                adapter_type=adapter_type if model_format == "adapter" else None,
-                training_method=training_method if model_format == "adapter" else None,
+                adapter_type = adapter_type if model_format == "adapter" else None,
+                training_method = training_method if model_format == "adapter" else None,
             )
         )
     elif not rows:
@@ -583,22 +583,22 @@ def _classify_local_path(
         size_bytes = _sum_file_sizes(files)
         rows.append(
             _local_model_info(
-                scan_path=scan_path,
-                load_path=load_path,
-                source=source,
-                model_format=fallback_format,
-                display_name=display_name,
-                model_id=model_id,
-                updated_at=updated_at,
-                partial=partial or trusted_hf_cache_repo,
-                size_bytes=size_bytes,
+                scan_path = scan_path,
+                load_path = load_path,
+                source = source,
+                model_format = fallback_format,
+                display_name = display_name,
+                model_id = model_id,
+                updated_at = updated_at,
+                partial = partial or trusted_hf_cache_repo,
+                size_bytes = size_bytes,
             )
         )
 
     if len(rows) > 1:
         rows = [
             row.model_copy(
-                update={
+                update = {
                     "display_name": f"{row.display_name} ({_format_label(row.model_format)})",
                     "inventory_id": _local_inventory_id(
                         row.source,

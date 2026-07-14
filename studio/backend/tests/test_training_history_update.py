@@ -55,7 +55,7 @@ def _patch_run(monkeypatch: pytest.MonkeyPatch, payload: TrainingRunUpdateReques
         training_history.update_training_run(
             "run-1",
             payload,
-            current_subject="test-user",
+            current_subject = "test-user",
         )
     )
     return result, calls
@@ -99,7 +99,7 @@ def test_get_run_detail_includes_preview_fields(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(training_history, "get_preview_sharing_enabled", lambda: True)
 
     detail = asyncio.run(
-        training_history.get_training_run_detail("run-1", current_subject="test-user")
+        training_history.get_training_run_detail("run-1", current_subject = "test-user")
     )
 
     assert detail.run.id == "run-1"

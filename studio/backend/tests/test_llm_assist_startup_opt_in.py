@@ -19,14 +19,14 @@ from routes import settings as settings_route
 from utils import helper_precache_settings
 
 
-def _install_fake_studio_db(monkeypatch, *, stored=None):
+def _install_fake_studio_db(monkeypatch, *, stored = None):
     storage_pkg = types.ModuleType("storage")
     studio_db = types.ModuleType("storage.studio_db")
     values: dict[str, object] = {}
     if stored is not None:
         values[helper_precache_settings.HELPER_PRECACHE_SETTING_KEY] = stored
 
-    def get_app_setting(key, fallback=None):
+    def get_app_setting(key, fallback = None):
         return values.get(key, fallback)
 
     def upsert_app_settings(settings):
@@ -41,7 +41,7 @@ def _install_fake_studio_db(monkeypatch, *, stored=None):
 
 
 def test_helper_precache_defaults_off_when_setting_missing(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_HELPER_MODEL_DISABLE", raising=False)
+    monkeypatch.delenv("UNSLOTH_HELPER_MODEL_DISABLE", raising = False)
     _install_fake_studio_db(monkeypatch)
 
     assert helper_precache_settings.get_helper_precache_enabled() is False
@@ -49,7 +49,7 @@ def test_helper_precache_defaults_off_when_setting_missing(monkeypatch):
 
 
 def test_helper_precache_opt_in_is_blocked_by_existing_disable_env(monkeypatch):
-    _install_fake_studio_db(monkeypatch, stored=True)
+    _install_fake_studio_db(monkeypatch, stored = True)
     monkeypatch.setenv("UNSLOTH_HELPER_MODEL_DISABLE", "true")
 
     assert helper_precache_settings.get_helper_precache_enabled() is True
@@ -58,11 +58,11 @@ def test_helper_precache_opt_in_is_blocked_by_existing_disable_env(monkeypatch):
 
 def test_settings_route_persists_helper_precache_toggle(monkeypatch):
     values = _install_fake_studio_db(monkeypatch)
-    monkeypatch.delenv("UNSLOTH_HELPER_MODEL_DISABLE", raising=False)
+    monkeypatch.delenv("UNSLOTH_HELPER_MODEL_DISABLE", raising = False)
 
     response = settings_route.update_helper_precache(
-        settings_route.HelperPrecachePayload(enabled=True),
-        current_subject="test-user",
+        settings_route.HelperPrecachePayload(enabled = True),
+        current_subject = "test-user",
     )
 
     assert response.enabled is True
@@ -72,7 +72,7 @@ def test_settings_route_persists_helper_precache_toggle(monkeypatch):
 
 
 def test_main_startup_uses_helper_precache_gate_instead_of_unconditional_precache():
-    source = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding = "utf-8")
     startup_section = source[
         source.index("cleanup_orphaned_runs") : source.index("# Initialize RSA key pair")
     ]
@@ -102,14 +102,14 @@ def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
 
     response = datasets_route.ai_assist_mapping(
         AiAssistMappingRequest(
-            columns=["prompt", "answer"],
-            samples=[{"prompt": "x" * 250, "answer": "ok", "extra": "ignored"}],
-            dataset_name="owner/dataset",
-            hf_token="hf_test",
-            model_name="unsloth/test",
-            model_type="text",
+            columns = ["prompt", "answer"],
+            samples = [{"prompt": "x" * 250, "answer": "ok", "extra": "ignored"}],
+            dataset_name = "owner/dataset",
+            hf_token = "hf_test",
+            model_name = "unsloth/test",
+            model_type = "text",
         ),
-        current_subject="test-user",
+        current_subject = "test-user",
     )
 
     assert response.success is True

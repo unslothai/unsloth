@@ -83,7 +83,7 @@ def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path
         json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
     (tmp_path / "adapter_model.safetensors").write_bytes(b"")
-    with patch("huggingface_hub.hf_hub_download", side_effect=AssertionError("no Hub call")):
+    with patch("huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")):
         assert get_base_model_from_lora_identifier(str(tmp_path)) == "HuggingFaceTB/SmolLM-135M"
 
 
@@ -96,14 +96,14 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
     def _dl(
         repo,
         fn,
-        token=None,
+        token = None,
     ):
         assert repo == "someone/my-remote-lora"
         assert fn == "adapter_config.json"
         return str(cfg)
 
     assert get_base_model_from_lora("someone/my-remote-lora") is None  # local-only: misses it
-    with patch("huggingface_hub.hf_hub_download", side_effect=_dl):
+    with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
         base = get_base_model_from_lora_identifier("someone/my-remote-lora")
     assert base == "unsloth/Llama-3.2-1B-Instruct"
 
@@ -112,7 +112,7 @@ def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
     # Non-LoRA remote repo: a 404 on adapter_config.json returns None without retrying.
     from huggingface_hub.utils import EntryNotFoundError
 
-    mock = patch("huggingface_hub.hf_hub_download", side_effect=EntryNotFoundError("404"))
+    mock = patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404"))
     with mock as m:
         assert get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
     assert m.call_count == 1  # 404 is definitive -> no retry
@@ -127,14 +127,14 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
     def _dl(
         repo,
         fn,
-        token=None,
+        token = None,
     ):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient network blip")
         return str(cfg)
 
-    with patch("huggingface_hub.hf_hub_download", side_effect=_dl):
+    with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
         base = get_base_model_from_lora_identifier("someone/remote-lora")
     assert base == "unsloth/Llama-3.2-1B-Instruct"
     assert calls["n"] == 2  # retried once
@@ -144,9 +144,8 @@ def test_lora_identifier_persistent_transient_returns_none():
     # Two transient errors -> None, logged at WARNING (a missed base is gated by neither).
     # Assert on the logger directly: robust to the logging backend (structlog vs stub).
     from utils.models import model_config as _mc
-
     with (
-        patch("huggingface_hub.hf_hub_download", side_effect=RuntimeError("down")),
+        patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")),
         patch.object(_mc.logger, "warning") as mock_warn,
     ):
         assert get_base_model_from_lora_identifier("someone/remote-lora") is None
@@ -155,9 +154,9 @@ def test_lora_identifier_persistent_transient_returns_none():
     )
 
 
-@patch("utils.models.model_config.is_audio_input_type", return_value=False)
-@patch("utils.models.model_config.detect_audio_type", return_value=None)
-@patch("utils.models.model_config.is_vision_model", return_value=False)
+@patch("utils.models.model_config.is_audio_input_type", return_value = False)
+@patch("utils.models.model_config.detect_audio_type", return_value = None)
+@patch("utils.models.model_config.is_vision_model", return_value = False)
 def test_model_config_full_finetune_local_path_is_not_lora(
     _mock_vision, _mock_audio_type, _mock_audio_input, tmp_path: Path
 ):

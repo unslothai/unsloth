@@ -29,7 +29,7 @@ def test_stream_first_item_deadline_after_headers():
         try:
             async for _ in inf_mod._aiter_llama_stream_items(
                 _Never(),
-                first_token_deadline=started + 0.02,
+                first_token_deadline = started + 0.02,
             ):
                 pass
         except inf_mod.httpx.ReadTimeout:
@@ -60,7 +60,7 @@ def test_stream_first_item_deadline_does_not_hop_tasks():
         out = []
         async for item in inf_mod._aiter_llama_stream_items(
             _One(),
-            first_token_deadline=time.monotonic() + 1,
+            first_token_deadline = time.monotonic() + 1,
         ):
             out.append(item)
 
@@ -71,7 +71,7 @@ def test_stream_first_item_deadline_does_not_hop_tasks():
 
 
 def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeypatch):
-    monkeypatch.setattr(inf_mod.asyncio, "timeout", None, raising=False)
+    monkeypatch.setattr(inf_mod.asyncio, "timeout", None, raising = False)
 
     async def _run():
         outer_task = asyncio.current_task()
@@ -91,7 +91,7 @@ def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeyp
         out = []
         async for item in inf_mod._aiter_llama_stream_items(
             _One(),
-            first_token_deadline=time.monotonic() + 1,
+            first_token_deadline = time.monotonic() + 1,
         ):
             out.append(item)
 
@@ -103,7 +103,7 @@ def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeyp
 
 def test_stream_wait_stops_on_known_disconnect_before_read():
     async def _run():
-        state = SimpleNamespace(disconnect_checks=0)
+        state = SimpleNamespace(disconnect_checks = 0)
         cancel_event = threading.Event()
 
         class _Request:
@@ -117,9 +117,9 @@ def test_stream_wait_stops_on_known_disconnect_before_read():
 
         async for _ in inf_mod._aiter_llama_stream_items(
             _Unread(),
-            cancel_event=cancel_event,
-            request=_Request(),
-            first_token_deadline=time.monotonic() + 1,
+            cancel_event = cancel_event,
+            request = _Request(),
+            first_token_deadline = time.monotonic() + 1,
         ):
             raise AssertionError("stream should stop after disconnect")
 
@@ -131,7 +131,7 @@ def test_stream_wait_stops_on_known_disconnect_before_read():
 
 def test_stream_wait_does_not_shorten_upstream_read_for_disconnect_poll():
     async def _run():
-        response = SimpleNamespace(request=SimpleNamespace(extensions={"timeout": {}}))
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         seen_read_timeouts = []
 
         class _Request:
@@ -145,10 +145,10 @@ def test_stream_wait_does_not_shorten_upstream_read_for_disconnect_poll():
 
         async for _ in inf_mod._aiter_llama_stream_items(
             _NoItem(),
-            cancel_event=threading.Event(),
-            request=_Request(),
-            response=response,
-            first_token_deadline=time.monotonic() + 1,
+            cancel_event = threading.Event(),
+            request = _Request(),
+            response = response,
+            first_token_deadline = time.monotonic() + 1,
         ):
             raise AssertionError("stream should end")
 
@@ -160,14 +160,14 @@ def test_stream_wait_does_not_shorten_upstream_read_for_disconnect_poll():
 
 def test_preheader_send_cleanup_on_disconnect_and_cancel():
     async def _run(cancel_parent):
-        state = SimpleNamespace(disconnected=False, closed=False, cancelled=False)
+        state = SimpleNamespace(disconnected = False, closed = False, cancelled = False)
         started = asyncio.Event()
 
         class _Client:
             async def send(
                 self,
                 req,
-                stream=False,
+                stream = False,
             ):
                 started.set()
                 try:
@@ -184,7 +184,7 @@ def test_preheader_send_cleanup_on_disconnect_and_cancel():
                 return state.disconnected
 
         task = asyncio.create_task(
-            inf_mod._send_stream_with_preheader_cancel(_Client(), object(), request=_Request())
+            inf_mod._send_stream_with_preheader_cancel(_Client(), object(), request = _Request())
         )
         await started.wait()
         if cancel_parent:
@@ -210,7 +210,7 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
     # the short post-terminal grace mid-stream; it must be re-resolved per read,
     # not captured once at generator start.
     async def _run():
-        response = SimpleNamespace(request=SimpleNamespace(extensions={"timeout": {}}))
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         values = iter([100.0, 2.0])
         seen = []
 
@@ -230,11 +230,11 @@ def test_stream_stall_timeout_callable_re_resolved_each_read():
 
         async for _ in inf_mod._aiter_llama_stream_items(
             _Items(),
-            cancel_event=threading.Event(),
-            request=_Request(),
-            response=response,
-            first_token_deadline=time.monotonic() + 1,
-            post_first_item_read_timeout_s=lambda: next(values, 5.0),
+            cancel_event = threading.Event(),
+            request = _Request(),
+            response = response,
+            first_token_deadline = time.monotonic() + 1,
+            post_first_item_read_timeout_s = lambda: next(values, 5.0),
         ):
             seen.append(response.request.extensions["timeout"].get("read"))
 
@@ -255,7 +255,7 @@ def test_stream_stall_timeout_disabled_clears_read_timeout():
     # first-token read timeout must be cleared, else a long post-first-chunk gap
     # trips a stale deadline the operator asked to turn off.
     async def _run():
-        response = SimpleNamespace(request=SimpleNamespace(extensions={"timeout": {}}))
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
         seen = []
 
         class _Request:
@@ -274,11 +274,11 @@ def test_stream_stall_timeout_disabled_clears_read_timeout():
 
         async for _ in inf_mod._aiter_llama_stream_items(
             _Items(),
-            cancel_event=threading.Event(),
-            request=_Request(),
-            response=response,
-            first_token_deadline=time.monotonic() + 5,
-            post_first_item_read_timeout_s=lambda: None,
+            cancel_event = threading.Event(),
+            request = _Request(),
+            response = response,
+            first_token_deadline = time.monotonic() + 5,
+            post_first_item_read_timeout_s = lambda: None,
         ):
             seen.append(response.request.extensions["timeout"].get("read"))
 

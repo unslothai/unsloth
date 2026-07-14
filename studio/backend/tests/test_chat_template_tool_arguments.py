@@ -50,8 +50,8 @@ class _StrictTemplateTokenizer:
         self,
         messages,
         *,
-        tokenize=False,
-        add_generation_prompt=True,
+        tokenize = False,
+        add_generation_prompt = True,
         **kw,
     ):
         for msg in messages:
@@ -94,8 +94,8 @@ class _RecordingTokenizer:
         self,
         messages,
         *,
-        tokenize=False,
-        add_generation_prompt=True,
+        tokenize = False,
+        add_generation_prompt = True,
         **kw,
     ):
         for msg in messages:
@@ -124,8 +124,8 @@ class _RaiseExceptionTemplateTokenizer:
         self,
         messages,
         *,
-        tokenize=False,
-        add_generation_prompt=True,
+        tokenize = False,
+        add_generation_prompt = True,
         **kw,
     ):
         for msg in messages:
@@ -153,5 +153,5 @@ def test_unrelated_template_error_still_propagates_with_dict_args():
         def apply_chat_template(self, messages, **kw):
             raise ValueError("template is broken")
 
-    with pytest.raises(ValueError, match="broken"):
+    with pytest.raises(ValueError, match = "broken"):
         apply_chat_template_for_generation(_AlwaysRaises(), _conv({"query": "x"}))

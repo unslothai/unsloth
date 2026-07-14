@@ -21,8 +21,8 @@ if "structlog" not in sys.modules:
             return lambda *args, **kwargs: None
 
     sys.modules["structlog"] = types.SimpleNamespace(
-        BoundLogger=_DummyLogger,
-        get_logger=lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
 import routes.training as rt
@@ -31,8 +31,8 @@ import routes.training as rt
 class _Progress:
     def __init__(
         self,
-        step=0,
-        total_steps=1000,
+        step = 0,
+        total_steps = 1000,
     ):
         self.step = step
         self.total_steps = total_steps
@@ -51,8 +51,8 @@ class _Backend:
         self,
         *,
         active_polls,
-        step_history=None,
-        live_step=0,
+        step_history = None,
+        live_step = 0,
     ):
         self.current_job_id = "job-prep"
         self.step_history = list(step_history or [])
@@ -61,7 +61,7 @@ class _Backend:
         self.eval_enabled = False
         self._active_calls = 0
         self._active_polls = active_polls
-        self.trainer = types.SimpleNamespace(training_progress=_Progress(step=live_step))
+        self.trainer = types.SimpleNamespace(training_progress = _Progress(step = live_step))
 
     def is_training_active(self):
         self._active_calls += 1
@@ -107,10 +107,10 @@ def _fast_short_timeout(monkeypatch):
 def test_prep_phase_does_not_time_out_before_first_step(monkeypatch, _fast_short_timeout):
     # Step 0 for many polls (far past the timeout), then the run ends. Pre-step
     # this is preparation, not a stall: no error event may be emitted.
-    backend = _Backend(active_polls=20, step_history=[], live_step=0)
+    backend = _Backend(active_polls = 20, step_history = [], live_step = 0)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject="tester")))
+    raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester")))
 
     assert (
         backend._active_calls > rt._PROGRESS_STALL_TIMEOUT_POLLS + 1
@@ -122,10 +122,10 @@ def test_prep_phase_does_not_time_out_before_first_step(monkeypatch, _fast_short
 def test_stall_after_first_step_still_times_out(monkeypatch, _fast_short_timeout):
     # Emits a live step (so seen_live_step becomes True) then stays put: a genuine
     # post-step stall that must still trigger the timeout error.
-    backend = _Backend(active_polls=100, step_history=[1, 2], live_step=5)
+    backend = _Backend(active_polls = 100, step_history = [1, 2], live_step = 5)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
-    raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject="tester")))
+    raw = _raw(asyncio.run(rt.stream_training_progress(_FakeRequest(), current_subject = "tester")))
 
     assert "event: error" in raw, "a real post-step stall should still time out"
 
@@ -135,11 +135,11 @@ def test_reconnect_to_stepped_run_still_times_out(monkeypatch, _fast_short_timeo
     # then hangs (only heartbeats): the post-step stall timeout must still fire.
     # Without seeding seen_live_step from the resume point it resets to False and
     # never times out for this client.
-    backend = _Backend(active_polls=100, step_history=[10], live_step=10)
+    backend = _Backend(active_polls = 100, step_history = [10], live_step = 10)
     monkeypatch.setattr(rt, "get_training_backend", lambda: backend)
 
     raw = _raw(
-        asyncio.run(rt.stream_training_progress(_ReconnectRequest(), current_subject="tester"))
+        asyncio.run(rt.stream_training_progress(_ReconnectRequest(), current_subject = "tester"))
     )
 
     assert (

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from auth import storage
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
@@ -29,12 +29,12 @@ def isolated_auth_db(tmp_path, monkeypatch):
     yield
 
 
-def seed_user(*, must_change_password=False):
+def seed_user(*, must_change_password = False):
     storage.create_initial_user(
-        username=storage.DEFAULT_ADMIN_USERNAME,
-        password="human-password-123",
-        jwt_secret=secrets.token_urlsafe(64),
-        must_change_password=must_change_password,
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        password = "human-password-123",
+        jwt_secret = secrets.token_urlsafe(64),
+        must_change_password = must_change_password,
     )
 
 
@@ -46,7 +46,7 @@ def auth_client():
     spec.loader.exec_module(auth_route)
 
     app = FastAPI()
-    app.include_router(auth_route.router, prefix="/api/auth")
+    app.include_router(auth_route.router, prefix = "/api/auth")
     return TestClient(app)
 
 
@@ -69,17 +69,17 @@ def local_recipe():
 
 def local_recipe_request(token):
     return SimpleNamespace(
-        headers={"authorization": f"Bearer {token}"},
-        app=SimpleNamespace(state=SimpleNamespace(server_port=8888)),
-        scope={},
-        base_url="http://testserver/",
+        headers = {"authorization": f"Bearer {token}"},
+        app = SimpleNamespace(state = SimpleNamespace(server_port = 8888)),
+        scope = {},
+        base_url = "http://testserver/",
     )
 
 
 @pytest.fixture
 def loaded_local_model(monkeypatch):
     inference_module = SimpleNamespace(
-        get_llama_cpp_backend=lambda: SimpleNamespace(is_loaded=True),
+        get_llama_cpp_backend = lambda: SimpleNamespace(is_loaded = True),
     )
     monkeypatch.setitem(sys.modules, "routes.inference", inference_module)
 
@@ -146,12 +146,12 @@ def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
 
 
 def test_web_login_token_has_no_desktop_marker_and_keeps_password_gate():
-    seed_user(must_change_password=True)
+    seed_user(must_change_password = True)
     client = auth_client()
 
     response = client.post(
         "/api/auth/login",
-        json={
+        json = {
             "username": storage.DEFAULT_ADMIN_USERNAME,
             "password": "human-password-123",
         },
@@ -163,25 +163,25 @@ def test_web_login_token_has_no_desktop_marker_and_keeps_password_gate():
     payload = jwt.decode(
         body["access_token"],
         storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
-        algorithms=["HS256"],
+        algorithms = ["HS256"],
     )
     assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
     assert "desktop" not in payload
 
     gated = client.post(
         "/api/auth/api-keys",
-        headers={"Authorization": f"Bearer {body['access_token']}"},
-        json={"name": "web"},
+        headers = {"Authorization": f"Bearer {body['access_token']}"},
+        json = {"name": "web"},
     )
     assert gated.status_code == 403
 
 
 def test_desktop_login_mints_admin_token_without_clearing_web_password_change():
-    seed_user(must_change_password=True)
+    seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
     client = auth_client()
 
-    response = client.post("/api/auth/desktop-login", json={"secret": raw})
+    response = client.post("/api/auth/desktop-login", json = {"secret": raw})
 
     assert response.status_code == 200
     body = response.json()
@@ -194,21 +194,21 @@ def test_desktop_login_mints_admin_token_without_clearing_web_password_change():
     payload = jwt.decode(
         body["access_token"],
         storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
-        algorithms=["HS256"],
+        algorithms = ["HS256"],
     )
     assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
     assert payload["desktop"] is True
 
 
 def test_desktop_refresh_preserves_desktop_marker():
-    seed_user(must_change_password=True)
+    seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
     client = auth_client()
-    login_body = client.post("/api/auth/desktop-login", json={"secret": raw}).json()
+    login_body = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()
 
     response = client.post(
         "/api/auth/refresh",
-        json={"refresh_token": login_body["refresh_token"]},
+        json = {"refresh_token": login_body["refresh_token"]},
     )
 
     assert response.status_code == 200
@@ -217,7 +217,7 @@ def test_desktop_refresh_preserves_desktop_marker():
     payload = jwt.decode(
         body["access_token"],
         storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME),
-        algorithms=["HS256"],
+        algorithms = ["HS256"],
     )
     assert payload["sub"] == storage.DEFAULT_ADMIN_USERNAME
     assert payload["desktop"] is True
@@ -229,7 +229,7 @@ def test_consume_refresh_token_second_call_returns_none():
     from datetime import datetime, timedelta, timezone
 
     raw = secrets.token_urlsafe(48)
-    expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(days = 30)).isoformat()
     storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
 
     first = storage.consume_refresh_token(raw)
@@ -245,7 +245,7 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
     from datetime import datetime, timedelta, timezone
 
     raw = secrets.token_urlsafe(48)
-    expires = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    expires = (datetime.now(timezone.utc) + timedelta(days = 30)).isoformat()
     storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
 
     workers = 64
@@ -257,7 +257,7 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
             # "database is locked" under contention; treat as losing the race.
             return None
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with ThreadPoolExecutor(max_workers = workers) as pool:
         results = list(pool.map(attempt, range(workers)))
 
     successes = [r for r in results if r is not None]
@@ -270,21 +270,21 @@ def test_consume_refresh_token_expired_returns_none():
     from datetime import datetime, timedelta, timezone
 
     raw = secrets.token_urlsafe(48)
-    expires = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    expires = (datetime.now(timezone.utc) - timedelta(hours = 1)).isoformat()
     storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
     assert storage.consume_refresh_token(raw) is None
 
 
 def test_desktop_session_uses_real_admin_identity_for_api_keys():
-    seed_user(must_change_password=True)
+    seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()
     client = auth_client()
-    token = client.post("/api/auth/desktop-login", json={"secret": raw}).json()["access_token"]
+    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
 
     response = client.post(
         "/api/auth/api-keys",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"name": "desktop"},
+        headers = {"Authorization": f"Bearer {token}"},
+        json = {"name": "desktop"},
     )
 
     assert response.status_code == 200
@@ -297,11 +297,11 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
     # forwarded JWT) that validates as admin whether the session was desktop or web.
     from auth.authentication import create_access_token, get_current_subject
 
-    seed_user(must_change_password=True)
+    seed_user(must_change_password = True)
     jobs_route = data_recipe_jobs_module()
     incoming_token = create_access_token(
-        subject=storage.DEFAULT_ADMIN_USERNAME,
-        desktop=True,
+        subject = storage.DEFAULT_ADMIN_USERNAME,
+        desktop = True,
     )
     recipe = local_recipe()
 
@@ -310,8 +310,8 @@ def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local
     local_token = recipe["model_providers"][0]["api_key"]
     assert local_token.startswith(storage.API_KEY_PREFIX)
     credentials = HTTPAuthorizationCredentials(
-        scheme="Bearer",
-        credentials=local_token,
+        scheme = "Bearer",
+        credentials = local_token,
     )
     assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
@@ -320,9 +320,9 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
     # Mirror of the desktop variant: API-key issuance is identical for web/desktop tokens.
     from auth.authentication import create_access_token, get_current_subject
 
-    seed_user(must_change_password=False)
+    seed_user(must_change_password = False)
     jobs_route = data_recipe_jobs_module()
-    incoming_token = create_access_token(subject=storage.DEFAULT_ADMIN_USERNAME)
+    incoming_token = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)
     recipe = local_recipe()
 
     jobs_route._inject_local_providers(recipe, local_recipe_request(incoming_token))
@@ -330,19 +330,19 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
     local_token = recipe["model_providers"][0]["api_key"]
     assert local_token.startswith(storage.API_KEY_PREFIX)
     credentials = HTTPAuthorizationCredentials(
-        scheme="Bearer",
-        credentials=local_token,
+        scheme = "Bearer",
+        credentials = local_token,
     )
     assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
 def test_desktop_login_rejects_invalid_secret():
-    seed_user(must_change_password=False)
+    seed_user(must_change_password = False)
     client = auth_client()
 
     response = client.post(
         "/api/auth/desktop-login",
-        json={"secret": "desktop-invalid"},
+        json = {"secret": "desktop-invalid"},
     )
 
     assert response.status_code == 401
@@ -460,7 +460,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
 
     app = FastAPI()
-    app.add_api_route("/api/health", backend_main.health_check, methods=["GET"])
+    app.add_api_route("/api/health", backend_main.health_check, methods = ["GET"])
     client = TestClient(app)
 
     unauthenticated = client.get("/api/health")
@@ -471,7 +471,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     response = client.get(
         "/api/health",
-        headers={"Authorization": f"Bearer {token}"},
+        headers = {"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
     body = response.json()
@@ -518,10 +518,10 @@ if result.exit_code != 0:
 """
     result = subprocess.run(
         [sys.executable, "-c", code, str(tmp_path)],
-        cwd=Path(__file__).resolve().parents[3],
-        env={**os.environ, "PYTHONPATH": "."},
-        text=True,
-        capture_output=True,
+        cwd = Path(__file__).resolve().parents[3],
+        env = {**os.environ, "PYTHONPATH": "."},
+        text = True,
+        capture_output = True,
     )
     assert result.returncode == 0, result.stderr + result.stdout
     secret = (auth_dir / ".desktop_secret").read_text()

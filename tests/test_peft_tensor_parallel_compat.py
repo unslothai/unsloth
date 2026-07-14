@@ -21,11 +21,11 @@ def _load_import_fixes():
 def _install_fake_module(
     name,
     *,
-    is_package=False,
-    attrs=None,
+    is_package = False,
+    attrs = None,
 ):
     module = types.ModuleType(name)
-    module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None, is_package=is_package)
+    module.__spec__ = importlib.machinery.ModuleSpec(name, loader = None, is_package = is_package)
     if is_package:
         module.__path__ = []
     if attrs:
@@ -35,7 +35,7 @@ def _install_fake_module(
     return module
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _restore_import_fixtures():
     keep = {
         "transformers",
@@ -55,13 +55,13 @@ def _restore_import_fixtures():
 
 
 def _install_fake_transformers_tensor_parallel(existing):
-    transformers = _install_fake_module("transformers", is_package=True)
-    integrations = _install_fake_module("transformers.integrations", is_package=True)
+    transformers = _install_fake_module("transformers", is_package = True)
+    integrations = _install_fake_module("transformers.integrations", is_package = True)
     setattr(transformers, "integrations", integrations)
 
     tp = _install_fake_module(
         "transformers.integrations.tensor_parallel",
-        attrs=existing,
+        attrs = existing,
     )
     setattr(integrations, "tensor_parallel", tp)
     return tp
@@ -74,7 +74,6 @@ def _fake_peft_shard_state_dict_for_tp():
         EmbeddingParallel,
         RowwiseParallel,
     )
-
     return (
         ALL_PARALLEL_STYLES,
         ColwiseParallel,
@@ -84,8 +83,8 @@ def _fake_peft_shard_state_dict_for_tp():
 
 
 def _install_fake_peft_tensor_parallel_import():
-    peft = _install_fake_module("peft", is_package=True)
-    utils = _install_fake_module("peft.utils", is_package=True)
+    peft = _install_fake_module("peft", is_package = True)
+    utils = _install_fake_module("peft.utils", is_package = True)
     setattr(peft, "utils", utils)
 
     save_and_load = _install_fake_module("peft.utils.save_and_load")
@@ -117,13 +116,13 @@ def test_missing_tensor_parallel_symbol_import_succeeds_after_fix(monkeypatch):
     assert patched == sys.modules["transformers.integrations.tensor_parallel"]
     assert embedding_parallel is getattr(patched, "EmbeddingParallel")
     assert getattr(embedding_parallel, "__unsloth_stub__", False)
-    with pytest.raises(NotImplementedError, match="ALL_PARALLEL_STYLES"):
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
         all_parallel_styles["rowwise"]
-    with pytest.raises(NotImplementedError, match="ALL_PARALLEL_STYLES"):
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
         "rowwise" in all_parallel_styles
-    with pytest.raises(NotImplementedError, match="ALL_PARALLEL_STYLES"):
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
         iter(all_parallel_styles)
-    with pytest.raises(NotImplementedError, match="ALL_PARALLEL_STYLES"):
+    with pytest.raises(NotImplementedError, match = "ALL_PARALLEL_STYLES"):
         len(all_parallel_styles)
 
 
@@ -191,7 +190,7 @@ def test_placeholder_raises_on_real_use(monkeypatch):
     )
     assert module.fix_peft_transformers_tensor_parallel_import_compat() is True
 
-    with pytest.raises(NotImplementedError, match="EmbeddingParallel"):
+    with pytest.raises(NotImplementedError, match = "EmbeddingParallel"):
         tp_mod.EmbeddingParallel()
 
     assert getattr(tp_mod.EmbeddingParallel, "__unsloth_stub__", False)

@@ -63,17 +63,17 @@ class TestWaitForHealthResilience:
     def test_returns_true_on_first_200(self, monkeypatch):
         b = _make_backend()
         b._process.poll.return_value = None
-        ok_resp = mock.Mock(status_code=200)
+        ok_resp = mock.Mock(status_code = 200)
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: ok_resp)
-        assert b._wait_for_health(timeout=1.0, interval=0.01) is True
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is True
 
     def test_timeout_records_marker_for_classification(self, monkeypatch):
         """A live-but-never-healthy server leaves a marker so the failure is
         classified as a /health timeout, not a bad GGUF (#5740)."""
         b = _make_backend()
         b._process.poll.return_value = None
-        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code=503))
-        assert b._wait_for_health(timeout=0.02, interval=0.01) is False
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
@@ -88,7 +88,7 @@ class TestWaitForHealthResilience:
             raise httpx.ReadError("WinError 10054")
 
         monkeypatch.setattr(httpx, "get", raise_read_error)
-        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         # Both loop iterations ran -- the ReadError did not bubble.
         assert b._process.poll.call_count >= 2
 
@@ -103,7 +103,7 @@ class TestWaitForHealthResilience:
             raise httpx.RemoteProtocolError("partial response")
 
         monkeypatch.setattr(httpx, "get", raise_rpe)
-        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._process.poll.call_count >= 2
 
     def test_write_error_also_swallowed(self, monkeypatch):
@@ -117,7 +117,7 @@ class TestWaitForHealthResilience:
             raise httpx.WriteError("connection broken on write")
 
         monkeypatch.setattr(httpx, "get", raise_we)
-        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert b._process.poll.call_count >= 2
 
     def test_connect_error_swallowed_until_success(self, monkeypatch):
@@ -126,7 +126,7 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._process.poll.return_value = None
         calls = {"n": 0}
-        ok_resp = mock.Mock(status_code=200)
+        ok_resp = mock.Mock(status_code = 200)
 
         def cycling(*a, **kw):
             calls["n"] += 1
@@ -135,7 +135,7 @@ class TestWaitForHealthResilience:
             return ok_resp
 
         monkeypatch.setattr(httpx, "get", cycling)
-        assert b._wait_for_health(timeout=5.0, interval=0.01) is True
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is True
         assert calls["n"] >= 3
 
     def test_dead_process_before_probe_returns_false(self, monkeypatch):
@@ -152,7 +152,7 @@ class TestWaitForHealthResilience:
             raise AssertionError("httpx.get must not run when subprocess is dead")
 
         monkeypatch.setattr(httpx, "get", should_not_be_called)
-        assert b._wait_for_health(timeout=5.0, interval=0.01) is False
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
         assert called["n"] == 0
 
 
@@ -171,7 +171,7 @@ class TestCrashLogTail:
 
         records: list = []
         fake_logger = mock.Mock()
-        fake_logger.error = mock.Mock(side_effect=lambda msg, *a, **k: records.append(msg))
+        fake_logger.error = mock.Mock(side_effect = lambda msg, *a, **k: records.append(msg))
         monkeypatch.setattr(_llama_mod, "logger", fake_logger)
         return records
 
@@ -185,7 +185,7 @@ class TestCrashLogTail:
         diagnostic = "ggml-cuda.cu:103: ROCm error: out of memory"
         b._stdout_lines = banner + [diagnostic]
 
-        assert b._wait_for_health(timeout=1.0, interval=0.01) is False
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
 
         crash_logs = [m for m in records if "exited with code" in m]
         assert crash_logs, "crash must produce an exited-with-code log"
@@ -202,7 +202,7 @@ class TestCrashLogTail:
         b._stdout_lines = ["boom"]
         b._llama_log_path = Path("C:/logs/llama-123-port-1234.log")
 
-        assert b._wait_for_health(timeout=1.0, interval=0.01) is False
+        assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
 
         crash_logs = [m for m in records if "exited with code" in m]
         assert crash_logs and "llama-123-port-1234.log" in crash_logs[-1]
@@ -217,7 +217,7 @@ class TestRetryLogFilenameUnique:
     def test_log_name_includes_attempt_index(self):
         src = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        ).read_text(encoding="utf-8")
+        ).read_text(encoding = "utf-8")
         assert "-try{_spawn_attempt}.log" in src
 
 
@@ -229,11 +229,11 @@ class TestFitOffRetryEligible:
 
     def test_eligible_for_plain_ngl_launch(self):
         cmd = ["llama-server", "-m", "x.gguf", "-ngl", "-1", "--jinja"]
-        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit=False) is True
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True
 
     def test_not_eligible_when_use_fit(self):
         cmd = ["llama-server", "-m", "x.gguf", "--fit", "on"]
-        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit=True) is False
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = True) is False
 
     @pytest.mark.parametrize(
         "fit_args",
@@ -247,7 +247,7 @@ class TestFitOffRetryEligible:
     )
     def test_not_eligible_with_explicit_fit_flag(self, fit_args):
         cmd = ["llama-server", "-m", "x.gguf", *fit_args]
-        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit=False) is False
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is False
 
     @pytest.mark.parametrize(
         "tuning_args",
@@ -261,4 +261,4 @@ class TestFitOffRetryEligible:
     )
     def test_fit_tuning_flags_do_not_block_retry(self, tuning_args):
         cmd = ["llama-server", "-m", "x.gguf", *tuning_args]
-        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit=False) is True
+        assert LlamaCppBackend._fit_off_retry_eligible(cmd, use_fit = False) is True

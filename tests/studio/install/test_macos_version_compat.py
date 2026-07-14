@@ -23,30 +23,30 @@ _CPU_TYPE_ARM64 = 0x0100000C
 _CPU_TYPE_X86_64 = 0x01000007
 
 
-def make_macos_host(macos_version, *, arm64=True):
+def make_macos_host(macos_version, *, arm64 = True):
     return HostInfo(
-        system="Darwin",
-        machine="arm64" if arm64 else "x86_64",
-        is_windows=False,
-        is_linux=False,
-        is_macos=True,
-        is_x86_64=not arm64,
-        is_arm64=arm64,
-        nvidia_smi=None,
-        driver_cuda_version=None,
-        compute_caps=[],
-        visible_cuda_devices=None,
-        has_physical_nvidia=False,
-        has_usable_nvidia=False,
-        macos_version=macos_version,
+        system = "Darwin",
+        machine = "arm64" if arm64 else "x86_64",
+        is_windows = False,
+        is_linux = False,
+        is_macos = True,
+        is_x86_64 = not arm64,
+        is_arm64 = arm64,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = macos_version,
     )
 
 
 def thin_macho(
-    minos=(14, 0),
+    minos = (14, 0),
     *,
-    cputype=_CPU_TYPE_ARM64,
-    build_version=True,
+    cputype = _CPU_TYPE_ARM64,
+    build_version = True,
 ):
     """Synthesize a minimal little-endian 64-bit Mach-O carrying a macOS
     minimum-version load command."""
@@ -117,7 +117,7 @@ class TestMachoMinimumMacos:
 
     def test_legacy_version_min_thin(self, tmp_path):
         path = tmp_path / "lib.dylib"
-        path.write_bytes(thin_macho((14, 0), build_version=False))
+        path.write_bytes(thin_macho((14, 0), build_version = False))
         assert ILP.macho_minimum_macos(path) == (14, 0)
 
     def test_universal_prefers_host_arch_slice(self, tmp_path):
@@ -126,13 +126,13 @@ class TestMachoMinimumMacos:
         path.write_bytes(
             fat_macho(
                 [
-                    (_CPU_TYPE_ARM64, thin_macho((14, 0), cputype=_CPU_TYPE_ARM64)),
-                    (_CPU_TYPE_X86_64, thin_macho((26, 0), cputype=_CPU_TYPE_X86_64)),
+                    (_CPU_TYPE_ARM64, thin_macho((14, 0), cputype = _CPU_TYPE_ARM64)),
+                    (_CPU_TYPE_X86_64, thin_macho((26, 0), cputype = _CPU_TYPE_X86_64)),
                 ]
             )
         )
         assert ILP.macho_minimum_macos(path, make_macos_host((14, 0))) == (14, 0)
-        assert ILP.macho_minimum_macos(path, make_macos_host((26, 0), arm64=False)) == (26, 0)
+        assert ILP.macho_minimum_macos(path, make_macos_host((26, 0), arm64 = False)) == (26, 0)
 
     def test_non_macho_returns_none(self, tmp_path):
         path = tmp_path / "script.sh"
@@ -164,7 +164,7 @@ class TestLooksLikeMacosIncompatibility:
 class TestPreflightMacosInstalledBinaries:
     def _install_dir(self, tmp_path, dylib_minos):
         bin_dir = tmp_path / "build" / "bin"
-        bin_dir.mkdir(parents=True)
+        bin_dir.mkdir(parents = True)
         (bin_dir / "libggml-metal.dylib").write_bytes(thin_macho(dylib_minos))
         server = tmp_path / "llama-server"
         server.write_bytes(thin_macho(dylib_minos))
@@ -174,7 +174,7 @@ class TestPreflightMacosInstalledBinaries:
 
     def test_rejects_too_new_dylib(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
-        with pytest.raises(PrebuiltFallback, match="newer macOS"):
+        with pytest.raises(PrebuiltFallback, match = "newer macOS"):
             ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host((14, 0)))
 
     def test_accepts_compatible_prebuilt(self, tmp_path):
@@ -190,19 +190,19 @@ class TestPreflightMacosInstalledBinaries:
     def test_noop_on_non_macos_host(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         linux_host = HostInfo(
-            system="Linux",
-            machine="x86_64",
-            is_windows=False,
-            is_linux=True,
-            is_macos=False,
-            is_x86_64=True,
-            is_arm64=False,
-            nvidia_smi=None,
-            driver_cuda_version=None,
-            compute_caps=[],
-            visible_cuda_devices=None,
-            has_physical_nvidia=False,
-            has_usable_nvidia=False,
+            system = "Linux",
+            machine = "x86_64",
+            is_windows = False,
+            is_linux = True,
+            is_macos = False,
+            is_x86_64 = True,
+            is_arm64 = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            visible_cuda_devices = None,
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
         )
         ILP.preflight_macos_installed_binaries(binaries, install_dir, linux_host)
 
@@ -285,7 +285,7 @@ class TestForwardsBackwardsCompat:
     def _select(self, tmp_path, host_version):
         for tag, minos in self.RELEASES:
             bin_dir = tmp_path / tag / "build" / "bin"
-            bin_dir.mkdir(parents=True)
+            bin_dir.mkdir(parents = True)
             (bin_dir / "libggml-metal.dylib").write_bytes(thin_macho(minos))
             try:
                 ILP.preflight_macos_installed_binaries(

@@ -10,21 +10,21 @@ from core.rag.parsers import Page, ParsedImage
 
 
 def _img(page):
-    return ParsedImage(image_bytes=b"\x89PNG fake", page_number=page, xref=page)
+    return ParsedImage(image_bytes = b"\x89PNG fake", page_number = page, xref = page)
 
 
 def test_caption_images_runs_when_images_present(monkeypatch):
     # Policy lives in ingestion (_run); caption_images captions given images + endpoint.
     monkeypatch.setattr(captioner.config, "CAPTION_IMAGES", False)
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: "a chart")
-    out = captioner.caption_images([_img(1)], endpoint=("http://x", "local"))
+    out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
     assert out == {1: ["a chart"]}
 
 
 def test_caption_images_groups_by_page(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 8)
     monkeypatch.setattr(captioner, "_caption_one", lambda base, model, b, t: "a chart of results")
-    out = captioner.caption_images([_img(1), _img(1), _img(3)], endpoint=("http://x", "local"))
+    out = captioner.caption_images([_img(1), _img(1), _img(3)], endpoint = ("http://x", "local"))
     assert out == {1: ["a chart of results", "a chart of results"], 3: ["a chart of results"]}
 
 
@@ -32,7 +32,7 @@ def test_caption_images_respects_cap(monkeypatch):
     monkeypatch.setattr(captioner.config, "CAPTION_MAX_IMAGES", 2)
     calls = []
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: (calls.append(1) or "cap"))
-    captioner.caption_images([_img(i) for i in range(5)], endpoint=("http://x", "local"))
+    captioner.caption_images([_img(i) for i in range(5)], endpoint = ("http://x", "local"))
     assert len(calls) == 2
 
 
@@ -44,7 +44,7 @@ def test_caption_images_no_endpoint(monkeypatch):
 def test_caption_runaway_guard_applied(monkeypatch):
     # A looping vision model must not flood the index; captions pass _collapse_runaway.
     monkeypatch.setattr(captioner, "_caption_one", lambda *a: "\n".join(["LOOP"] * 40))
-    out = captioner.caption_images([_img(1)], endpoint=("http://x", "local"))
+    out = captioner.caption_images([_img(1)], endpoint = ("http://x", "local"))
     assert out[1][0].splitlines().count("LOOP") == 3  # 40 -> 3
 
 
@@ -53,7 +53,7 @@ def test_caption_prompt_and_token_budget(monkeypatch):
     captured: dict = {}
 
     def fake_vision_complete(base_url, model, image_bytes, *, prompt, timeout, max_tokens):
-        captured.update(prompt=prompt, timeout=timeout, max_tokens=max_tokens)
+        captured.update(prompt = prompt, timeout = timeout, max_tokens = max_tokens)
         return "ok"
 
     monkeypatch.setattr(captioner, "_vision_complete", fake_vision_complete)
@@ -80,13 +80,13 @@ def test_pages_with_figures_and_tiles(tmp_path):
 
     pdf = tmp_path / "fig.pdf"
     _figure_pdf(pdf)
-    pgs = parsers.pages_with_figures(str(pdf), max_pages=4)
+    pgs = parsers.pages_with_figures(str(pdf), max_pages = 4)
     assert pgs == [1]
-    tiles = parsers.render_pdf_figure_tiles(str(pdf), pgs, rows=2, cols=2, fullpage=True)
+    tiles = parsers.render_pdf_figure_tiles(str(pdf), pgs, rows = 2, cols = 2, fullpage = True)
     assert len(tiles) == 5  # full page + 2x2 grid
     assert all(t.image_bytes[:8] == b"\x89PNG\r\n\x1a\n" and t.page_number == 1 for t in tiles)
     capped = parsers.render_pdf_figure_tiles(
-        str(pdf), pgs, rows=2, cols=2, fullpage=True, max_tiles=3
+        str(pdf), pgs, rows = 2, cols = 2, fullpage = True, max_tiles = 3
     )
     assert len(capped) == 3  # max_tiles budget honored
 
@@ -103,7 +103,7 @@ def test_render_pdf_figure_tiles_zero_grid_no_crash(tmp_path):
     doc.save(str(pdf))
     doc.close()
 
-    out = parsers.render_pdf_figure_tiles(str(pdf), [1], rows=0, cols=0, fullpage=True)
+    out = parsers.render_pdf_figure_tiles(str(pdf), [1], rows = 0, cols = 0, fullpage = True)
     assert len(out) == 2  # full page + a single 1x1 tile, no crash
 
 
@@ -119,7 +119,7 @@ def test_pages_with_figures_excludes_given_pages(tmp_path):
         shape.draw_rect(pymupdf.Rect(60, 140, 540, 520))
         for i in range(8):
             shape.draw_line((80, 160 + i * 40), (520, 160 + i * 40))
-        shape.finish(color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+        shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
         shape.commit()
 
     pdf = tmp_path / "charts.pdf"
@@ -129,9 +129,9 @@ def test_pages_with_figures_excludes_given_pages(tmp_path):
     doc.save(str(pdf))
     doc.close()
 
-    assert parsers.pages_with_figures(str(pdf), max_pages=4) == [1, 2]
-    assert parsers.pages_with_figures(str(pdf), max_pages=4, exclude_pages={1}) == [2]
-    assert parsers.pages_with_figures(str(pdf), max_pages=4, exclude_pages={2}) == [1]
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4) == [1, 2]
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4, exclude_pages = {1}) == [2]
+    assert parsers.pages_with_figures(str(pdf), max_pages = 4, exclude_pages = {2}) == [1]
 
 
 def test_run_skips_figure_work_without_vision_model(
@@ -173,12 +173,12 @@ def test_vision_complete_sends_auth_header(monkeypatch):
             return {"choices": [{"message": {"content": "ok"}}]}
 
     def fake_post(url, *, json, timeout, headers, trust_env):
-        captured.update(url=url, headers=headers, trust_env=trust_env)
+        captured.update(url = url, headers = headers, trust_env = trust_env)
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", fake_post)
     out = captioner._vision_complete(
-        "http://x", "local", b"img", prompt="p", timeout=5.0, max_tokens=8
+        "http://x", "local", b"img", prompt = "p", timeout = 5.0, max_tokens = 8
     )
     assert out == "ok"
     assert captured["headers"] == {"Authorization": "Bearer secret"}
@@ -205,7 +205,7 @@ def test_vision_complete_omits_header_when_unauthenticated(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(httpx, "post", fake_post)
-    captioner._vision_complete("http://x", "local", b"i", prompt="p", timeout=5.0, max_tokens=8)
+    captioner._vision_complete("http://x", "local", b"i", prompt = "p", timeout = 5.0, max_tokens = 8)
     assert captured["headers"] is None
     assert captured["trust_env"] is False
 
@@ -242,17 +242,17 @@ def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
     from core.rag import chunking, embeddings
 
     chunks = chunking.chunk_pages(
-        pages, max_tokens=128, overlap=16, count=embeddings.token_counter(None)
+        pages, max_tokens = 128, overlap = 16, count = embeddings.token_counter(None)
     )
-    vecs = embeddings.encode([c.text for c in chunks], normalize=True)
+    vecs = embeddings.encode([c.text for c in chunks], normalize = True)
 
     conn = rag_db.get_connection()
     try:
-        kb_id = store.create_kb(conn, name="kb")
+        kb_id = store.create_kb(conn, name = "kb")
         scope = store.kb_scope(kb_id)
-        doc_id = store.create_document(conn, scope=scope, filename="d.pdf", sha256="h")
+        doc_id = store.create_document(conn, scope = scope, filename = "d.pdf", sha256 = "h")
         store.add_chunks(conn, scope, doc_id, chunks, vecs)
-        hits = retrieval.retrieve_lexical(conn, scope, "throughput quantizations", k=5)
+        hits = retrieval.retrieve_lexical(conn, scope, "throughput quantizations", k = 5)
     finally:
         conn.close()
     assert hits, "spliced caption text should be retrievable via lexical search"
@@ -271,13 +271,13 @@ def _figure_pdf(path):
     page.insert_textbox(
         pymupdf.Rect(40, 40, 550, 120),
         "Quarterly revenue report. The chart below shows the trend.",
-        fontsize=11,
+        fontsize = 11,
     )
     shape = page.new_shape()
     shape.draw_rect(pymupdf.Rect(60, 140, 540, 520))
     for i in range(8):
         shape.draw_line((80, 160 + i * 40), (520, 160 + i * 40))
-    shape.finish(color=(0, 0, 0), fill=(0.8, 0.8, 0.9))
+    shape.finish(color = (0, 0, 0), fill = (0.8, 0.8, 0.9))
     shape.commit()
     doc.save(str(path))
     doc.close()
@@ -289,12 +289,12 @@ def _ingest_with_caption(rag_conn, thread_id, path, caption):
     scope = store.thread_scope(thread_id)
     document_id = store.create_document(
         rag_conn,
-        scope=scope,
-        filename="fig.pdf",
-        sha256=str(path) + str(caption),
-        thread_id=thread_id,
-        status="pending",
-        stored_path=str(path),
+        scope = scope,
+        filename = "fig.pdf",
+        sha256 = str(path) + str(caption),
+        thread_id = thread_id,
+        status = "pending",
+        stored_path = str(path),
     )
     job_id = ingestion._new_job(rag_conn, document_id, scope)
     # _run(job_id, document_id, scope, stored_path, model_name, ocr, caption)
@@ -316,7 +316,7 @@ def test_caption_override_true_runs_when_config_off(
     _figure_pdf(pdf)
     _ingest_with_caption(rag_conn, "t1", pdf, True)
 
-    text, _ = tool.whole_document_context(scope_thread_id="t1", max_tokens=6000)
+    text, _ = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert "wombat-7" in text  # the spliced figure caption reached the index
 
 

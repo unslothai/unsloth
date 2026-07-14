@@ -74,14 +74,14 @@ class _Req:
     def __init__(
         self,
         host,
-        headers=None,
+        headers = None,
     ):
-        self.client = _types.SimpleNamespace(host=host) if host else None
+        self.client = _types.SimpleNamespace(host = host) if host else None
         self.headers = headers or {}
 
 
 def test_client_ip_uses_socket_peer_by_default(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     # Forwarded header is ignored unless the operator opts in.
     req = _Req("203.0.113.9", {"x-forwarded-for": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
@@ -98,20 +98,20 @@ def test_client_ip_uses_rightmost_forwarded_when_trusted(monkeypatch):
 
 def test_client_ip_uses_cf_connecting_ip_on_loopback(monkeypatch):
     # Managed Cloudflare tunnel terminates at loopback; key by the real visitor.
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
     assert client_ip(req) == "198.51.100.7"
 
 
 def test_client_ip_ignores_cf_header_from_non_loopback(monkeypatch):
     # A direct (non-loopback) caller can't spoof CF-Connecting-IP to skew the limit.
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     req = _Req("203.0.113.9", {"cf-connecting-ip": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
 
 
 def test_client_ip_loopback_without_cf_returns_peer(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
     assert client_ip(_Req("127.0.0.1")) == "127.0.0.1"
 
 
@@ -128,8 +128,7 @@ def test_sharing_defaults_enabled_and_coerces():
 
 def test_sharing_missing_key_defaults_enabled(monkeypatch):
     import storage.studio_db as sdb
-
-    monkeypatch.setattr(sdb, "get_app_setting", lambda key, fallback=None: None)
+    monkeypatch.setattr(sdb, "get_app_setting", lambda key, fallback = None: None)
     assert get_preview_sharing_enabled() is True
 
 

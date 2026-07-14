@@ -37,7 +37,6 @@ def get_helper_precache_enabled() -> bool:
     """
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(HELPER_PRECACHE_SETTING_KEY, None)
     except Exception:
         stored = None

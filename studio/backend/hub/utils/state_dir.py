@@ -61,7 +61,7 @@ def state_root() -> Optional[Path]:
     """Return the Hub state root, creating it if needed. ``None`` on failure."""
     root = cache_root() / _HUB_STATE_DIRNAME
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents = True, exist_ok = True)
     except OSError as exc:
         logger.debug("Could not create hub state root %s: %s", root, exc)
         return None
@@ -74,7 +74,7 @@ def _subdir(name: str) -> Optional[Path]:
         return None
     path = root / name
     try:
-        path.mkdir(parents=True, exist_ok=True)
+        path.mkdir(parents = True, exist_ok = True)
     except OSError as exc:
         logger.debug("Could not create hub state subdir %s: %s", path, exc)
         return None

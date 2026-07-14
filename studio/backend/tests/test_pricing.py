@@ -24,9 +24,9 @@ from core.inference.pricing import (
 def _isclose(
     a,
     b,
-    tol=1e-6,
+    tol = 1e-6,
 ):
-    return math.isclose(a, b, rel_tol=tol, abs_tol=tol)
+    return math.isclose(a, b, rel_tol = tol, abs_tol = tol)
 
 
 # ── unknown model -> priced=False, totals zero, tokens still report ──

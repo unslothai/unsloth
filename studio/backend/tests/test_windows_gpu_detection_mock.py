@@ -132,11 +132,11 @@ def _populate_studio_venv(prefix: Path) -> None:
     site = prefix / "Lib" / "site-packages"
     for rel, dlls in REAL_PIP_NVIDIA_WHEEL_LAYOUTS.items():
         d = site / Path(rel)
-        d.mkdir(parents=True, exist_ok=True)
+        d.mkdir(parents = True, exist_ok = True)
         for name in dlls:
             (d / name).write_bytes(b"PE-stub")
     # install_python_stack always installs torch beside nvidia.
-    (site / "torch" / "lib").mkdir(parents=True, exist_ok=True)
+    (site / "torch" / "lib").mkdir(parents = True, exist_ok = True)
     for fn in ("c10.dll", "torch.dll", "torch_cpu.dll", "torch_python.dll"):
         (site / "torch" / "lib" / fn).write_bytes(b"PE-stub")
 
@@ -144,7 +144,7 @@ def _populate_studio_venv(prefix: Path) -> None:
 def _populate_studio_install(install_dir: Path, runtime: str = "13.1") -> None:
     """Lay out install_dir/build/bin/Release/ as #5322 leaves it: payload + cudart overlay."""
     rel = install_dir / "build" / "bin" / "Release"
-    rel.mkdir(parents=True, exist_ok=True)
+    rel.mkdir(parents = True, exist_ok = True)
     for fn in (
         "llama-server.exe",
         "llama-quantize.exe",
@@ -178,11 +178,11 @@ def _mock_nvidia_smi_run(fake_output: str, returncode: int = 0) -> "mock._patch"
     def fake_run(cmd, *args, **kwargs):
         if isinstance(cmd, list) and cmd and "nvidia-smi" in cmd[0]:
             return subprocess.CompletedProcess(
-                args=cmd, returncode=returncode, stdout=fake_output, stderr=""
+                args = cmd, returncode = returncode, stdout = fake_output, stderr = ""
             )
         return real_run(cmd, *args, **kwargs)
 
-    return mock.patch("subprocess.run", side_effect=fake_run)
+    return mock.patch("subprocess.run", side_effect = fake_run)
 
 
 # --------------------------------------------------------------------- #
@@ -195,8 +195,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
     def test_nvidia_smi_probe_reports_synthetic_gpu(self, monkeypatch):
         """Probe parses CSV output and returns (index, free_mib)."""
         # Clear inherited masks so the synthetic CSV isn't filtered.
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-        monkeypatch.delenv("NVIDIA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("NVIDIA_VISIBLE_DEVICES", raising = False)
         # The #5106 reporter's exact reproducer: RTX 4090, 22805 MiB.
         fake_csv = "0, 22805\n"
         with _mock_nvidia_smi_run(fake_csv):
@@ -215,7 +215,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         """Total is parsed when present; a legacy two-column line or a non-integer
         total ("N/A") yields total 0 (back-compat) rather than dropping the GPU,
         which would silently spill to CPU."""
-        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         with _mock_nvidia_smi_run("0, 22805, 24576\n"):
             assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 24576)]
         with _mock_nvidia_smi_run("0, 22805\n"):
@@ -231,7 +231,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         """All three bundle DLLs must land in install_dir/build/bin/
         Release; any missing one breaks ggml-cuda.dll's PE import chain."""
         install = tmp_path / "studio_install"
-        _populate_studio_install(install, runtime="13.1")
+        _populate_studio_install(install, runtime = "13.1")
         rel = install / "build" / "bin" / "Release"
         for fn in REAL_UPSTREAM_CUDART_BUNDLE["13.1"]:
             assert (rel / fn).exists(), f"missing {fn} in {rel}"
@@ -261,9 +261,9 @@ class TestWindowsGpuDetectionAfter5106Fix:
         prefix = tmp_path / "studio_venv"
         install = tmp_path / "studio_install"
         _populate_studio_venv(prefix)
-        _populate_studio_install(install, runtime="13.1")
+        _populate_studio_install(install, runtime = "13.1")
         binary_dir = install / "build" / "bin" / "Release"
-        path_dirs = _build_path_dirs_like_start_llama_server(binary_dir, prefix, cuda_path="")
+        path_dirs = _build_path_dirs_like_start_llama_server(binary_dir, prefix, cuda_path = "")
         # binary_dir first -- Windows DLL search step 1.
         assert path_dirs[0] == str(
             binary_dir
@@ -290,7 +290,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         prefix = tmp_path / "studio_venv"
         install = tmp_path / "studio_install"
         _populate_studio_venv(prefix)
-        _populate_studio_install(install, runtime="13.1")
+        _populate_studio_install(install, runtime = "13.1")
         binary_dir = install / "build" / "bin" / "Release"
         path_dirs = _build_path_dirs_like_start_llama_server(binary_dir, prefix)
         for required in REAL_UPSTREAM_CUDART_BUNDLE["13.1"]:
@@ -305,7 +305,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         prefix = tmp_path / "bare_venv"
         prefix.mkdir()
         install = tmp_path / "studio_install"
-        _populate_studio_install(install, runtime="13.1")
+        _populate_studio_install(install, runtime = "13.1")
         binary_dir = install / "build" / "bin" / "Release"
         path_dirs = _build_path_dirs_like_start_llama_server(binary_dir, prefix)
         assert path_dirs == [str(binary_dir)], f"bare venv produced unexpected PATH: {path_dirs}"
@@ -321,7 +321,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         _populate_studio_venv(prefix)
         install = tmp_path / "studio_install_pre5322"
         rel = install / "build" / "bin" / "Release"
-        rel.mkdir(parents=True)
+        rel.mkdir(parents = True)
         # Main archive payload only; cudart bundle absent.
         for fn in (
             "llama-server.exe",
@@ -353,7 +353,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         _populate_studio_venv(prefix)
         install = tmp_path / "pre_pr_install"
         rel = install / "build" / "bin" / "Release"
-        rel.mkdir(parents=True)
+        rel.mkdir(parents = True)
         for fn in ("llama-server.exe", "llama.dll", "ggml-cuda.dll"):
             (rel / fn).write_bytes(b"PE-stub")
         # Pre-PR PATH: binary_dir only, no pip nvidia dirs, no toolkit.

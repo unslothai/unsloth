@@ -40,7 +40,7 @@ class TestFailure(AssertionError):
 
 def _log(msg: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[smoke {ts}] {msg}", flush=True)
+    print(f"[smoke {ts}] {msg}", flush = True)
 
 
 def _free_port() -> int:
@@ -52,10 +52,10 @@ def _free_port() -> int:
 def _run_one_install(
     label: str, repo: Path, studio_home: Path, fake_home: Path, uv_cache: Path, log_path: Path
 ) -> tuple[str, int]:
-    studio_home.mkdir(parents=True, exist_ok=True)
-    fake_home.mkdir(parents=True, exist_ok=True)
-    uv_cache.mkdir(parents=True, exist_ok=True)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    studio_home.mkdir(parents = True, exist_ok = True)
+    fake_home.mkdir(parents = True, exist_ok = True)
+    uv_cache.mkdir(parents = True, exist_ok = True)
+    log_path.parent.mkdir(parents = True, exist_ok = True)
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
     env["UNSLOTH_STUDIO_HOME"] = str(studio_home)
@@ -64,11 +64,11 @@ def _run_one_install(
     with log_path.open("w") as fh:
         proc = subprocess.run(
             ["bash", "install.sh", "--local", "--no-torch"],
-            cwd=str(repo),
-            env=env,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
-            timeout=INSTALL_TIMEOUT_S,
+            cwd = str(repo),
+            env = env,
+            stdout = fh,
+            stderr = subprocess.STDOUT,
+            timeout = INSTALL_TIMEOUT_S,
         )
     return label, proc.returncode
 
@@ -76,7 +76,7 @@ def _run_one_install(
 def _launch_backend(
     studio_home: Path, fake_home: Path, port: int, log_path: Path
 ) -> subprocess.Popen:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.parent.mkdir(parents = True, exist_ok = True)
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
     # Pin UNSLOTH_STUDIO_HOME and clear the alias so the child can't inherit a
@@ -95,10 +95,10 @@ def _launch_backend(
                 str(port),
                 "--silent",
             ],
-            env=env,
-            stdout=fh,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+            env = env,
+            stdout = fh,
+            stderr = subprocess.STDOUT,
+            start_new_session = True,
         )
 
 
@@ -108,7 +108,7 @@ def _wait_for_health(port: int, timeout: float) -> dict:
     url = f"http://127.0.0.1:{port}/api/health"
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=2) as r:
+            with urllib.request.urlopen(url, timeout = 2) as r:
                 if r.status == 200:
                     return json.loads(r.read().decode())
         except (urllib.error.URLError, ConnectionError, OSError) as e:
@@ -124,7 +124,7 @@ def _http_status(
 ) -> int:
     url = f"http://127.0.0.1:{port}{path}"
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        with urllib.request.urlopen(url, timeout = timeout) as r:
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
@@ -208,7 +208,7 @@ def run(n_installs: int, keep: bool) -> int:
     if not (repo / "install.sh").is_file():
         raise TestFailure(f"install.sh not found at {repo}; run from a clone of unslothai/unsloth")
 
-    test_root = Path(tempfile.mkdtemp(prefix="unsloth_studio_clash_"))
+    test_root = Path(tempfile.mkdtemp(prefix = "unsloth_studio_clash_"))
     _log(f"test root: {test_root}")
     _log(f"repo: {repo}")
 
@@ -217,7 +217,7 @@ def run(n_installs: int, keep: bool) -> int:
     try:
         # ---- parallel installs --------------------------------------------
         _log(f"launching {n_installs} parallel installs (--local --no-torch)")
-        with ThreadPoolExecutor(max_workers=n_installs) as pool:
+        with ThreadPoolExecutor(max_workers = n_installs) as pool:
             futures = []
             for label in labels:
                 futures.append(
@@ -267,7 +267,7 @@ def run(n_installs: int, keep: bool) -> int:
         # ---- wait for health ----------------------------------------------
         _log("waiting for /api/health on each backend")
         health_payloads: dict[str, dict] = {}
-        with ThreadPoolExecutor(max_workers=n_installs) as pool:
+        with ThreadPoolExecutor(max_workers = n_installs) as pool:
             fut_to_label = {
                 pool.submit(_wait_for_health, port, HEALTH_TIMEOUT_S): label
                 for (label, _sh, _fh, port, _p) in backends
@@ -331,29 +331,29 @@ def run(n_installs: int, keep: bool) -> int:
             if proc.poll() is None:
                 try:
                     proc.terminate()
-                    proc.wait(timeout=10)
+                    proc.wait(timeout = 10)
                 except Exception:
                     proc.kill()
 
         if keep or failed:
             _log(f"artifacts kept at {test_root}")
         else:
-            shutil.rmtree(test_root, ignore_errors=True)
+            shutil.rmtree(test_root, ignore_errors = True)
             _log(f"cleaned up {test_root}")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description = __doc__)
     ap.add_argument(
         "--n",
-        type=int,
-        default=4,
-        help="number of parallel installs (default 4, must be >= 2)",
+        type = int,
+        default = 4,
+        help = "number of parallel installs (default 4, must be >= 2)",
     )
     ap.add_argument(
         "--keep",
-        action="store_true",
-        help="leave the temp test root on disk even on PASS",
+        action = "store_true",
+        help = "leave the temp test root on disk even on PASS",
     )
     args = ap.parse_args()
     return run(args.n, args.keep)

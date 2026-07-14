@@ -227,7 +227,7 @@ def detect_custom_format_heuristic(dataset):
         if (score := score_column(col, assistant_words, "assistant", len(assistant_potential))) > 0
     ]
     if assistant_candidates:
-        assistant_candidates.sort(key=lambda item: item[1], reverse=True)
+        assistant_candidates.sort(key = lambda item: item[1], reverse = True)
         assistant_col = assistant_candidates[0][0]
         mapping[assistant_col] = "assistant"
     else:
@@ -241,7 +241,7 @@ def detect_custom_format_heuristic(dataset):
         if score > 0:
             user_candidates.append((col, score))
     if user_candidates:
-        user_candidates.sort(key=lambda item: item[1], reverse=True)
+        user_candidates.sort(key = lambda item: item[1], reverse = True)
         user_col = user_candidates[0][0]
         mapping[user_col] = "user"
     else:
@@ -320,7 +320,6 @@ def _is_image_value(value) -> bool:
         return False
     try:
         from PIL.Image import Image as PILImage
-
         if isinstance(value, PILImage):
             return True
     except ImportError:
@@ -575,7 +574,7 @@ def detect_vlm_dataset_structure(dataset):
                 score = 0
             if score > 0:
                 image_candidates.append((col, score))
-    image_candidates.sort(key=lambda item: item[1], reverse=True)
+    image_candidates.sort(key = lambda item: item[1], reverse = True)
 
     text_candidates = []
     for col in column_names:
@@ -588,7 +587,7 @@ def detect_vlm_dataset_structure(dataset):
             text_candidates.append((col, min(len(value), 1000)))
         elif isinstance(value, list) and value and isinstance(value[0], str):
             text_candidates.append((col, min(len(value[0]), 1000) // 2))
-    text_candidates.sort(key=lambda item: item[1], reverse=True)
+    text_candidates.sort(key = lambda item: item[1], reverse = True)
 
     found_image = image_candidates[0][0] if image_candidates else None
     found_text = text_candidates[0][0] if text_candidates else None

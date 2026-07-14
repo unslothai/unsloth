@@ -28,11 +28,11 @@ def _load(name: str, path: Path):
 def test_infer_studio_home_swallows_permission_error(tmp_path, monkeypatch):
     candidate = tmp_path / "fake_root"
     venv = candidate / "unsloth_studio"
-    venv.mkdir(parents=True)
+    venv.mkdir(parents = True)
     monkeypatch.setattr(sys, "prefix", str(venv))
     sys.modules.pop("sr_perm", None)
     mod = _load("sr_perm", STORAGE_ROOTS)
-    with mock.patch.object(Path, "is_file", side_effect=PermissionError("denied")):
+    with mock.patch.object(Path, "is_file", side_effect = PermissionError("denied")):
         # Must NOT raise.
         assert mod._infer_studio_home_from_venv() is None
 
@@ -41,13 +41,13 @@ def test_studio_root_does_not_crash_on_permission_error(tmp_path, monkeypatch):
     """studio_root() falls through to the legacy default on a restricted filesystem."""
     candidate = tmp_path / "fake_root"
     venv = candidate / "unsloth_studio"
-    venv.mkdir(parents=True)
+    venv.mkdir(parents = True)
     monkeypatch.setattr(sys, "prefix", str(venv))
-    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising=False)
-    monkeypatch.delenv("STUDIO_HOME", raising=False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
     sys.modules.pop("sr_studio_perm", None)
     mod = _load("sr_studio_perm", STORAGE_ROOTS)
-    with mock.patch.object(Path, "is_file", side_effect=OSError("ebusy")):
+    with mock.patch.object(Path, "is_file", side_effect = OSError("ebusy")):
         result = mod.studio_root()
     assert result == Path.home() / ".unsloth" / "studio"
 
@@ -138,7 +138,7 @@ def test_search_roots_keeps_custom_when_resolve_fails(tmp_path):
     home.mkdir()
     custom = tmp_path / "custom_studio"
     custom.mkdir()
-    roots = _exec_search_roots_block(home=home, studio_root_value=custom, resolve_raises=True)
+    roots = _exec_search_roots_block(home = home, studio_root_value = custom, resolve_raises = True)
     # On resolve() failure, the inner except falls back to direct equality;
     # custom != legacy_studio so the custom root must remain in search_roots.
     assert custom / "llama.cpp" in roots, f"custom root dropped on resolve() failure: {roots}"
@@ -152,7 +152,7 @@ def test_search_roots_default_mode_uses_legacy_only(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     legacy = home / ".unsloth" / "studio"
-    legacy.mkdir(parents=True)
-    roots = _exec_search_roots_block(home=home, studio_root_value=legacy, resolve_raises=False)
+    legacy.mkdir(parents = True)
+    roots = _exec_search_roots_block(home = home, studio_root_value = legacy, resolve_raises = False)
     # Default mode: only legacy_llama.
     assert roots == [home / ".unsloth" / "llama.cpp"]

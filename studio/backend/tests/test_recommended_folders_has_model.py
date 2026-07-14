@@ -44,7 +44,7 @@ def _load_has_downloaded_model():
             body.append(node)
     got = {n.name for n in body if isinstance(n, ast.FunctionDef)}
     assert got == wanted, f"helpers missing from source: {wanted - got}"
-    module = ast.Module(body=body, type_ignores=[])
+    module = ast.Module(body = body, type_ignores = [])
     ns: dict = {"Path": Path, "os": os, "json": json}
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_dir_has_downloaded_model"]
@@ -55,28 +55,28 @@ has_downloaded_model = _load_has_downloaded_model()
 
 def test_empty_scaffold_is_false(tmp_path):
     empty = tmp_path / "lmstudio" / "models"
-    empty.mkdir(parents=True)
+    empty.mkdir(parents = True)
     assert has_downloaded_model(empty) is False
 
 
 def test_lmstudio_gguf_is_true(tmp_path):
     # models/publisher/repo/file.gguf (LM Studio's nested layout).
     repo = tmp_path / "models" / "bartowski" / "Qwen3-4B-GGUF"
-    repo.mkdir(parents=True)
+    repo.mkdir(parents = True)
     (repo / "q4.gguf").write_bytes(b"x")
     assert has_downloaded_model(tmp_path / "models") is True
 
 
 def test_safetensors_is_true(tmp_path):
     repo = tmp_path / "models" / "repo"
-    repo.mkdir(parents=True)
+    repo.mkdir(parents = True)
     (repo / "model.safetensors").write_bytes(b"x")
     assert has_downloaded_model(tmp_path / "models") is True
 
 
 def test_ollama_empty_scaffold_is_false(tmp_path):
     models = tmp_path / "ollama" / "models"
-    (models / "manifests").mkdir(parents=True)
+    (models / "manifests").mkdir(parents = True)
     (models / "blobs").mkdir()
     assert has_downloaded_model(models) is False
 
@@ -84,7 +84,7 @@ def test_ollama_empty_scaffold_is_false(tmp_path):
 def test_ollama_with_manifest_is_true(tmp_path):
     models = tmp_path / "ollama" / "models"
     manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
-    manifest.mkdir(parents=True)
+    manifest.mkdir(parents = True)
     # A real manifest references its weights via an image.model layer; the
     # referenced blob must exist on disk for the model to be loadable.
     (manifest / "latest").write_text(
@@ -109,7 +109,7 @@ def test_ollama_manifest_without_blob_is_false(tmp_path):
     # gone: the chip must not lead to an empty picker.
     models = tmp_path / "ollama" / "models"
     manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
-    manifest.mkdir(parents=True)
+    manifest.mkdir(parents = True)
     (manifest / "latest").write_text(
         json.dumps(
             {
@@ -137,7 +137,7 @@ def test_pytorch_bin_weights_are_true(tmp_path):
     # A folder whose only weights are PyTorch .bin checkpoints (which the local
     # scanner accepts) should still earn a Recommended chip.
     repo = tmp_path / "models" / "repo"
-    repo.mkdir(parents=True)
+    repo.mkdir(parents = True)
     (repo / "config.json").write_text("{}")
     (repo / "pytorch_model.bin").write_bytes(b"x")
     assert has_downloaded_model(tmp_path / "models") is True
@@ -146,7 +146,7 @@ def test_pytorch_bin_weights_are_true(tmp_path):
 def test_non_weight_bin_is_false(tmp_path):
     # A stray .bin that is not a weight file (e.g. tokenizer.bin) must not count.
     repo = tmp_path / "models" / "repo"
-    repo.mkdir(parents=True)
+    repo.mkdir(parents = True)
     (repo / "tokenizer.bin").write_bytes(b"x")
     assert has_downloaded_model(tmp_path / "models") is False
 
@@ -157,10 +157,10 @@ def test_hidden_subtree_does_not_starve_the_budget(tmp_path):
     # reaches the actual weights, which would falsely report "no model".
     models = tmp_path / "models"
     git = models / ".git" / "objects"
-    git.mkdir(parents=True)
+    git.mkdir(parents = True)
     for i in range(50):
         (git / f"obj{i}").write_bytes(b"x")
     repo = models / "repo"
     repo.mkdir()
     (repo / "model.safetensors").write_bytes(b"x")
-    assert has_downloaded_model(models, max_entries=10) is True
+    assert has_downloaded_model(models, max_entries = 10) is True

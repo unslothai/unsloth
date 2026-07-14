@@ -11,7 +11,7 @@ import pytest
 from utils.transformers_dtype import _has_torch_dtype_kwarg, dtype_kwargs
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clear_cache():
     _has_torch_dtype_kwarg.cache_clear()
     yield
@@ -64,7 +64,7 @@ def test_malformed_version_prefers_modern_name(monkeypatch):
 
 
 def test_missing_transformers_prefers_modern_name(monkeypatch):
-    monkeypatch.delitem(sys.modules, "transformers", raising=False)
+    monkeypatch.delitem(sys.modules, "transformers", raising = False)
     real_import = __import__
 
     def _raise(name, *args, **kwargs):

@@ -80,10 +80,10 @@ def main() -> int:
     # falls back to 0 where the flag doesn't exist (Windows CDLL ignores mode).
     _rtld_global = getattr(ctypes, "RTLD_GLOBAL", 0)
     try:
-        base = ctypes.CDLL(os.path.join(bindir, base_name), mode=_rtld_global)
-        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode=_rtld_global)
+        base = ctypes.CDLL(os.path.join(bindir, base_name), mode = _rtld_global)
+        lib = ctypes.CDLL(os.path.join(bindir, vk_name), mode = _rtld_global)
     except OSError as e:
-        print(f"ggml-vulkan load failed: {e}", file=sys.stderr)
+        print(f"ggml-vulkan load failed: {e}", file = sys.stderr)
         return 1
 
     lib.ggml_backend_vk_get_device_count.restype = ctypes.c_int

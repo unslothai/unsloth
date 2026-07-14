@@ -38,7 +38,7 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
     m = types.ModuleType(name)
-    m.__spec__ = importlib.machinery.ModuleSpec(name=name, loader=None, origin="<test stub>")
+    m.__spec__ = importlib.machinery.ModuleSpec(name = name, loader = None, origin = "<test stub>")
     for k, v in (attrs or {}).items():
         setattr(m, k, v)
     sys.modules[name] = m
@@ -61,16 +61,16 @@ _stub_module(
 _stub_module("torchcodec")
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _torch_distributed_safe(monkeypatch):
     """unsloth_zoo modules occasionally probe torch.distributed."""
     try:
         import torch.distributed as dist
 
-        monkeypatch.setattr(dist, "is_available", lambda: True, raising=False)
-        monkeypatch.setattr(dist, "is_initialized", lambda: False, raising=False)
-        monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 1, raising=False)
-        monkeypatch.setattr(dist, "get_rank", lambda *a, **k: 0, raising=False)
+        monkeypatch.setattr(dist, "is_available", lambda: True, raising = False)
+        monkeypatch.setattr(dist, "is_initialized", lambda: False, raising = False)
+        monkeypatch.setattr(dist, "get_world_size", lambda *a, **k: 1, raising = False)
+        monkeypatch.setattr(dist, "get_rank", lambda *a, **k: 0, raising = False)
     except Exception:
         pass
 
@@ -110,7 +110,7 @@ _ZOO_VLLM_FREE_MODULES = [
 ]
 
 
-@pytest.mark.skipif(not _has_unsloth_zoo(), reason="unsloth_zoo not installed")
+@pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 @pytest.mark.parametrize("modname", _ZOO_VLLM_FREE_MODULES)
 def test_unsloth_zoo_module_imports_under_spoof(modname: str):
     """Each unsloth_zoo module imports cleanly under spoof (catches import-time symbol drift)."""
@@ -127,7 +127,7 @@ def test_unsloth_zoo_module_imports_under_spoof(modname: str):
 # Spoof correctness: _IS_MLX stays False on a non-Mac runner.
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_unsloth_is_mlx_false_under_spoof():
     """CUDA spoof must not flip _IS_MLX on non-Apple-Silicon hosts."""
     sys.modules.pop("unsloth", None)
@@ -153,7 +153,7 @@ _UNSLOTH_CORE_MODULES = [
 ]
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 @pytest.mark.parametrize("modname", _UNSLOTH_CORE_MODULES)
 def test_unsloth_core_module_imports_under_spoof(modname: str):
     """Core unsloth modules must import under spoof (module-top symbol drift
@@ -179,7 +179,7 @@ def test_unsloth_core_module_imports_under_spoof(modname: str):
 # with the notebook-relied methods present.
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_fast_model_class_surface_under_spoof():
     sys.modules.pop("unsloth", None)
     import unsloth
@@ -207,7 +207,7 @@ def test_fast_model_class_surface_under_spoof():
 # empty while rl_replacements imports cleanly.
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_unsloth_rl_replacements_dispatch_populated():
     try:
         import unsloth  # noqa: F401  -- _gpu_init bootstrap
@@ -236,7 +236,7 @@ def test_unsloth_rl_replacements_dispatch_populated():
 # unsloth-zoo compiler test_apply_fused_lm_head (compiler.py:1983) must be callable.
 
 
-@pytest.mark.skipif(not _has_unsloth_zoo(), reason="unsloth_zoo not installed")
+@pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_zoo_compiler_apply_fused_lm_head_callable():
     sys.modules.pop("unsloth_zoo.compiler", None)
     compiler = importlib.import_module("unsloth_zoo.compiler")
@@ -250,7 +250,7 @@ def test_zoo_compiler_apply_fused_lm_head_callable():
 # FastModel.from_pretrained kwarg stability: removal becomes silent positional drift.
 
 
-@pytest.mark.skipif(not _has_unsloth(), reason="unsloth not installed")
+@pytest.mark.skipif(not _has_unsloth(), reason = "unsloth not installed")
 def test_fast_model_from_pretrained_kwargs_under_spoof():
     sys.modules.pop("unsloth", None)
     import unsloth

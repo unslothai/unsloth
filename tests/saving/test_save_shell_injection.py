@@ -8,7 +8,7 @@ SAVE_PY = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
 
 
 def _get_function(source: str, function_name: str) -> ast.FunctionDef:
-    tree = ast.parse(source, filename=str(SAVE_PY))
+    tree = ast.parse(source, filename = str(SAVE_PY))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == function_name:
             return node
@@ -41,7 +41,7 @@ def _list_assignments(node: ast.AST, target: str) -> list[ast.List]:
 def test_lora_gguf_conversion_does_not_use_shell() -> None:
     """The LoRA -> GGUF conversion must pass argv as a list (no shell=True), so a crafted
     save path cannot inject shell commands. The conversion lives in the shared helper now."""
-    helper = _get_function(SAVE_PY.read_text(encoding="utf-8"), "_unsloth_save_lora_gguf")
+    helper = _get_function(SAVE_PY.read_text(encoding = "utf-8"), "_unsloth_save_lora_gguf")
     popen_calls = _popen_calls(helper)
     assert popen_calls, "Expected at least one subprocess.Popen call in _unsloth_save_lora_gguf"
 
@@ -74,7 +74,7 @@ def test_lora_gguf_conversion_does_not_use_shell() -> None:
 def test_legacy_ggml_wrappers_delegate_safely() -> None:
     """The legacy ggml entry points must delegate to the shared helper and not build their
     own subprocess invocation."""
-    source = SAVE_PY.read_text(encoding="utf-8")
+    source = SAVE_PY.read_text(encoding = "utf-8")
     for function_name in (
         "unsloth_convert_lora_to_ggml_and_push_to_hub",
         "unsloth_convert_lora_to_ggml_and_save_locally",

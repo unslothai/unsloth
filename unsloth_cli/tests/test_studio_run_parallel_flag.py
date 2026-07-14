@@ -29,7 +29,6 @@ def _load_run_command():
     """Import `studio` without triggering server start; backend imports
     are lazy inside run()."""
     from unsloth_cli.commands import studio as _studio
-
     return _studio
 
 
@@ -193,20 +192,20 @@ def _invoke_run(
     monkeypatch,
     args,
     *,
-    platform="linux",
+    platform = "linux",
 ):
     import typer as _typer
 
     studio_mod = _load_run_command()
-    captured = _install_reexec_capture(monkeypatch, platform=platform)
+    captured = _install_reexec_capture(monkeypatch, platform = platform)
     app = _typer.Typer()
     app.command(
-        context_settings={
+        context_settings = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    result = CliRunner().invoke(app, args, catch_exceptions=True)
+    result = CliRunner().invoke(app, args, catch_exceptions = True)
     return result, captured
 
 
@@ -239,7 +238,7 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
-    result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform=platform)
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform = platform)
     assert len(captured) == 1
     expected_kind = "popen" if platform == "win32" else "execvp"
     assert (
@@ -336,7 +335,6 @@ class _RunServerCaptured(SystemExit):
 
 def _types_module(name):
     import types as _types
-
     return _types.ModuleType(name)
 
 
@@ -348,7 +346,7 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     import typer as _typer
 
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name="studio")
+    app.add_typer(studio_mod.studio_app, name = "studio")
 
     runner = CliRunner()
     result = runner.invoke(app, ["studio", "--parallel", "8", "run", "--model", "X"])
@@ -371,7 +369,7 @@ def test_studio_default_rejects_api_only_when_subcommand_invoked():
     import typer as _typer
 
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name="studio")
+    app.add_typer(studio_mod.studio_app, name = "studio")
 
     runner = CliRunner()
     result = runner.invoke(app, ["studio", "--api-only", "run", "--model", "X"])
@@ -393,7 +391,7 @@ def test_studio_default_default_parallel_with_subcommand_does_not_error():
     import typer as _typer
 
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name="studio")
+    app.add_typer(studio_mod.studio_app, name = "studio")
     runner = CliRunner()
     result = runner.invoke(app, ["studio", "--help"])
     assert result.exit_code == 0, result.output
@@ -460,12 +458,12 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
 
     app = _typer.Typer()
     app.command(
-        context_settings={
+        context_settings = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    CliRunner().invoke(app, _BASE + ["--parallel", str(value)], catch_exceptions=True)
+    CliRunner().invoke(app, _BASE + ["--parallel", str(value)], catch_exceptions = True)
 
     assert (
         captured.get("llama_parallel_slots") == value
@@ -534,12 +532,12 @@ def test_in_venv_path_passes_api_only_to_run_server(monkeypatch, extra, expected
 
     app = _typer.Typer()
     app.command(
-        context_settings={
+        context_settings = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,
         },
     )(studio_mod.run)
-    CliRunner().invoke(app, _BASE + extra, catch_exceptions=True)
+    CliRunner().invoke(app, _BASE + extra, catch_exceptions = True)
 
     assert (
         captured.get("api_only") is expected

@@ -31,7 +31,7 @@ class LlamaServerStatsLogger:
         self,
         base_url,
         logger,
-        interval_s=10.0,
+        interval_s = 10.0,
     ):
         self._url = f"{base_url.rstrip('/')}/metrics"
         self._log = logger
@@ -41,7 +41,7 @@ class LlamaServerStatsLogger:
 
     def start(self):
         if self._thread is None:
-            self._thread = threading.Thread(target=self._run, name="llama-stats", daemon=True)
+            self._thread = threading.Thread(target = self._run, name = "llama-stats", daemon = True)
             self._thread.start()
 
     def stop(self):
@@ -49,7 +49,7 @@ class LlamaServerStatsLogger:
 
     def _scrape(self):
         try:
-            with urllib.request.urlopen(self._url, timeout=3) as r:
+            with urllib.request.urlopen(self._url, timeout = 3) as r:
                 if r.status != 200:
                     return None
                 body = r.read().decode("utf-8", "replace")
@@ -98,10 +98,10 @@ class LlamaServerStatsLogger:
             if running or waiting or gen_delta or prompt_delta:
                 self._log.info(
                     "engine_stats",
-                    gen_tok_s=round(float(gen_tps), 1),
-                    prompt_tok_s=round(float(prompt_tps), 1),
-                    running=running,
-                    waiting=waiting,
+                    gen_tok_s = round(float(gen_tps), 1),
+                    prompt_tok_s = round(float(prompt_tps), 1),
+                    running = running,
+                    waiting = waiting,
                 )
 
 

@@ -154,15 +154,15 @@ def test_parallel_cancel_vs_register_never_drops():
             tracker.__enter__()
 
         threads = [
-            threading.Thread(target=do_cancel),
-            threading.Thread(target=do_enter),
+            threading.Thread(target = do_cancel),
+            threading.Thread(target = do_enter),
         ]
         random.shuffle(threads)
         for t in threads:
             t.start()
         start.set()
         for t in threads:
-            t.join(timeout=5.0)
+            t.join(timeout = 5.0)
             assert not t.is_alive()
 
         if not ev.is_set():

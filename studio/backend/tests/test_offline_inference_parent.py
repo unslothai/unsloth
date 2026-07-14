@@ -76,8 +76,8 @@ from utils.transformers_version import (
 
 @pytest.fixture
 def clean_offline_env(monkeypatch):
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
 class TestEnvOffline:
@@ -144,13 +144,13 @@ class TestLoraDetectOffline:
         class _OfflineModeIsEnabled(Exception):
             pass
 
-        mock = MagicMock(side_effect=_OfflineModeIsEnabled("offline"))
+        mock = MagicMock(side_effect = _OfflineModeIsEnabled("offline"))
         with patch("huggingface_hub.model_info", mock):
             try:
                 ModelConfig.from_identifier(
-                    model_id="unsloth/Qwen3.5-4B",
-                    hf_token=None,
-                    gguf_variant=None,
+                    model_id = "unsloth/Qwen3.5-4B",
+                    hf_token = None,
+                    gguf_variant = None,
                 )
             except Exception:
                 pass  # registry miss OK; pinning the LoRA-detect call
@@ -171,7 +171,7 @@ class TestLoraDetectOffline:
 
         repo = tmp_path / "models--org--my-lora"
         snap = repo / "snapshots" / ("a" * 40)
-        snap.mkdir(parents=True)
+        snap.mkdir(parents = True)
         (snap / "adapter_config.json").write_text(
             '{"base_model_name_or_path": "unsloth/Llama-3-8B"}'
         )
@@ -184,9 +184,9 @@ class TestLoraDetectOffline:
         with patch("huggingface_hub.model_info", boom):
             try:
                 cfg = ModelConfig.from_identifier(
-                    model_id="org/my-lora",
-                    hf_token=None,
-                    gguf_variant=None,
+                    model_id = "org/my-lora",
+                    hf_token = None,
+                    gguf_variant = None,
                 )
             except Exception:
                 cfg = None
@@ -210,7 +210,7 @@ class TestTrainingWorkerProbeNoGlobalTimeout:
             r'if\s+"HF_HUB_OFFLINE"\s+not\s+in\s+os\.environ\s*:.*?'
             r"print\([^)]*HF_HUB_OFFLINE=1[^)]*\)",
             src,
-            flags=re.DOTALL,
+            flags = re.DOTALL,
         )
         assert m is not None, "could not locate offline auto-detect block"
         block = m.group(0)

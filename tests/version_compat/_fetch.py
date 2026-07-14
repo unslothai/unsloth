@@ -20,8 +20,8 @@ def fetch_text(repo: str, ref: str, path: str) -> str | None:
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return r.read().decode("utf-8", errors="replace")
+        with urllib.request.urlopen(req, timeout = 15) as r:
+            return r.read().decode("utf-8", errors = "replace")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None

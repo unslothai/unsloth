@@ -97,7 +97,7 @@ def parse_stdio_command(address: str) -> list[str]:
     transport so both agree on quoting (notably Windows backslash paths)."""
     posix = sys.platform != "win32"
     if posix:
-        return shlex.split(address, posix=posix)
+        return shlex.split(address, posix = posix)
     if address.lstrip().startswith("'"):
         raise ValueError("Single-quoted executables are not supported on Windows")
     return _split_windows_command_line(address)
@@ -111,7 +111,6 @@ def join_stdio_command(parts: list[str]) -> str:
     paths round-trip through the posix=False quote-strip; posix uses shlex."""
     if sys.platform == "win32":
         import subprocess
-
         return subprocess.list2cmdline(parts)
     return shlex.join(parts)
 
@@ -176,9 +175,9 @@ def _oauth_store():
         # Hash keys/collections — fastmcp uses raw URLs as keys, and FileTreeStore
         # would treat the "://" as nested directories.
         _oauth_token_store = FileTreeStore(
-            data_directory=ensure_dir(studio_root() / "mcp-oauth-tokens"),
-            key_sanitization_strategy=AlwaysHashStrategy(),
-            collection_sanitization_strategy=AlwaysHashStrategy(),
+            data_directory = ensure_dir(studio_root() / "mcp-oauth-tokens"),
+            key_sanitization_strategy = AlwaysHashStrategy(),
+            collection_sanitization_strategy = AlwaysHashStrategy(),
         )
     return _oauth_token_store
 
@@ -190,8 +189,7 @@ async def clear_oauth_tokens_async(url: str) -> None:
     / OAuth failures must not 500 the delete / update route."""
     try:
         from fastmcp.client.auth import OAuth
-
-        auth = OAuth(mcp_url=url, token_storage=_oauth_store())
+        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
         await auth.token_storage_adapter.clear()
     except Exception as exc:  # noqa: BLE001
         # Cleanup is best-effort; the row delete still wins.
@@ -218,10 +216,10 @@ def _client(
         # keep_alive=False tears the subprocess down so a one-shot call leaves no orphan.
         return Client(
             StdioTransport(
-                command=parts[0],
-                args=parts[1:],
-                env=headers or None,
-                keep_alive=False,
+                command = parts[0],
+                args = parts[1:],
+                env = headers or None,
+                keep_alive = False,
             )
         )
 
@@ -231,13 +229,12 @@ def _client(
     auth = None
     if use_oauth:
         from fastmcp.client.auth import OAuth
-
-        auth = OAuth(mcp_url=url, token_storage=_oauth_store())
+        auth = OAuth(mcp_url = url, token_storage = _oauth_store())
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
-    return Client(transport_cls(url=url, headers=headers or None, auth=auth))
+    return Client(transport_cls(url = url, headers = headers or None, auth = auth))
 
 
 async def list_tools_async(
@@ -249,9 +246,9 @@ async def list_tools_async(
     async def _fetch() -> list[dict]:
         async with _client(url, headers, use_oauth) as client:
             tools = await client.list_tools()
-        return [t.model_dump(exclude_none=True) for t in tools]
+        return [t.model_dump(exclude_none = True) for t in tools]
 
-    return await asyncio.wait_for(_fetch(), timeout=timeout)
+    return await asyncio.wait_for(_fetch(), timeout = timeout)
 
 
 # Discovered-tool cache, keyed by MCP server id. get_enabled_mcp_tools()
@@ -325,7 +322,7 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
-    cancel_event=None,
+    cancel_event = None,
 ) -> str:
     """Synchronously call an MCP tool.
 
@@ -351,13 +348,13 @@ def call_tool_sync(
             raise _MCPCancelled
         call_task = asyncio.create_task(_call())
         if cancel_event is None:
-            return await asyncio.wait_for(call_task, timeout=timeout)
+            return await asyncio.wait_for(call_task, timeout = timeout)
         watch_task = asyncio.create_task(_watch_cancel())
         try:
             done, pending = await asyncio.wait(
                 {call_task, watch_task},
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
+                timeout = timeout,
+                return_when = asyncio.FIRST_COMPLETED,
             )
         finally:
             for t in (call_task, watch_task):

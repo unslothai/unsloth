@@ -41,7 +41,6 @@ def _cache_dir() -> Path:
     """Lazy import so tests can stub storage_roots."""
     try:
         from utils.paths.storage_roots import cache_root
-
         return cache_root() / "llama_cpp_freshness"
     except Exception:
         return Path.home() / ".unsloth" / "studio" / "cache" / "llama_cpp_freshness"
@@ -62,12 +61,12 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
         candidate = parent / _INSTALL_MARKER_NAME
         if candidate.is_file():
             try:
-                marker = json.loads(candidate.read_text(encoding="utf-8"))
+                marker = json.loads(candidate.read_text(encoding = "utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug(
                     "failed to parse install marker",
-                    path=str(candidate),
-                    error=str(exc),
+                    path = str(candidate),
+                    error = str(exc),
                 )
                 marker = None
             break
@@ -83,7 +82,7 @@ def _cache_path_for(repo: str) -> Path:
 def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:
     path = _cache_path_for(repo)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     ts = payload.get("fetched_at")
@@ -96,15 +95,15 @@ def _load_disk_cache(repo: str) -> Optional[tuple[float, Optional[str]]]:
 def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
     path = _cache_path_for(repo)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(
             json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag}),
-            encoding="utf-8",
+            encoding = "utf-8",
         )
         tmp.replace(path)
     except OSError as exc:
-        logger.debug("freshness cache write failed", repo=repo, error=str(exc))
+        logger.debug("freshness cache write failed", repo = repo, error = str(exc))
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
@@ -127,9 +126,9 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers = headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (
         urllib.error.URLError,
@@ -137,7 +136,7 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
         OSError,
         json.JSONDecodeError,
     ) as exc:
-        logger.debug("freshness fetch failed", repo=repo, error=str(exc))
+        logger.debug("freshness fetch failed", repo = repo, error = str(exc))
         return None
     if not isinstance(data, list):
         return None
@@ -152,7 +151,7 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     ]
     if not published:
         return None
-    newest = max(published, key=lambda r: r.get("published_at") or "")
+    newest = max(published, key = lambda r: r.get("published_at") or "")
     return newest["tag_name"]
 
 
@@ -197,9 +196,9 @@ def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[di
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers = headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except (
         urllib.error.URLError,
@@ -207,7 +206,7 @@ def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[di
         OSError,
         json.JSONDecodeError,
     ) as exc:
-        logger.debug("freshness asset fetch failed", repo=repo, error=str(exc))
+        logger.debug("freshness asset fetch failed", repo = repo, error = str(exc))
         return None
     if not isinstance(data, list):
         return None
@@ -222,7 +221,7 @@ def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[di
     ]
     if not published:
         return None
-    newest = max(published, key=lambda r: r.get("published_at") or "")
+    newest = max(published, key = lambda r: r.get("published_at") or "")
     assets: dict[str, int] = {}
     for a in newest.get("assets") or []:
         name, size = a.get("name"), a.get("size")
@@ -278,7 +277,7 @@ def update_download_size_bytes(
         repos.append(binary_repo)
     want = f"app-{latest_tag}-{suffix}"
     for r in repos:
-        assets = latest_release_assets(r, force_refresh=force_refresh)
+        assets = latest_release_assets(r, force_refresh = force_refresh)
         if not assets:
             continue
         if want in assets:
@@ -299,7 +298,7 @@ def _parse_installed_at(value: object) -> Optional[datetime]:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo = timezone.utc)
     return dt
 
 
@@ -390,7 +389,7 @@ def check_prebuilt_freshness(
     installed_at = _parse_installed_at(out["installed_at_utc"])
     if installed_at is None:
         return out
-    now = now or datetime.now(tz=timezone.utc)
+    now = now or datetime.now(tz = timezone.utc)
     age_seconds = (now - installed_at).total_seconds()
     out["age_days"] = max(0, int(age_seconds // 86400))
     if age_seconds >= threshold_days * 86400:
@@ -430,4 +429,4 @@ def reset_caches(*, drop_disk: bool = False) -> None:
         # _cache_dir() is a dedicated freshness-only subdir; it is re-created on
         # the next _save_disk_cache. ignore_errors so a missing/locked dir is a
         # no-op rather than breaking an otherwise successful install.
-        shutil.rmtree(_cache_dir(), ignore_errors=True)
+        shutil.rmtree(_cache_dir(), ignore_errors = True)

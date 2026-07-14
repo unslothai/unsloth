@@ -57,7 +57,7 @@ class _FakeProcess:
     def terminate(self):
         pass
 
-    def wait(self, timeout=None):
+    def wait(self, timeout = None):
         return 0
 
     def kill(self):
@@ -94,20 +94,20 @@ def test_already_in_target_state_uses_gguf_path_when_present(tmp_path):
     gguf_file = tmp_path / "model.Q4_K_M.gguf"
     gguf_file.write_bytes(b"")
     backend = _loaded_backend(
-        _hf_variant="Q4_K_M",
-        _gguf_path=str(gguf_file),
+        _hf_variant = "Q4_K_M",
+        _gguf_path = str(gguf_file),
     )
     assert (
         backend._already_in_target_state(
-            gguf_path=str(gguf_file),
-            model_identifier="owner/repo",
-            hf_variant=None,
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=None,
-            is_vision=False,
+            gguf_path = str(gguf_file),
+            model_identifier = "owner/repo",
+            hf_variant = None,
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
         )
         is True
     )
@@ -118,18 +118,18 @@ def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
     a.write_bytes(b"")
     b = tmp_path / "b.gguf"
     b.write_bytes(b"")
-    backend = _loaded_backend(_gguf_path=str(a))
+    backend = _loaded_backend(_gguf_path = str(a))
     assert (
         backend._already_in_target_state(
-            gguf_path=str(b),
-            model_identifier="owner/repo",
-            hf_variant=None,
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=None,
-            is_vision=False,
+            gguf_path = str(b),
+            model_identifier = "owner/repo",
+            hf_variant = None,
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
         )
         is False
     )
@@ -139,36 +139,36 @@ def test_already_in_target_state_rejects_different_gguf_path(tmp_path):
 
 
 def test_already_in_target_state_falls_back_to_hf_variant_for_hf_loads():
-    backend = _loaded_backend(_hf_variant="Q4_K_M", _gguf_path=None)
+    backend = _loaded_backend(_hf_variant = "Q4_K_M", _gguf_path = None)
     assert (
         backend._already_in_target_state(
-            gguf_path=None,
-            model_identifier="owner/repo",
-            hf_variant="Q8_0",
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=None,
-            is_vision=False,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q8_0",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
         )
         is False
     )
 
 
 def test_already_in_target_state_hf_same_variant_matches():
-    backend = _loaded_backend(_hf_variant="Q4_K_M", _gguf_path=None)
+    backend = _loaded_backend(_hf_variant = "Q4_K_M", _gguf_path = None)
     assert (
         backend._already_in_target_state(
-            gguf_path=None,
-            model_identifier="owner/repo",
-            hf_variant="Q4_K_M",
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=None,
-            is_vision=False,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
         )
         is True
     )
@@ -178,54 +178,54 @@ def test_already_in_target_state_hf_same_variant_matches():
 
 
 def test_already_in_target_state_none_extras_inherits_stored():
-    backend = _loaded_backend(_extra_args=["--top-k", "20"])
+    backend = _loaded_backend(_extra_args = ["--top-k", "20"])
     assert (
         backend._already_in_target_state(
-            gguf_path=None,
-            model_identifier="owner/repo",
-            hf_variant="Q4_K_M",
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=None,
-            is_vision=False,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
         )
         is True
     )
 
 
 def test_already_in_target_state_empty_extras_forces_reload_when_stored():
-    backend = _loaded_backend(_extra_args=["--top-k", "20"])
+    backend = _loaded_backend(_extra_args = ["--top-k", "20"])
     assert (
         backend._already_in_target_state(
-            gguf_path=None,
-            model_identifier="owner/repo",
-            hf_variant="Q4_K_M",
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=[],
-            is_vision=False,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = [],
+            is_vision = False,
         )
         is False
     )
 
 
 def test_already_in_target_state_explicit_extras_match():
-    backend = _loaded_backend(_extra_args=["--top-k", "20"])
+    backend = _loaded_backend(_extra_args = ["--top-k", "20"])
     assert (
         backend._already_in_target_state(
-            gguf_path=None,
-            model_identifier="owner/repo",
-            hf_variant="Q4_K_M",
-            n_ctx=8192,
-            cache_type_kv=None,
-            speculative_type=None,
-            chat_template_override=None,
-            extra_args=["--top-k", "20"],
-            is_vision=False,
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = ["--top-k", "20"],
+            is_vision = False,
         )
         is True
     )

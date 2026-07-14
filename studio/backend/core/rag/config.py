@@ -76,7 +76,6 @@ def effective_embedding_model() -> str:
     Settings change applies without a restart."""
     try:
         from utils.embedding_model_settings import get_rag_embedding_model
-
         return get_rag_embedding_model()
     except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
         return EMBEDDING_MODEL

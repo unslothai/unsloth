@@ -123,14 +123,14 @@ def test_worker_activates_correct_transformers_version(tmp_path):
     default 4.57.x pinned and fails this assertion -- exactly the #6951 ``TokenizersBackend`` regression."""
     result = subprocess.run(
         [sys.executable, "-c", _SNIPPET],
-        cwd=str(_BACKEND_DIR),
-        env={
+        cwd = str(_BACKEND_DIR),
+        env = {
             **__import__("os").environ,
             "STUB_HOME": str(tmp_path),
             **({"SPOOF_PATH": str(_SPOOF_PATH)} if _SPOOF_PATH.exists() else {}),
         },
-        capture_output=True,
-        text=True,
+        capture_output = True,
+        text = True,
     )
     assert result.returncode == 0, (
         "Worker preflight + activation harness crashed.\n"

@@ -30,7 +30,7 @@ DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S = 5.0
 DEFAULT_ADMISSION_MAX_QUEUE = 64
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class LlamaAdmissionConfig:
     enabled: bool = DEFAULT_ADMISSION_ENABLED
     queue_timeout_s: Optional[float] = DEFAULT_ADMISSION_QUEUE_TIMEOUT_S
@@ -38,7 +38,7 @@ class LlamaAdmissionConfig:
     max_queue: Optional[int] = DEFAULT_ADMISSION_MAX_QUEUE
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class LlamaAdmissionSnapshot:
     key: str
     capacity: int
@@ -116,16 +116,16 @@ def _optional_positive_int_env(name: str, default: Optional[int]) -> Optional[in
 
 def llama_admission_config_from_env() -> LlamaAdmissionConfig:
     return LlamaAdmissionConfig(
-        enabled=_bool_env(ADMISSION_CONTROL_ENV, DEFAULT_ADMISSION_ENABLED),
-        queue_timeout_s=_optional_positive_float_env(
+        enabled = _bool_env(ADMISSION_CONTROL_ENV, DEFAULT_ADMISSION_ENABLED),
+        queue_timeout_s = _optional_positive_float_env(
             ADMISSION_QUEUE_TIMEOUT_ENV,
             DEFAULT_ADMISSION_QUEUE_TIMEOUT_S,
         ),
-        keepalive_interval_s=_positive_float_env(
+        keepalive_interval_s = _positive_float_env(
             ADMISSION_KEEPALIVE_INTERVAL_ENV,
             DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S,
         ),
-        max_queue=_optional_positive_int_env(
+        max_queue = _optional_positive_int_env(
             ADMISSION_MAX_QUEUE_ENV,
             DEFAULT_ADMISSION_MAX_QUEUE,
         ),
@@ -202,7 +202,7 @@ class LlamaAdmissionReservation:
             return None
         waiter = self._waiter
         try:
-            await asyncio.wait_for(asyncio.shield(waiter.future), timeout=timeout_s)
+            await asyncio.wait_for(asyncio.shield(waiter.future), timeout = timeout_s)
         except asyncio.CancelledError:
             if waiter.future.cancelled():
                 waiter.cancelled = True
@@ -240,9 +240,9 @@ class LlamaAdmissionQueue:
         capacity = max(1, int(capacity or 1))
         if not config.enabled:
             return LlamaAdmissionReservation(
-                queue=None,
-                lease=LlamaAdmissionLease(None),
-                snapshot=LlamaAdmissionSnapshot(self.key, capacity, 0, 0),
+                queue = None,
+                lease = LlamaAdmissionLease(None),
+                snapshot = LlamaAdmissionSnapshot(self.key, capacity, 0, 0),
             )
 
         loop = asyncio.get_running_loop()
@@ -253,24 +253,24 @@ class LlamaAdmissionQueue:
             if self._active < self._capacity and not self._waiters:
                 self._active += 1
                 return LlamaAdmissionReservation(
-                    queue=self,
-                    lease=LlamaAdmissionLease(self),
-                    snapshot=self._snapshot_locked(),
+                    queue = self,
+                    lease = LlamaAdmissionLease(self),
+                    snapshot = self._snapshot_locked(),
                 )
             if config.max_queue is not None and len(self._waiters) >= config.max_queue:
                 raise LlamaAdmissionQueueFull(
                     "llama-server generation queue is full",
-                    snapshot=self._snapshot_locked(),
+                    snapshot = self._snapshot_locked(),
                 )
             waiter = _Waiter(
-                loop=loop,
-                future=loop.create_future(),
+                loop = loop,
+                future = loop.create_future(),
             )
             self._waiters.append(waiter)
             return LlamaAdmissionReservation(
-                queue=self,
-                waiter=waiter,
-                snapshot=self._snapshot_locked(),
+                queue = self,
+                waiter = waiter,
+                snapshot = self._snapshot_locked(),
             )
 
     def release(self) -> None:
@@ -337,10 +337,10 @@ class LlamaAdmissionQueue:
 
     def _snapshot_locked(self) -> LlamaAdmissionSnapshot:
         return LlamaAdmissionSnapshot(
-            key=self.key,
-            capacity=self._capacity,
-            active=self._active,
-            queued=len(self._waiters),
+            key = self.key,
+            capacity = self._capacity,
+            active = self._active,
+            queued = len(self._waiters),
         )
 
 

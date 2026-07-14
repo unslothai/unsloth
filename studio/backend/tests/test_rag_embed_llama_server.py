@@ -16,7 +16,7 @@ from core.rag import embed_llama_server as mod
 from core.rag.embed_llama_server import LlamaServerBackend
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset_backend_singleton():
     embeddings._reset_backend()
     yield
@@ -28,8 +28,8 @@ class _FakeProc:
 
     def __init__(
         self,
-        alive=True,
-        returncode=0,
+        alive = True,
+        returncode = 0,
     ):
         self._alive = alive
         self.returncode = returncode
@@ -44,7 +44,7 @@ class _FakeProc:
     def kill(self):
         self._alive = False
 
-    def wait(self, timeout=None):
+    def wait(self, timeout = None):
         return self.returncode
 
 
@@ -64,18 +64,18 @@ def _stub_st_load(monkeypatch):
 
 def test_auto_uses_st_with_cuda(monkeypatch):
     _stub_st_load(monkeypatch)
-    _mock_auto(monkeypatch, gpus=[(0, 40000)], binary="/bin/llama-server")
+    _mock_auto(monkeypatch, gpus = [(0, 40000)], binary = "/bin/llama-server")
     assert type(embeddings._get_backend()).__name__ == "_SentenceTransformersBackend"
 
 
 def test_auto_uses_llama_without_cuda(monkeypatch):
-    _mock_auto(monkeypatch, gpus=[], binary="/bin/llama-server")
+    _mock_auto(monkeypatch, gpus = [], binary = "/bin/llama-server")
     assert isinstance(embeddings._get_backend(), LlamaServerBackend)
 
 
 def test_auto_falls_back_to_st_without_binary(monkeypatch):
     _stub_st_load(monkeypatch)
-    _mock_auto(monkeypatch, gpus=[], binary=None)
+    _mock_auto(monkeypatch, gpus = [], binary = None)
     assert type(embeddings._get_backend()).__name__ == "_SentenceTransformersBackend"
 
 
@@ -86,7 +86,7 @@ def test_llama_backend_selected_by_config(monkeypatch):
 
 def test_unknown_backend_raises(monkeypatch):
     monkeypatch.setattr(config, "EMBED_BACKEND", "bogus")
-    with pytest.raises(ValueError, match="Unknown RAG_EMBED_BACKEND"):
+    with pytest.raises(ValueError, match = "Unknown RAG_EMBED_BACKEND"):
         embeddings._get_backend()
 
 
@@ -117,14 +117,14 @@ def test_llama_backend_imports_no_torch():
         "RAG_EMBED_BACKEND": "llama-server",
         "PYTHONPATH": str(backend_dir),
     }
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
+    proc = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True, env = env)
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
 
 
 def test_build_cmd_cpu_flags():
     b = LlamaServerBackend()
-    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 9999, use_gpu=False)
+    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 9999, use_gpu = False)
     assert "--embedding" in cmd
     assert cmd[cmd.index("--pooling") + 1] == "cls"
     assert cmd[cmd.index("--fit") + 1] == "off"  # deterministic, no auto-resize
@@ -134,13 +134,13 @@ def test_build_cmd_cpu_flags():
 
 def test_build_cmd_gpu_offloads():
     b = LlamaServerBackend()
-    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 1, use_gpu=True)
+    cmd = b._build_cmd("/bin/llama-server", "/m/bge.gguf", 1, use_gpu = True)
     assert cmd[cmd.index("-ngl") + 1] == "-1"  # offload all, matching the chat server
 
 
 def test_build_env_cpu_hides_gpus():
     b = LlamaServerBackend()
-    env = b._build_env("/bin/llama-server", use_gpu=False)
+    env = b._build_env("/bin/llama-server", use_gpu = False)
     assert env["CUDA_VISIBLE_DEVICES"] == ""  # never contend with the chat model
     assert env["LLAMA_SET_ROWS"] == "1"
 
@@ -148,7 +148,7 @@ def test_build_env_cpu_hides_gpus():
 def test_build_env_gpu_inherits_devices(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
     b = LlamaServerBackend()
-    env = b._build_env("/bin/llama-server", use_gpu=True)
+    env = b._build_env("/bin/llama-server", use_gpu = True)
     assert env.get("CUDA_VISIBLE_DEVICES") == "0,1"  # inherit Studio's selection
 
 
@@ -193,7 +193,6 @@ def test_gpu_available_reuses_studio_probe(monkeypatch):
 
 def test_gpu_available_apple_metal(monkeypatch):
     import utils.hardware as uh
-
     monkeypatch.setattr(uh, "is_apple_silicon", lambda: True)
     assert LlamaServerBackend._gpu_available() is True
 
@@ -202,7 +201,7 @@ def _patch_spawn_deps(
     monkeypatch,
     proc,
     *,
-    free_port=54321,
+    free_port = 54321,
 ):
     # Force CPU so spawn never depends on a host GPU.
     monkeypatch.setattr(config, "EMBED_DEVICE", "cpu")
@@ -215,7 +214,7 @@ def _patch_spawn_deps(
 def test_spawn_uses_explicit_port(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 8123)
     b = LlamaServerBackend()
-    _patch_spawn_deps(monkeypatch, _FakeProc(alive=True))
+    _patch_spawn_deps(monkeypatch, _FakeProc(alive = True))
     monkeypatch.setattr(b, "_wait_for_health", lambda *a, **k: True)
     b._spawn()
     assert b._port == 8123
@@ -224,7 +223,7 @@ def test_spawn_uses_explicit_port(monkeypatch):
 def test_spawn_uses_free_port_when_auto(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 0)
     b = LlamaServerBackend()
-    _patch_spawn_deps(monkeypatch, _FakeProc(alive=True), free_port=47000)
+    _patch_spawn_deps(monkeypatch, _FakeProc(alive = True), free_port = 47000)
     monkeypatch.setattr(b, "_wait_for_health", lambda *a, **k: True)
     b._spawn()
     assert b._port == 47000
@@ -233,8 +232,8 @@ def test_spawn_uses_free_port_when_auto(monkeypatch):
 def test_spawn_fails_loud_on_early_exit(monkeypatch):
     monkeypatch.setattr(config, "EMBED_PORT", 8124)
     b = LlamaServerBackend()
-    _patch_spawn_deps(monkeypatch, _FakeProc(alive=False, returncode=1))
-    with pytest.raises(RuntimeError, match="failed to become healthy"):
+    _patch_spawn_deps(monkeypatch, _FakeProc(alive = False, returncode = 1))
+    with pytest.raises(RuntimeError, match = "failed to become healthy"):
         b._spawn()
 
 
@@ -263,7 +262,7 @@ def test_spawn_explicit_gpu_does_not_fall_back(monkeypatch):
         raise RuntimeError("CUDA out of memory")
 
     monkeypatch.setattr(b, "_spawn_once", fake_spawn_once)
-    with pytest.raises(RuntimeError, match="out of memory"):
+    with pytest.raises(RuntimeError, match = "out of memory"):
         b._spawn()
     assert b._force_cpu is False  # explicit gpu never silently downgrades
 
@@ -285,7 +284,7 @@ def test_encode_orders_and_returns_float32(monkeypatch):
         return _embed_response([[3.0, 4.0], [0.0, 5.0]])
 
     monkeypatch.setattr(b, "_post", fake_post)
-    out = b.encode(["a", "b"], normalize=False)
+    out = b.encode(["a", "b"], normalize = False)
     assert captured["path"] == "/v1/embeddings"
     assert out.dtype == np.float32
     assert out.shape == (2, 2)
@@ -296,8 +295,8 @@ def test_encode_normalizes(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(b, "_ensure_ready", lambda: None)
     monkeypatch.setattr(b, "_post", lambda p, pl: _embed_response([[3.0, 4.0]]))
-    out = b.encode(["a"], normalize=True)
-    np.testing.assert_allclose(np.linalg.norm(out, axis=1), [1.0], rtol=1e-6)
+    out = b.encode(["a"], normalize = True)
+    np.testing.assert_allclose(np.linalg.norm(out, axis = 1), [1.0], rtol = 1e-6)
 
 
 def test_encode_empty_returns_zero_rows(monkeypatch):
@@ -313,8 +312,8 @@ def test_encode_rejects_count_mismatch(monkeypatch):
     b = LlamaServerBackend()
     monkeypatch.setattr(b, "_ensure_ready", lambda: None)
     monkeypatch.setattr(b, "_post", lambda p, pl: {"data": [{"index": 0, "embedding": [1.0]}]})
-    with pytest.raises(RuntimeError, match="vectors for"):
-        b.encode(["a", "b"], normalize=False)
+    with pytest.raises(RuntimeError, match = "vectors for"):
+        b.encode(["a", "b"], normalize = False)
 
 
 def test_encode_batches(monkeypatch):
@@ -329,7 +328,7 @@ def test_encode_batches(monkeypatch):
         return _embed_response([[1.0, 0.0]] * len(chunk))
 
     monkeypatch.setattr(b, "_post", fake_post)
-    out = b.encode(["a", "b", "c"], normalize=False)
+    out = b.encode(["a", "b", "c"], normalize = False)
     assert out.shape == (3, 2)
     assert calls == [2, 1]  # batched at EMBED_BATCH=2
 
@@ -368,12 +367,12 @@ def test_token_counter_hits_tokenize(monkeypatch):
 
 def test_ensure_ready_respawns_dead_process(monkeypatch):
     b = LlamaServerBackend()
-    b._process = _FakeProc(alive=False, returncode=0)
+    b._process = _FakeProc(alive = False, returncode = 0)
     spawned = {"n": 0}
 
     def fake_spawn():
         spawned["n"] += 1
-        b._process = _FakeProc(alive=True)
+        b._process = _FakeProc(alive = True)
         # _current() now also checks the served repo, so mark it current.
         b._model_repo = config.effective_gguf_repo()
 

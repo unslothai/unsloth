@@ -94,11 +94,11 @@ class BusyInstallConflict(RuntimeError):
 
 
 def log(message: str) -> None:
-    print(f"[node-prebuilt] {message}", file=sys.stdout if _LOG_TO_STDOUT else sys.stderr)
+    print(f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
 # ── Host detection ──
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class HostInfo:
     system: str  # platform.system()
     machine: str  # lowered platform.machine()
@@ -134,12 +134,12 @@ def detect_host() -> HostInfo:
     # .tar.gz (not .tar.xz) on Unix so the extractor needs no xz; .zip on Windows.
     archive_ext = ".zip" if is_windows else ".tar.gz"
     return HostInfo(
-        system=system,
-        machine=machine,
-        node_os=node_os,
-        node_arch=node_arch,
-        archive_ext=archive_ext,
-        is_windows=is_windows,
+        system = system,
+        machine = machine,
+        node_os = node_os,
+        node_arch = node_arch,
+        archive_ext = archive_ext,
+        is_windows = is_windows,
     )
 
 
@@ -242,8 +242,8 @@ def download_bytes(url: str, *, timeout: int = 60) -> bytes:
     last_exc: Exception | None = None
     for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
         try:
-            request = urllib.request.Request(url, headers=_auth_headers())
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            request = urllib.request.Request(url, headers = _auth_headers())
+            with urllib.request.urlopen(request, timeout = timeout) as response:
                 return response.read()
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
@@ -256,28 +256,28 @@ def download_bytes(url: str, *, timeout: int = 60) -> bytes:
 
 
 def fetch_json(url: str) -> object:
-    return json.loads(download_bytes(url, timeout=30).decode("utf-8"))
+    return json.loads(download_bytes(url, timeout = 30).decode("utf-8"))
 
 
 def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     os.replace(tmp_path, destination)
 
 
 def download_file(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.parent.mkdir(parents = True, exist_ok = True)
     last_exc: Exception | None = None
     for attempt in range(1, HTTP_FETCH_ATTEMPTS + 1):
         tmp_path: Path | None = None
         try:
-            request = urllib.request.Request(url, headers=_auth_headers())
+            request = urllib.request.Request(url, headers = _auth_headers())
             with tempfile.NamedTemporaryFile(
-                prefix=destination.name + ".tmp-",
-                dir=destination.parent,
-                delete=False,
+                prefix = destination.name + ".tmp-",
+                dir = destination.parent,
+                delete = False,
             ) as handle:
                 tmp_path = Path(handle.name)
-                with urllib.request.urlopen(request, timeout=120) as response:
+                with urllib.request.urlopen(request, timeout = 120) as response:
                     while True:
                         chunk = response.read(1024 * 1024)
                         if not chunk:
@@ -293,7 +293,7 @@ def download_file(url: str, destination: Path) -> None:
             last_exc = exc
             if tmp_path is not None:
                 try:
-                    tmp_path.unlink(missing_ok=True)
+                    tmp_path.unlink(missing_ok = True)
                 except Exception:  # noqa: BLE001
                     pass
             if attempt >= HTTP_FETCH_ATTEMPTS or not is_retryable_url_error(exc):
@@ -322,7 +322,7 @@ def download_file_verified(
             log(f"verified {label} sha256={actual}")
             return
         log(f"{label} checksum mismatch {attempt}/2: expected={expected_sha256} actual={actual}")
-        destination.unlink(missing_ok=True)
+        destination.unlink(missing_ok = True)
         if attempt == 2:
             raise PrebuiltFallback(f"{label} checksum mismatch after retry")
 
@@ -335,7 +335,7 @@ def pins_path() -> Path:
 def load_pins() -> dict:
     path = pins_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding = "utf-8"))
     except FileNotFoundError as exc:
         raise PrebuiltFallback(f"pinned Node manifest missing: {path}") from exc
     except (json.JSONDecodeError, OSError) as exc:
@@ -395,7 +395,7 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
         f"not an independent integrity guarantee."
     )
     # A non-UTF8 body just yields no hex match below -> clean PrebuiltFallback.
-    shasums = download_bytes(node_shasums_url(version), timeout=30).decode("utf-8", "replace")
+    shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8", "replace")
     expected = expected_sha256_for(shasums, asset)
     if not expected:
         raise PrebuiltFallback(f"no sha256 for {asset} in SHASUMS256.txt (v{version})")
@@ -423,9 +423,9 @@ def _extract_zip_safely(source: Path, base: Path) -> None:
             if mode == 0o120000:
                 raise PrebuiltFallback(f"zip archive contained a symlink entry: {member.filename}")
             if member.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
+                target.mkdir(parents = True, exist_ok = True)
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents = True, exist_ok = True)
             with archive.open(member, "r") as src, target.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
 
@@ -438,14 +438,14 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
         for member in archive.getmembers():
             target = _safe_extract_path(base, member.name)
             if member.isdir():
-                target.mkdir(parents=True, exist_ok=True)
+                target.mkdir(parents = True, exist_ok = True)
                 continue
             if member.islnk() or member.issym():
                 pending_links.append((member, target))
                 continue
             if not member.isfile():
                 raise PrebuiltFallback(f"tar archive contained an unsupported entry: {member.name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents = True, exist_ok = True)
             extracted = archive.extractfile(member)
             if extracted is None:
                 raise PrebuiltFallback(f"tar archive entry could not be read: {member.name}")
@@ -469,7 +469,7 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
             raise PrebuiltFallback(
                 f"archive link escaped destination: {member.name} -> {link_name}"
             ) from exc
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents = True, exist_ok = True)
         if target.exists() or target.is_symlink():
             target.unlink()
         if member.issym():
@@ -479,7 +479,7 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
 
 
 def extract_archive(archive_path: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents = True, exist_ok = True)
     if archive_path.name.endswith(".zip"):
         _extract_zip_safely(archive_path, destination)
     elif archive_path.name.endswith(".tar.gz"):
@@ -501,9 +501,9 @@ def _pid_is_alive(pid: int) -> bool:
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                timeout=5,
+                capture_output = True,
+                text = True,
+                timeout = 5,
                 **_windows_hidden_kwargs(),
             )
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -523,7 +523,7 @@ def _pid_is_alive(pid: int) -> bool:
 
 @contextmanager
 def install_lock(lock_path: Path) -> Iterator[None]:
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
     if FileLock is None:
         fd: int | None = None
         deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
@@ -550,7 +550,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     try:
                         stale_path = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}")
                         os.replace(str(lock_path), str(stale_path))
-                        stale_path.unlink(missing_ok=True)
+                        stale_path.unlink(missing_ok = True)
                     except (OSError, ValueError):
                         pass
                     continue
@@ -564,11 +564,11 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         finally:
             if fd is not None:
                 os.close(fd)
-            lock_path.unlink(missing_ok=True)
+            lock_path.unlink(missing_ok = True)
         return
 
     try:
-        with FileLock(str(lock_path), timeout=INSTALL_LOCK_TIMEOUT_SECONDS):
+        with FileLock(str(lock_path), timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
             yield
     except FileLockTimeout as exc:
         raise BusyInstallConflict(
@@ -614,10 +614,10 @@ def _run_node(
     env.pop("NODE_PATH", None)
     result = subprocess.run(
         [str(node_bin), *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+        env = env,
         **_windows_hidden_kwargs(),
     )
     if result.returncode != 0:
@@ -632,7 +632,7 @@ def installed_node_version(install_dir: Path, host: HostInfo) -> str | None:
     if not node_bin.exists():
         return None
     try:
-        return _run_node(install_dir, host, ["-v"], timeout=30).lstrip("v")
+        return _run_node(install_dir, host, ["-v"], timeout = 30).lstrip("v")
     except Exception:  # noqa: BLE001
         return None
 
@@ -642,7 +642,7 @@ def installed_npm_major(install_dir: Path, host: HostInfo) -> int | None:
     if not cli.exists():
         return None
     try:
-        out = _run_node(install_dir, host, [str(cli), "--version"], timeout=60)
+        out = _run_node(install_dir, host, [str(cli), "--version"], timeout = 60)
         return _version_tuple(out)[0]
     except Exception:  # noqa: BLE001
         return None
@@ -660,7 +660,7 @@ def write_metadata(install_dir: Path, *, version: str, asset: str, sha256: str) 
         "asset": asset,
         "sha256": sha256,
     }
-    metadata_path(install_dir).write_text(json.dumps(payload, indent=2) + "\n")
+    metadata_path(install_dir).write_text(json.dumps(payload, indent = 2) + "\n")
 
 
 def load_metadata(install_dir: Path) -> dict | None:
@@ -707,7 +707,7 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
 
 def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     """Atomically replace install_dir with extracted_root (same filesystem)."""
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
+    install_dir.parent.mkdir(parents = True, exist_ok = True)
     backup: Path | None = None
     if install_dir.exists():
         backup = install_dir.parent / f".{install_dir.name}.old-{os.getpid()}"
@@ -719,7 +719,7 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
             os.replace(backup, install_dir)
         raise
     if backup is not None:
-        shutil.rmtree(backup, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors = True)
 
 
 def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
@@ -729,7 +729,7 @@ def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
         return
     log(f"bundled npm {npm_major} below {NPM_MIN_MAJOR}; upgrading npm inside the isolated prefix")
     cli = npm_cli_path(install_dir, host)
-    _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout=300)
+    _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout = 300)
 
 
 # ── Orchestration ──
@@ -751,7 +751,7 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             raise
         if not isinstance(index, list):
             raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
-        version = select_node_version(index, channel=channel, min_major=min_major)
+        version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")
         # Explicit version bypasses min_major; reject anything Vite/OXC cannot use.
@@ -773,7 +773,7 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     if (
         not force
         and may_keep
-        and existing_install_matches(install_dir, host, version=version, expected_sha=pin)
+        and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
     ):
         log(f"existing Node install already matches v{version}; nothing to do")
         return EXIT_SUCCESS
@@ -783,20 +783,20 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         if (
             not force
             and may_keep
-            and existing_install_matches(install_dir, host, version=version, expected_sha=pin)
+            and existing_install_matches(install_dir, host, version = version, expected_sha = pin)
         ):
             log(f"existing Node install already matches v{version}; nothing to do")
             return EXIT_SUCCESS
 
         try:
             expected_sha = resolve_expected_sha256(
-                pins, version, asset, allow_unverified=allow_unverified
+                pins, version, asset, allow_unverified = allow_unverified
             )
 
             staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
-            staging_root.mkdir(parents=True, exist_ok=True)
+            staging_root.mkdir(parents = True, exist_ok = True)
             staging = Path(
-                tempfile.mkdtemp(prefix=f"{install_dir.name}.staging-", dir=staging_root)
+                tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root)
             )
             try:
                 archive_path = staging / asset
@@ -804,8 +804,8 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 download_file_verified(
                     node_download_url(version, asset),
                     archive_path,
-                    expected_sha256=expected_sha,
-                    label=asset,
+                    expected_sha256 = expected_sha,
+                    label = asset,
                 )
                 extract_dir = staging / "extracted"
                 extract_archive(archive_path, extract_dir)
@@ -816,10 +816,10 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
                 extracted_root = roots[0]
 
                 _ensure_npm_floor(extracted_root, host)
-                write_metadata(extracted_root, version=version, asset=asset, sha256=expected_sha)
+                write_metadata(extracted_root, version = version, asset = asset, sha256 = expected_sha)
                 _swap_into_place(extracted_root, install_dir)
             finally:
-                shutil.rmtree(staging, ignore_errors=True)
+                shutil.rmtree(staging, ignore_errors = True)
                 try:
                     staging_root.rmdir()
                 except OSError:
@@ -858,22 +858,22 @@ def main(argv: list[str] | None = None) -> int:
     global _LOG_TO_STDOUT
     _LOG_TO_STDOUT = True
 
-    parser = argparse.ArgumentParser(description="Install an isolated Node.js for Unsloth Studio")
+    parser = argparse.ArgumentParser(description = "Install an isolated Node.js for Unsloth Studio")
     parser.add_argument(
-        "--install-dir", required=True, help="isolated Node directory, e.g. <UNSLOTH_HOME>/node"
+        "--install-dir", required = True, help = "isolated Node directory, e.g. <UNSLOTH_HOME>/node"
     )
     parser.add_argument(
         "--node-version",
-        default=os.environ.get("UNSLOTH_NODE_VERSION", DEFAULT_NODE_CHANNEL),
-        help=(
+        default = os.environ.get("UNSLOTH_NODE_VERSION", DEFAULT_NODE_CHANNEL),
+        help = (
             f"'pinned' (default; installs the digest-pinned version from {PINS_FILENAME}), "
             f"'lts', 'latest', or an explicit version like 24.4.1. Non-pinned versions require "
             f"{ALLOW_UNVERIFIED_ENV}=1."
         ),
     )
-    parser.add_argument("--min-major", type=int, default=NODE_MIN_LTS_MAJOR)
+    parser.add_argument("--min-major", type = int, default = NODE_MIN_LTS_MAJOR)
     parser.add_argument(
-        "--force", action="store_true", help="reinstall even if the version matches"
+        "--force", action = "store_true", help = "reinstall even if the version matches"
     )
     args = parser.parse_args(argv)
 
@@ -881,9 +881,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return install_prebuilt(
             install_dir,
-            channel=args.node_version,
-            min_major=args.min_major,
-            force=args.force,
+            channel = args.node_version,
+            min_major = args.min_major,
+            force = args.force,
         )
     except BusyInstallConflict as exc:
         log(str(exc))

@@ -27,7 +27,7 @@ class _ExistingScanFolderConn:
     def execute(
         self,
         _sql,
-        params=(),
+        params = (),
     ):
         self.params = params
         return self
@@ -98,14 +98,14 @@ def test_linux_run_media_mount_roots_lists_readable_volume_roots(monkeypatch, tm
     sensitive_aws_mount = base / "dspofu" / ".aws"
     other_user_mount = base / "other" / "backup"
     incomplete = base / "dspofu-only"
-    mount.mkdir(parents=True)
+    mount.mkdir(parents = True)
     sensitive_mount.mkdir()
     sensitive_aws_mount.mkdir()
-    other_user_mount.mkdir(parents=True)
+    other_user_mount.mkdir(parents = True)
     incomplete.mkdir()
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
 
-    roots = external_media.linux_run_media_mount_roots(base, user="dspofu")
+    roots = external_media.linux_run_media_mount_roots(base, user = "dspofu")
 
     assert roots == [mount.resolve()]
 
@@ -114,13 +114,13 @@ def test_linux_run_media_mount_roots_skips_sensitive_resolved_volume_name(monkey
     base = tmp_path / "run" / "media"
     normal_mount = base / "dspofu" / "nvmeB"
     sensitive_target = base / "dspofu" / ".config"
-    normal_mount.mkdir(parents=True)
+    normal_mount.mkdir(parents = True)
     sensitive_target.mkdir()
     alias = base / "dspofu" / "config-alias"
-    alias.symlink_to(sensitive_target, target_is_directory=True)
+    alias.symlink_to(sensitive_target, target_is_directory = True)
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
 
-    roots = external_media.linux_run_media_mount_roots(base, user="dspofu")
+    roots = external_media.linux_run_media_mount_roots(base, user = "dspofu")
 
     assert roots == [normal_mount.resolve()]
 
@@ -129,12 +129,12 @@ def test_linux_run_media_mount_roots_skips_sensitive_resolved_descendant(monkeyp
     base = tmp_path / "run" / "media"
     normal_mount = base / "dspofu" / "nvmeB"
     sensitive_descendant = normal_mount / ".ssh" / "models"
-    sensitive_descendant.mkdir(parents=True)
+    sensitive_descendant.mkdir(parents = True)
     alias = base / "dspofu" / "models-alias"
-    alias.symlink_to(sensitive_descendant, target_is_directory=True)
+    alias.symlink_to(sensitive_descendant, target_is_directory = True)
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
 
-    roots = external_media.linux_run_media_mount_roots(base, user="dspofu")
+    roots = external_media.linux_run_media_mount_roots(base, user = "dspofu")
 
     assert roots == [normal_mount.resolve()]
 
@@ -166,7 +166,7 @@ def test_hub_scan_folder_keeps_unrelated_run_paths_blocked(monkeypatch, target):
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
     _stub_hub_scan_folder_db(monkeypatch)
 
-    with pytest.raises(ValueError, match="Path under /run is not allowed"):
+    with pytest.raises(ValueError, match = "Path under /run is not allowed"):
         scan_folders.add_scan_folder(target)
 
 
@@ -175,7 +175,7 @@ def test_hub_scan_folder_keeps_sensitive_dirs_blocked_under_run_media(monkeypatc
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
     _stub_hub_scan_folder_db(monkeypatch)
 
-    with pytest.raises(ValueError, match="Credential or configuration"):
+    with pytest.raises(ValueError, match = "Credential or configuration"):
         scan_folders.add_scan_folder("/run/media/dspofu/nvmeB/.ssh/models")
 
 
@@ -206,7 +206,7 @@ def test_legacy_scan_folder_keeps_unrelated_run_paths_blocked(monkeypatch, targe
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
     _stub_legacy_scan_folder_db(monkeypatch)
 
-    with pytest.raises(ValueError, match="Path under /run is not allowed"):
+    with pytest.raises(ValueError, match = "Path under /run is not allowed"):
         studio_db.add_scan_folder(target)
 
 
@@ -215,12 +215,12 @@ def test_legacy_scan_folder_keeps_sensitive_dirs_blocked_under_run_media(monkeyp
     monkeypatch.setattr(external_media.platform, "system", lambda: "Linux")
     _stub_legacy_scan_folder_db(monkeypatch)
 
-    with pytest.raises(ValueError, match="Credential or configuration"):
+    with pytest.raises(ValueError, match = "Credential or configuration"):
         studio_db.add_scan_folder("/run/media/dspofu/nvmeB/.aws/models")
 
 
 def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path):
-    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding="utf-8"))
+    tree = ast.parse((_BACKEND_ROOT / "routes" / "models.py").read_text(encoding = "utf-8"))
     function_names = {
         "_build_browse_allowlist",
         "_browse_relative_parts",
@@ -234,28 +234,28 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in function_names
     ]
-    module = ast.Module(body=functions, type_ignores=[])
+    module = ast.Module(body = functions, type_ignores = [])
     ast.fix_missing_locations(module)
 
     home = tmp_path / "home"
     media_root = tmp_path / "run" / "media" / "dspofu" / "nvmeB"
     model_dir = media_root / "modelsAI" / "gguf" / "qwen3.6"
     home.mkdir()
-    model_dir.mkdir(parents=True)
+    model_dir.mkdir(parents = True)
     (media_root / ".ssh").mkdir()
 
     fake_paths = SimpleNamespace(
-        hf_default_cache_dir=lambda: tmp_path / "missing-default-hf",
-        legacy_hf_cache_dir=lambda: tmp_path / "missing-legacy-hf",
-        well_known_model_dirs=lambda: [],
-        studio_root=lambda: tmp_path / "missing-studio",
-        outputs_root=lambda: tmp_path / "missing-outputs",
-        exports_root=lambda: tmp_path / "missing-exports",
+        hf_default_cache_dir = lambda: tmp_path / "missing-default-hf",
+        legacy_hf_cache_dir = lambda: tmp_path / "missing-legacy-hf",
+        well_known_model_dirs = lambda: [],
+        studio_root = lambda: tmp_path / "missing-studio",
+        outputs_root = lambda: tmp_path / "missing-outputs",
+        exports_root = lambda: tmp_path / "missing-exports",
     )
-    fake_external_media = SimpleNamespace(linux_run_media_mount_roots=lambda: [media_root])
+    fake_external_media = SimpleNamespace(linux_run_media_mount_roots = lambda: [media_root])
     fake_studio_db = SimpleNamespace(
-        list_scan_folders=lambda: [],
-        contains_sensitive_path_component=studio_db.contains_sensitive_path_component,
+        list_scan_folders = lambda: [],
+        contains_sensitive_path_component = studio_db.contains_sensitive_path_component,
     )
     monkeypatch.setitem(sys.modules, "utils.paths", fake_paths)
     monkeypatch.setitem(sys.modules, "utils.paths.external_media", fake_external_media)
@@ -268,7 +268,7 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
         "Optional": Optional,
         "_safe_is_dir": lambda p: Path(p).is_dir(),
         "_resolve_hf_cache_dir": lambda: tmp_path / "missing-hf",
-        "logger": SimpleNamespace(debug=lambda *_args, **_kwargs: None),
+        "logger": SimpleNamespace(debug = lambda *_args, **_kwargs: None),
     }
     exec(compile(module, "<extracted routes/models.py>", "exec"), ns)
 

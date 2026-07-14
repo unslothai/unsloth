@@ -119,12 +119,12 @@ class LoggingMiddleware:
         except Exception as exc:
             logger.error(
                 "request_failed",
-                path=path,
-                method=scope["method"],
-                status_code=status_code,
-                error=str(exc),
-                process_time_ms=round((time.perf_counter() - start_time) * 1000, 2),
-                exc_info=True,
+                path = path,
+                method = scope["method"],
+                status_code = status_code,
+                error = str(exc),
+                process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
+                exc_info = True,
             )
             raise
         else:
@@ -134,10 +134,10 @@ class LoggingMiddleware:
             ):
                 logger.info(
                     "request_completed",
-                    method=scope["method"],
-                    path=path,
-                    status_code=status_code,
-                    process_time_ms=round((end_time - start_time) * 1000, 2),
+                    method = scope["method"],
+                    path = path,
+                    status_code = status_code,
+                    process_time_ms = round((end_time - start_time) * 1000, 2),
                 )
 
 

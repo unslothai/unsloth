@@ -35,14 +35,14 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
 
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        api_key="sk-ant-test",
+        provider_type = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        api_key = "sk-ant-test",
     )
 
 
@@ -78,8 +78,8 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -87,14 +87,14 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "hi"}],
-            model="claude-opus-4-6",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
-            top_k=None,
-            enable_thinking=None,
-            reasoning_effort="medium",
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "medium",
         ):
             pass
         await client.close()
@@ -122,8 +122,8 @@ def test_adaptive_thinking_maps_xhigh_to_max_on_claude_4_6(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -131,14 +131,14 @@ def test_adaptive_thinking_maps_xhigh_to_max_on_claude_4_6(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "hi"}],
-            model="claude-sonnet-4-6",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
-            top_k=None,
-            enable_thinking=None,
-            reasoning_effort="xhigh",
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-sonnet-4-6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "xhigh",
         ):
             pass
         await client.close()
@@ -155,8 +155,8 @@ def test_adaptive_thinking_keeps_max_on_claude_4_6(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -164,14 +164,14 @@ def test_adaptive_thinking_keeps_max_on_claude_4_6(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "hi"}],
-            model="claude-opus-4-6",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
-            top_k=None,
-            enable_thinking=None,
-            reasoning_effort="max",
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "max",
         ):
             pass
         await client.close()
@@ -188,8 +188,8 @@ def test_adaptive_thinking_keeps_xhigh_on_claude_4_7(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -197,14 +197,14 @@ def test_adaptive_thinking_keeps_xhigh_on_claude_4_7(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "hi"}],
-            model="claude-opus-4-7",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
-            top_k=None,
-            enable_thinking=None,
-            reasoning_effort="xhigh",
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "xhigh",
         ):
             pass
         await client.close()
@@ -223,8 +223,8 @@ def test_manual_thinking_body_uses_budget_tokens_on_4_5(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -232,14 +232,14 @@ def test_manual_thinking_body_uses_budget_tokens_on_4_5(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "hi"}],
-            model="claude-opus-4-5",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=1024,
-            top_k=None,
-            enable_thinking=None,
-            reasoning_effort="high",
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 1024,
+            top_k = None,
+            enable_thinking = None,
+            reasoning_effort = "high",
         ):
             pass
         await client.close()
@@ -297,8 +297,8 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
         ]
         return httpx.Response(
             200,
-            content=_anthropic_sse(events),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse(events),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -307,14 +307,14 @@ def test_thinking_delta_wrapped_in_think_tags(monkeypatch):
         client = _make_client()
         lines = await _collect(
             client._stream_anthropic(
-                messages=[{"role": "user", "content": "hi"}],
-                model="claude-opus-4-6",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=4096,
-                top_k=None,
-                enable_thinking=True,
-                reasoning_effort=None,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-opus-4-6",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                top_k = None,
+                enable_thinking = True,
+                reasoning_effort = None,
             )
         )
         await client.close()
@@ -363,8 +363,8 @@ def test_thinking_only_turn_closes_tag_without_text_delta(monkeypatch):
         ]
         return httpx.Response(
             200,
-            content=_anthropic_sse(events),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse(events),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -373,14 +373,14 @@ def test_thinking_only_turn_closes_tag_without_text_delta(monkeypatch):
         client = _make_client()
         lines = await _collect(
             client._stream_anthropic(
-                messages=[{"role": "user", "content": "hi"}],
-                model="claude-opus-4-7",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=4096,
-                top_k=None,
-                enable_thinking=True,
-                reasoning_effort=None,
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                top_k = None,
+                enable_thinking = True,
+                reasoning_effort = None,
             )
         )
         await client.close()

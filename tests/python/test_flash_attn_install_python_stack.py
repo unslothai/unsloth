@@ -28,11 +28,11 @@ class TestPrebuiltWheelTorchMapping:
         # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the
         # torch2.10 wheel filename just like flash-attn does.
         url = wheel_utils.direct_wheel_url(
-            filename_prefix="causal_conv1d",
-            package_version="1.6.1",
-            release_tag="v1.6.1.post4",
-            release_base_url="https://example.test/download",
-            env={
+            filename_prefix = "causal_conv1d",
+            package_version = "1.6.1",
+            release_tag = "v1.6.1.post4",
+            release_base_url = "https://example.test/download",
+            env = {
                 "python_tag": "cp313",
                 "torch_mm": "2.11",
                 "cuda_major": "13",
@@ -118,7 +118,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value={
+                return_value = {
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "12",
@@ -126,9 +126,9 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value=True),
-            mock.patch.object(ips, "install_wheel", side_effect=fake_install_wheel),
-            mock.patch("subprocess.run", return_value=self._import_check()),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
+            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -157,7 +157,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value={
+                return_value = {
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "12",
@@ -165,9 +165,9 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value=True),
-            mock.patch.object(ips, "install_wheel", side_effect=fake_install_wheel),
-            mock.patch("subprocess.run", return_value=self._import_check()),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(ips, "install_wheel", side_effect = fake_install_wheel),
+            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -182,7 +182,7 @@ class TestEnsureFlashAttn:
         def fake_step(
             label: str,
             value: str,
-            color_fn=None,
+            color_fn = None,
         ):
             step_messages.append((label, value))
 
@@ -195,7 +195,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value={
+                return_value = {
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "12",
@@ -203,11 +203,11 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value=True),
+            mock.patch.object(ips, "url_exists", return_value = True),
             mock.patch.object(
                 ips,
                 "install_wheel",
-                return_value=[
+                return_value = [
                     ("uv", subprocess.CompletedProcess(["uv"], 1, "uv wheel failed")),
                     (
                         "pip",
@@ -218,10 +218,10 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "_print_optional_install_failure",
-                side_effect=lambda label, result: printed_failures.append(label),
+                side_effect = lambda label, result: printed_failures.append(label),
             ),
-            mock.patch.object(ips, "_step", side_effect=fake_step),
-            mock.patch("subprocess.run", return_value=self._import_check()),
+            mock.patch.object(ips, "_step", side_effect = fake_step),
+            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -237,7 +237,7 @@ class TestEnsureFlashAttn:
         def fake_step(
             label: str,
             value: str,
-            color_fn=None,
+            color_fn = None,
         ):
             step_messages.append((label, value))
 
@@ -248,7 +248,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(
                 ips,
                 "probe_torch_wheel_env",
-                return_value={
+                return_value = {
                     "python_tag": "cp313",
                     "torch_mm": "2.10",
                     "cuda_major": "13",
@@ -256,10 +256,10 @@ class TestEnsureFlashAttn:
                     "platform_tag": "linux_x86_64",
                 },
             ),
-            mock.patch.object(ips, "url_exists", return_value=False),
+            mock.patch.object(ips, "url_exists", return_value = False),
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect=fake_step),
-            mock.patch("subprocess.run", return_value=self._import_check()),
+            mock.patch.object(ips, "_step", side_effect = fake_step),
+            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -274,7 +274,7 @@ class TestEnsureFlashAttn:
             mock.patch.dict(os.environ, {"UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL": "1"}),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch("subprocess.run", return_value=self._import_check()),
+            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -291,7 +291,7 @@ class TestEnsureFlashAttn:
             mock.patch.object(ips, "IS_MACOS", False),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch("subprocess.run", return_value=self._import_check()),
+            mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
@@ -317,28 +317,28 @@ class TestInstallPythonStackFlashAttnIntegration:
             mock.patch.object(ips, "USE_UV", True),
             mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
             mock.patch.object(ips, "VERBOSE", False),
-            mock.patch.object(ips, "_bootstrap_uv", return_value=True),
-            mock.patch.object(ips, "_ensure_flash_attn", side_effect=count_flash_attn),
-            mock.patch("subprocess.run", side_effect=fake_run),
-            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value=False),
-            mock.patch.object(ips, "_has_rocm_gpu", return_value=False),
+            mock.patch.object(ips, "_bootstrap_uv", return_value = True),
+            mock.patch.object(ips, "_ensure_flash_attn", side_effect = count_flash_attn),
+            mock.patch("subprocess.run", side_effect = fake_run),
+            mock.patch.object(ips, "_has_usable_nvidia_gpu", return_value = False),
+            mock.patch.object(ips, "_has_rocm_gpu", return_value = False),
             mock.patch.object(ips, "LOCAL_DD_UNSTRUCTURED_PLUGIN", Path("/fake/plugin")),
-            mock.patch("pathlib.Path.is_dir", return_value=True),
-            mock.patch("pathlib.Path.is_file", return_value=True),
-            mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear=False),
+            mock.patch("pathlib.Path.is_dir", return_value = True),
+            mock.patch("pathlib.Path.is_file", return_value = True),
+            mock.patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}, clear = False),
         ):
             ips.install_python_stack()
 
         return flash_attn_calls
 
     def test_linux_torch_install_calls_flash_attn_step(self):
-        assert self._run_install(no_torch=False, is_macos=False, is_windows=False) == 1
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = False) == 1
 
     def test_no_torch_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch=True, is_macos=False, is_windows=False) == 0
+        assert self._run_install(no_torch = True, is_macos = False, is_windows = False) == 0
 
     def test_macos_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch=False, is_macos=True, is_windows=False) == 0
+        assert self._run_install(no_torch = False, is_macos = True, is_windows = False) == 0
 
     def test_windows_install_skips_flash_attn_step(self):
-        assert self._run_install(no_torch=False, is_macos=False, is_windows=True) == 0
+        assert self._run_install(no_torch = False, is_macos = False, is_windows = True) == 0

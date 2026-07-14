@@ -19,7 +19,7 @@ _BACKEND = Path(__file__).resolve().parent.parent
 
 
 def _src(rel):
-    return (_BACKEND / rel).read_text(encoding="utf-8")
+    return (_BACKEND / rel).read_text(encoding = "utf-8")
 
 
 def _func_src(rel, name):
@@ -34,20 +34,20 @@ def _func_src(rel, name):
 
 
 def test_gguf_request_imatrix_defaults_and_set():
-    assert ExportGGUFRequest(save_directory="/tmp/x").imatrix is False
-    assert ExportGGUFRequest(save_directory="/tmp/x").imatrix_path is None
-    r = ExportGGUFRequest(save_directory="/tmp/x", imatrix=True, imatrix_path="/i.dat")
+    assert ExportGGUFRequest(save_directory = "/tmp/x").imatrix is False
+    assert ExportGGUFRequest(save_directory = "/tmp/x").imatrix_path is None
+    r = ExportGGUFRequest(save_directory = "/tmp/x", imatrix = True, imatrix_path = "/i.dat")
     assert r.imatrix is True and r.imatrix_path == "/i.dat"
 
 
 def test_merged_request_accepts_compressed_formats():
     for fmt in ("16-bit (FP16)", "FP8 (compressed-tensors)", "NVFP4 (compressed-tensors)"):
-        assert ExportMergedModelRequest(save_directory="/tmp/x", format_type=fmt).format_type == fmt
+        assert ExportMergedModelRequest(save_directory = "/tmp/x", format_type = fmt).format_type == fmt
 
 
 def test_merged_request_rejects_unknown_format():
     with pytest.raises(ValidationError):
-        ExportMergedModelRequest(save_directory="/tmp/x", format_type="bogus")
+        ExportMergedModelRequest(save_directory = "/tmp/x", format_type = "bogus")
 
 
 # -- threading (ast) ----------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def test_supports_kwarg_helper():
     exec(_func_src("core/export/export.py", "_supports_kwarg"), ns)
     supports = ns["_supports_kwarg"]
 
-    def has_it(a, imatrix_file=None):
+    def has_it(a, imatrix_file = None):
         pass
 
     def lacks_it(a):
@@ -120,7 +120,7 @@ def test_compressed_hub_push_uploads_local_dir_without_recompressing():
 def test_merged_request_accepts_torchao_aliases():
     # Portable torchao aliases pass through compressed_method (validated in the backend registry).
     for alias in ("torchao_fp8", "torchao_int8"):
-        r = ExportMergedModelRequest(save_directory="/tmp/x", compressed_method=alias)
+        r = ExportMergedModelRequest(save_directory = "/tmp/x", compressed_method = alias)
         assert r.compressed_method == alias
 
 
@@ -154,7 +154,7 @@ def test_export_merged_relaxes_is_peft_guard():
 
 def test_unsloth_save_has_torchao_registry_and_path():
     # Read unsloth/save.py as text (not import) so this runs in the CPU suite without unsloth.
-    save_py = (_BACKEND.parent.parent / "unsloth" / "save.py").read_text(encoding="utf-8")
+    save_py = (_BACKEND.parent.parent / "unsloth" / "save.py").read_text(encoding = "utf-8")
     assert "def _normalize_torchao_method" in save_py
     assert "def _unsloth_save_torchao" in save_py
     assert "TORCHAO_EXPORT_SCHEMES = {" in save_py
@@ -167,9 +167,9 @@ def test_unsloth_save_has_torchao_registry_and_path():
 
 
 def test_gguf_request_accepts_list_of_quants():
-    r = ExportGGUFRequest(save_directory="/tmp/x", quantization_method=["Q4_K_M", "Q8_0"])
+    r = ExportGGUFRequest(save_directory = "/tmp/x", quantization_method = ["Q4_K_M", "Q8_0"])
     assert r.quantization_method == ["Q4_K_M", "Q8_0"]
-    r2 = ExportGGUFRequest(save_directory="/tmp/x", quantization_method="Q4_K_M")
+    r2 = ExportGGUFRequest(save_directory = "/tmp/x", quantization_method = "Q4_K_M")
     assert r2.quantization_method == "Q4_K_M"
 
 
@@ -185,17 +185,16 @@ def test_export_gguf_normalizes_quant_list():
 def test_lora_request_has_gguf_fields():
     from models.export import ExportLoRAAdapterRequest
 
-    r = ExportLoRAAdapterRequest(save_directory="/tmp/x")
+    r = ExportLoRAAdapterRequest(save_directory = "/tmp/x")
     assert r.gguf is False and r.gguf_outtype == "q8_0"
-    r2 = ExportLoRAAdapterRequest(save_directory="/tmp/x", gguf=True, gguf_outtype="q8_0")
+    r2 = ExportLoRAAdapterRequest(save_directory = "/tmp/x", gguf = True, gguf_outtype = "q8_0")
     assert r2.gguf is True and r2.gguf_outtype == "q8_0"
 
 
 def test_lora_request_rejects_bad_outtype():
     from models.export import ExportLoRAAdapterRequest
-
     with pytest.raises(ValidationError):
-        ExportLoRAAdapterRequest(save_directory="/tmp/x", gguf_outtype="q3_k")
+        ExportLoRAAdapterRequest(save_directory = "/tmp/x", gguf_outtype = "q3_k")
 
 
 def test_export_lora_wires_gguf_save_method():
@@ -222,9 +221,9 @@ def test_route_passes_lora_gguf():
 
 def test_merged_request_accepts_compressed_method():
     # Defaults to None; any scheme alias is accepted (validation happens in the backend registry).
-    assert ExportMergedModelRequest(save_directory="/tmp/x").compressed_method is None
+    assert ExportMergedModelRequest(save_directory = "/tmp/x").compressed_method is None
     for alias in ("fp8", "fp8_static", "w8a8", "w8a16", "w4a16", "mxfp4", "mxfp8", "nvfp4"):
-        r = ExportMergedModelRequest(save_directory="/tmp/x", compressed_method=alias)
+        r = ExportMergedModelRequest(save_directory = "/tmp/x", compressed_method = alias)
         assert r.compressed_method == alias
 
 

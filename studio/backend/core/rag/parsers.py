@@ -21,7 +21,7 @@ from . import config
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Page:
     """A unit of extracted text. ``page_number`` is 1-based (None if N/A)."""
 
@@ -30,7 +30,7 @@ class Page:
     char_count: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ParsedImage:
     """A raster image embedded in a document (PDF only)."""
 
@@ -40,7 +40,7 @@ class ParsedImage:
 
 
 def _page(text: str, page_number: int | None) -> Page:
-    return Page(text=text, page_number=page_number, char_count=len(text))
+    return Page(text = text, page_number = page_number, char_count = len(text))
 
 
 class _Stripper(HTMLParser):
@@ -114,11 +114,11 @@ def _pdf_markdown(doc) -> list[str] | None:
     try:
         chunks = pymupdf4llm.to_markdown(
             doc,
-            page_chunks=True,
-            show_progress=False,
+            page_chunks = True,
+            show_progress = False,
         )
     except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
-        logger.warning("pymupdf4llm extraction failed; using plain text", exc_info=True)
+        logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
         return None
     if not isinstance(chunks, list) or len(chunks) != doc.page_count:
         return None
@@ -149,7 +149,7 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                 text = plain
             pages.append(_page(text, i + 1))
             if want_images:
-                for img in page.get_images(full=True):
+                for img in page.get_images(full = True):
                     xref = img[0]
                     try:
                         extracted = doc.extract_image(xref)
@@ -160,9 +160,9 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                     if image_bytes:
                         images.append(
                             ParsedImage(
-                                image_bytes=image_bytes,
-                                page_number=i + 1,
-                                xref=xref,
+                                image_bytes = image_bytes,
+                                page_number = i + 1,
+                                xref = xref,
                             )
                         )
     finally:
@@ -177,7 +177,7 @@ def _merge_rects(boxes: list) -> list:
     rects = [pymupdf.Rect(b) for b in boxes]
     rects = [r for r in rects if r.width > 5 and r.height > 5]
     merged: list = []
-    for box in sorted(rects, key=lambda r: -r.get_area()):
+    for box in sorted(rects, key = lambda r: -r.get_area()):
         placed = False
         for m in merged:
             if m.intersects(box):
@@ -246,7 +246,7 @@ def pages_with_figures(
         for i, page in enumerate(doc):
             if (i + 1) in exclude:
                 continue
-            if _figure_boxes(page, min_area_frac=min_area_frac, min_side=min_side):
+            if _figure_boxes(page, min_area_frac = min_area_frac, min_side = min_side):
                 pages.append(i + 1)
                 if len(pages) >= max_pages:
                     break
@@ -304,8 +304,8 @@ def render_pdf_figure_tiles(
                     )
             for clip in clips:
                 try:
-                    pix = page.get_pixmap(dpi=dpi, clip=clip)
-                    out.append(ParsedImage(image_bytes=pix.tobytes("png"), page_number=num, xref=0))
+                    pix = page.get_pixmap(dpi = dpi, clip = clip)
+                    out.append(ParsedImage(image_bytes = pix.tobytes("png"), page_number = num, xref = 0))
                 except Exception:
                     continue
                 if len(out) >= max_tiles:
@@ -343,7 +343,7 @@ def render_pdf_pages(
             if num not in wanted:
                 continue
             try:
-                pix = page.get_pixmap(dpi=dpi)
+                pix = page.get_pixmap(dpi = dpi)
                 out[num] = pix.tobytes("png")
             except Exception:
                 continue
@@ -424,7 +424,7 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding = "utf-8", errors = "replace") as f:
             raw = f.read()
         pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
         return (pages, []) if want_images else pages

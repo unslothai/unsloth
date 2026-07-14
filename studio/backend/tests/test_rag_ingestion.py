@@ -14,7 +14,7 @@ from storage import rag_db
 
 def _write(tmp_path, name, text):
     path = tmp_path / name
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding = "utf-8")
     return str(path)
 
 
@@ -22,7 +22,7 @@ def _drain(job_id):
     return list(ingestion.job_events(job_id))
 
 
-def _wait_completed(job_id, timeout=30.0):
+def _wait_completed(job_id, timeout = 30.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = ingestion.get_job_status(job_id)
@@ -91,8 +91,8 @@ def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embedd
     scope = store.kb_scope("K1")
     conn = rag_db.get_connection()
     try:
-        empty_id = store.create_document(conn, scope=scope, filename="old.txt", sha256=sha)
-        store.set_document_status(conn, empty_id, "completed", num_chunks=0)
+        empty_id = store.create_document(conn, scope = scope, filename = "old.txt", sha256 = sha)
+        store.set_document_status(conn, empty_id, "completed", num_chunks = 0)
     finally:
         conn.close()
 
@@ -117,8 +117,8 @@ def test_ingestion_dedupe_removes_duplicate_upload(rag_home, stub_embeddings):
     uploads = ensure_dir(rag_uploads_root())
     first_path = uploads / "doc.txt"
     duplicate_path = uploads / "copy.txt"
-    first_path.write_text("alpha bravo charlie", encoding="utf-8")
-    duplicate_path.write_text("alpha bravo charlie", encoding="utf-8")
+    first_path.write_text("alpha bravo charlie", encoding = "utf-8")
+    duplicate_path.write_text("alpha bravo charlie", encoding = "utf-8")
     scope = store.project_scope("P1")
 
     doc_id, job_id = ingestion.start_ingestion(
@@ -127,7 +127,7 @@ def test_ingestion_dedupe_removes_duplicate_upload(rag_home, stub_embeddings):
         None,
         "doc.txt",
         str(first_path),
-        project_id="P1",
+        project_id = "P1",
     )
     _drain(job_id)
     _wait_completed(job_id)
@@ -138,7 +138,7 @@ def test_ingestion_dedupe_removes_duplicate_upload(rag_home, stub_embeddings):
         None,
         "copy.txt",
         str(duplicate_path),
-        project_id="P1",
+        project_id = "P1",
     )
     events = _drain(job_id2)
     assert doc_id2 == doc_id
@@ -153,8 +153,8 @@ def test_ingestion_retry_replaces_failed_hash(rag_home, stub_embeddings):
     uploads = ensure_dir(rag_uploads_root())
     old_path = uploads / "failed.txt"
     retry_path = uploads / "retry.txt"
-    old_path.write_text("alpha bravo charlie", encoding="utf-8")
-    retry_path.write_text("alpha bravo charlie", encoding="utf-8")
+    old_path.write_text("alpha bravo charlie", encoding = "utf-8")
+    retry_path.write_text("alpha bravo charlie", encoding = "utf-8")
     scope = store.project_scope("P1")
     sha = ingestion._sha256_file(str(old_path))
 
@@ -162,12 +162,12 @@ def test_ingestion_retry_replaces_failed_hash(rag_home, stub_embeddings):
     try:
         failed_id = store.create_document(
             conn,
-            scope=scope,
-            filename="failed.txt",
-            sha256=sha,
-            project_id="P1",
-            status="failed",
-            stored_path=str(old_path),
+            scope = scope,
+            filename = "failed.txt",
+            sha256 = sha,
+            project_id = "P1",
+            status = "failed",
+            stored_path = str(old_path),
         )
     finally:
         conn.close()
@@ -178,7 +178,7 @@ def test_ingestion_retry_replaces_failed_hash(rag_home, stub_embeddings):
         None,
         "retry.txt",
         str(retry_path),
-        project_id="P1",
+        project_id = "P1",
     )
     events = _drain(job_id)
     assert doc_id != failed_id
@@ -205,25 +205,25 @@ def test_delete_document_route_removes_stored_upload(rag_home):
     from utils.paths import ensure_dir, rag_uploads_root
 
     upload = ensure_dir(rag_uploads_root()) / "delete-me.txt"
-    upload.write_text("alpha bravo", encoding="utf-8")
+    upload.write_text("alpha bravo", encoding = "utf-8")
     scope = store.project_scope("P1")
 
     conn = rag_db.get_connection()
     try:
         doc_id = store.create_document(
             conn,
-            scope=scope,
-            filename="delete-me.txt",
-            sha256="delete-route-sha",
-            project_id="P1",
-            status="completed",
-            stored_path=str(upload),
+            scope = scope,
+            filename = "delete-me.txt",
+            sha256 = "delete-route-sha",
+            project_id = "P1",
+            status = "completed",
+            stored_path = str(upload),
         )
     finally:
         conn.close()
 
     app = FastAPI()
-    app.include_router(router, prefix="/api/rag")
+    app.include_router(router, prefix = "/api/rag")
     app.dependency_overrides[get_current_subject] = lambda: "tester"
     client = TestClient(app)
 
@@ -309,21 +309,21 @@ def test_ingestion_empty_doc_completes_with_zero_chunks(rag_home, stub_embedding
 
 @pytest.mark.skipif(
     os.environ.get("RAG_REAL_EMBEDDER") != "1",
-    reason="set RAG_REAL_EMBEDDER=1 to run the real sentence-transformers test",
+    reason = "set RAG_REAL_EMBEDDER=1 to run the real sentence-transformers test",
 )
 def test_ingestion_with_real_embedder(rag_home, tmp_path):
     path = _write(tmp_path, "doc.txt", "The Kestrel-9 turbine is rated at 9.5 megawatts.")
     scope = store.kb_scope("K1")
     doc_id, job_id = ingestion.start_ingestion(scope, "K1", None, "doc.txt", path)
     _drain(job_id)
-    status = _wait_completed(job_id, timeout=120.0)
+    status = _wait_completed(job_id, timeout = 120.0)
     assert status["status"] == "completed"
 
     from core.rag import retrieval
 
     conn = rag_db.get_connection()
     try:
-        hits = retrieval.retrieve_hybrid(conn, scope, "how much power does the turbine make?", k=5)
+        hits = retrieval.retrieve_hybrid(conn, scope, "how much power does the turbine make?", k = 5)
         assert hits and hits[0].chunk_id == f"{doc_id}:0"
     finally:
         conn.close()

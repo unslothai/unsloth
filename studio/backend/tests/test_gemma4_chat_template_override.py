@@ -137,7 +137,7 @@ def test_is_unsloth_gemma4_edge_gguf(model_id, expected_edge):
 
 def test_resolver_returns_edge_template_for_e2b_e4b():
     for mid in ("unsloth/gemma-4-E2B-it-GGUF", "unsloth/gemma-4-E4B-it-GGUF"):
-        out = resolve_effective_chat_template_override(model_identifier=mid, user_override=None)
+        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
         assert out == EDGE
         assert out != BUNDLED
 
@@ -147,13 +147,13 @@ def test_resolver_handles_owner_less_shorthand():
     # runs before that, so it must apply the same normalization.
     assert (
         resolve_effective_chat_template_override(
-            model_identifier="gemma-4-E2B-it-GGUF", user_override=None
+            model_identifier = "gemma-4-E2B-it-GGUF", user_override = None
         )
         == EDGE
     )
     assert (
         resolve_effective_chat_template_override(
-            model_identifier="gemma-4-31B-it-GGUF", user_override=None
+            model_identifier = "gemma-4-31B-it-GGUF", user_override = None
         )
         == BUNDLED
     )
@@ -165,20 +165,20 @@ def test_resolver_returns_standard_template_for_larger_models():
         "unsloth/gemma-4-26B-A4B-it-GGUF",
         "unsloth/gemma-4-31B-it-GGUF",
     ):
-        out = resolve_effective_chat_template_override(model_identifier=mid, user_override=None)
+        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
         assert out == BUNDLED
 
 
 def test_resolver_user_override_wins():
     out = resolve_effective_chat_template_override(
-        model_identifier="unsloth/gemma-4-E2B-it-GGUF", user_override="MY TEMPLATE"
+        model_identifier = "unsloth/gemma-4-E2B-it-GGUF", user_override = "MY TEMPLATE"
     )
     assert out == "MY TEMPLATE"
 
 
 def test_resolver_blank_override_falls_back_to_bundled():
     out = resolve_effective_chat_template_override(
-        model_identifier="unsloth/gemma-4-31B-it-GGUF", user_override="   "
+        model_identifier = "unsloth/gemma-4-31B-it-GGUF", user_override = "   "
     )
     assert out == BUNDLED
 
@@ -186,7 +186,7 @@ def test_resolver_blank_override_falls_back_to_bundled():
 def test_resolver_none_for_non_gemma():
     assert (
         resolve_effective_chat_template_override(
-            model_identifier="unsloth/Llama-3.2-1B-Instruct-GGUF", user_override=None
+            model_identifier = "unsloth/Llama-3.2-1B-Instruct-GGUF", user_override = None
         )
         is None
     )
@@ -229,12 +229,12 @@ def test_edge_template_omits_empty_thought_block_on_thinking_off():
     intended difference between the two bundled templates."""
     EMPTY = "<|channel>thought\n<channel|>"
     msgs = [{"role": "user", "content": "hi"}]
-    edge_off = _render_with(EDGE, msgs, enable_thinking=False)
-    std_off = _render_with(BUNDLED, msgs, enable_thinking=False)
+    edge_off = _render_with(EDGE, msgs, enable_thinking = False)
+    std_off = _render_with(BUNDLED, msgs, enable_thinking = False)
     assert EMPTY not in edge_off, "edge (E2B/E4B) should not emit empty thought block"
     assert EMPTY in std_off, "standard (12b/26B/31B) should emit empty thought block"
     # With thinking ON neither appends the empty block at the prompt tail.
-    assert EMPTY not in _render_with(EDGE, msgs, enable_thinking=True)
+    assert EMPTY not in _render_with(EDGE, msgs, enable_thinking = True)
 
 
 # ── Jinja gate behaviour (off = omit prior reasoning, on = keep) ─────
@@ -247,12 +247,12 @@ def _render_with(tpl, messages, **kw):
     def raise_exception(msg):
         raise RuntimeError(msg)
 
-    env = Environment(loader=BaseLoader())
+    env = Environment(loader = BaseLoader())
     return env.from_string(tpl).render(
-        messages=messages,
-        bos_token="<bos>",
-        raise_exception=raise_exception,
-        add_generation_prompt=True,
+        messages = messages,
+        bos_token = "<bos>",
+        raise_exception = raise_exception,
+        add_generation_prompt = True,
         **kw,
     )
 
@@ -281,12 +281,12 @@ def test_preserve_thinking_off_omits_prior_reasoning():
 
 
 def test_preserve_thinking_on_keeps_prior_reasoning():
-    assert "SECRET_THOUGHT" in _render(_convo_with_prior_tool_reasoning(), preserve_thinking=True)
+    assert "SECRET_THOUGHT" in _render(_convo_with_prior_tool_reasoning(), preserve_thinking = True)
 
 
 def test_enable_thinking_gates_think_token():
-    assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking=True)
-    assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking=False)
+    assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
+    assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
 
 
 # ── Reload dedup interaction (why the route resolves the effective override) ──
@@ -303,7 +303,7 @@ def test_already_in_target_state_consistent_with_bundled_override():
 
     class _FakeProcess:
         def terminate(self): ...
-        def wait(self, timeout=None):
+        def wait(self, timeout = None):
             return 0
 
         def kill(self): ...
@@ -325,18 +325,18 @@ def test_already_in_target_state_consistent_with_bundled_override():
     backend._gguf_path = None
 
     common = dict(
-        model_identifier="unsloth/gemma-4-E2B-it-GGUF",
-        hf_variant="Q4_K_M",
-        n_ctx=8192,
-        cache_type_kv=None,
-        speculative_type=None,
-        extra_args=None,
-        is_vision=False,
+        model_identifier = "unsloth/gemma-4-E2B-it-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = None,
+        extra_args = None,
+        is_vision = False,
     )
     # Effective (resolved bundled) override -> already loaded, no reload.
-    assert backend._already_in_target_state(chat_template_override=BUNDLED, **common) is True
+    assert backend._already_in_target_state(chat_template_override = BUNDLED, **common) is True
     # Raw None (unresolved) -> false match, would force a needless reload.
-    assert backend._already_in_target_state(chat_template_override=None, **common) is False
+    assert backend._already_in_target_state(chat_template_override = None, **common) is False
 
 
 def _import_backend():

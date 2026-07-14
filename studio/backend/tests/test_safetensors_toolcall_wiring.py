@@ -64,8 +64,8 @@ class RecordingTokenizer:
         self,
         messages,
         *,
-        tokenize=False,
-        add_generation_prompt=True,
+        tokenize = False,
+        add_generation_prompt = True,
         **kwargs,
     ):
         self.call_count += 1
@@ -88,17 +88,17 @@ class StubExecutor:
         name,
         arguments,
         *,
-        cancel_event=None,
-        timeout=None,
-        session_id=None,
-        rag_scope=None,
-        disable_sandbox=False,
+        cancel_event = None,
+        timeout = None,
+        session_id = None,
+        rag_scope = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         return self.result
 
 
-def _collect(generator, max_events=200):
+def _collect(generator, max_events = 200):
     events = []
     for ev in generator:
         events.append(ev)
@@ -120,11 +120,11 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
     active_tools_seen: list = []
     conversations_seen: list = []
 
-    def single_turn(conversation, *, active_tools=None):
+    def single_turn(conversation, *, active_tools = None):
         # Mirror the real _single_turn: render via the shared helper, then yield cumulative snapshots.
         active_tools_seen.append(active_tools)
         conversations_seen.append([dict(m) for m in conversation])
-        apply_chat_template_for_generation(tok, conversation, tools=active_tools)
+        apply_chat_template_for_generation(tok, conversation, tools = active_tools)
         text = next(turns)
         mid = len(text) // 2
         acc = ""
@@ -134,11 +134,11 @@ def test_backend_seam_injects_tools_and_drives_full_tool_loop():
 
     events = _collect(
         run_safetensors_tool_loop(
-            single_turn=single_turn,
-            messages=[{"role": "user", "content": "What is the weather in Paris?"}],
-            tools=[FAKE_TOOL],
-            execute_tool=executor,
-            max_tool_iterations=3,
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "What is the weather in Paris?"}],
+            tools = [FAKE_TOOL],
+            execute_tool = executor,
+            max_tool_iterations = 3,
         )
     )
 

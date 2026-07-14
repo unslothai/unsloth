@@ -55,12 +55,12 @@ def _exact_git_studio_tag(repo_root: Path) -> str | None:
                 "v[0-9]*",
                 "HEAD",
             ],
-            cwd=repo_root,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
+            cwd = repo_root,
+            check = False,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = _GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -76,12 +76,12 @@ def _git_branch(repo_root: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=repo_root,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
+            cwd = repo_root,
+            check = False,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = _GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

@@ -19,9 +19,9 @@ def _safe_print(text: str) -> None:
     except UnicodeEncodeError:
         encoding = getattr(sys.stdout, "encoding", None) or "ascii"
         try:
-            print(text.encode(encoding, errors="replace").decode(encoding))
+            print(text.encode(encoding, errors = "replace").decode(encoding))
         except LookupError:
-            print(text.encode("ascii", errors="replace").decode("ascii"))
+            print(text.encode("ascii", errors = "replace").decode("ascii"))
 
 
 def stdout_supports_color() -> bool:

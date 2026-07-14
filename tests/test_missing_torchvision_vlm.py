@@ -13,13 +13,13 @@ def test_error_text_mentions_torchvision_is_detected():
 
 
 def test_torchvision_missing_is_detected_without_error():
-    with mock.patch.object(importlib.util, "find_spec", return_value=None):
+    with mock.patch.object(importlib.util, "find_spec", return_value = None):
         assert _missing_torchvision_error(None) is True
 
 
 def test_torchvision_present_unrelated_error_is_not_flagged():
     sentinel = object()
-    with mock.patch.object(importlib.util, "find_spec", return_value=sentinel):
+    with mock.patch.object(importlib.util, "find_spec", return_value = sentinel):
         assert _missing_torchvision_error(ValueError("unrelated")) is False
         assert _missing_torchvision_error(None) is False
 

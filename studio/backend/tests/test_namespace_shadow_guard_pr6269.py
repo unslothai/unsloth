@@ -135,13 +135,13 @@ _DRIVER = textwrap.dedent(
 
 def _make_namespace_shadow(root: Path, name: str) -> None:
     """A directory named `name` with no __init__.py -> namespace portion."""
-    (root / name).mkdir(parents=True, exist_ok=True)
+    (root / name).mkdir(parents = True, exist_ok = True)
 
 
 def _make_real_pkg(root: Path) -> None:
-    (root / "unsloth").mkdir(parents=True, exist_ok=True)
+    (root / "unsloth").mkdir(parents = True, exist_ok = True)
     (root / "unsloth" / "__init__.py").write_text(_REAL_UNSLOTH_INIT)
-    (root / "unsloth_zoo").mkdir(parents=True, exist_ok=True)
+    (root / "unsloth_zoo").mkdir(parents = True, exist_ok = True)
     (root / "unsloth_zoo" / "__init__.py").write_text(_REAL_ZOO_INIT)
 
 
@@ -150,7 +150,7 @@ def _run(
     *,
     shadow_roots,
     real: bool,
-    names=("unsloth_zoo", "unsloth"),
+    names = ("unsloth_zoo", "unsloth"),
     guard_py: Path = GUARD_PY,
     raise_on_invalidate: bool = False,
 ):
@@ -186,10 +186,10 @@ def _run(
         # -S: skip site-packages so the installed unsloth_zoo can't shadow-beat
         # the namespace portion; the real package is served by the meta finder.
         [sys.executable, "-S", str(driver), str(cfg_path)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
     )
     assert (
         out.is_file()
@@ -205,7 +205,7 @@ def test_only_zoo_shadowed_imports_unsloth_first(tmp_path):
     unsloth_zoo before unsloth -- that would skip _gpu_init's pre-zoo fixes."""
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth_zoo")
-    res = _run(tmp_path, shadow_roots=[shadow], real=True)
+    res = _run(tmp_path, shadow_roots = [shadow], real = True)
 
     assert res["error"] is None
     assert res["order"] == ["unsloth", "unsloth_zoo"], res
@@ -218,7 +218,7 @@ def test_both_shadowed_imports_unsloth_first(tmp_path):
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth")
     _make_namespace_shadow(shadow, "unsloth_zoo")
-    res = _run(tmp_path, shadow_roots=[shadow], real=True)
+    res = _run(tmp_path, shadow_roots = [shadow], real = True)
 
     assert res["error"] is None
     assert res["order"] == ["unsloth", "unsloth_zoo"], res
@@ -230,7 +230,7 @@ def test_both_shadowed_imports_unsloth_first(tmp_path):
 def test_only_unsloth_shadowed_recovers(tmp_path):
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth")
-    res = _run(tmp_path, shadow_roots=[shadow], real=True)
+    res = _run(tmp_path, shadow_roots = [shadow], real = True)
 
     assert res["error"] is None
     assert res["order"] == ["unsloth", "unsloth_zoo"], res
@@ -240,7 +240,7 @@ def test_only_unsloth_shadowed_recovers(tmp_path):
 
 def test_healthy_install_is_noop(tmp_path):
     """No shadow on sys.path: the guard imports nothing and leaves sys.path."""
-    res = _run(tmp_path, shadow_roots=[], real=True)
+    res = _run(tmp_path, shadow_roots = [], real = True)
 
     assert res["error"] is None
     assert res["order"] == [], res  # guard short-circuits before importing
@@ -250,7 +250,7 @@ def test_healthy_install_is_noop(tmp_path):
 def test_real_package_absent_surfaces_module_not_found(tmp_path):
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth_zoo")
-    res = _run(tmp_path, shadow_roots=[shadow], real=False)
+    res = _run(tmp_path, shadow_roots = [shadow], real = False)
 
     assert res["error"] == "ModuleNotFoundError", res
     assert res["path_restored"], res  # restored even on failure
@@ -261,7 +261,7 @@ def test_multiple_shadow_entries_all_removed(tmp_path):
     shadow_b = tmp_path / "shadow_b"
     _make_namespace_shadow(shadow_a, "unsloth_zoo")
     _make_namespace_shadow(shadow_b, "unsloth_zoo")
-    res = _run(tmp_path, shadow_roots=[shadow_a, shadow_b], real=True)
+    res = _run(tmp_path, shadow_roots = [shadow_a, shadow_b], real = True)
 
     assert res["error"] is None
     # if only one offending entry were dropped, zoo would still resolve to a
@@ -275,7 +275,7 @@ def test_sys_path_restored_if_invalidate_caches_raises(tmp_path):
     """sys.path is restored even if importlib.invalidate_caches raises."""
     shadow = tmp_path / "shadow"
     _make_namespace_shadow(shadow, "unsloth_zoo")
-    res = _run(tmp_path, shadow_roots=[shadow], real=True, raise_on_invalidate=True)
+    res = _run(tmp_path, shadow_roots = [shadow], real = True, raise_on_invalidate = True)
 
     assert res["error"] == "RuntimeError", res
     assert res["path_restored"], res

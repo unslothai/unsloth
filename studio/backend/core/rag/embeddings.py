@@ -75,7 +75,6 @@ def _ambient_hf_token() -> str | None:
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
     try:
         from huggingface_hub import get_token
-
         return get_token()
     except Exception:
         return None
@@ -106,7 +105,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
             from huggingface_hub.utils import EntryNotFoundError
 
             try:
-                local = hf_hub_download(name, "modules.json", token=token or None)
+                local = hf_hub_download(name, "modules.json", token = token or None)
             except EntryNotFoundError:
                 return ()
             data = json.loads(open(local).read())
@@ -136,7 +135,7 @@ def _guard_model_security(name: str) -> None:
         load_subdirs = tuple(
             dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
         )
-        blocked = evaluate_file_security(name, hf_token=token, load_subdirs=load_subdirs).blocked
+        blocked = evaluate_file_security(name, hf_token = token, load_subdirs = load_subdirs).blocked
     except Exception:
         return
     if blocked:
@@ -159,22 +158,20 @@ def _get(model_name: str | None = None):
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name)
-            _model = SentenceTransformer(name, device=device, model_kwargs=dtype_kwargs("float16"))
+            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
             _name = name
         return _model
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize = 1)
 def _inference_ctx_factory():
     """``torch.inference_mode`` if torch imports, else ``nullcontext``. Returns the
     factory so each call gets a fresh single-use guard."""
     try:
         import torch
-
         return torch.inference_mode
     except Exception:  # noqa: BLE001 - torch may be missing or broken
         from contextlib import nullcontext
-
         return nullcontext
 
 
@@ -197,15 +194,15 @@ def _st_encode(
             with _inference_ctx():
                 out = model.encode(
                     texts,
-                    normalize_embeddings=normalize,
-                    convert_to_numpy=True,
-                    show_progress_bar=False,
+                    normalize_embeddings = normalize,
+                    convert_to_numpy = True,
+                    show_progress_bar = False,
                 )
         finally:
             os.environ["TOKENIZERS_PARALLELISM"] = "false"
     # fp16 weights yield fp16 output; store float32 for sqlite-vec + stable cosine.
     if hasattr(out, "astype"):
-        out = out.astype("float32", copy=False)
+        out = out.astype("float32", copy = False)
     return out
 
 
@@ -223,7 +220,7 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
         with _compute_lock:
             os.environ["TOKENIZERS_PARALLELISM"] = "true"
             try:
-                return len(tok.encode(t, add_special_tokens=False))
+                return len(tok.encode(t, add_special_tokens = False))
             finally:
                 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -238,11 +235,11 @@ class _SentenceTransformersBackend:
         self,
         texts,
         *,
-        model_name=None,
-        normalize=True,
+        model_name = None,
+        normalize = True,
     ):
         try:
-            return _st_encode(texts, model_name=model_name, normalize=normalize)
+            return _st_encode(texts, model_name = model_name, normalize = normalize)
         except UnsafeEmbeddingModelError:
             raise  # a security block must hard-fail, not fall back to llama-server
         except Exception as st_err:  # noqa: BLE001 - runtime ST/CUDA encode failure
@@ -251,15 +248,15 @@ class _SentenceTransformersBackend:
             fallback = _switch_to_llama_fallback(st_err)
             if fallback is None:
                 raise
-            return fallback.encode(texts, model_name=model_name, normalize=normalize)
+            return fallback.encode(texts, model_name = model_name, normalize = normalize)
 
-    def token_counter(self, *, model_name=None):
+    def token_counter(self, *, model_name = None):
         return _st_token_counter(model_name)
 
-    def dim(self, *, model_name=None):
+    def dim(self, *, model_name = None):
         return _st_dim(model_name)
 
-    def warm(self, *, model_name=None):
+    def warm(self, *, model_name = None):
         _get(model_name)
 
 
@@ -306,7 +303,7 @@ def _build_st_backend_or_fallback():
     this never mixes spaces. Re-raises if no embedder can start."""
     backend = _SentenceTransformersBackend()
     try:
-        backend.warm(model_name=None)
+        backend.warm(model_name = None)
         return backend
     except UnsafeEmbeddingModelError:
         raise  # a security block must hard-fail, not fall back to llama-server
@@ -360,7 +357,6 @@ def _get_backend():
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
             from .embed_llama_server import LlamaServerBackend
-
             _backend = LlamaServerBackend()
         else:
             raise ValueError(
@@ -412,7 +408,7 @@ def active_backend_is_llama() -> bool:
 
 def warm(model_name: str | None = None) -> None:
     """Eagerly load the embedder so the first real request isn't slow."""
-    _get_backend().warm(model_name=model_name)
+    _get_backend().warm(model_name = model_name)
 
 
 def encode(
@@ -422,14 +418,14 @@ def encode(
     normalize: bool = True,
 ):
     """Embed texts into an (N, dim) float32 numpy array."""
-    return _get_backend().encode(texts, model_name=model_name, normalize=normalize)
+    return _get_backend().encode(texts, model_name = model_name, normalize = normalize)
 
 
 def dim(model_name: str | None = None) -> int:
     """Embedding dimension for the (loaded) model."""
-    return _get_backend().dim(model_name=model_name)
+    return _get_backend().dim(model_name = model_name)
 
 
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Callable counting tokens with the embedder's own tokenizer."""
-    return _get_backend().token_counter(model_name=model_name)
+    return _get_backend().token_counter(model_name = model_name)

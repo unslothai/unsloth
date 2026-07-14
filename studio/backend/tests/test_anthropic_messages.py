@@ -98,13 +98,13 @@ def test_anthropic_emitter_does_not_double_close_balanced_think():
 def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
     import routes.inference as inf_mod
 
-    monitor = ApiMonitor(max_entries=3)
+    monitor = ApiMonitor(max_entries = 3)
     monkeypatch.setattr(inf_mod, "api_monitor", monitor)
     monitor_id = monitor.start(
-        endpoint="/v1/messages",
-        method="POST",
-        model="m",
-        prompt="hi",
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
     )
 
     for payload in (
@@ -143,11 +143,11 @@ def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
 class TestToolActionNudge:
     def test_balanced_nudge_uses_expanded_web_and_code_tips(self):
         nudge = _build_tool_action_nudge(
-            tools=[
+            tools = [
                 {"type": "function", "function": {"name": "web_search"}},
                 {"type": "function", "function": {"name": "python"}},
             ],
-            model_name="Llama-3.1-70B-Instruct",
+            model_name = "Llama-3.1-70B-Instruct",
         )
 
         assert nudge.startswith("The current date is ")
@@ -159,11 +159,11 @@ class TestToolActionNudge:
 
     def test_balanced_nudge_preserves_compact_web_tip_and_canvas_gate(self):
         nudge = _build_tool_action_nudge(
-            tools=[
+            tools = [
                 {"type": "function", "function": {"name": "web_search"}},
                 {"type": "function", "function": {"name": "render_html"}},
             ],
-            model_name="Llama-3.1-8B-Instruct",
+            model_name = "Llama-3.1-8B-Instruct",
         )
 
         assert "When using web_search, do not repeat the same search query." in nudge
@@ -171,7 +171,7 @@ class TestToolActionNudge:
         assert "call render_html once" in nudge
 
     def test_balanced_nudge_empty_without_known_tool_categories(self):
-        assert _build_tool_action_nudge(tools=[], model_name="Llama-3.1-8B-Instruct") == ""
+        assert _build_tool_action_nudge(tools = [], model_name = "Llama-3.1-8B-Instruct") == ""
 
 
 # =====================================================================
@@ -182,7 +182,7 @@ class TestToolActionNudge:
 class TestAnthropicModels:
     def test_minimal_request(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens is None
         assert req.model == "default"
@@ -190,23 +190,23 @@ class TestAnthropicModels:
 
     def test_max_tokens_optional(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.max_tokens == 100
 
     def test_system_as_string(self):
         req = AnthropicMessagesRequest(
-            max_tokens=50,
-            messages=[{"role": "user", "content": "Hi"}],
-            system="You are helpful.",
+            max_tokens = 50,
+            messages = [{"role": "user", "content": "Hi"}],
+            system = "You are helpful.",
         )
         assert req.system == "You are helpful."
 
     def test_system_role_message_normalized_to_system_field(self):
         req = AnthropicMessagesRequest(
-            max_tokens=50,
-            messages=[
+            max_tokens = 50,
+            messages = [
                 {"role": "system", "content": "You are helpful."},
                 {"role": "user", "content": "Hi"},
             ],
@@ -217,9 +217,9 @@ class TestAnthropicModels:
 
     def test_system_role_message_merges_with_existing_system_field(self):
         req = AnthropicMessagesRequest(
-            max_tokens=50,
-            system="Base instructions.",
-            messages=[
+            max_tokens = 50,
+            system = "Base instructions.",
+            messages = [
                 {"role": "user", "content": "Hi"},
                 {"role": "system", "content": "Additional instructions."},
                 {"role": "assistant", "content": "Hello."},
@@ -230,9 +230,9 @@ class TestAnthropicModels:
 
     def test_system_role_message_with_null_content_ignored(self):
         req = AnthropicMessagesRequest(
-            max_tokens=50,
-            system="Base.",
-            messages=[
+            max_tokens = 50,
+            system = "Base.",
+            messages = [
                 {"role": "system", "content": None},
                 {
                     "role": "system",
@@ -250,18 +250,18 @@ class TestAnthropicModels:
 
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[{"name": "web_search", "input_schema": {"type": "object"}}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            tools = [{"name": "web_search", "input_schema": {"type": "object"}}],
         )
         assert len(req.tools) == 1
         assert req.tools[0].name == "web_search"
 
     def test_server_tool_field_parses(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            tools=[{"type": "web_fetch_20250910", "name": "web_fetch"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            tools = [{"type": "web_fetch_20250910", "name": "web_fetch"}],
         )
         assert len(req.tools) == 1
         assert req.tools[0].type == "web_fetch_20250910"
@@ -270,25 +270,25 @@ class TestAnthropicModels:
 
     def test_extra_fields_accepted(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
-            some_future_field="hello",
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
+            some_future_field = "hello",
         )
         assert req.max_tokens == 100
 
     def test_stream_defaults_false(self):
         req = AnthropicMessagesRequest(
-            max_tokens=100,
-            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens = 100,
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.stream is False
 
     def test_enable_tools_shorthand(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
-            enable_tools=True,
-            enabled_tools=["web_search", "python"],
-            session_id="my-session",
+            messages = [{"role": "user", "content": "Hi"}],
+            enable_tools = True,
+            enabled_tools = ["web_search", "python"],
+            session_id = "my-session",
         )
         assert req.enable_tools is True
         assert req.enabled_tools == ["web_search", "python"]
@@ -296,7 +296,7 @@ class TestAnthropicModels:
 
     def test_extension_fields_default_none(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hi"}],
+            messages = [{"role": "user", "content": "Hi"}],
         )
         assert req.enable_tools is None
         assert req.enabled_tools is None
@@ -324,14 +324,14 @@ class TestAnthropicMessagesToOpenAI:
 
     def test_system_string_prepended(self):
         msgs = [{"role": "user", "content": "Hello"}]
-        result = anthropic_messages_to_openai(msgs, system="Be brief.")
+        result = anthropic_messages_to_openai(msgs, system = "Be brief.")
         assert result[0] == {"role": "system", "content": "Be brief."}
         assert result[1] == {"role": "user", "content": "Hello"}
 
     def test_top_level_system_request_translates_unchanged(self):
         req = AnthropicMessagesRequest(
-            messages=[{"role": "user", "content": "Hello"}],
-            system="Be brief.",
+            messages = [{"role": "user", "content": "Hello"}],
+            system = "Be brief.",
         )
         result = anthropic_messages_to_openai(
             [m.model_dump() for m in req.messages],
@@ -348,7 +348,7 @@ class TestAnthropicMessagesToOpenAI:
             {"type": "text", "text": "Be accurate."},
         ]
         msgs = [{"role": "user", "content": "Hello"}]
-        result = anthropic_messages_to_openai(msgs, system=system)
+        result = anthropic_messages_to_openai(msgs, system = system)
         assert result[0]["role"] == "system"
         assert "Be brief." in result[0]["content"]
         assert "Be accurate." in result[0]["content"]
@@ -636,14 +636,14 @@ class TestAnthropicToolsToOpenAI:
 
         result = _select_anthropic_server_tools(
             all_tools,
-            requested_studio_tools={"web_search"},
-            enabled_tools=["python"],
+            requested_studio_tools = {"web_search"},
+            enabled_tools = ["python"],
         )
 
         assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
     def test_pydantic_model_input(self):
-        tool = AnthropicTool(name="test", description="desc", input_schema={"type": "object"})
+        tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"
 
@@ -943,7 +943,7 @@ class TestAnthropicToolNonStreaming:
 
         tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
         response = asyncio.run(
-            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools=tools)
+            _anthropic_tool_non_streaming(_run_gen, "msg_1", "m", openai_tools = tools)
         )
         body = json.loads(response.body)
         text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
@@ -1267,8 +1267,8 @@ class TestAnthropicPassthroughStreamAdapter:
             content += "data: [DONE]\n\n"
             return httpx.Response(
                 200,
-                content=content.encode(),
-                headers={"content-type": "text/event-stream"},
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
             )
 
         transport = httpx.MockTransport(handler)
@@ -1276,15 +1276,15 @@ class TestAnthropicPassthroughStreamAdapter:
 
         def _client(*args, **kwargs):
             return real_async_client(
-                transport=transport,
-                timeout=kwargs.get("timeout", 600),
+                transport = transport,
+                timeout = kwargs.get("timeout", 600),
             )
 
         monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
         backend = SimpleNamespace(
-            base_url="http://llama.test",
-            context_length=4096,
-            count_chat_tokens=lambda *args, **kwargs: 2,
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
         )
 
         async def run():
@@ -1329,7 +1329,7 @@ def _jpeg_data_url() -> str:
 
     img = Image.new("RGB", (2, 2), (255, 0, 0))
     buf = _BytesIO()
-    img.save(buf, format="JPEG")
+    img.save(buf, format = "JPEG")
     b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
 
@@ -1337,7 +1337,7 @@ def _jpeg_data_url() -> str:
 class TestNormalizeAnthropicOpenAIImages:
     def test_noop_when_no_images(self):
         msgs = [{"role": "user", "content": "hi"}]
-        has_image = _normalize_anthropic_openai_images(msgs, is_vision=False)
+        has_image = _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert has_image is False
         assert msgs == [{"role": "user", "content": "hi"}]
 
@@ -1350,7 +1350,7 @@ class TestNormalizeAnthropicOpenAIImages:
                 ],
             }
         ]
-        assert _normalize_anthropic_openai_images(msgs, is_vision=True) is True
+        assert _normalize_anthropic_openai_images(msgs, is_vision = True) is True
 
     def test_rejects_image_when_model_not_vision(self):
         msgs = [
@@ -1366,7 +1366,7 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         with pytest.raises(HTTPException) as exc:
-            _normalize_anthropic_openai_images(msgs, is_vision=False)
+            _normalize_anthropic_openai_images(msgs, is_vision = False)
         assert exc.value.status_code == 400
 
     def test_reencodes_jpeg_data_url_to_png(self):
@@ -1380,7 +1380,7 @@ class TestNormalizeAnthropicOpenAIImages:
                 ],
             }
         ]
-        _normalize_anthropic_openai_images(msgs, is_vision=True)
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
         new_url = msgs[0]["content"][1]["image_url"]["url"]
         assert new_url.startswith("data:image/png;base64,")
         assert new_url != original_url
@@ -1397,7 +1397,7 @@ class TestNormalizeAnthropicOpenAIImages:
                 ],
             }
         ]
-        _normalize_anthropic_openai_images(msgs, is_vision=True)
+        _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert msgs[0]["content"][0]["image_url"]["url"] == "https://x.example/y.png"
 
     def test_bad_base64_raises_400(self):
@@ -1413,7 +1413,7 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         with pytest.raises(HTTPException) as exc:
-            _normalize_anthropic_openai_images(msgs, is_vision=True)
+            _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert exc.value.status_code == 400
 
 
@@ -1455,8 +1455,8 @@ class TestAnthropicRequestedStudioTools:
 
     def test_pydantic_model_input(self):
         tools = [
-            AnthropicTool(type="web_fetch_20250910", name="web_fetch"),
-            AnthropicTool(name="x", input_schema={"type": "object"}),
+            AnthropicTool(type = "web_fetch_20250910", name = "web_fetch"),
+            AnthropicTool(name = "x", input_schema = {"type": "object"}),
         ]
         assert _anthropic_requested_studio_tools(tools) == {"web_search"}
 
@@ -1489,15 +1489,15 @@ def _mock_backend(monkeypatch, **overrides):
         yield {"type": "content", "text": "ok"}
 
     backend = SimpleNamespace(
-        is_loaded=True,
-        is_vision=False,
-        supports_tools=True,
-        model_identifier="test-model",
-        context_length=4096,
-        count_chat_tokens=lambda *args, **kwargs: 2,
-        generate_chat_completion=_gen_plain,
-        generate_chat_completion_with_tools=_gen_tools,
-        calls=calls,
+        is_loaded = True,
+        is_vision = False,
+        supports_tools = True,
+        model_identifier = "test-model",
+        context_length = 4096,
+        count_chat_tokens = lambda *args, **kwargs: 2,
+        generate_chat_completion = _gen_plain,
+        generate_chat_completion_with_tools = _gen_tools,
+        calls = calls,
     )
     backend.__dict__.update(overrides)
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
@@ -1517,7 +1517,7 @@ def _basic_payload(**fields) -> AnthropicMessagesRequest:
     return AnthropicMessagesRequest(**base)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset_policy():
     reset_tool_policy()
     yield
@@ -1527,7 +1527,7 @@ def _reset_policy():
 class TestAnthropicMessagesToolRouting:
     class _Request:
         state = SimpleNamespace()
-        url = SimpleNamespace(path="/v1/messages")
+        url = SimpleNamespace(path = "/v1/messages")
         method = "POST"
 
         async def is_disconnected(self):
@@ -1546,12 +1546,12 @@ class TestAnthropicMessagesToolRouting:
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
-        _mock_backend(monkeypatch, context_length=2048)
-        monitor = ApiMonitor(max_entries=3)
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         payload = _basic_payload()
 
-        response = _drive(anthropic_messages(payload, request=self._Request(), current_subject="t"))
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert response.status_code == 200
         [entry] = monitor.snapshot()
@@ -1576,17 +1576,17 @@ class TestAnthropicMessagesToolRouting:
 
         _mock_backend(
             monkeypatch,
-            context_length=2048,
-            generate_chat_completion_with_tools=_gen_tools,
+            context_length = 2048,
+            generate_chat_completion_with_tools = _gen_tools,
         )
-        monitor = ApiMonitor(max_entries=3)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         payload = _basic_payload(
-            enable_tools=True,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            enable_tools = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        response = _drive(anthropic_messages(payload, request=self._Request(), current_subject="t"))
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert response.status_code == 200
         [entry] = monitor.snapshot()
@@ -1596,12 +1596,12 @@ class TestAnthropicMessagesToolRouting:
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
-        _mock_backend(monkeypatch, context_length=2048)
-        monitor = ApiMonitor(max_entries=3)
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        payload = _basic_payload(stream=True)
+        payload = _basic_payload(stream = True)
 
-        response = _drive(anthropic_messages(payload, request=self._Request(), current_subject="t"))
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert monitor.active_count() == 1
         self._consume_response(response)
@@ -1618,14 +1618,14 @@ class TestAnthropicMessagesToolRouting:
         async def _cancelled_before_response(*_args, **_kwargs):
             raise asyncio.CancelledError()
 
-        _mock_backend(monkeypatch, context_length=2048)
-        monitor = ApiMonitor(max_entries=3)
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_anthropic_plain_stream", _cancelled_before_response)
-        payload = _basic_payload(stream=True)
+        payload = _basic_payload(stream = True)
 
         with pytest.raises(asyncio.CancelledError):
-            _drive(anthropic_messages(payload, request=self._Request(), current_subject="t"))
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         [entry] = monitor.snapshot()
         assert entry["status"] == "cancelled"
@@ -1634,14 +1634,14 @@ class TestAnthropicMessagesToolRouting:
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[
+            tools = [
                 {"type": "web_search_20250305", "name": "web_search"},
                 {"name": "custom", "input_schema": {"type": "object"}},
             ],
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
@@ -1652,25 +1652,25 @@ class TestAnthropicMessagesToolRouting:
         # routes to server-only.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[
+            tools = [
                 {"type": "web_search_20250305", "name": "web_search"},
                 {"name": "web_search", "input_schema": {"type": "object"}},
             ],
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
     def test_client_tool_missing_input_schema_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[{"name": "my_tool", "description": "oops, schema typo"}],
+            tools = [{"name": "my_tool", "description": "oops, schema typo"}],
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "input_schema" in exc.value.detail
 
@@ -1682,11 +1682,11 @@ class TestAnthropicMessagesToolRouting:
         # the boundary instead.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[{"input_schema": {"type": "object"}}],
+            tools = [{"input_schema": {"type": "object"}}],
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "name" in exc.value.detail
 
@@ -1696,11 +1696,11 @@ class TestAnthropicMessagesToolRouting:
         # `if not name` guard. Reject at the boundary so the typo shows.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[{"name": "", "input_schema": {"type": "object"}}],
+            tools = [{"name": "", "input_schema": {"type": "object"}}],
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "name" in exc.value.detail
 
@@ -1710,20 +1710,20 @@ class TestAnthropicMessagesToolRouting:
         # surface a 400, not silently switch into Studio's built-in python
         # execution.
         _mock_backend(monkeypatch)
-        payload = _basic_payload(tools=[{"name": "python"}])
+        payload = _basic_payload(tools = [{"name": "python"}])
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "input_schema" in exc.value.detail
 
     def test_unrecognized_server_tool_accepted_as_noop(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+            tools = [{"type": "code_execution_20250825", "name": "code_execution"}],
         )
 
-        _drive(anthropic_messages(payload, request=None, current_subject="t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
@@ -1732,31 +1732,31 @@ class TestAnthropicMessagesToolRouting:
         backend = _mock_backend(monkeypatch)
         set_tool_policy(False)
         payload = _basic_payload(
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        _drive(anthropic_messages(payload, request=None, current_subject="t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
         # Mirror of the previous test for the default (None) policy.
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        _drive(anthropic_messages(payload, request=None, current_subject="t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "tools"
 
     def test_confirm_tool_calls_rejected_for_server_tools(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            confirm_tool_calls=True,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            confirm_tool_calls = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
         with pytest.raises(HTTPException) as exc:
-            _drive(anthropic_messages(payload, request=None, current_subject="t"))
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert exc.value.status_code == 400
         assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
         assert backend.calls == []
@@ -1764,11 +1764,11 @@ class TestAnthropicMessagesToolRouting:
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
-            enable_tools=False,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            enable_tools = False,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        _drive(anthropic_messages(payload, request=None, current_subject="t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
         assert backend.calls[0][0] == "plain"
 
 
@@ -1778,9 +1778,9 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
     from pydantic import ValidationError
 
     req = AnthropicMessagesRequest(
-        model="x",
-        max_tokens=16,
-        messages=[
+        model = "x",
+        max_tokens = 16,
+        messages = [
             {"role": "user", "content": "hi"},
             {
                 "role": "assistant",
@@ -1806,9 +1806,9 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
     # A malformed KNOWN block still fails cleanly instead of being swallowed.
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
-            model="x",
-            max_tokens=16,
-            messages=[{"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}],
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "assistant", "content": [{"type": "tool_use", "name": "f"}]}],
         )
 
 
@@ -1816,12 +1816,11 @@ def test_user_null_content_rejected():
     # The null->"" leniency is assistant-only; a null user content must be rejected
     # at the boundary, not coerced into an empty prompt and forwarded to the model.
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
-            model="x",
-            max_tokens=16,
-            messages=[{"role": "user", "content": None}],
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "user", "content": None}],
         )
 
 
@@ -1830,12 +1829,11 @@ def test_user_unknown_block_rejected_not_silently_dropped():
     # block is unknown would validate yet forward no content. Reject at the boundary
     # to avoid that silent data loss (the assistant fallback is unaffected).
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
-            model="x",
-            max_tokens=16,
-            messages=[
+            model = "x",
+            max_tokens = 16,
+            messages = [
                 {"role": "user", "content": [{"type": "document", "source": {}}]},
             ],
         )
@@ -1845,9 +1843,9 @@ def test_user_translatable_blocks_still_accepted():
     # text / image / tool_result are translatable, so a real user message built from
     # them must still pass; the unknown-block guard only trips on other types.
     req = AnthropicMessagesRequest(
-        model="x",
-        max_tokens=16,
-        messages=[
+        model = "x",
+        max_tokens = 16,
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -1875,12 +1873,11 @@ def test_user_malformed_known_block_still_rejected():
     # The guard only allow-lists a user block's *type*; the union still validates its
     # shape, so a known-but-malformed block (tool_result without tool_use_id) fails.
     from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
-            model="x",
-            max_tokens=16,
-            messages=[
+            model = "x",
+            max_tokens = 16,
+            messages = [
                 {"role": "user", "content": [{"type": "tool_result", "content": "x"}]},
             ],
         )
@@ -1891,13 +1888,12 @@ def test_user_content_block_non_string_type_rejected_cleanly():
     # int) must fail as a clean validation error, not raise TypeError from the
     # frozenset membership test and escape as a 500.
     from pydantic import ValidationError
-
     for bad_type in ([], {}, 5):
         with pytest.raises(ValidationError):
             AnthropicMessagesRequest(
-                model="x",
-                max_tokens=16,
-                messages=[{"role": "user", "content": [{"type": bad_type}]}],
+                model = "x",
+                max_tokens = 16,
+                messages = [{"role": "user", "content": [{"type": bad_type}]}],
             )
 
 
@@ -1908,15 +1904,15 @@ def test_assistant_missing_content_key_still_rejected():
 
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
-            model="x",
-            max_tokens=16,
-            messages=[{"role": "assistant"}],
+            model = "x",
+            max_tokens = 16,
+            messages = [{"role": "assistant"}],
         )
     # An explicit null is still accepted and coerced (regression guard).
     req = AnthropicMessagesRequest(
-        model="x",
-        max_tokens=16,
-        messages=[
+        model = "x",
+        max_tokens = 16,
+        messages = [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": None},
         ],
@@ -1928,27 +1924,27 @@ def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkey
     # user -> assistant(null) -> user is now accepted: the null assistant turn coerces
     # to "" and is dropped. The route must then coalesce the two remaining user turns
     # so a strict GGUF chat template does not 400 on non-alternating roles.
-    backend = _mock_backend(monkeypatch, context_length=2048)
+    backend = _mock_backend(monkeypatch, context_length = 2048)
 
     class _Req:
         state = SimpleNamespace()
-        url = SimpleNamespace(path="/v1/messages")
+        url = SimpleNamespace(path = "/v1/messages")
         method = "POST"
 
         async def is_disconnected(self):
             return False
 
     payload = AnthropicMessagesRequest(
-        model="x",
-        max_tokens=16,
-        messages=[
+        model = "x",
+        max_tokens = 16,
+        messages = [
             {"role": "user", "content": "first question"},
             {"role": "assistant", "content": None},
             {"role": "user", "content": "please continue"},
         ],
     )
 
-    response = _drive(anthropic_messages(payload, request=_Req(), current_subject="t"))
+    response = _drive(anthropic_messages(payload, request = _Req(), current_subject = "t"))
     assert response.status_code == 200
 
     [(_path, kwargs)] = backend.calls

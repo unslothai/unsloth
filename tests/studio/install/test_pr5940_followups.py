@@ -63,21 +63,21 @@ def test_hf_resolve_url_parts_non_hf_returns_none(url):
 def test_fetch_validation_model_prefers_huggingface_hub(tmp_path):
     model = tmp_path / "stories260K.gguf"
     model.write_bytes(b"GGUF-via-hf")
-    fake_hf = MagicMock(return_value=str(model))
+    fake_hf = MagicMock(return_value = str(model))
     with (
-        patch.object(prebuilt, "validated_validation_model_bytes", side_effect=lambda b: b),
-        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download=fake_hf)}),
+        patch.object(prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b),
+        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-hf"
     assert fake_hf.called  # hf path was taken, urllib not needed
 
 
 def test_fetch_validation_model_falls_back_to_urllib_on_hf_failure():
-    fake_hf = MagicMock(side_effect=RuntimeError("hf unreachable"))
+    fake_hf = MagicMock(side_effect = RuntimeError("hf unreachable"))
     with (
-        patch.object(prebuilt, "validated_validation_model_bytes", side_effect=lambda b: b),
-        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download=fake_hf)}),
-        patch.object(prebuilt, "download_bytes", return_value=b"GGUF-via-urllib") as dl,
+        patch.object(prebuilt, "validated_validation_model_bytes", side_effect = lambda b: b),
+        patch.dict(sys.modules, {"huggingface_hub": MagicMock(hf_hub_download = fake_hf)}),
+        patch.object(prebuilt, "download_bytes", return_value = b"GGUF-via-urllib") as dl,
     ):
         assert prebuilt._fetch_validation_model_bytes() == b"GGUF-via-urllib"
     assert dl.called  # fell back to the direct URL download
@@ -94,8 +94,8 @@ def _capture_env(command, system):
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     with (
-        patch.object(prebuilt.subprocess, "run", side_effect=fake_run),
-        patch.object(prebuilt.platform, "system", return_value=system),
+        patch.object(prebuilt.subprocess, "run", side_effect = fake_run),
+        patch.object(prebuilt.platform, "system", return_value = system),
     ):
         prebuilt.run_capture(command)
     return captured["env"]
@@ -128,27 +128,27 @@ def _ps_name_arch_rows(text):
 
 
 def test_ps_name_arch_tables_in_sync():
-    t1 = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding="utf-8"))
-    t2 = _ps_name_arch_rows(_SETUP_PS1.read_text(encoding="utf-8"))
+    t1 = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
+    t2 = _ps_name_arch_rows(_SETUP_PS1.read_text(encoding = "utf-8"))
     assert t1, "no nameArchTable found in install.ps1"
     assert t1 == t2, f"name->arch tables drifted:\ninstall.ps1={t1}\nsetup.ps1={t2}"
 
 
 def test_rx_7700s_resolves_to_gfx1102_not_gfx1100():
-    rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding="utf-8"))
+    rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
     name = "AMD Radeon RX 7700S"
     matched = next((arch for pattern, arch in rows if re.search(pattern, name)), None)
     assert matched == "gfx1102", f"RX 7700S matched {matched!r}, expected gfx1102"
 
 
 def test_radeon_8060s_resolves_to_gfx1151():
-    rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding="utf-8"))
+    rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
     name = "AMD Radeon(TM) 8060S Graphics"
     matched = next((arch for pattern, arch in rows if re.search(pattern, name)), None)
     assert matched == "gfx1151"
 
 
-def _sh_name_arch_rows(text, var="_gpu_disp_gfx"):
+def _sh_name_arch_rows(text, var = "_gpu_disp_gfx"):
     """Parse a bash name->arch case table into ordered [(substr_tokens, arch), ...]."""
     rows = []
     for line in text.splitlines():
@@ -171,8 +171,8 @@ def _sh_resolve(rows, name):
 def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
     """install.sh name->arch table must match the PowerShell source on the Strix
     Halo/Point split and never misclassify NVIDIA/Intel as an AMD gfx."""
-    sh_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding="utf-8"))
-    ps_rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding="utf-8"))
+    sh_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
+    ps_rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
     assert sh_rows, "no name->arch case table found in install.sh"
     cases = {
         "AMD Radeon(TM) 8060S Graphics": "gfx1151",  # Strix Halo
@@ -194,10 +194,10 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
 def test_setup_sh_name_arch_table_in_sync_with_install_sh():
     """studio/setup.sh's name->arch table must stay row-for-row identical to
     install.sh's (order carries the RX 7700S -> gfx1102 rule)."""
-    install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding="utf-8"))
+    install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
     setup_rows = _sh_name_arch_rows(
-        (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding="utf-8"),
-        var="_setup_gfx",
+        (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8"),
+        var = "_setup_gfx",
     )
     assert setup_rows, "no name->arch case table found in studio/setup.sh"
     assert install_rows == setup_rows, (
@@ -233,32 +233,32 @@ def _amd_smi_allowed_under(system, hipinfo_present, env):
             open(os.path.join(sdk_bin, "hipinfo.exe"), "w").close()
             path_env["PATH"] = sdk_bin + os.pathsep + path_env.get("PATH", "")
         with (
-            patch.object(prebuilt.platform, "system", return_value=system),
+            patch.object(prebuilt.platform, "system", return_value = system),
             patch.object(prebuilt.sys, "prefix", venv_root),
-            patch.dict(prebuilt.os.environ, path_env, clear=True),
+            patch.dict(prebuilt.os.environ, path_env, clear = True),
         ):
             return prebuilt._amd_smi_allowed()
 
 
 def test_amd_smi_allowed_on_linux_regardless():
     # Linux amd-smi does not elevate -> always allowed.
-    assert _amd_smi_allowed_under("Linux", hipinfo_present=False, env={}) is True
+    assert _amd_smi_allowed_under("Linux", hipinfo_present = False, env = {}) is True
 
 
 def test_amd_smi_skipped_on_windows_without_hip_sdk():
     # The DiskPart fix: no HIP SDK + no opt-in -> do not spawn amd-smi.
-    assert _amd_smi_allowed_under("Windows", hipinfo_present=False, env={}) is False
+    assert _amd_smi_allowed_under("Windows", hipinfo_present = False, env = {}) is False
 
 
 def test_amd_smi_allowed_on_windows_with_hip_sdk():
     # hipinfo present => amd-smi runs un-elevated, so it is allowed.
-    assert _amd_smi_allowed_under("Windows", hipinfo_present=True, env={}) is True
+    assert _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {}) is True
 
 
 def test_amd_smi_opt_in_forces_on_windows_no_sdk():
     assert (
         _amd_smi_allowed_under(
-            "Windows", hipinfo_present=False, env={"UNSLOTH_ENABLE_AMD_SMI": "1"}
+            "Windows", hipinfo_present = False, env = {"UNSLOTH_ENABLE_AMD_SMI": "1"}
         )
         is True
     )
@@ -266,7 +266,7 @@ def test_amd_smi_opt_in_forces_on_windows_no_sdk():
 
 def test_amd_smi_opt_out_overrides_hip_sdk():
     assert (
-        _amd_smi_allowed_under("Windows", hipinfo_present=True, env={"UNSLOTH_ENABLE_AMD_SMI": "0"})
+        _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {"UNSLOTH_ENABLE_AMD_SMI": "0"})
         is False
     )
 
@@ -277,12 +277,12 @@ def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
     # Strix Halo with no real HIP SDK (the snapcast3r/UBER6 bug).
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
-    venv_scripts.mkdir(parents=True)
+    venv_scripts.mkdir(parents = True)
     (venv_scripts / "hipinfo.exe").write_text("")
     with (
-        patch.object(prebuilt.platform, "system", return_value="Windows"),
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear=True),
+        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is False
 
@@ -291,12 +291,12 @@ def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
     # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so
     # HIP-SDK Windows users keep amd-smi (no regression for the venv-exclusion).
     sdk_bin = tmp_path / "hipsdk" / "bin"
-    sdk_bin.mkdir(parents=True)
+    sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
     with (
-        patch.object(prebuilt.platform, "system", return_value="Windows"),
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.dict(prebuilt.os.environ, {"PATH": str(sdk_bin)}, clear=True),
+        patch.dict(prebuilt.os.environ, {"PATH": str(sdk_bin)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is True
 
@@ -307,16 +307,16 @@ def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
     # closes the gate; scanning every PATH entry must still find the external SDK.
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
-    venv_scripts.mkdir(parents=True)
+    venv_scripts.mkdir(parents = True)
     (venv_scripts / "hipinfo.exe").write_text("")
     sdk_bin = tmp_path / "hipsdk" / "bin"
-    sdk_bin.mkdir(parents=True)
+    sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
     path = str(venv_scripts) + os.pathsep + str(sdk_bin)  # venv copy first
     with (
-        patch.object(prebuilt.platform, "system", return_value="Windows"),
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"PATH": path}, clear=True),
+        patch.dict(prebuilt.os.environ, {"PATH": path}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is True
 
@@ -326,12 +326,12 @@ def test_amd_smi_skipped_when_env_root_hipinfo_is_venv_internal(tmp_path):
     # under <venv>/_rocm_sdk_core/bin is still not a real HIP SDK.
     venv_root = tmp_path / "venv"
     hip_root = venv_root / "_rocm_sdk_core"
-    (hip_root / "bin").mkdir(parents=True)
+    (hip_root / "bin").mkdir(parents = True)
     (hip_root / "bin" / "hipinfo.exe").write_text("")
     with (
-        patch.object(prebuilt.platform, "system", return_value="Windows"),
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"ROCM_PATH": str(hip_root)}, clear=True),
+        patch.dict(prebuilt.os.environ, {"ROCM_PATH": str(hip_root)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is False
 
@@ -340,12 +340,12 @@ def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
     # A real HIP SDK pointed to by HIP_PATH (outside the venv) still opens the
     # gate, so the env-root venv filter does not regress HIP-SDK Windows users.
     hip_root = tmp_path / "hipsdk"
-    (hip_root / "bin").mkdir(parents=True)
+    (hip_root / "bin").mkdir(parents = True)
     (hip_root / "bin" / "hipinfo.exe").write_text("")
     with (
-        patch.object(prebuilt.platform, "system", return_value="Windows"),
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.dict(prebuilt.os.environ, {"HIP_PATH": str(hip_root)}, clear=True),
+        patch.dict(prebuilt.os.environ, {"HIP_PATH": str(hip_root)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is True
 
@@ -355,11 +355,11 @@ def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
     # count as an external HIP SDK (the whole point of the venv filter).
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
-    venv_scripts.mkdir(parents=True)
+    venv_scripts.mkdir(parents = True)
     (venv_scripts / "hipinfo.exe").write_text("")
     with (
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear=True),
+        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear = True),
     ):
         assert prebuilt._external_hipinfo_on_path() is False
 
@@ -369,7 +369,7 @@ def test_python_hipinfo_gates_scan_all_path_entries():
     # (not just the first shutil.which hit) so the venv-internal hipInfo cannot
     # shadow a real SDK's hipinfo later on PATH.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
-        text = src.read_text(encoding="utf-8")
+        text = src.read_text(encoding = "utf-8")
         assert (
             "_external_hipinfo_on_path" in text
         ), f"{src.name} must use the PATH-scanning hipinfo helper"
@@ -380,11 +380,11 @@ def test_path_inside_venv_resolves_symlinks(tmp_path):
     # still count as inside, else its hipInfo escapes the filter and amd-smi
     # pops the DiskPart UAC. abspath would leave the alias unresolved here.
     real = tmp_path / "real"
-    (real / "Scripts").mkdir(parents=True)
+    (real / "Scripts").mkdir(parents = True)
     (real / "Scripts" / "hipInfo.exe").write_text("")
     link = tmp_path / "link"
     try:
-        link.symlink_to(real, target_is_directory=True)
+        link.symlink_to(real, target_is_directory = True)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks not permitted on this runner")
     with patch.object(prebuilt.sys, "prefix", str(real)):
@@ -394,7 +394,7 @@ def test_path_inside_venv_resolves_symlinks(tmp_path):
 def test_ps_installers_gate_amd_smi_on_windows():
     # Both PowerShell installers must gate amd-smi like _amd_smi_allowed().
     for ps in (_INSTALL_PS1, _SETUP_PS1):
-        text = ps.read_text(encoding="utf-8")
+        text = ps.read_text(encoding = "utf-8")
         assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
         assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
         # The HIP-SDK probe must exclude the venv-internal hipInfo.exe (mirrors
@@ -427,12 +427,12 @@ def test_ps_installers_gate_amd_smi_on_windows():
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_STUDIO_HOME"
 
 
-@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids=["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
     # The probe seeds the venv root from a custom Studio home; a ~\studio form
     # must expand to USERPROFILE like the canonical resolver, else GetFullPath
     # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
-    text = ps.read_text(encoding="utf-8")
+    text = ps.read_text(encoding = "utf-8")
     i = text.find("$studioHomeEnv = ")
     j = text.find('Join-Path $studioHomeEnv "unsloth_studio"', i)
     assert i != -1 and j != -1, f"{ps.name}: studioHomeEnv venv-root seed not found"
@@ -466,8 +466,8 @@ def test_install_setup_ps_rocm_torch_floors_in_sync():
     # install.ps1/setup.ps1 pull from AMD's per-arch index; their torch and
     # companion floor maps must match so both resolve the same ABI-consistent trio
     # (install.ps1 once left companions bare -> incompatible set -> CPU).
-    it = _INSTALL_PS1.read_text(encoding="utf-8")
-    st = _SETUP_PS1.read_text(encoding="utf-8")
+    it = _INSTALL_PS1.read_text(encoding = "utf-8")
+    st = _SETUP_PS1.read_text(encoding = "utf-8")
     for prefix in ("torch>=", "torchvision>=", "torchaudio>="):
         i_map = _ps_floor_map(it, prefix)
         s_map = _ps_floor_map(st, prefix)
@@ -486,7 +486,7 @@ def test_install_setup_ps_rocm_torch_floors_in_sync():
 def test_install_ps1_rocm_cpu_fallback_uses_retry():
     # The ROCm->CPU fallback (likeliest to hit a transient index issue) once used
     # the non-retrying helper; it must retry like every other torch install here.
-    text = _INSTALL_PS1.read_text(encoding="utf-8")
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
     window = text[i : i + 600]
@@ -506,7 +506,7 @@ def test_setup_ps1_rocm_cpu_fallback_force_reinstalls():
     # setup.ps1's CPU block is shared with the genuine CPU-only path, so it force-
     # reinstalls only after an AMD ROCm fallback ($ROCmCpuFallback) -- evicting a
     # partial ROCm torch without slowing the common CPU install.
-    text = _SETUP_PS1.read_text(encoding="utf-8")
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
     assert "$ROCmCpuFallback = $true" in text, (
         "setup.ps1 must flag the AMD ROCm->CPU fallback so the CPU install can force-"
         "reinstall a partial ROCm torch"
@@ -532,7 +532,7 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
     # AND spawning a subprocess must gate it behind _amd_smi_allowed().
     import ast
 
-    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding="utf-8")
+    src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
 
     def _names_amd_smi_command(node):
@@ -577,7 +577,7 @@ def test_install_ps1_installs_rocm_torch_for_known_arch():
     # A known AMD arch (even name-inferred, $HasROCm false) must select the ROCm
     # index directly, not a CPU base that setup.ps1 then force-reinstalls as ROCm.
     # The repo.amd.com wheels bundle their runtime (no HIP SDK), so gate on $ROCmGfxArch.
-    text = _INSTALL_PS1.read_text(encoding="utf-8")
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
     gates = [
         ln
         for ln in text.splitlines()
@@ -599,13 +599,13 @@ def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
     # them before os.path.join, else a real HIP SDK in a quoted dir is missed and a
     # genuine AMD box silently loses amd-smi VRAM polling.
     sdk_bin = tmp_path / "hip sdk" / "bin"
-    sdk_bin.mkdir(parents=True)
+    sdk_bin.mkdir(parents = True)
     (sdk_bin / "hipinfo.exe").write_text("")
     quoted = '"' + str(sdk_bin) + '"'  # the literal quotes Windows can leave on PATH
     with (
-        patch.object(prebuilt.platform, "system", return_value="Windows"),
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.dict(prebuilt.os.environ, {"PATH": quoted}, clear=True),
+        patch.dict(prebuilt.os.environ, {"PATH": quoted}, clear = True),
     ):
         assert prebuilt._external_hipinfo_on_path() is True
         assert prebuilt._amd_smi_allowed() is True
@@ -614,7 +614,7 @@ def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
 def test_python_hipinfo_strips_quotes_in_all_copies():
     # All three copies of the PATH scan must strip surrounding quotes from entries.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
-        text = src.read_text(encoding="utf-8")
+        text = src.read_text(encoding = "utf-8")
         assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
 
 
@@ -623,7 +623,7 @@ def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
     # path on the filesystem and classifies a real external hipinfo as
     # venv-internal, silently disabling amd-smi. All three copies must guard it.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
-        text = src.read_text(encoding="utf-8")
+        text = src.read_text(encoding = "utf-8")
         assert (
             "os.path.dirname(" in text and ") == " in text and "return False" in text
         ), f"{src.name} _path_inside_venv must guard a root-dir sys.prefix"
@@ -637,30 +637,30 @@ def test_path_inside_venv_returns_false_for_root_prefix():
     with patch.object(
         prebuilt.os.path,
         "realpath",
-        side_effect=lambda p: root if p == prebuilt.sys.prefix else real(p),
+        side_effect = lambda p: root if p == prebuilt.sys.prefix else real(p),
     ):
         ext = os.path.join(root, "hip", "bin", "hipinfo.exe")
         assert prebuilt._path_inside_venv(ext) is False
 
 
-@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids=["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_skips_drive_root(ps):
     # A non-venv UNSLOTH_SETUP_PYTHON like C:\Python311\python.exe yields a bare
     # drive root (C:) as a venv root; without a guard it matches every path on that
     # drive and misclassifies a real HIP SDK as venv-internal, disabling amd-smi.
-    text = ps.read_text(encoding="utf-8")
+    text = ps.read_text(encoding = "utf-8")
     assert "'^[a-zA-Z]:$'" in text, (
         f"{ps.name} venv-internal probe must skip bare drive roots so a non-venv "
         "UNSLOTH_SETUP_PYTHON doesn't match the whole drive"
     )
 
 
-@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids=["install.ps1", "setup.ps1"])
+@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_env_fallback_iterates_all_hip_roots(ps):
     # The HIP_PATH/ROCM_PATH fallback must iterate every env root (incl. HIP_PATH_57)
     # and take the first non-venv hipinfo, so a venv-internal HIP_PATH can't mask a
     # real SDK in ROCM_PATH (single-root selection would bail on the venv copy).
-    text = ps.read_text(encoding="utf-8")
+    text = ps.read_text(encoding = "utf-8")
     assert 'foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"))' in text, (
         f"{ps.name} must iterate HIP_PATH/HIP_PATH_57/ROCM_PATH in the env fallback, "
         "not pick a single root"
@@ -671,7 +671,7 @@ def test_install_ps1_clears_rocm_index_after_cpu_fallback():
     # After the ROCm->CPU fallback, $ROCmIndexUrl must be cleared so the later
     # flavor-repair block doesn't retry the just-failed index and Exit-InstallFailure
     # (the fallback lets install complete; setup.ps1 retries ROCm).
-    text = _INSTALL_PS1.read_text(encoding="utf-8")
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
     window = text[i : i + 1800]
@@ -685,7 +685,7 @@ def test_install_ps1_rocm_repair_pins_companions():
     # The flavor-repair ROCm reinstall must use the pinned companion specs (like the
     # fresh ROCm install), not bare torchvision/torchaudio, which can resolve an
     # ABI-incompatible trio on AMD's per-arch index.
-    text = _INSTALL_PS1.read_text(encoding="utf-8")
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("PyTorch flavor mismatch (installed $installedTorchTag, need ROCm)")
     assert i != -1, "ROCm flavor-repair block not found in install.ps1"
     window = text[i : i + 400]
@@ -699,7 +699,7 @@ def test_install_sh_wsl_reroute_uses_pipefail():
     # The `curl | sh` reroute runs via `bash -lc`; without pipefail a failed curl is
     # masked by sh exiting 0 on empty input, so the reroute would wrongly report
     # success and exit 0 from the parent installer.
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = _INSTALL_SH.read_text(encoding = "utf-8")
     assert "set -o pipefail" in text, "reroute must enable pipefail"
     # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04
     # fallback) via bash -lc; find that exec line.
@@ -717,7 +717,7 @@ def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
     # In --tauri mode the rerouted child uses exit 2 ([TAURI:NEED_SUDO]) to ask the
     # desktop app to elevate for the target distro. The reroute must propagate that
     # code instead of masking it as a generic failure and dropping to CPU here.
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = _INSTALL_SH.read_text(encoding = "utf-8")
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
     window = text[i : i + 500]
@@ -735,7 +735,7 @@ def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
     # and other WSL distros; both removal paths must keep it while any "Unsloth
     # Studio*.lnk" survives (reciprocal of uninstall.ps1's
     # _RemoveDataDirKeepingWslIcon), not delete it unconditionally.
-    text = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    text = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
     assert "_drop_shared_icon_if_unused" in text, (
         "uninstall.sh drvfs path must gate the shared-icon deletion behind a "
         "shortcut-in-use check, not delete unconditionally"
@@ -757,11 +757,11 @@ def test_uninstall_removes_managed_node_runtime():
     # in default mode, a sibling of studio -- deleting <studio> misses it, so both
     # uninstallers must remove it explicitly (env/custom mode nests it under the
     # custom root, removed with that root).
-    sh = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+    sh = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
     assert (
         '_remove_path "$HOME/.unsloth/node"' in sh
     ), "uninstall.sh must remove the default-mode ~/.unsloth/node runtime"
-    ps = (PACKAGE_ROOT / "scripts" / "uninstall.ps1").read_text(encoding="utf-8")
+    ps = (PACKAGE_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
     assert (
         '$defaultNode = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "node" }' in ps
     ), "uninstall.ps1 must resolve the default-mode ~/.unsloth\\node runtime dir"
@@ -776,7 +776,7 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
     # the per-arch index resolves an ABI-consistent trio, and (2) be nonfatal so a
     # transient index failure doesn't abort the install after the PS side already
     # fell back to CPU torch.
-    text = _PYSTACK_PY.read_text(encoding="utf-8")
+    text = _PYSTACK_PY.read_text(encoding = "utf-8")
     assert (
         "_WINDOWS_ROCM_TORCH_PKG_SPECS" in text
     ), "install_python_stack.py must define a Windows per-arch ROCm companion pin map"
@@ -827,7 +827,7 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
     calls = {"try": [], "fatal": 0, "bnb": 0}
     monkeypatch.setattr(ps, "IS_WINDOWS", True)
     monkeypatch.setattr(ps, "IS_MACOS", False)
-    monkeypatch.setattr(ps, "_TORCH_BACKEND", "rocm", raising=False)
+    monkeypatch.setattr(ps, "_TORCH_BACKEND", "rocm", raising = False)
     monkeypatch.setattr(ps, "_has_usable_nvidia_gpu", lambda: False)
     monkeypatch.setattr(ps, "_detect_windows_gfx_arch", lambda: "gfx1151")
     monkeypatch.setattr(
@@ -851,7 +851,7 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
         "_install_bnb_windows_rocm",
         lambda *a, **k: calls.__setitem__("bnb", calls["bnb"] + 1) or True,
     )
-    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising=False)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
 
     ps._ensure_rocm_torch()  # must not raise / SystemExit
 

@@ -66,7 +66,7 @@ def test_ime_pass_password_step_does_not_export_old_pw():
 
 def test_ime_playwright_script_does_not_read_studio_old_pw():
     src = IME_PY.read_text()
-    code_only = re.sub(r'""".*?"""', "", src, flags=re.DOTALL)
+    code_only = re.sub(r'""".*?"""', "", src, flags = re.DOTALL)
     assert (
         "STUDIO_OLD_PW" not in code_only
     ), "IME Playwright script still references dead STUDIO_OLD_PW env var"
@@ -160,7 +160,7 @@ def test_main_composer_keydown_rearms_watchdog():
 def test_compare_composer_keydown_rearms_watchdog():
     """Same re-arm contract for the compare-mode composer."""
     src = SHARED_TSX.read_text()
-    block = _extract_block(src, "function onKeyDown", opener="{", closer="}")
+    block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
     assert "refreshStuckImeTimer" in block, (
         "compare composer keydown gate must call refreshStuckImeTimer "
         "after re-pinning composingRef"
@@ -197,5 +197,5 @@ def test_main_composer_stuck_enter_does_not_clear_before_submit():
 
 def test_compare_composer_stuck_enter_does_not_clear_before_submit():
     src = SHARED_TSX.read_text()
-    block = _extract_block(src, "function onKeyDown", opener="{", closer="}")
+    block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
     _assert_enter_guard_before_immediate_recovery(block, "refreshStuckImeTimer")

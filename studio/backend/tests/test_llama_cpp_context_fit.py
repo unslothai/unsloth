@@ -85,12 +85,12 @@ FALLBACK_CTX = 4096
 
 
 def _make_backend(
-    native_ctx=131072,
-    n_layers=80,
-    n_kv_heads=8,
-    n_heads=64,
-    kv_key_length=128,
-    kv_value_length=128,
+    native_ctx = 131072,
+    n_layers = 80,
+    n_kv_heads = 8,
+    n_heads = 64,
+    kv_key_length = 128,
+    kv_value_length = 128,
 ):
     """LlamaCppBackend with GGUF metadata set and decision helpers stubbed."""
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -117,25 +117,25 @@ def _drive(
     n_ctx,
     model_gib,
     gpus,
-    native_ctx=131072,
-    kv_per_token_bytes=325_000,
-    can_estimate_kv=True,
-    extra_args=None,
-    apple_budget_mib=0,
-    flat_mtp_reserve=0.0,
+    native_ctx = 131072,
+    kv_per_token_bytes = 325_000,
+    can_estimate_kv = True,
+    extra_args = None,
+    apple_budget_mib = 0,
+    flat_mtp_reserve = 0.0,
 ):
     """Drive the post-metadata portion of load_model with stubbed inputs.
 
     Mirrors llama_cpp.py:1137-1296 to assert the built command, without
     subprocesses or GPU probes.
     """
-    inst = _make_backend(native_ctx=native_ctx)
+    inst = _make_backend(native_ctx = native_ctx)
     model_size = int(model_gib * GIB)
     cache_type_kv = None
 
     def fake_estimate(
         n_ctx_,
-        _type=None,
+        _type = None,
         **_kwargs,
     ):
         return 0 if n_ctx_ <= 0 else n_ctx_ * kv_per_token_bytes
@@ -165,7 +165,7 @@ def _drive(
     if gpus and inst._can_estimate_kv() and effective_ctx > 0:
         native_ctx_for_cap = context_length or effective_ctx
         if native_ctx_for_cap > 0:
-            ranked_for_cap = sorted(gpus, key=lambda g: g[1], reverse=True)
+            ranked_for_cap = sorted(gpus, key = lambda g: g[1], reverse = True)
             best_cap = 0
             for n_gpus in range(1, len(ranked_for_cap) + 1):
                 subset = ranked_for_cap[:n_gpus]
@@ -189,7 +189,7 @@ def _drive(
             )
             gpu_indices, use_fit = inst._select_gpus(requested_total, gpus)
         else:
-            ranked = sorted(gpus, key=lambda g: g[1], reverse=True)
+            ranked = sorted(gpus, key = lambda g: g[1], reverse = True)
             matched = False
             pin_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
             for n_gpus in range(1, len(ranked) + 1):
@@ -238,7 +238,7 @@ def _drive(
                 apple_fit_budget_mib,
                 model_size,
                 cache_type_kv,
-                budget_frac=1.0,
+                budget_frac = 1.0,
             )
             cap_footprint_mib = (model_size + inst._estimate_kv_cache_bytes(cap, cache_type_kv)) / (
                 1024 * 1024
@@ -273,10 +273,10 @@ class TestAutoModeWeightsExceedVRAM:
 
     def test_minimax_like_single_gpu(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -287,10 +287,10 @@ class TestAutoModeWeightsExceedVRAM:
 
     def test_multi_gpu_all_subsets_fail(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=400,
-            gpus=[(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
-            native_ctx=131072,
+            n_ctx = 0,
+            model_gib = 400,
+            gpus = [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)],
+            native_ctx = 131072,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -299,11 +299,11 @@ class TestAutoModeWeightsExceedVRAM:
     def test_no_kv_metadata_auto(self):
         """File-size-only fallback path also defaults to 4096."""
         plan = _drive(
-            n_ctx=0,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
-            can_estimate_kv=False,
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            can_estimate_kv = False,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -321,10 +321,10 @@ class TestExplicitCtxRespectsUser:
         # 8 GB weights + 131k ctx KV on 24 GB VRAM. Budget = 21.6 GB, KV
         # at 131k >> 13.6 GB remaining, so _select_gpus flips use_fit=True.
         plan = _drive(
-            n_ctx=131072,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
+            n_ctx = 131072,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
         )
         assert plan["c_arg"] == 131072
         assert plan["use_fit"] is True
@@ -332,10 +332,10 @@ class TestExplicitCtxRespectsUser:
 
     def test_explicit_that_fits_uses_ngl(self):
         plan = _drive(
-            n_ctx=8192,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
+            n_ctx = 8192,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
         )
         assert plan["c_arg"] == 8192
         assert plan["use_fit"] is False
@@ -344,20 +344,20 @@ class TestExplicitCtxRespectsUser:
     def test_explicit_on_weights_exceed_vram(self):
         # User drags the slider to 32k on a too-big model: honored.
         plan = _drive(
-            n_ctx=32768,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
+            n_ctx = 32768,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
         )
         assert plan["c_arg"] == 32768
         assert plan["use_fit"] is True
 
     def test_explicit_at_fallback_on_too_big(self):
         plan = _drive(
-            n_ctx=FALLBACK_CTX,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
+            n_ctx = FALLBACK_CTX,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -365,9 +365,9 @@ class TestExplicitCtxRespectsUser:
     def test_explicit_below_floor_honored(self):
         # 2048 is below --fit-ctx default; honored since user set it.
         plan = _drive(
-            n_ctx=2048,
-            model_gib=8,
-            gpus=[(0, 24_000)],
+            n_ctx = 2048,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
         )
         assert plan["c_arg"] == 2048
 
@@ -380,11 +380,11 @@ class TestExplicitCtxRespectsUser:
 class TestExtraArgsCtxOverride:
     def test_ctx_size_extra_honored_over_auto(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
-            extra_args=["--ctx-size", "128000"],
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            extra_args = ["--ctx-size", "128000"],
         )
         assert plan["ctx_override"] == 128000
         assert plan["original_ctx"] == 128000
@@ -393,22 +393,22 @@ class TestExtraArgsCtxOverride:
 
     def test_ctx_size_short_alias_honored_over_auto(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=131,
-            gpus=[(0, 97_000)],
-            native_ctx=196608,
-            extra_args=["-c", "128000"],
+            n_ctx = 0,
+            model_gib = 131,
+            gpus = [(0, 97_000)],
+            native_ctx = 196608,
+            extra_args = ["-c", "128000"],
         )
         assert plan["c_arg"] == 128000
         assert plan["use_fit"] is True
 
     def test_ctx_size_extra_wins_over_first_class_field(self):
         plan = _drive(
-            n_ctx=4096,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
-            extra_args=["--ctx-size", "128000"],
+            n_ctx = 4096,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            extra_args = ["--ctx-size", "128000"],
         )
         assert plan["original_ctx"] == 128000
         assert plan["c_arg"] == 128000
@@ -422,11 +422,11 @@ class TestExtraArgsCtxOverride:
 class TestFittableAutoPickRegressions:
     def test_small_model_one_gpu(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
-            kv_per_token_bytes=8192,
+            n_ctx = 0,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 8192,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -434,22 +434,22 @@ class TestFittableAutoPickRegressions:
 
     def test_medium_model_needs_multi_gpu(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=60,
-            gpus=[(0, 40_000), (1, 40_000)],
-            native_ctx=131072,
-            kv_per_token_bytes=8192,
+            n_ctx = 0,
+            model_gib = 60,
+            gpus = [(0, 40_000), (1, 40_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 8192,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0, 1]
 
     def test_no_kv_metadata_fittable_auto(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=8,
-            gpus=[(0, 24_000)],
-            native_ctx=131072,
-            can_estimate_kv=False,
+            n_ctx = 0,
+            model_gib = 8,
+            gpus = [(0, 24_000)],
+            native_ctx = 131072,
+            can_estimate_kv = False,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -467,11 +467,11 @@ class TestTightFitPinsToGPU:
         # noahterbest's #5106 log: 20.8 GB model on 22805 MiB free GPU,
         # ctx=4096 -> ~94% utilization, ~1.4 GiB headroom.
         plan = _drive(
-            n_ctx=0,
-            model_gib=20.8,
-            gpus=[(0, 22_805)],
-            native_ctx=131072,
-            kv_per_token_bytes=25_000,
+            n_ctx = 0,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -479,11 +479,11 @@ class TestTightFitPinsToGPU:
     def test_explicit_ctx_at_94_pct_pins_to_gpu(self):
         # Explicit-ctx branch must agree with auto-ctx on headroom.
         plan = _drive(
-            n_ctx=4096,
-            model_gib=20.8,
-            gpus=[(0, 22_805)],
-            native_ctx=131072,
-            kv_per_token_bytes=25_000,
+            n_ctx = 4096,
+            model_gib = 20.8,
+            gpus = [(0, 22_805)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
         )
         assert plan["use_fit"] is False
         assert plan["gpu_indices"] == [0]
@@ -491,11 +491,11 @@ class TestTightFitPinsToGPU:
     def test_genuine_overflow_still_uses_fit(self):
         # Beyond 95% must still defer to --fit on.
         plan = _drive(
-            n_ctx=4096,
-            model_gib=23,
-            gpus=[(0, 22_000)],
-            native_ctx=131072,
-            kv_per_token_bytes=25_000,
+            n_ctx = 4096,
+            model_gib = 23,
+            gpus = [(0, 22_000)],
+            native_ctx = 131072,
+            kv_per_token_bytes = 25_000,
         )
         assert plan["use_fit"] is True
         assert plan["gpu_indices"] is None
@@ -510,8 +510,8 @@ class TestTightFitPinsToGPU:
 def test_identical_decision_across_platforms(platform_tag):
     """Decision takes ``[(gpu_idx, free_mib), ...]`` regardless of source;
     identical inputs must yield identical plans."""
-    plan_a = _drive(n_ctx=0, model_gib=8, gpus=[(0, 24_000)])
-    plan_b = _drive(n_ctx=0, model_gib=8, gpus=[(0, 24_000)])
+    plan_a = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
+    plan_b = _drive(n_ctx = 0, model_gib = 8, gpus = [(0, 24_000)])
     assert plan_a == plan_b, platform_tag
 
 
@@ -706,7 +706,7 @@ def test_select_gpus_ranks_by_usable_not_raw_free():
     gpus = [(0, 30000), (1, 29000)]
     totals = {0: 81920, 1: 32607}
     model = int(27000 * 1024 * 1024)
-    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx=totals)
+    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
     assert idxs == [1] and use_fit is False
 
 
@@ -720,17 +720,17 @@ def test_select_gpus_reserves_per_device_overhead():
     totals = {0: 16384, 1: 16384}
     gib = 1024 * 1024 * 1024
     model = int(30000 * 1024 * 1024)
-    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx=totals)
+    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
     assert idxs == [0, 1] and use_fit is False  # fits 2 GPUs without overhead
     idxs2, use_fit2 = LlamaCppBackend._select_gpus(
-        model, gpus, total_by_idx=totals, per_device_overhead_bytes=gib
+        model, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
     )
     assert idxs2 is None and use_fit2 is True  # overhead tips it past the pool
     # A single-GPU fit is unchanged by the overhead (k=1 adds nothing).
     small = int(15000 * 1024 * 1024)
-    a, _ = LlamaCppBackend._select_gpus(small, gpus, total_by_idx=totals)
+    a, _ = LlamaCppBackend._select_gpus(small, gpus, total_by_idx = totals)
     b, _ = LlamaCppBackend._select_gpus(
-        small, gpus, total_by_idx=totals, per_device_overhead_bytes=gib
+        small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
     )
     assert a == [0] and b == [0]
 
@@ -744,7 +744,6 @@ def test_select_gpus_reserves_per_device_overhead():
 
 def _force_apple(monkeypatch):
     import platform as _platform
-
     monkeypatch.setattr(_platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_platform, "machine", lambda: "arm64")
 
@@ -753,7 +752,7 @@ def _install_fake_mlx(monkeypatch, working_set_bytes):
     """Minimal mlx.core stub exposing metal.is_available() and device_info()."""
     mlx = _types.ModuleType("mlx")
     mlx_core = _types.ModuleType("mlx.core")
-    mlx_core.metal = _types.SimpleNamespace(is_available=lambda: True)
+    mlx_core.metal = _types.SimpleNamespace(is_available = lambda: True)
     mlx_core.device_info = lambda: {"max_recommended_working_set_size": working_set_bytes}
     mlx.core = mlx_core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
@@ -780,7 +779,7 @@ class TestAppleUnifiedMemoryBudget:
         _force_apple(monkeypatch)
         monkeypatch.setitem(sys.modules, "mlx", None)  # import mlx.core -> ImportError
         fake_psutil = _types.ModuleType("psutil")
-        fake_psutil.virtual_memory = lambda: _types.SimpleNamespace(total=36 * GIB)
+        fake_psutil.virtual_memory = lambda: _types.SimpleNamespace(total = 36 * GIB)
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
         assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
             36 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
@@ -799,7 +798,7 @@ class TestAppleContextCap:
     def test_caps_native_context_into_unified_budget(self):
         # ~15.7 GB weights at native 262144 (~16 GB KV) -> ~32 GB on a 36 GB M3
         # Pro (~23 GB budget); the fit must reduce the context to fit.
-        inst = _make_backend(native_ctx=262144)
+        inst = _make_backend(native_ctx = 262144)
         inst._can_estimate_kv = lambda: True
         inst._estimate_kv_cache_bytes = (
             lambda n, *a, **k: 0 if n <= 0 else int(n * 64_000)  # ~16 GB @ 262144
@@ -814,7 +813,7 @@ class TestAppleContextCap:
         assert native_footprint_mib > budget_mib
 
         capped = inst._fit_context_to_vram(
-            262144, budget_mib, model_size_fit, None, budget_frac=1.0
+            262144, budget_mib, model_size_fit, None, budget_frac = 1.0
         )
         assert capped < 262144
         capped_footprint_mib = (model_size_fit + inst._estimate_kv_cache_bytes(capped)) // (
@@ -828,12 +827,12 @@ class TestAppleBranchEndToEnd:
 
     def test_auto_context_capped_below_native(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=15.7,
-            gpus=[],
-            native_ctx=262144,
-            kv_per_token_bytes=64_000,
-            apple_budget_mib=23_000,  # ~22 GB: weights fit, native KV doesn't
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,  # ~22 GB: weights fit, native KV doesn't
         )
         assert 0 < plan["c_arg"] < 262144
         assert plan["use_fit"] is True  # --fit on still ships as a backstop
@@ -843,11 +842,11 @@ class TestAppleBranchEndToEnd:
     def test_floors_to_fallback_when_weights_exceed_budget(self):
         # Weights alone exceed budget: ctx can't help, so floor to 4096.
         plan = _drive(
-            n_ctx=0,
-            model_gib=100,
-            gpus=[],
-            native_ctx=262144,
-            apple_budget_mib=20_000,
+            n_ctx = 0,
+            model_gib = 100,
+            gpus = [],
+            native_ctx = 262144,
+            apple_budget_mib = 20_000,
         )
         assert plan["c_arg"] == FALLBACK_CTX
         assert plan["use_fit"] is True
@@ -856,12 +855,12 @@ class TestAppleBranchEndToEnd:
     def test_explicit_context_honored_verbatim(self):
         # Explicit context is never shrunk, but the UI ceiling still tightens.
         plan = _drive(
-            n_ctx=200_000,
-            model_gib=15.7,
-            gpus=[],
-            native_ctx=262144,
-            kv_per_token_bytes=64_000,
-            apple_budget_mib=23_000,
+            n_ctx = 200_000,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,
         )
         assert plan["c_arg"] == 200_000  # launch context honored verbatim
         assert plan["use_fit"] is True
@@ -876,15 +875,15 @@ class TestAppleMtpFlatReserve:
     def test_flat_reserve_keeps_draft_within_budget(self):
         # No reserve -> cap fills the budget, leaving nothing for the ~5% draft.
         kw = dict(
-            n_ctx=0,
-            model_gib=15.7,
-            gpus=[],
-            native_ctx=262144,
-            kv_per_token_bytes=64_000,
-            apple_budget_mib=23_000,
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,
         )
-        no_reserve = _drive(**kw, flat_mtp_reserve=0.0)
-        with_reserve = _drive(**kw, flat_mtp_reserve=0.05)
+        no_reserve = _drive(**kw, flat_mtp_reserve = 0.0)
+        with_reserve = _drive(**kw, flat_mtp_reserve = 0.05)
 
         def footprint_mib(ctx):
             return (15.7 * GIB + ctx * 64_000) / (1024 * 1024)
@@ -898,14 +897,14 @@ class TestAppleMtpFlatReserve:
     def test_no_reserve_is_a_noop_when_mtp_absent(self):
         # flat_mtp_reserve == 0 (the common, non-MTP case) must not change the cap.
         kw = dict(
-            n_ctx=0,
-            model_gib=15.7,
-            gpus=[],
-            native_ctx=262144,
-            kv_per_token_bytes=64_000,
-            apple_budget_mib=23_000,
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            kv_per_token_bytes = 64_000,
+            apple_budget_mib = 23_000,
         )
-        assert _drive(**kw, flat_mtp_reserve=0.0) == _drive(**kw)
+        assert _drive(**kw, flat_mtp_reserve = 0.0) == _drive(**kw)
 
 
 class TestAppleNoKvMetadataFloor:
@@ -914,12 +913,12 @@ class TestAppleNoKvMetadataFloor:
 
     def test_sparse_kv_floors_auto_context(self):
         plan = _drive(
-            n_ctx=0,
-            model_gib=15.7,
-            gpus=[],
-            native_ctx=262144,
-            can_estimate_kv=False,
-            apple_budget_mib=23_000,
+            n_ctx = 0,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            can_estimate_kv = False,
+            apple_budget_mib = 23_000,
         )
         assert plan["c_arg"] == FALLBACK_CTX  # not native 262144
         assert plan["use_fit"] is True
@@ -927,11 +926,11 @@ class TestAppleNoKvMetadataFloor:
 
     def test_sparse_kv_still_honors_explicit_context(self):
         plan = _drive(
-            n_ctx=100_000,
-            model_gib=15.7,
-            gpus=[],
-            native_ctx=262144,
-            can_estimate_kv=False,
-            apple_budget_mib=23_000,
+            n_ctx = 100_000,
+            model_gib = 15.7,
+            gpus = [],
+            native_ctx = 262144,
+            can_estimate_kv = False,
+            apple_budget_mib = 23_000,
         )
         assert plan["c_arg"] == 100_000  # explicit honored even without KV sizing

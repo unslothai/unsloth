@@ -87,7 +87,7 @@ def tmp_root() -> Path:
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents = True, exist_ok = True)
     return path
 
 
@@ -123,9 +123,9 @@ def _wsl_automount_root() -> str:
     try:
         import configparser
 
-        parser = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+        parser = configparser.ConfigParser(inline_comment_prefixes = ("#", ";"))
         parser.read("/etc/wsl.conf")
-        root = parser.get("automount", "root", fallback="").strip().strip("\"'")
+        root = parser.get("automount", "root", fallback = "").strip().strip("\"'")
     except Exception:
         return default
     if not root:
@@ -268,7 +268,7 @@ def _memo_set(memo_key: tuple[str, str], value: str) -> None:
         _CACHE_CASE_RESOLUTION_MEMO[memo_key] = value
         _CACHE_CASE_RESOLUTION_MEMO.move_to_end(memo_key)
         while len(_CACHE_CASE_RESOLUTION_MEMO) > _CACHE_CASE_RESOLUTION_MEMO_MAX:
-            _CACHE_CASE_RESOLUTION_MEMO.popitem(last=False)
+            _CACHE_CASE_RESOLUTION_MEMO.popitem(last = False)
 
 
 def _memo_drop(memo_key: tuple[str, str]) -> None:
@@ -279,7 +279,6 @@ def _memo_drop(memo_key: tuple[str, str]) -> None:
 def _hf_hub_cache_dir() -> Path:
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
-
         return Path(HF_HUB_CACHE)
     except Exception as exc:
         logger.debug("Could not read huggingface_hub HF_HUB_CACHE, using default: %s", exc)
@@ -329,7 +328,7 @@ def lmstudio_model_dirs() -> list[Path]:
     settings_path = Path.home() / ".lmstudio" / "settings.json"
     if settings_path.is_file():
         try:
-            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+            settings = json.loads(settings_path.read_text(encoding = "utf-8"))
             downloads = settings.get("downloadsFolder", "")
             if downloads:
                 _add(downloads)

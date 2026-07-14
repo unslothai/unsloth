@@ -504,7 +504,7 @@ def test_patch_loss_functions_covers_conditional_generation():
 
     saved = dict(lu.LOSS_MAPPING)
     try:
-        cel.patch_loss_functions(torch_compile=False)
+        cel.patch_loss_functions(torch_compile = False)
 
         unsloth_loss = lu.LOSS_MAPPING.get("ForCausalLM")
         assert unsloth_loss is not None
@@ -533,7 +533,7 @@ def test_patch_loss_functions_does_not_touch_other_loss_types():
 
     saved = dict(lu.LOSS_MAPPING)
     try:
-        cel.patch_loss_functions(torch_compile=False)
+        cel.patch_loss_functions(torch_compile = False)
 
         unsloth_loss = lu.LOSS_MAPPING.get("ForCausalLM")
         for key in non_causal_keys:
@@ -570,7 +570,7 @@ def test_accelerate_recursively_apply_empty_logits_patch():
     e = EmptyLogits()
     patch_accelerate_recursively_apply()
 
-    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type=True)
+    res = acc_ops.recursively_apply(lambda x: x, e, error_on_other_type = True)
     assert res is e
 
 
@@ -607,9 +607,9 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         def _gather_one(t):
             if t.ndim == 0:
                 t = t.clone()[None]
-            return torch.cat([t] * state.num_processes, dim=0)
+            return torch.cat([t] * state.num_processes, dim = 0)
 
-        return acc_ops.recursively_apply(_gather_one, tensor, error_on_other_type=True)
+        return acc_ops.recursively_apply(_gather_one, tensor, error_on_other_type = True)
 
     def mock_gpu_broadcast(data, *args, **kwargs):
         return data
@@ -618,12 +618,12 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
         with (
             mock.patch(
                 "accelerate.utils.operations.gather_object",
-                side_effect=mock_gather_object,
+                side_effect = mock_gather_object,
             ),
-            mock.patch("accelerate.utils.operations._gpu_gather", side_effect=mock_gpu_gather),
+            mock.patch("accelerate.utils.operations._gpu_gather", side_effect = mock_gpu_gather),
             mock.patch(
                 "accelerate.utils.operations._gpu_broadcast",
-                side_effect=mock_gpu_broadcast,
+                side_effect = mock_gpu_broadcast,
             ),
         ):
             state.device = torch.device("cpu")
@@ -638,14 +638,14 @@ def test_accelerate_gather_empty_logits_debug_mode_patch():
 
             # Mixed payload: real tensor gets gathered, EmptyLogits passes through.
             # Tensor must live on state.device or debug-mode device check fails on GPUs.
-            real_tensor = torch.tensor([42], device=state.device)
+            real_tensor = torch.tensor([42], device = state.device)
             payload = {"labels": real_tensor, "logits": e}
             res_mixed = acc_ops.gather(payload)
 
             assert isinstance(res_mixed, dict)
             assert res_mixed["logits"] is e
             # num_processes = 2 -> gathered to [42, 42]
-            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device=state.device))
+            assert torch.equal(res_mixed["labels"], torch.tensor([42, 42], device = state.device))
 
             # Broadcast with EmptyLogits
             res_broadcast = acc_ops.broadcast(e)
@@ -733,7 +733,7 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
 
     import ast
 
-    with open(cuda_specs_path, "r", encoding="utf-8") as f:
+    with open(cuda_specs_path, "r", encoding = "utf-8") as f:
         source = f.read()
     helpers = [
         node

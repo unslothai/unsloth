@@ -30,9 +30,9 @@ def _load_pad_helpers():
                 nodes.append(node)
         elif isinstance(node, ast.FunctionDef) and node.name in WANTED:
             nodes.append(node)
-    module = ast.Module(body=nodes, type_ignores=[])
+    module = ast.Module(body = nodes, type_ignores = [])
     ast.fix_missing_locations(module)
-    ns = {"logger": types.SimpleNamespace(warning=lambda *a, **k: None)}
+    ns = {"logger": types.SimpleNamespace(warning = lambda *a, **k: None)}
     exec(compile(module, TOK_PATH, "exec"), ns)
     return ns
 
@@ -72,8 +72,8 @@ def test_fallback_keeps_pad_named_token(monkeypatch):
     # A pad-named token (e.g. <|vision_pad|>) is a valid pad -> fallback keeps it.
     tok = FakeTok(
         {"<|endoftext|>": 1, "<|im_end|>": 2, "<|vision_pad|>": 3},
-        pad="<|vision_pad|>",
-        eos="<|im_end|>",
+        pad = "<|vision_pad|>",
+        eos = "<|im_end|>",
     )
     ns["_fix_pad_token"](tok)
     assert tok.pad_token == "<|vision_pad|>"
@@ -83,7 +83,7 @@ def test_fallback_keeps_pad_named_token(monkeypatch):
 def test_fallback_leaves_valid_pad_untouched(monkeypatch):
     ns = _load_pad_helpers()
     _block_shared_module(monkeypatch)
-    tok = FakeTok({"<s>": 1, "</s>": 2, "<pad>": 0}, pad="<pad>", eos="</s>")
+    tok = FakeTok({"<s>": 1, "</s>": 2, "<pad>": 0}, pad = "<pad>", eos = "</s>")
     ns["_fix_pad_token"](tok)
     assert tok.pad_token == "<pad>"
 
@@ -94,7 +94,7 @@ def test_fix_pad_token_delegates_to_shared_module(monkeypatch):
 
     fake = types.ModuleType("unsloth_zoo.pad_token")
 
-    def fix_pad_token(tokenizer, allow_add=True):
+    def fix_pad_token(tokenizer, allow_add = True):
         calls["allow_add"] = allow_add
         tokenizer.pad_token = "SHARED"
 
@@ -102,7 +102,7 @@ def test_fix_pad_token_delegates_to_shared_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.pad_token", fake)
 
-    tok = FakeTok({"a": 1}, pad="x", eos="y")
+    tok = FakeTok({"a": 1}, pad = "x", eos = "y")
     ns["_fix_pad_token"](tok)
     # Delegated, and crucially with allow_add=False (no model here to resize).
     assert tok.pad_token == "SHARED"

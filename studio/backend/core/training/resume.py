@@ -11,8 +11,8 @@ from utils.paths import outputs_root, resolve_output_dir
 
 
 def _is_under_outputs(path: Path) -> bool:
-    resolved = path.resolve(strict=False)
-    root = outputs_root().resolve(strict=False)
+    resolved = path.resolve(strict = False)
+    root = outputs_root().resolve(strict = False)
     try:
         resolved.relative_to(root)
         return True
@@ -47,7 +47,7 @@ def get_resume_checkpoint_path(path_value: str) -> Optional[str]:
     ]
     if not checkpoints:
         return None
-    return str(max(checkpoints, key=_checkpoint_step))
+    return str(max(checkpoints, key = _checkpoint_step))
 
 
 def normalize_resume_output_dir(path_value: str) -> str:

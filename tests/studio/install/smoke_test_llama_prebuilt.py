@@ -29,38 +29,38 @@ installer = load_installer_module()
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
+        description = (
             "Run a real end-to-end prebuilt llama.cpp install into an isolated temporary "
             "directory on the current machine."
         )
     )
     parser.add_argument(
         "--llama-tag",
-        default="latest",
-        help="llama.cpp tag to resolve. Defaults to the latest usable published Unsloth release.",
+        default = "latest",
+        help = "llama.cpp tag to resolve. Defaults to the latest usable published Unsloth release.",
     )
     parser.add_argument(
         "--published-repo",
-        default=installer.DEFAULT_PUBLISHED_REPO,
-        help="Published bundle repository used for Linux CUDA selection.",
+        default = installer.DEFAULT_PUBLISHED_REPO,
+        help = "Published bundle repository used for Linux CUDA selection.",
     )
     parser.add_argument(
         "--published-release-tag",
-        default=installer.DEFAULT_PUBLISHED_TAG or "",
-        help="Optional published GitHub release tag to pin.",
+        default = installer.DEFAULT_PUBLISHED_TAG or "",
+        help = "Optional published GitHub release tag to pin.",
     )
     parser.add_argument(
         "--work-dir",
-        default="",
-        help=(
+        default = "",
+        help = (
             "Optional directory under which the smoke install temp dir will be created. "
             "If omitted, defaults to ./.tmp/llama-prebuilt-smoke under the current directory."
         ),
     )
     parser.add_argument(
         "--keep-temp",
-        action="store_true",
-        help="Keep the temporary smoke install directory after success.",
+        action = "store_true",
+        help = "Keep the temporary smoke install directory after success.",
     )
     return parser.parse_args()
 
@@ -72,9 +72,9 @@ def smoke_root_base(work_dir: str) -> Path:
 
 
 def make_smoke_root(base_dir: Path) -> Path:
-    base_dir.mkdir(parents=True, exist_ok=True)
+    base_dir.mkdir(parents = True, exist_ok = True)
     timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-    return Path(tempfile.mkdtemp(prefix=f"run-{timestamp}-", dir=base_dir))
+    return Path(tempfile.mkdtemp(prefix = f"run-{timestamp}-", dir = base_dir))
 
 
 def main() -> int:
@@ -104,10 +104,10 @@ def main() -> int:
         print(f"[smoke] selected_source={choice.source_label}")
         print(f"[smoke] install_dir={install_dir}")
         installer.install_prebuilt(
-            install_dir=install_dir,
-            llama_tag=args.llama_tag,
-            published_repo=args.published_repo,
-            published_release_tag=args.published_release_tag,
+            install_dir = install_dir,
+            llama_tag = args.llama_tag,
+            published_repo = args.published_repo,
+            published_release_tag = args.published_release_tag,
         )
         print(f"[smoke] PASS install_dir={install_dir}")
         print("[smoke] note=This was a real prebuilt install into an isolated temp directory.")
@@ -129,7 +129,7 @@ def main() -> int:
         if args.keep_temp:
             print(f"[smoke] keeping_temp_root={smoke_root}")
         elif smoke_root.exists():
-            shutil.rmtree(smoke_root, ignore_errors=True)
+            shutil.rmtree(smoke_root, ignore_errors = True)
 
 
 if __name__ == "__main__":

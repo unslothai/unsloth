@@ -11,7 +11,7 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 
 def _write(path: Path, n_bytes: int) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"\x00" * n_bytes)
     return path
 

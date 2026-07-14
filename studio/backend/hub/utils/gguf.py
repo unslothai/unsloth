@@ -146,7 +146,7 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
     if recursive:
         seen = 0
         # os.walk skips unreadable subdirs instead of raising (e.g. /proc).
-        for dirpath, dirnames, filenames in os.walk(directory, onerror=lambda _e: None):
+        for dirpath, dirnames, filenames in os.walk(directory, onerror = lambda _e: None):
             for name in filenames:
                 if is_gguf_filename(name):
                     yield Path(dirpath) / name
@@ -272,7 +272,7 @@ def iter_hf_cache_snapshots(repo_id: str):
         except OSError:
             return 0.0
 
-    snapshots.sort(key=_mtime, reverse=True)
+    snapshots.sort(key = _mtime, reverse = True)
     yield from snapshots
 
 
@@ -368,14 +368,14 @@ def list_partial_gguf_variants_from_state(
             main_filename = f"{variant}.gguf"
         variants.append(
             GgufVariantInfo(
-                filename=main_filename,
-                quant=variant,
-                size_bytes=size_bytes,
-                download_size_bytes=size_bytes + companion_bytes,
+                filename = main_filename,
+                quant = variant,
+                size_bytes = size_bytes,
+                download_size_bytes = size_bytes + companion_bytes,
             )
         )
 
-    variants.sort(key=lambda variant: -variant.size_bytes)
+    variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)
     return variants, has_vision
 
@@ -405,10 +405,10 @@ def list_gguf_variants(
             return (*cached, None)
 
     try:
-        info = HfApi(token=hf_token).model_info(
+        info = HfApi(token = hf_token).model_info(
             repo_id,
-            files_metadata=True,
-            timeout=_GGUF_MODEL_INFO_TIMEOUT_SECONDS,
+            files_metadata = True,
+            timeout = _GGUF_MODEL_INFO_TIMEOUT_SECONDS,
         )
     except Exception as exc:
         if type(exc).__name__ in (
@@ -451,13 +451,13 @@ def list_gguf_variants(
     for quant, total_size in quant_totals.items():
         variants.append(
             GgufVariantInfo(
-                filename=quant_first_file[quant],
-                quant=quant,
-                size_bytes=total_size,
+                filename = quant_first_file[quant],
+                quant = quant,
+                size_bytes = total_size,
             )
         )
 
-    variants.sort(key=lambda variant: -variant.size_bytes)
+    variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)
     return variants, has_vision, list(info.siblings)
 
@@ -485,7 +485,7 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    for file in sorted(iter_gguf_files(root, recursive=True)):
+    for file in sorted(iter_gguf_files(root, recursive = True)):
         if is_mmproj_filename(file.name):
             has_vision = True
             continue
@@ -504,12 +504,12 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
 
     variants = [
         GgufVariantInfo(
-            filename=quant_first_file[quant],
-            quant=quant,
-            size_bytes=size,
+            filename = quant_first_file[quant],
+            quant = quant,
+            size_bytes = size,
         )
         for quant, size in quant_totals.items()
     ]
-    variants.sort(key=lambda variant: -variant.size_bytes)
+    variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)
     return variants, has_vision

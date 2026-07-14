@@ -35,7 +35,7 @@ import pytest
 # the spoof and the rest of this module need the real torch runtime. Skip the
 # whole module cleanly when torch is absent rather than crashing collection.
 if importlib.util.find_spec("torch") is None:
-    pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level=True)
+    pytest.skip("torch not installed; fake-run needs the real runtime", allow_module_level = True)
 
 # Apply the spoof BEFORE any unsloth-touching import (mirrors
 # tests/vllm_compat/test_extended_module_imports.py).
@@ -50,7 +50,7 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
     if name in sys.modules:
         return
     m = types.ModuleType(name)
-    m.__spec__ = importlib.machinery.ModuleSpec(name=name, loader=None, origin="<test stub>")
+    m.__spec__ = importlib.machinery.ModuleSpec(name = name, loader = None, origin = "<test stub>")
     for k, v in (attrs or {}).items():
         setattr(m, k, v)
     sys.modules[name] = m
@@ -62,7 +62,6 @@ _stub_module("torchcodec")
 def _trl_version():
     import trl
     from packaging.version import Version
-
     return Version(trl.__version__.split("+")[0])
 
 
@@ -89,7 +88,7 @@ def _patch_grpo_and_get_source() -> str:
     return inspect.getsource(mod) if mod is not None else inspect.getsource(patched)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def generated_grpo_source():
     if importlib.util.find_spec("unsloth") is None:
         pytest.skip("unsloth not installed")
@@ -126,7 +125,6 @@ def test_grpo_patch_three_tuple_return(generated_grpo_source):
     _get_per_token_logps_and_entropies; the injected replacement must return
     (logps, entropies, aux_loss)."""
     from packaging.version import Version
-
     if _trl_version() >= Version("1.7.0"):
         assert "return logprobs.detach(), entropies, aux_loss" in generated_grpo_source, (
             "3-tuple per-token-logps return missing; the arity version-gate in "
@@ -197,7 +195,6 @@ def _patch_and_get_source(trainer_file: str, trainer_cls: str) -> str:
 
 def _assert_quantized_cast_neutralized(src: str, trainer_cls: str) -> None:
     from packaging.version import Version
-
     if _trl_version() < Version("1.7.0"):
         pytest.skip("pre-1.7.0 spells the QLoRA cast differently (is_loaded_in_4bit)")
     assert "if _is_quantized_model:" not in src, (
@@ -231,7 +228,7 @@ def test_per_token_logps_arity_gate_both_directions(monkeypatch):
     gate = _rlr.grpo_trainer__get_per_token_logps_and_entropies
 
     # >= 1.7.0: 3-tuple return kept.
-    monkeypatch.setattr(_rlr, "trl_version", Version("1.7.0"), raising=False)
+    monkeypatch.setattr(_rlr, "trl_version", Version("1.7.0"), raising = False)
     src_new = gate("_get_per_token_logps_and_entropies", None)
     assert (
         "return logprobs.detach(), entropies, aux_loss" in src_new
@@ -239,7 +236,7 @@ def test_per_token_logps_arity_gate_both_directions(monkeypatch):
 
     # < 1.7.0: aux_loss element dropped -> 2-tuple. A no-op downgrade must raise
     # (fail loud), never silently ship a 3-tuple to older TRL.
-    monkeypatch.setattr(_rlr, "trl_version", Version("1.6.0"), raising=False)
+    monkeypatch.setattr(_rlr, "trl_version", Version("1.6.0"), raising = False)
     src_old = gate("_get_per_token_logps_and_entropies", None)
     assert (
         "return logprobs.detach(), entropies  # logps, entropies" in src_old

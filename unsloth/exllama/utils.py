@@ -41,7 +41,7 @@ EXLLAMA_IMPORT_ERROR = (
 _DISABLED = os.environ.get("UNSLOTH_DISABLE_EXLLAMA", "0") == "1"
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize = 1)
 def is_exllama_available() -> bool:
     """Return True if exllamav3 can be imported and is not disabled.
 
@@ -67,12 +67,15 @@ def _version_at_least(have: str, want: str) -> bool:
     """Return True if version string ``have`` >= ``want`` (numeric, dotted)."""
     try:
         from packaging.version import Version
-
         return Version(str(have)) >= Version(str(want))
     except Exception:
+
         def _parts(v):
-            return [int("".join(c for c in ch if c.isdigit()) or 0)
-                    for ch in str(v).split("+")[0].split(".")]
+            return [
+                int("".join(c for c in ch if c.isdigit()) or 0)
+                for ch in str(v).split("+")[0].split(".")
+            ]
+
         a, b = _parts(have), _parts(want)
         n = max(len(a), len(b))
         a += [0] * (n - len(a))
@@ -80,7 +83,7 @@ def _version_at_least(have: str, want: str) -> bool:
         return a >= b
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize = 1)
 def exllama_version() -> str | None:
     """Return the installed exllamav3 version string, or None if unavailable."""
     # NOTE: do not call is_exllama_available() here - it depends on this

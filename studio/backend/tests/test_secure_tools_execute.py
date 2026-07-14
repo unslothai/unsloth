@@ -81,15 +81,15 @@ def _make_backend(monkeypatch, streams: list[list[str]]):
         _url,
         payload,
         _cancel_event,
-        headers=None,
-        first_token_deadline=None,
+        headers = None,
+        first_token_deadline = None,
     ):
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
     def fake_iter_text_cancellable(
         response,
         _cancel_event,
-        first_token_deadline=None,
+        first_token_deadline = None,
     ):
         yield from response.chunks
 
@@ -117,9 +117,9 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
     )
     events = list(
         backend.generate_chat_completion_with_tools(
-            messages=[{"role": "user", "content": f"use the {tool_name} tool"}],
-            tools=[_tool_schema(tool_name)],
-            max_tool_iterations=1,
+            messages = [{"role": "user", "content": f"use the {tool_name} tool"}],
+            tools = [_tool_schema(tool_name)],
+            max_tool_iterations = 1,
         )
     )
     tool_ends = [
@@ -129,7 +129,7 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
     return tool_ends[0]["result"]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset_policy():
     reset_tool_policy()
     yield
@@ -151,13 +151,13 @@ def test_python_tool_counts_to_100(monkeypatch):
 def test_bash_tool_returns_current_datetime(monkeypatch):
     # "Use the bash tool to provide today's datetime." Bound the parsed UTC time
     # to the call window rather than a hard-coded date (survives midnight/TZ).
-    before = datetime.now(timezone.utc) - timedelta(seconds=5)
+    before = datetime.now(timezone.utc) - timedelta(seconds = 5)
     result = _run_one_tool(monkeypatch, "terminal", {"command": "date -u +%Y-%m-%dT%H:%M:%SZ"})
-    after = datetime.now(timezone.utc) + timedelta(seconds=5)
+    after = datetime.now(timezone.utc) + timedelta(seconds = 5)
 
     match = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", result)
     assert match, f"no UTC datetime in terminal result: {result!r}"
-    parsed = datetime.strptime(match.group(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    parsed = datetime.strptime(match.group(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo = timezone.utc)
     assert before <= parsed <= after, f"{parsed} not in [{before}, {after}]"
 
 
@@ -171,7 +171,7 @@ def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
         def text(
             self,
             query,
-            max_results=5,
+            max_results = 5,
         ):
             return [
                 {

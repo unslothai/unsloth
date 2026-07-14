@@ -24,7 +24,7 @@ from core.inference.tool_call_parser import parse_tool_calls_from_text
 
 
 def _only(text: str) -> dict:
-    calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
     assert len(calls) == 1, f"expected exactly one call, got {len(calls)}: {calls!r}"
     fn = calls[0]["function"]
     return {"name": fn["name"], "arguments": json.loads(fn["arguments"])}
@@ -75,7 +75,7 @@ class TestFunctionStyleTrailingText:
         # Regression: the heal path (allow_incomplete=True) must match the strict path --
         # keep a clean argument and leave trailing prose outside the call span.
         text = "<function=web_search><parameter=query>cats</parameter></function> trailing words"
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         fn = calls[0]["function"]
         assert fn["name"] == "web_search"
@@ -85,20 +85,20 @@ class TestFunctionStyleTrailingText:
             parse_tool_calls_from_text as _parse_with_spans,
         )
 
-        _calls, spans = _parse_with_spans(text, allow_incomplete=True, with_spans=True)
+        _calls, spans = _parse_with_spans(text, allow_incomplete = True, with_spans = True)
         out = text
-        for s, e in sorted(spans, reverse=True):
+        for s, e in sorted(spans, reverse = True):
             out = out[:s] + out[e:]
         assert out == " trailing words"
 
     def test_incomplete_function_without_close_is_still_rejected(self):
         text = "<function=web_search><parameter=query>weather london"
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_param_without_close_tag_is_rejected_in_strict_mode(self):
         # Closing </function> present, but the single parameter never closes.
         text = "<function=web_search><parameter=query>weather london</function>"
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_attribute_form_literal_close_tag_is_preserved(self):
         # The attribute form <function name="..."> (MiniCPM-5 / MiniMax-M2) also ends at the
@@ -116,7 +116,7 @@ class TestFunctionStyleTrailingText:
         # mode must not treat the empty parameter list as a truncated call.
         assert _only('<function name="ping"></function>') == {"name": "ping", "arguments": {}}
         # A no-arg call that never closes is still rejected as truncated.
-        assert parse_tool_calls_from_text('<function name="ping">', allow_incomplete=False) == []
+        assert parse_tool_calls_from_text('<function name="ping">', allow_incomplete = False) == []
 
 
 class TestParityWithJsonStyle:
@@ -125,7 +125,7 @@ class TestParityWithJsonStyle:
             '<tool_call>{"name":"web_search","arguments":{"query":"weather london"}}</tool_call>'
             " Let me check that for you."
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
 
@@ -133,11 +133,11 @@ class TestParityWithJsonStyle:
         q = "weather london"
         func = parse_tool_calls_from_text(
             f"<function=web_search><parameter=query>{q}</parameter></function> trailing",
-            allow_incomplete=False,
+            allow_incomplete = False,
         )
         js = parse_tool_calls_from_text(
             f'<tool_call>{{"name":"web_search","arguments":{{"query":"{q}"}}}}</tool_call> trailing',
-            allow_incomplete=False,
+            allow_incomplete = False,
         )
         assert len(func) == len(js) == 1
         assert json.loads(func[0]["function"]["arguments"]) == {"query": q}
@@ -149,7 +149,7 @@ class TestGemmaNativeStyle:
         text = (
             '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>' " running it now"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "terminal"
         assert json.loads(calls[0]["function"]["arguments"]) == {
@@ -159,21 +159,21 @@ class TestGemmaNativeStyle:
 
     def test_unclosed_native_call_requires_healing(self):
         text = '<|tool_call>call:terminal{command:"ls"}'
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "terminal"
 
     def test_hyphenated_native_argument_name_is_accepted(self):
         text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "mcp__srv__create-issue"
         assert json.loads(calls[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
 
     def test_native_template_quotes_preserve_windows_path(self):
         text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
 
@@ -182,7 +182,7 @@ class TestGemmaNativeStyle:
         text = (
             "<|tool_call>call:get_weather{location:Tokyo,unit:celsius,days:3,live:true}<tool_call|>"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {
             "location": "Tokyo",
@@ -195,7 +195,7 @@ class TestGemmaNativeStyle:
 class TestLlama3PythonTagStrict:
     def test_closed_dot_call_is_accepted(self):
         text = '<|python_tag|>get_weather.call(location="Tokyo")'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "get_weather"
         assert json.loads(calls[0]["function"]["arguments"]) == {"location": "Tokyo"}
@@ -203,30 +203,30 @@ class TestLlama3PythonTagStrict:
     def test_truncated_dot_call_is_rejected(self):
         # No closing paren (depth > 0 at EOF): truncated, reject in strict mode.
         text = '<|python_tag|>get_weather.call(location="Tokyo"'
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
         # Auto-Heal still recovers it.
-        assert len(parse_tool_calls_from_text(text, allow_incomplete=True)) == 1
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
 
 
 class TestMistralArrayStrict:
     def test_closed_array_is_accepted(self):
         text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"}}]'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
 
     def test_unclosed_array_is_rejected(self):
         # Missing the closing ]; strict mode must not heal it.
         text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"}}'
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
         # Auto-Heal still recovers the object by hand.
-        assert len(parse_tool_calls_from_text(text, allow_incomplete=True)) == 1
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
 
 
 class TestHealingPathUnaffected:
     def test_auto_heal_still_repairs_unclosed_function(self):
         text = "<function=web_search><parameter=query>cats"
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
 
@@ -236,7 +236,7 @@ class TestHealingPathUnaffected:
         from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
 
         text = "<function=web_search><parameter=query>cats</parameter></function> trailing"
-        calls, spans = parse_with_spans(text, allow_incomplete=True, with_spans=True)
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
         (call,) = calls
         assert json.loads(call["function"]["arguments"]) == {"query": "cats"}
         (span,) = spans
@@ -250,7 +250,7 @@ class TestHealingPathUnaffected:
         from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
 
         closed = "before <function=web_search><parameter=query>cats</parameter></function> after"
-        calls, spans = parse_with_spans(closed, allow_incomplete=True, with_spans=True)
+        calls, spans = parse_with_spans(closed, allow_incomplete = True, with_spans = True)
         (call,) = calls
         assert json.loads(call["function"]["arguments"]) == {"query": "cats"}
         (span,) = spans
@@ -259,7 +259,7 @@ class TestHealingPathUnaffected:
         )
 
         healed = "x <function=web_search><parameter=query>dogs"
-        calls, spans = parse_with_spans(healed, allow_incomplete=True, with_spans=True)
+        calls, spans = parse_with_spans(healed, allow_incomplete = True, with_spans = True)
         (call,) = calls
         assert json.loads(call["function"]["arguments"]) == {"query": "dogs"}
         (span,) = spans
@@ -278,24 +278,24 @@ class TestEnabledToolNameGate:
     def test_inactive_rehearsal_before_active_call_does_not_swallow_it(self):
         # P1: an inactive ``foo[ARGS]{...}`` before a real call must not consume the real call.
         text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert self._names(calls) == ["web_search"]
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_inactive_rehearsal_alone_is_not_a_call(self):
         text = 'foo[ARGS]{"a":1}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
     def test_active_rehearsal_is_still_parsed(self):
         text = 'web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert self._names(calls) == ["web_search"]
 
     def test_unrestricted_gate_none_preserves_legacy_behavior(self):
         # Without a gate every ``NAME[ARGS]{...}`` is parsed, as before the gate landed.
         text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
         assert self._names(parse_tool_calls_from_text(text)) == ["foo", "web_search"]
-        assert self._names(parse_tool_calls_from_text(text, enabled_tool_names=None)) == [
+        assert self._names(parse_tool_calls_from_text(text, enabled_tool_names = None)) == [
             "foo",
             "web_search",
         ]
@@ -342,7 +342,7 @@ class TestBracketCallSpans:
         from core.tool_healing import parse_tool_calls_from_text as parse_with_spans
 
         text = '[TOOL_CALLS]web_search[ARGS]{"query":"cats"}[/TOOL_CALLS] after'
-        calls, spans = parse_with_spans(text, allow_incomplete=True, with_spans=True)
+        calls, spans = parse_with_spans(text, allow_incomplete = True, with_spans = True)
         (call,) = calls
         assert call["function"]["name"] == "web_search"
         (span,) = spans
@@ -400,15 +400,15 @@ class TestGlmStrict:
             "<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n"
             "</tool_call>"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "get_weather"
 
     def test_unclosed_glm_call_is_rejected(self):
         # No </tool_call> close: truncated, reject with Auto-Heal off.
         text = "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>"
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-        assert len(parse_tool_calls_from_text(text, allow_incomplete=True)) == 1
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
 
 
 class TestKimiStrict:
@@ -420,21 +420,21 @@ class TestKimiStrict:
 
     def test_full_kimi_call_is_accepted(self):
         text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._KE + self._SE
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "x"
 
     def test_kimi_call_without_call_end_is_rejected(self):
         # Section closed but the call lacks <|tool_call_end|>: reject in strict.
         text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._SE
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-        assert len(parse_tool_calls_from_text(text, allow_incomplete=True)) == 1
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
 
     def test_kimi_without_section_end_is_rejected(self):
         # No <|tool_calls_section_end|>: truncated section, reject in strict.
         text = self._SB + self._KB + "functions.x:0" + self._AB + '{"a":1}' + self._KE
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-        assert len(parse_tool_calls_from_text(text, allow_incomplete=True)) == 1
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
 
 
 class TestParserLinearity:
@@ -445,7 +445,7 @@ class TestParserLinearity:
 
         text = '<|python_tag|>upload.call(data="' + "A" * 200_000  # no closing quote/paren
         t0 = time.perf_counter()
-        parse_tool_calls_from_text(text, allow_incomplete=True)
+        parse_tool_calls_from_text(text, allow_incomplete = True)
         assert time.perf_counter() - t0 < 2.0
 
     def test_llama3_huge_wordrun_call_arg_is_linear(self):
@@ -453,7 +453,7 @@ class TestParserLinearity:
 
         text = "<|python_tag|>upload.call(" + "a" * 200_000  # giant word run, no '='
         t0 = time.perf_counter()
-        parse_tool_calls_from_text(text, allow_incomplete=True)
+        parse_tool_calls_from_text(text, allow_incomplete = True)
         assert time.perf_counter() - t0 < 2.0
 
     def test_mistral_unclosed_array_open_braces_is_linear(self):
@@ -461,7 +461,7 @@ class TestParserLinearity:
 
         text = "[TOOL_CALLS] [" + "{" * 200_000  # unclosed array, all open braces
         t0 = time.perf_counter()
-        parse_tool_calls_from_text(text, allow_incomplete=True)
+        parse_tool_calls_from_text(text, allow_incomplete = True)
         assert time.perf_counter() - t0 < 2.0
 
     def test_gemma_wrapperless_deep_nesting_is_linear(self):
@@ -487,7 +487,7 @@ class TestParserLinearity:
 
     def test_llama3_call_kwargs_still_parse(self):
         text = '<|python_tag|>do.call(s="hi 😀", n=42, f=1.5, b=true, z=null)'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {
             "s": "hi 😀",
@@ -500,7 +500,7 @@ class TestParserLinearity:
     def test_llama3_call_scientific_notation_args_parse(self):
         # Scientific notation must decode as float (the old regex truncated 1e-3 -> 1).
         text = "<|python_tag|>calc.call(x=1e-3, y=-2E+4, z=0.5e2, n=42)"
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"x": 1e-3, "y": -2e4, "z": 50.0, "n": 42}
@@ -511,7 +511,7 @@ class TestParserLinearity:
             '[TOOL_CALLS] [{"name":"a","arguments":{"k":1}},'
             '{"name":"b","arguments":{"j":2}}'  # missing closing ]
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert [c["function"]["name"] for c in calls] == ["a", "b"]
 
 
@@ -521,7 +521,7 @@ class TestLlamaBuiltinChainAndNesting:
     def test_semicolon_chained_builtin_calls_all_parse(self):
         # Only the first call is anchored to <|python_tag|>; the rest chain via ';'.
         text = "<|python_tag|>alpha.call(x=1); beta.call(y=2); gamma.call(z=3)"
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert [c["function"]["name"] for c in calls] == ["alpha", "beta", "gamma"]
         assert json.loads(calls[1]["function"]["arguments"]) == {"y": 2}
 
@@ -532,7 +532,7 @@ class TestLlamaBuiltinChainAndNesting:
             '<|python_tag|>{"name":"python","parameters":'
             '{"code":"<|python_tag|>os.call(\'rm -rf /\')"}}'
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "python"
         args = json.loads(calls[0]["function"]["arguments"])
@@ -540,7 +540,7 @@ class TestLlamaBuiltinChainAndNesting:
 
     def test_single_builtin_call_unchanged(self):
         text = '<|python_tag|>web_search.call(query="cats")'
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
@@ -565,8 +565,8 @@ def test_deepseek_r1_missing_call_terminator_rejected_in_strict_mode():
         '{"city":"NYC"}'
         "<｜tool▁calls▁end｜>"
     )
-    assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-    assert len(parse_tool_calls_from_text(text, allow_incomplete=True)) == 1
+    assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+    assert len(parse_tool_calls_from_text(text, allow_incomplete = True)) == 1
 
 
 def test_deepseek_r1_complete_call_accepted_in_strict_mode():
@@ -577,7 +577,7 @@ def test_deepseek_r1_complete_call_accepted_in_strict_mode():
         '{"city":"NYC"}\n'
         "```<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
     )
-    calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+    calls = parse_tool_calls_from_text(text, allow_incomplete = False)
     assert len(calls) == 1 and calls[0]["function"]["name"] == "get_weather"
 
 
@@ -626,7 +626,7 @@ def test_glm_literal_close_tag_in_string_arg_not_truncated():
         '<arg_value>print("</tool_call>")</arg_value>\n'
         "</tool_call>"
     )
-    calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+    calls = parse_tool_calls_from_text(text, allow_incomplete = True)
     assert len(calls) == 1
     args = json.loads(calls[0]["function"]["arguments"])
     assert args["code"] == 'print("</tool_call>")', args
@@ -638,8 +638,8 @@ def test_glm_truncated_block_rejected_in_strict_mode_but_healed_otherwise():
     # No </tool_call> close: strict mode (Auto-Heal off) rejects the truncated
     # block; with Auto-Heal it keeps the partial call.
     text = "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>NYC"
-    assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
-    healed = parse_tool_calls_from_text(text, allow_incomplete=True)
+    assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+    healed = parse_tool_calls_from_text(text, allow_incomplete = True)
     assert len(healed) == 1 and healed[0]["function"]["name"] == "get_weather"
 
 
@@ -649,7 +649,7 @@ def test_truncated_wrapperless_gemma_call_is_stripped():
     # A wrapper-less Gemma ``call:NAME{...`` cut off mid-arguments (no closing
     # brace) must not leak the raw call into the visible stream.
     text = 'Sure!\ncall:web_search{"query": "weather in San Fr'
-    stripped = strip_tool_markup(text, final=True)
+    stripped = strip_tool_markup(text, final = True)
     assert "call:web_search" not in stripped, repr(stripped)
     assert stripped.strip() == "Sure!"
 
@@ -660,7 +660,7 @@ def test_complete_wrapperless_gemma_call_keeps_trailing_prose():
     # The truncation pattern must run AFTER the closed form, so a complete call
     # followed by prose keeps the prose instead of eating to EOS.
     text = 'call:web_search{"query": "cats"} Here you go.'
-    stripped = strip_tool_markup(text, final=True)
+    stripped = strip_tool_markup(text, final = True)
     assert "call:web_search" not in stripped
     assert stripped.strip() == "Here you go."
 
@@ -671,15 +671,15 @@ def test_bare_json_gated_on_enabled_tool_names():
     alice = '{"name":"Alice","parameters":{"age":30}}'
     real = '{"name":"web_search","parameters":{"query":"cats"}}'
     # With an enabled set, markerless JSON whose name is not a tool is NOT a call.
-    assert parse_tool_calls_from_text(alice, enabled_tool_names={"web_search"}) == []
+    assert parse_tool_calls_from_text(alice, enabled_tool_names = {"web_search"}) == []
     # A real call (enabled name) still parses.
-    got = parse_tool_calls_from_text(real, enabled_tool_names={"web_search"})
+    got = parse_tool_calls_from_text(real, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in got] == ["web_search"]
     # No enabled set (None) keeps the name-agnostic behaviour for direct callers.
     assert [c["function"]["name"] for c in parse_tool_calls_from_text(alice)] == ["Alice"]
     # Marker-based forms are NOT gated (an explicit signal is a real call attempt).
     xml = '<tool_call>{"name":"Alice","arguments":{}}</tool_call>'
-    assert parse_tool_calls_from_text(xml, enabled_tool_names={"web_search"})
+    assert parse_tool_calls_from_text(xml, enabled_tool_names = {"web_search"})
 
 
 def test_strip_leading_bare_json_call_gated_on_enabled_tool_names():
@@ -703,12 +703,12 @@ def test_function_xml_strip_keeps_literal_close_tag_in_param_value():
     # The strip uses the LAST </function> (like the parser) so a literal </function> in a value doesn't
     # truncate it; separate calls still strip independently.
     text = '<function=python><parameter=code>print("</function>")</parameter></function> done'
-    assert strip_tool_markup(text, final=True) == "done"
+    assert strip_tool_markup(text, final = True) == "done"
     two = (
         "a <function=f><parameter=x>1</parameter></function> mid "
         "<function=g><parameter=y>2</parameter></function> end"
     )
-    assert strip_tool_markup(two, final=True) == "a  mid  end"
+    assert strip_tool_markup(two, final = True) == "a  mid  end"
 
 
 def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
@@ -718,10 +718,10 @@ def test_function_xml_strip_keeps_trailing_text_after_literal_open_tag():
     # strip keeps " done" (the old negative-lookahead regex ate the trailing prose).
     text = '<function=python><parameter=code>print("<function=x>")</parameter></function> done'
     assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
-    assert strip_tool_markup(text, final=True) == "done"
+    assert strip_tool_markup(text, final = True) == "done"
     # Non-final (streaming) keeps an unclosed call buffered, does not eat prose early.
     open_text = 'pre <function=python><parameter=code>print("<function=x>")'
-    assert strip_tool_markup(open_text, final=False) == open_text
+    assert strip_tool_markup(open_text, final = False) == open_text
 
 
 def test_final_strip_removes_magistral_think_reasoning():
@@ -730,10 +730,10 @@ def test_final_strip_removes_magistral_think_reasoning():
     # Magistral emits reasoning as ``[THINK]...[/THINK]`` (bracket form, not ``<think>``);
     # at end-of-turn it must be dropped so it doesn't leak into display / history.
     text = "[THINK]The user greeted me, I should say hi.[/THINK]Hello! How can I help?"
-    assert strip_tool_markup(text, final=True) == "Hello! How can I help?"
+    assert strip_tool_markup(text, final = True) == "Hello! How can I help?"
     # A ``[TOOL_CALLS]`` living inside the reasoning goes with it.
     with_call = '[THINK]Maybe I should search.[/THINK][TOOL_CALLS]search{"q":"x"}'
-    assert strip_tool_markup(with_call, final=True) == ""
+    assert strip_tool_markup(with_call, final = True) == ""
 
 
 def test_streaming_strip_keeps_magistral_think_buffered():
@@ -742,7 +742,7 @@ def test_streaming_strip_keeps_magistral_think_buffered():
     # Mid-stream (final=False) the reasoning block is left intact; only the
     # end-of-turn pass removes it.
     text = "[THINK]still thinking"
-    assert strip_tool_markup(text, final=False) == text
+    assert strip_tool_markup(text, final = False) == text
 
 
 def test_final_strip_leaves_non_magistral_bracket_text_untouched():
@@ -750,7 +750,7 @@ def test_final_strip_leaves_non_magistral_bracket_text_untouched():
 
     # Only a LEADING ``[THINK]`` block is reasoning; unrelated bracketed prose stays.
     text = "See [THINK about it] later"
-    assert strip_tool_markup(text, final=True) == "See [THINK about it] later"
+    assert strip_tool_markup(text, final = True) == "See [THINK about it] later"
 
 
 def test_strip_leading_bare_json_call_ignores_nested_name():
@@ -790,7 +790,6 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
     # F1: the parser is imported standalone on python >=3.9, where its PEP 604 ``X | None``
     # annotations need ``from __future__ import annotations``; guard that the import stays.
     from pathlib import Path
-
     src = (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
     ).read_text()
@@ -805,7 +804,7 @@ def test_glm_strip_treats_literal_close_tag_in_arg_value_as_data():
         "<tool_call>web_search\n<arg_key>query</arg_key>\n"
         "<arg_value>see </tool_call> tag</arg_value>\n</tool_call> tail"
     )
-    assert strip_tool_markup(text, final=True) == "tail"
+    assert strip_tool_markup(text, final = True) == "tail"
     calls = parse_tool_calls_from_text(text)
     assert [c["function"]["name"] for c in calls] == ["web_search"]
     assert json.loads(calls[0]["function"]["arguments"]) == {"query": "see </tool_call> tag"}
@@ -822,7 +821,7 @@ def test_bare_json_function_alias_parses_and_strips_symmetrically():
 
     enabled = {"web_search"}
     text = '{"function":"web_search","parameters":{"query":"cats"}}'
-    calls = parse_tool_calls_from_text(text, enabled_tool_names=enabled)
+    calls = parse_tool_calls_from_text(text, enabled_tool_names = enabled)
     assert [c["function"]["name"] for c in calls] == ["web_search"]
     assert strip_leading_bare_json_call(text, enabled) == ""
 
@@ -846,7 +845,7 @@ class TestMistralOuterOverXmlLiteral:
             '<function=evil><parameter=x>1</parameter></function>"}'
         )
         for strict in (True, False):
-            calls = parse_tool_calls_from_text(text, allow_incomplete=not strict)
+            calls = parse_tool_calls_from_text(text, allow_incomplete = not strict)
             assert [c["function"]["name"] for c in calls] == ["web_search"]
             assert "<function=evil>" in json.loads(calls[0]["function"]["arguments"])["query"]
 
@@ -875,7 +874,6 @@ class TestHealerSignalAlignment:
 
     def test_heal_signals_subset_of_promotable_formats(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
-
         assert set(_HEAL_SIGNALS) == {"<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]"}
 
     def test_stream_healer_does_not_hold_llama_python_tag_text(self):
@@ -902,7 +900,7 @@ class TestGemmaWrapperlessLiteralMarkers:
 
     def test_marker_literal_in_argument_still_parses(self):
         text = 'call:web_search{query:"what does <|tool_call> mean"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["query"] == "what does <|tool_call> mean"
@@ -913,11 +911,11 @@ class TestGemmaWrapperlessLiteralMarkers:
         # An actual wrapped opener present: the Gemma fallback must keep
         # deferring to the shared tool_healing parser that owns that form.
         text = '<|tool_call>call:web_search{query:<|"|>cats<|"|>}<tool_call|>'
-        assert _parse_gemma_tool_calls(text, id_offset=0) == []
+        assert _parse_gemma_tool_calls(text, id_offset = 0) == []
 
     def test_single_quoted_brace_does_not_truncate_code(self):
         text = "call:python{code:print('}')}"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"python"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "print('}')"
@@ -926,7 +924,7 @@ class TestGemmaWrapperlessLiteralMarkers:
         from core.inference.tool_call_parser import strip_tool_markup
 
         text = "call:python{code:print('}')} Done."
-        stripped = strip_tool_markup(text, final=True, enabled_tool_names={"python"})
+        stripped = strip_tool_markup(text, final = True, enabled_tool_names = {"python"})
         assert "call:python" not in stripped
         assert "')}" not in stripped
         assert stripped.strip() == "Done."
@@ -945,7 +943,7 @@ class TestGlmEmbeddedClosePair:
             '<arg_value>print("</arg_value></tool_call>")\nx = 1</arg_value>\n'
             "</tool_call>"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == 'print("</arg_value></tool_call>")\nx = 1'
@@ -959,7 +957,7 @@ class TestGlmEmbeddedClosePair:
             '<arg_value>print("</arg_value></tool_call>")\nx = 1</arg_value>\n'
             "</tool_call> Done."
         )
-        stripped = strip_tool_markup(text, final=True)
+        stripped = strip_tool_markup(text, final = True)
         assert "arg_value" not in stripped
         assert stripped.strip() == "Done."
 
@@ -972,7 +970,7 @@ class TestGlmEmbeddedClosePair:
             "<arg_value>it's fine</arg_value>\n"
             "</tool_call>"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["query"] == "it's fine"
@@ -1068,7 +1066,7 @@ class TestBareJsonOuterOverXmlLiteral:
             '{"name": "python", "arguments": '
             '{"code": "run() # <function=terminal>ls</function>"}}'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"python"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
         assert [c["function"]["name"] for c in calls] == ["python"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "run() # <function=terminal>ls</function>"
@@ -1119,14 +1117,14 @@ class TestGemmaUnquotedApostrophes:
 
     def test_contraction_in_unquoted_query_parses(self):
         text = "call:web_search{query:what's the weather}"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["query"] == "what's the weather"
 
     def test_contraction_does_not_swallow_next_key(self):
         text = "call:web_search{query:what's up, n:3}"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["query"] == "what's up"
@@ -1136,13 +1134,13 @@ class TestGemmaUnquotedApostrophes:
         from core.inference.tool_call_parser import strip_tool_markup
 
         text = "call:web_search{query:what's the weather} Done."
-        stripped = strip_tool_markup(text, final=True, enabled_tool_names={"web_search"})
+        stripped = strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"})
         assert "call:web_search" not in stripped
         assert stripped.strip() == "Done."
 
     def test_quoted_values_still_hide_delimiters(self):
         text = 'call:web_search{query:"weather, location: Boston", n:2}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["query"] == "weather, location: Boston"
@@ -1156,11 +1154,11 @@ class TestGlmKeyWithoutValue:
 
     def test_strict_rejects_key_without_value(self):
         text = "<tool_call>web_search\n<arg_key>query</arg_key>\n</tool_call>"
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_heal_keeps_the_lenient_skip(self):
         text = "<tool_call>web_search\n<arg_key>query</arg_key>\n</tool_call>"
-        calls = parse_tool_calls_from_text(text, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "web_search"
         assert json.loads(calls[0]["function"]["arguments"]) == {}
@@ -1174,18 +1172,18 @@ class TestDisabledBareJsonLiteralNotPromoted:
             '{"name": "Alice", "note": "try <function=web_search>'
             '<parameter=query>x</parameter></function>"}'
         )
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
     def test_python_tag_literal_inside_disabled_json_stays_data(self):
         text = '{"name": "Alice", "note": "<|python_tag|>web_search.call(query=1)"}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
     def test_real_call_after_disabled_json_still_parses(self):
         text = (
             '{"name": "Alice", "note": "<function=evil>x</function>"} '
             '<tool_call>{"name": "web_search", "arguments": {"query": "cats"}}</tool_call>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
@@ -1199,7 +1197,7 @@ class TestDeepSeekMarkerInsideLeadingEnvelopes:
             '{"name": "web_search", "arguments": '
             '{"query": "what is <｜tool▁calls▁begin｜>...{}..."}}'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert "tool▁calls▁begin" in args["query"]
@@ -1226,14 +1224,14 @@ class TestMistralLiteralInsideLeadingJson:
 
     def test_outer_json_call_wins_over_mistral_literal(self):
         text = '{"name": "python", "arguments": {"code": "[TOOL_CALLS]web_search{}"}}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"python", "web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"})
         assert [c["function"]["name"] for c in calls] == ["python"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["code"] == "[TOOL_CALLS]web_search{}"
 
     def test_disabled_outer_json_keeps_mistral_literal_as_data(self):
         text = '{"name": "Alice", "note": "[TOOL_CALLS]web_search{}"}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
 
 class TestGemmaWrappedWhitespace:
@@ -1241,18 +1239,18 @@ class TestGemmaWrappedWhitespace:
 
     def test_space_after_call_colon_parses(self):
         text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_space_around_colon_parses(self):
         text = '<|tool_call>call : web_search{query:<|"|>cats<|"|>}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_strict_mode_still_requires_the_closing_tag(self):
         text = '<|tool_call>call: web_search{query:<|"|>cats<|"|>}'
-        assert parse_tool_calls_from_text(text, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
 
 class TestDisabledJsonBeforeDeepSeekCall:
@@ -1268,13 +1266,13 @@ class TestDisabledJsonBeforeDeepSeekCall:
 
     def test_real_deepseek_call_after_disabled_json_parses(self):
         text = '{"name": "Alice", "note": "<｜tool▁calls▁begin｜>"} ' + self._DS
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_disabled_json_with_marker_alone_stays_data(self):
         text = '{"name": "Alice", "note": "<｜tool▁calls▁begin｜>"}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
 
 class TestGemmaDottedArgumentKeys:
@@ -1282,7 +1280,7 @@ class TestGemmaDottedArgumentKeys:
 
     def test_dotted_key_parses(self):
         text = '<|tool_call>call:web_search{user.name:<|"|>bob<|"|>, query:<|"|>x<|"|>}<tool_call|>'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"user.name": "bob", "query": "x"}
@@ -1299,7 +1297,7 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
             'call:web_search{query:"explain <tool_call>'
             '{"name":"evil","arguments":{}}</tool_call>"}'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_xml_leading_keeps_normal_order(self):
@@ -1307,7 +1305,7 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
             '<tool_call>{"name":"web_search","arguments":'
             '{"query":"call:evil{x:1} example"}}</tool_call>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
@@ -1334,7 +1332,7 @@ class TestLeadingMistralCallOwnsTheTurn:
 class TestGemmaDottedKeyAfterBareValue:
     def test_dotted_key_after_bare_value_is_a_boundary(self):
         text = "<|tool_call>call:web_search{query:foo,user.name:bob}<tool_call|>"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": "foo", "user.name": "bob"}
@@ -1347,26 +1345,25 @@ class TestJsonAnswersAreDataForMarkerlessScans:
 
     def test_gemma_example_inside_json_answer_not_promoted(self):
         text = '{"answer":"Gemma syntax is call:web_search{query:hi}"}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
     def test_gemma_example_inside_json_answer_not_stripped(self):
         from core.inference.tool_call_parser import strip_tool_markup
-
         text = '{"answer":"Gemma syntax is call:web_search{query:hi}"}'
-        assert strip_tool_markup(text, final=True, enabled_tool_names={"web_search"}) == text
+        assert strip_tool_markup(text, final = True, enabled_tool_names = {"web_search"}) == text
 
     def test_kimi_marker_inside_json_answer_not_promoted(self):
         text = (
             '{"answer":"<|tool_call_begin|>functions.web_search:0'
             '<|tool_call_argument_begin|>{}<|tool_call_end|>"}'
         )
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
 
 class TestGemmaNestedQuotedLeaves:
     def test_nested_object_and_array_values_are_unquoted(self):
         text = 'call:f{loc:{city:"New York"},items:["a","b"],n:3}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"f"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"f"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"loc": {"city": "New York"}, "items": ["a", "b"], "n": 3}
@@ -1403,14 +1400,14 @@ class TestNamelessLeadingJsonAnswerIsData:
 
     def test_xml_literal_inside_json_answer_stays_data(self):
         text = '{"answer": "use <function=web_search><parameter=query>x</parameter></function>"}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
     def test_real_call_after_json_answer_still_parses(self):
         text = (
             '{"answer": "docs"} <tool_call>{"name": "web_search", '
             '"arguments": {"query": "cats"}}</tool_call>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
@@ -1431,7 +1428,7 @@ class TestClosedCallPrecedesMarkerPrePass:
             + self._KIMI_EVIL
             + '<|"|>}<tool_call|>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_leading_xml_call_wins_over_trailing_kimi_example(self):
@@ -1439,7 +1436,7 @@ class TestClosedCallPrecedesMarkerPrePass:
             '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
             " For reference: " + self._KIMI_EVIL
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_standalone_kimi_call_still_parses(self):
@@ -1450,13 +1447,13 @@ class TestClosedCallPrecedesMarkerPrePass:
 class TestTruncatedWrapperlessGemmaStopsScan:
     def test_call_quoted_inside_truncated_arg_not_promoted(self):
         text = 'call:python{code:example("call:web_search{query:hi}") and then it cut'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"python", "web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"}) == []
 
 
 class TestGemmaQuotedNestedDelimiters:
     def test_comma_inside_quoted_nested_string_not_a_split(self):
         text = 'call:f{loc:{city:"New, York"},n:1}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"f"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"f"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"loc": {"city": "New, York"}, "n": 1}
@@ -1465,7 +1462,7 @@ class TestGemmaQuotedNestedDelimiters:
 class TestGemmaStringMarkerLiteralInArgs:
     def test_string_marker_literal_does_not_lose_the_call(self):
         text = "call:web_search{query:'what does <|\"|> mean in Gemma'}"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args["query"] == 'what does <|"|> mean in Gemma'
@@ -1474,14 +1471,14 @@ class TestGemmaStringMarkerLiteralInArgs:
 class TestGemmaMidValueQuotedPhrase:
     def test_quoted_phrase_mid_value_hides_delimiters(self):
         text = 'call:web_search{query:find "weather, location: Boston", limit:3}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": 'find "weather, location: Boston"', "limit": 3}
 
     def test_apostrophes_still_prose_mid_value(self):
         text = "call:web_search{query:what's on at the museum, n:2}"
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": "what's on at the museum", "n": 2}
 
@@ -1496,10 +1493,10 @@ class TestGlmStrictRefusesInQuoteFallback:
     )
 
     def test_strict_rejects_truncated_in_string_close(self):
-        assert parse_tool_calls_from_text(self._TRUNC, allow_incomplete=False) == []
+        assert parse_tool_calls_from_text(self._TRUNC, allow_incomplete = False) == []
 
     def test_heal_keeps_partial_value(self):
-        calls = parse_tool_calls_from_text(self._TRUNC, allow_incomplete=True)
+        calls = parse_tool_calls_from_text(self._TRUNC, allow_incomplete = True)
         assert len(calls) == 1 and calls[0]["function"]["name"] == "python"
 
 
@@ -1509,7 +1506,7 @@ class TestGemmaGuardCoversPreambles:
             "Sure, searching now. call:web_search{query:"
             '"explain <tool_call>{"name":"evil","arguments":{}}</tool_call>"}'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
@@ -1519,7 +1516,7 @@ class TestGlmStrictAcceptsApostrophes:
             "<tool_call>web_search\n<arg_key>query</arg_key>\n"
             "<arg_value>what's the weather</arg_value>\n</tool_call>"
         )
-        calls = parse_tool_calls_from_text(text, allow_incomplete=False)
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         args = json.loads(calls[0]["function"]["arguments"])
         assert args == {"query": "what's the weather"}
@@ -1528,14 +1525,14 @@ class TestGlmStrictAcceptsApostrophes:
 class TestDisabledGemmaCallLiteralsAreData:
     def test_literal_inside_disabled_call_not_promoted(self):
         text = 'call:foo{query:"<function=python><parameter=code>x</parameter></function>"}'
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"python", "web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"}) == []
 
     def test_real_call_after_disabled_example_still_parses(self):
         text = (
             'call:foo{query:"<function=python><parameter=code>x</parameter></function>"}'
             " call:web_search{query:hi}"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"python", "web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python", "web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
 
@@ -1545,7 +1542,7 @@ class TestLeadingJsonArrayAnswerIsData:
             '[{"answer": "<|tool_call_begin|>functions.web_search:0'
             '<|tool_call_argument_begin|>{}<|tool_call_end|>"}]'
         )
-        assert parse_tool_calls_from_text(text, enabled_tool_names={"web_search"}) == []
+        assert parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"}) == []
 
 
 class TestLeadingBareJsonOwnsTurnOverTrailingXml:
@@ -1557,7 +1554,7 @@ class TestLeadingBareJsonOwnsTurnOverTrailingXml:
             '{"name":"lookup","parameters":{"q":"first"}} Example: '
             '<tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"lookup", "delete_all"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "delete_all"})
         assert [c["function"]["name"] for c in calls] == ["lookup"], calls
         assert json.loads(calls[0]["function"]["arguments"]) == {"q": "first"}
 
@@ -1567,7 +1564,7 @@ class TestLeadingBareJsonOwnsTurnOverTrailingXml:
             '{"name":"lookup","parameters":{"q":"second"}} '
             '<tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"lookup", "delete_all"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "delete_all"})
         assert [c["function"]["name"] for c in calls] == ["lookup", "lookup"], calls
 
     def test_non_call_leading_object_defers_to_trailing_real_call(self):
@@ -1575,7 +1572,7 @@ class TestLeadingBareJsonOwnsTurnOverTrailingXml:
         # the object is dropped and the real trailing call still parses.
         for lead in ('{"answer": 42}', '{"name":"draft","parameters":{}}'):
             text = lead + ' <tool_call>{"name":"delete_all","arguments":{}}</tool_call>'
-            calls = parse_tool_calls_from_text(text, enabled_tool_names={"delete_all"})
+            calls = parse_tool_calls_from_text(text, enabled_tool_names = {"delete_all"})
             assert [c["function"]["name"] for c in calls] == ["delete_all"], (lead, calls)
 
     def test_leading_xml_call_still_wins_over_trailing_bare_json(self):
@@ -1583,7 +1580,7 @@ class TestLeadingBareJsonOwnsTurnOverTrailingXml:
             '<tool_call>{"name":"delete_all","arguments":{}}</tool_call> '
             'Example: {"name":"lookup","parameters":{"q":"x"}}'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"lookup", "delete_all"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"lookup", "delete_all"})
         assert [c["function"]["name"] for c in calls] == ["delete_all"], calls
 
 
@@ -1597,13 +1594,13 @@ class TestProseCloseTagAfterClosedFunctionCall:
             "<function=web_search><parameter=query>cats</parameter></function>"
             " Done. The tag </function> closes a call."
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"], calls
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_literal_close_inside_open_parameter_stays_data(self):
         text = '<function=python><parameter=code>print("</function>")</parameter></function>'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"python"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
         assert [c["function"]["name"] for c in calls] == ["python"], calls
         assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</function>")'}
 
@@ -1614,13 +1611,13 @@ class TestProseCloseTagAfterClosedFunctionCall:
             '<function name="web_search"><parameter name="query">cats</parameter></function>'
             " Done. The tag </function> closes a call."
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert [c["function"]["name"] for c in calls] == ["web_search"], calls
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_attribute_form_literal_close_in_open_parameter_stays_data(self):
         text = '<function name="python"><parameter name="code">print("</function>")</parameter></function>'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"python"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
         assert json.loads(calls[0]["function"]["arguments"]) == {"code": 'print("</function>")'}
 
     def test_attribute_form_two_calls_both_parse(self):
@@ -1628,7 +1625,7 @@ class TestProseCloseTagAfterClosedFunctionCall:
             '<function name="web_search"><parameter name="query">cats</parameter></function>'
             '<function name="python"><parameter name="code">x=1</parameter></function>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "python"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "python"})
         assert [c["function"]["name"] for c in calls] == ["web_search", "python"], calls
 
 
@@ -1639,13 +1636,11 @@ class TestEnabledNameJsonAnswerIsContent:
 
     def test_answer_survives_strip(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
-
         ans = '{"name":"web_search","result":"no call"}'
         assert strip_leading_bare_json_call(ans, {"web_search"}) == ans
 
     def test_answer_does_not_route_to_draining(self):
         from core.inference.safetensors_agentic import _looks_like_enabled_bare_json
-
         assert not _looks_like_enabled_bare_json(
             '{"name":"web_search","result":"no call"}', {"web_search"}
         )
@@ -1660,7 +1655,6 @@ class TestEnabledNameJsonAnswerIsContent:
 
     def test_arguments_string_call_still_strips(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
-
         call = '{"name":"web_search","arguments":"{\\"q\\":\\"x\\"}"} tail'
         assert strip_leading_bare_json_call(call, {"web_search"}) == "tail"
 
@@ -1676,7 +1670,7 @@ class TestAttributeFormLeadingContainment:
             '<function name="web_search"><param name="query">find '
             '<tool_call>{"name":"delete","arguments":{}}</tool_call></param></function>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "delete"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
         assert "delete" in json.loads(calls[0]["function"]["arguments"])["query"]
 
@@ -1687,7 +1681,7 @@ class TestAttributeFormLeadingContainment:
             '<tool_call>{"name":"delete","arguments":{}}</tool_call> Example: '
             '<function name="web_search"><param name="q">x</param></function>'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "delete"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "delete"})
         assert calls[0]["function"]["name"] == "delete"
 
 
@@ -1703,26 +1697,24 @@ class TestParameterKeepsMultipleLiteralCloses:
             '<function name="web_search"><param name="query">'
             "a </function> b </function> c </param></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
         assert json.loads(calls[0]["function"]["arguments"]) == {
             "query": "a </function> b </function> c"
         }
 
     def test_strip_removes_the_whole_call(self):
         from core.inference.tool_call_parser import strip_tool_markup
-
         text = (
             '<function name="web_search"><param name="query">'
             "a </function> b </function> c </param></function> after"
         )
-        assert strip_tool_markup(text, final=True) == "after"
+        assert strip_tool_markup(text, final = True) == "after"
 
     def test_unclosed_parameter_still_heals_at_function_close(self):
         from core.inference.tool_call_parser import parse_tool_calls_from_text
-
         calls = parse_tool_calls_from_text(
             "<function=web_search><parameter=query>val</function>",
-            enabled_tool_names={"web_search"},
+            enabled_tool_names = {"web_search"},
         )
         assert json.loads(calls[0]["function"]["arguments"]) == {"query": "val"}
 
@@ -1738,7 +1730,7 @@ class TestMistralPreambleOwnership:
             'pref [TOOL_CALLS]web_search[ARGS]{"query":"cats"} Note '
             "<function=evil><parameter=x>1</parameter></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_array_form_after_preface(self):
@@ -1748,7 +1740,7 @@ class TestMistralPreambleOwnership:
             'pref [TOOL_CALLS][{"name":"web_search","arguments":{"query":"cats"}}] Note '
             "<function=evil><parameter=x>1</parameter></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
 
     def test_xml_call_before_trigger_keeps_order(self):
@@ -1758,7 +1750,7 @@ class TestMistralPreambleOwnership:
             "<function=evil><parameter=x>1</parameter></function> then "
             '[TOOL_CALLS][{"name":"web_search","arguments":{}}]'
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"web_search", "evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert calls[0]["function"]["name"] == "evil"
 
     def test_prose_mention_without_call_shape_keeps_order(self):
@@ -1768,7 +1760,7 @@ class TestMistralPreambleOwnership:
             "See [TOOL_CALLS] docs for details. "
             "<function=evil><parameter=x>1</parameter></function>"
         )
-        calls = parse_tool_calls_from_text(text, enabled_tool_names={"evil"})
+        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"evil"})
         assert [c["function"]["name"] for c in calls] == ["evil"]
 
 
@@ -1785,7 +1777,6 @@ class TestBareJsonStripRequiresTopLevelName:
 
     def test_real_call_still_strips_name_agnostic(self):
         from core.inference.tool_call_parser import strip_leading_bare_json_call
-
         assert strip_leading_bare_json_call('{"name":"web_search","parameters":{"q":"x"}}') == ""
 
 
@@ -1795,13 +1786,12 @@ class TestGemmaAwareClosedBlockPrePass:
 
     def test_literal_function_in_gemma_arg_with_later_real_call(self):
         from core.tool_healing import strip_tool_call_markup
-
         text = (
             'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
             "<tool_call|> <function=terminal><parameter=cmd>ls</parameter>"
             "</function> after"
         )
-        assert strip_tool_call_markup(text, final=True) == "before   after"
+        assert strip_tool_call_markup(text, final = True) == "before   after"
 
     def test_literal_function_in_gemma_arg_with_prose_closer(self):
         from core.tool_healing import strip_tool_call_markup
@@ -1810,24 +1800,22 @@ class TestGemmaAwareClosedBlockPrePass:
             'before <|tool_call>call:python{code:<|"|>print("<function=x>")<|"|>}'
             "<tool_call|> then use </function> to close. after"
         )
-        out = strip_tool_call_markup(text, final=True)
+        out = strip_tool_call_markup(text, final = True)
         assert out.startswith("before")
         assert out.endswith("after")
         assert "call:python" not in out
 
     def test_gemma_opener_inside_json_arg_still_strips_block(self):
         from core.tool_healing import strip_tool_call_markup
-
         text = (
             '<tool_call>{"name":"t","arguments":{"code":"<|tool_call>call:x{"}}</tool_call> after'
         )
-        assert strip_tool_call_markup(text, final=True) == "after"
+        assert strip_tool_call_markup(text, final = True) == "after"
 
     def test_gemma_opener_inside_function_param_still_strips_block(self):
         from core.tool_healing import strip_tool_call_markup
-
         text = (
             '<function=python><parameter=code>x = "<|tool_call>call:t{"</parameter>'
             "</function> after"
         )
-        assert strip_tool_call_markup(text, final=True) == "after"
+        assert strip_tool_call_markup(text, final = True) == "after"

@@ -28,7 +28,7 @@ from core.inference.llama_admission import (
 )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _reset_queues():
     reset_llama_admission_queues()
     yield
@@ -42,7 +42,7 @@ def test_admission_config_defaults(monkeypatch):
         ADMISSION_KEEPALIVE_INTERVAL_ENV,
         ADMISSION_MAX_QUEUE_ENV,
     ):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
 
     config = llama_admission_config_from_env()
 
@@ -79,9 +79,9 @@ def test_fifo_capacity_one_grants_next_waiter_on_release():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
-        third = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
+        third = queue.reserve(capacity = 1, config = config)
 
         first_lease = first.lease_nowait()
         assert first_lease is not None
@@ -109,15 +109,15 @@ def test_fifo_capacity_one_grants_next_waiter_on_release():
 def test_queue_full_rejects_excess_waiter():
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(max_queue=1)
+        config = LlamaAdmissionConfig(max_queue = 1)
 
-        first = queue.reserve(capacity=1, config=config)
-        queued = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        queued = queue.reserve(capacity = 1, config = config)
 
         assert first.lease_nowait() is not None
         assert queued.lease_nowait() is None
         with pytest.raises(LlamaAdmissionQueueFull):
-            queue.reserve(capacity=1, config=config)
+            queue.reserve(capacity = 1, config = config)
 
     asyncio.run(_run())
 
@@ -125,10 +125,10 @@ def test_queue_full_rejects_excess_waiter():
 def test_disabled_admission_bypasses_active_slot_limit():
     async def _run():
         queue = get_llama_admission_queue("http://llama.test")
-        config = LlamaAdmissionConfig(enabled=False)
+        config = LlamaAdmissionConfig(enabled = False)
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
 
         assert first.lease_nowait() is not None
         assert second.lease_nowait() is not None
@@ -143,8 +143,8 @@ def test_cancelling_promoted_waiter_releases_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
         first_lease = first.lease_nowait()
 
         first_lease.release()
@@ -163,8 +163,8 @@ def test_cancelling_promoted_waiter_before_delivery_releases_slot():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
         first_lease = first.lease_nowait()
 
         first_lease.release()
@@ -182,8 +182,8 @@ def test_external_waiter_future_cancel_invalidates_reservation():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
         first_lease = first.lease_nowait()
         assert first_lease is not None
         assert second._waiter is not None
@@ -207,8 +207,8 @@ def test_wait_returns_none_when_waiter_future_cancelled_during_wait():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
         first_lease = first.lease_nowait()
         assert first_lease is not None
         assert second._waiter is not None
@@ -217,7 +217,7 @@ def test_wait_returns_none_when_waiter_future_cancelled_during_wait():
         await asyncio.sleep(0)
         second._waiter.future.cancel()
 
-        assert await asyncio.wait_for(wait_task, timeout=0.1) is None
+        assert await asyncio.wait_for(wait_task, timeout = 0.1) is None
         assert second.is_cancelled is True
 
         first_lease.release()
@@ -233,8 +233,8 @@ def test_capacity_increase_promotes_existing_waiter_fifo():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        first = queue.reserve(capacity=1, config=config)
-        second = queue.reserve(capacity=1, config=config)
+        first = queue.reserve(capacity = 1, config = config)
+        second = queue.reserve(capacity = 1, config = config)
 
         first_lease = first.lease_nowait()
         assert first_lease is not None
@@ -242,7 +242,7 @@ def test_capacity_increase_promotes_existing_waiter_fifo():
         assert queue.snapshot().active == 1
         assert queue.snapshot().queued == 1
 
-        third = queue.reserve(capacity=2, config=config)
+        third = queue.reserve(capacity = 2, config = config)
 
         second_lease = await second.wait(0.1)
         assert second_lease is not None
@@ -271,11 +271,11 @@ def test_lease_release_is_idempotent_under_concurrent_calls():
         queue = get_llama_admission_queue("http://llama.test")
         config = LlamaAdmissionConfig()
 
-        reservation = queue.reserve(capacity=1, config=config)
+        reservation = queue.reserve(capacity = 1, config = config)
         lease = reservation.lease_nowait()
         assert lease is not None
 
-        threads = [threading.Thread(target=lease.release) for _ in range(16)]
+        threads = [threading.Thread(target = lease.release) for _ in range(16)]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -304,7 +304,7 @@ def test_new_key_retains_in_flight_prior_load_queue():
     busy = get_llama_admission_queue("http://127.0.0.1:2001")
 
     async def _run():
-        reservation = busy.reserve(capacity=1, config=config)
+        reservation = busy.reserve(capacity = 1, config = config)
         lease = reservation.lease_nowait()
         assert lease is not None
 

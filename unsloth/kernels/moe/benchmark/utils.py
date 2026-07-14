@@ -40,7 +40,7 @@ def create_merged_results(
 def post_process_results(
     results: list[KernelResult], mode: str, seqlen: int, dtype: torch.dtype, autotune: bool
 ):
-    df = KernelResult.to_dataframe(results, sort_by="speedup")
+    df = KernelResult.to_dataframe(results, sort_by = "speedup")
     df = create_merged_results(df, mode, seqlen, dtype, autotune)
     return df
 
@@ -54,15 +54,15 @@ def save_results(
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
     print(f"Saving results to {save_path}")
-    df.to_csv(save_path, index=False)
+    df.to_csv(save_path, index = False)
 
 
 def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: bool):
     block_m_range = power_of_two_range(args.BLOCK_SIZE_M[0], args.BLOCK_SIZE_M[1])
     block_n_range = power_of_two_range(args.BLOCK_SIZE_N[0], args.BLOCK_SIZE_N[1])
     block_k_range = power_of_two_range(args.BLOCK_SIZE_K[0], args.BLOCK_SIZE_K[1])
-    num_warps_range = multiples_of_range(args.num_warps[0], args.num_warps[1], step=2)
-    num_stages_range = multiples_of_range(args.num_stages[0], args.num_stages[1], step=1)
+    num_warps_range = multiples_of_range(args.num_warps[0], args.num_warps[1], step = 2)
+    num_stages_range = multiples_of_range(args.num_stages[0], args.num_stages[1], step = 1)
 
     mode = args.mode
     kernel_configs = []
@@ -85,39 +85,39 @@ def create_kernel_configs(args: argparse.Namespace, permute_x: bool, permute_y: 
     ):
         if mode == "forward":
             kernel_config = KernelConfigForward(
-                BLOCK_SIZE_M=block_m,
-                BLOCK_SIZE_N=block_n,
-                BLOCK_SIZE_K=block_k,
-                num_warps=num_warps,
-                num_stages=num_stages,
-                use_tma_load_w=tma_load_a,
-                use_tma_load_x=tma_load_b,
-                permute_x=permute_x,
-                permute_y=permute_y,
+                BLOCK_SIZE_M = block_m,
+                BLOCK_SIZE_N = block_n,
+                BLOCK_SIZE_K = block_k,
+                num_warps = num_warps,
+                num_stages = num_stages,
+                use_tma_load_w = tma_load_a,
+                use_tma_load_x = tma_load_b,
+                permute_x = permute_x,
+                permute_y = permute_y,
             )
         elif mode == "dW":
             kernel_config = KernelConfigBackward_dW(
-                BLOCK_SIZE_M=block_m,
-                BLOCK_SIZE_N=block_n,
-                BLOCK_SIZE_K=block_k,
-                num_warps=num_warps,
-                num_stages=num_stages,
-                use_tma_load_dy=tma_load_a,
-                use_tma_load_x=tma_load_b,
-                permute_x=permute_x,
-                permute_y=permute_y,
+                BLOCK_SIZE_M = block_m,
+                BLOCK_SIZE_N = block_n,
+                BLOCK_SIZE_K = block_k,
+                num_warps = num_warps,
+                num_stages = num_stages,
+                use_tma_load_dy = tma_load_a,
+                use_tma_load_x = tma_load_b,
+                permute_x = permute_x,
+                permute_y = permute_y,
             )
         elif mode == "dX":
             kernel_config = KernelConfigBackward_dX(
-                BLOCK_SIZE_M=block_m,
-                BLOCK_SIZE_N=block_n,
-                BLOCK_SIZE_K=block_k,
-                num_warps=num_warps,
-                num_stages=num_stages,
-                use_tma_load_dy=tma_load_a,
-                use_tma_load_w=tma_load_b,
-                permute_x=permute_x,
-                permute_y=permute_y,
+                BLOCK_SIZE_M = block_m,
+                BLOCK_SIZE_N = block_n,
+                BLOCK_SIZE_K = block_k,
+                num_warps = num_warps,
+                num_stages = num_stages,
+                use_tma_load_dy = tma_load_a,
+                use_tma_load_w = tma_load_b,
+                permute_x = permute_x,
+                permute_y = permute_y,
             )
         else:
             raise ValueError(f"Invalid mode: {mode}")
@@ -153,7 +153,7 @@ def power_of_two_range(start, end):
 def multiples_of_range(
     start,
     end,
-    step=1,
+    step = 1,
 ):
     return list(range(start, end + step, step))
 
@@ -174,7 +174,7 @@ def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_di
         filename = "_".join(key)
         save_path = f"{save_dir}/{filename}.json"
         print(f"Saving autotune results to {save_path}")
-        with open(save_path, "w", encoding="utf-8") as f:
+        with open(save_path, "w", encoding = "utf-8") as f:
             result = {
                 **config.all_kwargs(),
                 "ref_time": ref_time,
@@ -186,22 +186,18 @@ def save_autotune_results(autotune_cache, mode, ref_time, fused_time, results_di
 def get_autotuner(mode):
     if mode == "forward":
         from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
-
         return _autotuned_grouped_gemm_forward_kernel
     elif mode == "dW":
         from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dW_kernel
-
         return _autotuned_grouped_gemm_dW_kernel
     elif mode == "dX":
         from grouped_gemm.kernels.backward import _autotuned_grouped_gemm_dX_kernel
-
         return _autotuned_grouped_gemm_dX_kernel
     elif mode == "backward":
         from grouped_gemm.kernels.backward import (
             _autotuned_grouped_gemm_dW_kernel,
             _autotuned_grouped_gemm_dX_kernel,
         )
-
         return _autotuned_grouped_gemm_dW_kernel, _autotuned_grouped_gemm_dX_kernel
     else:
         raise ValueError(f"Invalid mode: {mode}")
@@ -212,8 +208,8 @@ def postprocess_autotune_results(autotuner, mode, ref_time, fused_time, results_
         print(f"{mode} {key}: {value.all_kwargs()}")
     save_autotune_results(
         autotuner.cache,
-        mode=mode,
-        ref_time=ref_time,
-        fused_time=fused_time,
-        results_dir=results_dir,
+        mode = mode,
+        ref_time = ref_time,
+        fused_time = fused_time,
+        results_dir = results_dir,
     )

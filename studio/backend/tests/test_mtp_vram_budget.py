@@ -93,14 +93,14 @@ GIB = 1024**3
 
 def _make_backend(
     *,
-    nextn=1,
-    n_kv_heads=4,
-    n_heads=24,
-    kv_key_length=256,
-    kv_value_length=256,
-    embedding_length=5120,
-    n_layers=65,
-    native_ctx=262144,
+    nextn = 1,
+    n_kv_heads = 4,
+    n_heads = 24,
+    kv_key_length = 256,
+    kv_value_length = 256,
+    embedding_length = 5120,
+    n_layers = 65,
+    native_ctx = 262144,
 ):
     """Qwen3.6-27B-MTP-class backend (embedded head) with the MTP-math dims."""
     b = LlamaCppBackend.__new__(LlamaCppBackend)
@@ -139,8 +139,8 @@ class _StubDrafter:
     def _estimate_kv_cache_bytes(
         self,
         n_ctx,
-        cache_type=None,
-        n_parallel=1,
+        cache_type = None,
+        n_parallel = 1,
         **_k,
     ):
         bpe = _kv_bytes_per_elem(cache_type)
@@ -170,11 +170,11 @@ class TestEmbeddedDraftKv:
         expected = int(1 * 4 * 512 * 2.0 * ctx)
         assert b._mtp_draft_kv_bytes(ctx) == expected
         # And that is 512 MiB, matching the measured 27B draft-KV slope (~4 MiB/1k).
-        assert b._mtp_draft_kv_bytes(ctx) / MIB == pytest.approx(512, abs=1)
+        assert b._mtp_draft_kv_bytes(ctx) / MIB == pytest.approx(512, abs = 1)
 
     def test_scales_with_nextn_predict_layers(self):
-        one = _make_backend(nextn=1)._mtp_draft_kv_bytes(65536)
-        two = _make_backend(nextn=2)._mtp_draft_kv_bytes(65536)
+        one = _make_backend(nextn = 1)._mtp_draft_kv_bytes(65536)
+        two = _make_backend(nextn = 2)._mtp_draft_kv_bytes(65536)
         assert two == pytest.approx(2 * one)
 
     def test_embedded_draft_kv_floored_at_f16(self):
@@ -183,10 +183,10 @@ class TestEmbeddedDraftKv:
         # f16, not more (ggml-org/llama.cpp#24102). The embedded reserve floors a
         # quantized draft type at f16 (never under-reserved); f32 still costs more.
         b = _make_backend()
-        f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k="f16", draft_cache_type_v="f16")
-        q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k="q8_0", draft_cache_type_v="q8_0")
-        q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k="q4_0", draft_cache_type_v="q4_0")
-        f32 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k="f32", draft_cache_type_v="f32")
+        f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
+        q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q8_0", draft_cache_type_v = "q8_0")
+        q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0")
+        f32 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f32", draft_cache_type_v = "f32")
         assert q8 == f16 and q4 == f16  # quantized draft KV priced as f16, not less
         assert f32 == pytest.approx(f16 * 2.0)  # f32 genuinely larger, not floored
 
@@ -195,15 +195,15 @@ class TestEmbeddedDraftKv:
         # all-f16 value for the single-layer embedded head (the f16 floor; #24102).
         b = _make_backend()
         both_q4 = b._mtp_draft_kv_bytes(
-            131072, draft_cache_type_k="q4_0", draft_cache_type_v="q4_0"
+            131072, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
         )
-        k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k="q4_0")  # V defaults f16
-        both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k="f16", draft_cache_type_v="f16")
+        k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
+        both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
         assert both_q4 == k_only == both_f16  # floored at f16, never under-reserved
 
     def test_none_when_dims_missing(self):
-        assert _make_backend(nextn=0)._mtp_draft_kv_bytes(65536) is None
-        assert _make_backend(kv_key_length=None)._mtp_draft_kv_bytes(65536) is None
+        assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
+        assert _make_backend(kv_key_length = None)._mtp_draft_kv_bytes(65536) is None
         assert _make_backend()._mtp_draft_kv_bytes(0) is None
 
 
@@ -214,62 +214,62 @@ class TestEmbeddedDraftKv:
 
 class TestSeparateDrafter:
     def test_uses_drafter_kv_and_weights(self, monkeypatch):
-        b = _make_backend(nextn=None)  # main has no embedded head
-        stub = _StubDrafter(kv_per_token=2000)
+        b = _make_backend(nextn = None)  # main has no embedded head
+        stub = _StubDrafter(kv_per_token = 2000)
         monkeypatch.setattr(b, "_draft_backend_for", lambda path: stub)
         ctx = 65536
-        kv = b._mtp_draft_kv_bytes(ctx, drafter_path="/m/draft.gguf")
+        kv = b._mtp_draft_kv_bytes(ctx, drafter_path = "/m/draft.gguf")
         assert kv == stub._estimate_kv_cache_bytes(ctx)
         total = b._estimate_mtp_overhead_bytes(
-            ctx, drafter_path="/m/draft.gguf", draft_weights_bytes=GIB
+            ctx, drafter_path = "/m/draft.gguf", draft_weights_bytes = GIB
         )
         assert total == kv + GIB
 
     def test_drafter_kv_scales_with_context(self, monkeypatch):
-        b = _make_backend(nextn=None)
+        b = _make_backend(nextn = None)
         monkeypatch.setattr(b, "_draft_backend_for", lambda path: _StubDrafter(2000))
-        a = b._mtp_draft_kv_bytes(16384, drafter_path="/m/d.gguf")
-        c = b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf")
+        a = b._mtp_draft_kv_bytes(16384, drafter_path = "/m/d.gguf")
+        c = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf")
         assert c == pytest.approx(4 * a)
 
     def test_drafter_kv_scales_with_parallel_slots(self, monkeypatch):
         # The drafter is served under the same --parallel slots as the main model,
         # so a sliding-window drafter's KV grows per slot; the reserve must thread
         # n_parallel or it under-reserves (Finding G1).
-        b = _make_backend(nextn=None)
+        b = _make_backend(nextn = None)
         monkeypatch.setattr(b, "_draft_backend_for", lambda path: _StubDrafter(2000))
-        one = b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf", n_parallel=1)
-        four = b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf", n_parallel=4)
+        one = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf", n_parallel = 1)
+        four = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf", n_parallel = 4)
         assert four == pytest.approx(4 * one)
         # And it threads through the overhead estimate too.
         ov1 = b._estimate_mtp_overhead_bytes(
-            65536, drafter_path="/m/d.gguf", draft_weights_bytes=GIB, n_parallel=1
+            65536, drafter_path = "/m/d.gguf", draft_weights_bytes = GIB, n_parallel = 1
         )
         ov4 = b._estimate_mtp_overhead_bytes(
-            65536, drafter_path="/m/d.gguf", draft_weights_bytes=GIB, n_parallel=4
+            65536, drafter_path = "/m/d.gguf", draft_weights_bytes = GIB, n_parallel = 4
         )
         assert (ov4 - GIB) == pytest.approx(4 * (ov1 - GIB))  # KV scales, weights flat
 
     def test_none_when_drafter_unreadable(self, monkeypatch):
-        b = _make_backend(nextn=None)
+        b = _make_backend(nextn = None)
         monkeypatch.setattr(b, "_draft_backend_for", lambda path: None)
-        assert b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf") is None
-        assert b._estimate_mtp_overhead_bytes(65536, drafter_path="/m/d.gguf") is None
+        assert b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf") is None
+        assert b._estimate_mtp_overhead_bytes(65536, drafter_path = "/m/d.gguf") is None
 
     def test_keeps_weights_when_drafter_kv_unsizable(self, monkeypatch):
         # KV can't be sized (exotic/remote drafter), but the local weights are
         # known: reserve the weights so a drafter larger than the flat fallback
         # cushion can't slip through and OOM (Finding C). Nothing known -> None.
-        b = _make_backend(nextn=None)
+        b = _make_backend(nextn = None)
         monkeypatch.setattr(b, "_draft_backend_for", lambda path: None)
-        assert b._mtp_draft_kv_bytes(65536, drafter_path="/m/d.gguf") is None
+        assert b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf") is None
         assert (
             b._estimate_mtp_overhead_bytes(
-                65536, drafter_path="/m/d.gguf", draft_weights_bytes=3 * GIB
+                65536, drafter_path = "/m/d.gguf", draft_weights_bytes = 3 * GIB
             )
             == 3 * GIB
         )
-        assert b._estimate_mtp_overhead_bytes(65536, drafter_path="/m/d.gguf") is None
+        assert b._estimate_mtp_overhead_bytes(65536, drafter_path = "/m/d.gguf") is None
 
 
 # ---------------------------------------------------------------------------
@@ -287,16 +287,16 @@ class TestOverheadTotal:
         # The verify buffer (the only n_max-dependent term) rides in headroom now.
         b = _make_backend()
         assert b._estimate_mtp_overhead_bytes(
-            65536, spec_draft_n_max=2
-        ) == b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max=6)
+            65536, spec_draft_n_max = 2
+        ) == b._estimate_mtp_overhead_bytes(65536, spec_draft_n_max = 6)
 
     def test_none_when_draft_kv_unsizable(self):
-        assert _make_backend(nextn=0)._estimate_mtp_overhead_bytes(65536) is None
+        assert _make_backend(nextn = 0)._estimate_mtp_overhead_bytes(65536) is None
 
     def test_includes_separate_drafter_weights(self):
         b = _make_backend()
         base = b._estimate_mtp_overhead_bytes(65536)
-        with_w = b._estimate_mtp_overhead_bytes(65536, draft_weights_bytes=GIB)
+        with_w = b._estimate_mtp_overhead_bytes(65536, draft_weights_bytes = GIB)
         assert with_w - base == GIB
 
     @pytest.mark.parametrize(
@@ -308,7 +308,7 @@ class TestOverheadTotal:
     def test_draft_kv_matches_measured(self, ctx, measured_draft_kv_mib):
         b = _make_backend()
         pred = b._estimate_mtp_overhead_bytes(ctx) / MIB
-        assert pred == pytest.approx(measured_draft_kv_mib, abs=2)
+        assert pred == pytest.approx(measured_draft_kv_mib, abs = 2)
 
 
 # ---------------------------------------------------------------------------
@@ -317,10 +317,10 @@ class TestOverheadTotal:
 
 
 class TestFitContextWithMtp:
-    def _fit_backend(self, kv_per_token=325_000):
+    def _fit_backend(self, kv_per_token = 325_000):
         b = _make_backend()
         b._can_estimate_kv = lambda: True
-        b._estimate_kv_cache_bytes = lambda n, _t=None, **_k: (0 if n <= 0 else n * kv_per_token)
+        b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else n * kv_per_token)
         return b
 
     def test_overhead_fn_lowers_context(self):
@@ -332,7 +332,7 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
         )
         assert 0 < with_mtp < without
 
@@ -347,8 +347,8 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(
-                c, draft_cache_type_k="f16", draft_cache_type_v="f16"
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(
+                c, draft_cache_type_k = "f16", draft_cache_type_v = "f16"
             )
             or 0,
         )
@@ -356,8 +356,8 @@ class TestFitContextWithMtp:
             131072,
             avail_mib,
             model,
-            mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(
-                c, draft_cache_type_k="q4_0", draft_cache_type_v="q4_0"
+            mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(
+                c, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
             )
             or 0,
         )
@@ -368,7 +368,7 @@ class TestFitContextWithMtp:
         avail_mib, model = 24_000, 8 * GIB
         a = b._fit_context_to_vram(131072, avail_mib, model)
         bb = b._fit_context_to_vram(
-            131072, avail_mib, model, mtp_engaged=False, mtp_overhead_fn=None
+            131072, avail_mib, model, mtp_engaged = False, mtp_overhead_fn = None
         )
         assert a == bb
 
@@ -376,7 +376,7 @@ class TestFitContextWithMtp:
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
         fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0  # noqa: E731
-        ctx = b._fit_context_to_vram(131072, avail_mib, model, mtp_overhead_fn=fn)
+        ctx = b._fit_context_to_vram(131072, avail_mib, model, mtp_overhead_fn = fn)
         budget = avail_mib * MIB * _CTX_FIT_VRAM_FRACTION
         assert model + b._estimate_kv_cache_bytes(ctx) + fn(ctx) <= budget
 
@@ -402,14 +402,14 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_requests_mtp(self, args, expected):
-        assert _extra_args_requests_mtp(args, env={}) is expected
+        assert _extra_args_requests_mtp(args, env = {}) is expected
 
     def test_requests_mtp_env(self):
         # The child honors LLAMA_ARG_SPEC_TYPE; env-requested MTP must reserve too.
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is True
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "none"}) is False
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is True
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
 
     def test_requests_mtp_effective_spec_type(self):
         # llama.cpp uses the LAST CLI --spec-type and ignores the env when any CLI
@@ -420,30 +420,30 @@ class TestExtraArgsMtpDetection:
         # Later CLI value overrides an earlier MTP one (last-wins).
         assert (
             _extra_args_requests_mtp(
-                ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env={}
+                ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env = {}
             )
             is False
         )
         # A non-MTP CLI flag overrides a stale MTP env.
-        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env=env_mtp) is False
-        assert _extra_args_requests_mtp(["--spec-type", "none"], env=env_mtp) is False
+        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
+        assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is False
         # A later MTP CLI value still engages.
         assert (
             _extra_args_requests_mtp(
-                ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env={}
+                ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env = {}
             )
             is True
         )
         # Same precedence for separate (draft-simple/eagle3) detection.
         assert (
             _extra_args_requests_separate_draft(
-                ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env={}
+                ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
             )
             is False
         )
         assert (
             _extra_args_requests_separate_draft(
-                ["--spec-type", "ngram-mod"], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+                ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
             )
             is False
         )
@@ -461,15 +461,15 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_requests_separate_draft(self, args, expected):
-        assert _extra_args_requests_separate_draft(args, env={}) is expected
+        assert _extra_args_requests_separate_draft(args, env = {}) is expected
 
     def test_requests_separate_draft_env(self):
         assert (
-            _extra_args_requests_separate_draft([], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"})
+            _extra_args_requests_separate_draft([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"})
             is True
         )
         assert (
-            _extra_args_requests_separate_draft([], env={"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
+            _extra_args_requests_separate_draft([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
             is False
         )
 
@@ -494,12 +494,12 @@ class TestExtraArgsMtpDetection:
         # the draft reserve, or auto-fit spends the drafter's VRAM and OOMs. Mirror
         # load_model's _user_draft_via_extras gate (codex review 4507014299).
         monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/large.gguf")
-        monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", raising=False)
+        monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", raising = False)
         ea = ["--spec-type", "draft-simple"]  # _spec_env is {} (extras set spec-type)
-        assert _extra_args_requests_separate_draft(ea, env={}) is True
+        assert _extra_args_requests_separate_draft(ea, env = {}) is True
         assert _extra_args_mtp_draft_path(ea) == "/large.gguf"  # env=None -> os.environ
         # -> _user_draft_via_extras True; _env_draft_for_budget sizes the drafter.
-        assert _extra_args_mtp_draft_path([], env=dict(os.environ)) == "/large.gguf"
+        assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
     def test_load_model_gates_env_spec_type_on_off_mode(self):
         # LLAMA_ARG_SPEC_TYPE only reaches the child when Studio emits no spec
@@ -516,16 +516,16 @@ class TestExtraArgsMtpDetection:
         # non-MTP) that overrides a stale LLAMA_ARG_SPEC_TYPE env, so the reserve
         # must not treat it as MTP (reviewer.py R4).
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
-        assert _extra_args_requests_mtp(["--spec-default"], env=env_mtp) is False
+        assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is False
         assert (
             _extra_args_requests_separate_draft(
-                ["--spec-default"], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+                ["--spec-default"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
             )
             is False
         )
         # A later --spec-type still wins over an earlier --spec-default.
         assert (
-            _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env={}) is True
+            _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {}) is True
         )
 
     def test_load_model_drafter_budget_precedence(self):
@@ -592,27 +592,27 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_draft_offloaded_to_cpu(self, args, expected):
-        assert _extra_args_draft_offloaded_to_cpu(args, env={}) is expected
+        assert _extra_args_draft_offloaded_to_cpu(args, env = {}) is expected
 
     def test_draft_offloaded_to_cpu_env(self):
         # The child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT; an env-only CPU offload
         # must drop the drafter from the budget too (review run3 #3). CLI wins.
         assert (
-            _extra_args_draft_offloaded_to_cpu([], env={"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"})
+            _extra_args_draft_offloaded_to_cpu([], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"})
             is True
         )
         assert (
-            _extra_args_draft_offloaded_to_cpu([], env={"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"})
+            _extra_args_draft_offloaded_to_cpu([], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"})
             is False
         )
         # CLI --spec-draft-ngl wins over the env (last-wins is CLI-only).
         assert (
             _extra_args_draft_offloaded_to_cpu(
-                ["--spec-draft-ngl", "-1"], env={"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}
+                ["--spec-draft-ngl", "-1"], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}
             )
             is False
         )
-        assert _extra_args_draft_offloaded_to_cpu([], env={}) is False
+        assert _extra_args_draft_offloaded_to_cpu([], env = {}) is False
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -647,7 +647,7 @@ class TestExtraArgsMtpDetection:
     )
     def test_mtp_draft_path(self, args, expected):
         # env={} isolates pure-CLI behavior from a polluted test environment.
-        assert _extra_args_mtp_draft_path(args, env={}) == expected
+        assert _extra_args_mtp_draft_path(args, env = {}) == expected
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -660,18 +660,18 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_mtp_draft_path_hf_flags(self, args, expected):
-        assert _extra_args_mtp_draft_path(args, env={}) == expected
+        assert _extra_args_mtp_draft_path(args, env = {}) == expected
 
     def test_mtp_draft_path_env_fallback(self):
         # The child honors LLAMA_ARG_SPEC_DRAFT_MODEL / _HF_REPO; CLI wins over env.
         assert (
-            _extra_args_mtp_draft_path([], env={"LLAMA_ARG_SPEC_DRAFT_MODEL": "/m/e.gguf"})
+            _extra_args_mtp_draft_path([], env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/m/e.gguf"})
             == "/m/e.gguf"
         )
-        assert _extra_args_mtp_draft_path([], env={"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}) == "x/y"
+        assert _extra_args_mtp_draft_path([], env = {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}) == "x/y"
         assert (
             _extra_args_mtp_draft_path(
-                ["-md", "/m/cli.gguf"], env={"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}
+                ["-md", "/m/cli.gguf"], env = {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}
             )
             == "/m/cli.gguf"
         )
@@ -691,22 +691,22 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_draft_cache_types(self, args, expected):
-        assert _extra_args_draft_cache_types(args, env={}) == expected
+        assert _extra_args_draft_cache_types(args, env = {}) == expected
 
     def test_draft_cache_types_env_fallback(self):
         # The child honors LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K/_V per axis; CLI wins.
         assert _extra_args_draft_cache_types(
-            [], env={"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
+            [], env = {"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
         ) == ("q8_0", None)
         assert _extra_args_draft_cache_types(
             [],
-            env={
+            env = {
                 "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0",
                 "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": "q4_0",
             },
         ) == ("q8_0", "q4_0")
         assert _extra_args_draft_cache_types(
-            ["-ctkd", "q4_0"], env={"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
+            ["-ctkd", "q4_0"], env = {"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
         ) == ("q4_0", None)
 
     @pytest.mark.parametrize(
@@ -721,38 +721,38 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_n_ubatch(self, args, expected):
-        assert _extra_args_n_ubatch(args, env={}) == expected
+        assert _extra_args_n_ubatch(args, env = {}) == expected
 
     def test_n_ubatch_env_fallback(self):
         # The child honors LLAMA_ARG_UBATCH; it must reach the compute-buffer reserve.
-        assert _extra_args_n_ubatch([], env={"LLAMA_ARG_UBATCH": "4096"}) == 4096
+        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "4096"}) == 4096
         assert (
-            _extra_args_n_ubatch(["-ub", "1024"], env={"LLAMA_ARG_UBATCH": "4096"}) == 1024
+            _extra_args_n_ubatch(["-ub", "1024"], env = {"LLAMA_ARG_UBATCH": "4096"}) == 1024
         )  # CLI wins
-        assert _extra_args_n_ubatch([], env={"LLAMA_ARG_UBATCH": "notint"}) is None
+        assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "notint"}) is None
 
     def test_env_main_cache_type_for_budget(self):
         # The child inherits LLAMA_ARG_CACHE_TYPE_K/_V, but Studio emits no
         # --cache-type when neither param nor extras set it -> a heavier env
         # main KV (f32) must be adopted so the reserve matches the child.
-        assert _env_main_cache_type_for_budget(env={}) is None
+        assert _env_main_cache_type_for_budget(env = {}) is None
         # f32 exceeds the f16 default -> adopt it (lower-cased so the launch
         # re-emits it via _valid_cache_types).
-        assert _env_main_cache_type_for_budget(env={"LLAMA_ARG_CACHE_TYPE_K": "f32"}) == "f32"
-        assert _env_main_cache_type_for_budget(env={"LLAMA_ARG_CACHE_TYPE_V": "F32"}) == "f32"
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f32"}) == "f32"
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "F32"}) == "f32"
         # Heavier of K/V (single knob; over-reserves the lighter axis).
         assert (
             _env_main_cache_type_for_budget(
-                env={"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f16"}
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f16"}
             )
             == "f32"
         )
         # Quantized env types are <= f16 -> already over-reserved by the default.
-        assert _env_main_cache_type_for_budget(env={"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
-        assert _env_main_cache_type_for_budget(env={"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
-        assert _env_main_cache_type_for_budget(env={"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
         # Unknown env type self-neutralizes (treated as f16 by _kv_bytes_per_elem).
-        assert _env_main_cache_type_for_budget(env={"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None
 
     def test_load_model_adopts_env_main_cache_type(self):
         # Source-level: load_model budgets the heavier of asymmetric --cache-type
@@ -768,28 +768,28 @@ class TestExtraArgsMtpDetection:
         # The child inherits LLAMA_ARG_SPLIT_MODE, but Studio emits --split-mode
         # only on its tensor branch -> a tensor env must flip the budget so the
         # heavier per-device compute buffer is reserved (not layer overhead).
-        assert _env_split_mode_is_tensor(env={}) is False
-        assert _env_split_mode_is_tensor(env={"LLAMA_ARG_SPLIT_MODE": "tensor"}) is True
-        assert _env_split_mode_is_tensor(env={"LLAMA_ARG_SPLIT_MODE": "Tensor"}) is True
+        assert _env_split_mode_is_tensor(env = {}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}) is True
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "Tensor"}) is True
         # Other modes are not a runtime-heavier surprise -> not acted on.
-        assert _env_split_mode_is_tensor(env={"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
-        assert _env_split_mode_is_tensor(env={"LLAMA_ARG_SPLIT_MODE": "row"}) is False
-        assert _env_split_mode_is_tensor(env={"LLAMA_ARG_SPLIT_MODE": "none"}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "none"}) is False
 
     def test_effective_tensor_parallel_env_flip(self):
         # Shared by load_model and both duplicate-load matchers, so they agree.
         tensor_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
         # No extras, toggle off, tensor env -> flips on.
-        assert _effective_tensor_parallel(None, False, env=tensor_env) is True
+        assert _effective_tensor_parallel(None, False, env = tensor_env) is True
         # Extras override (any --split-mode) beats the env, even if non-tensor.
-        assert _effective_tensor_parallel(["--split-mode", "layer"], False, env=tensor_env) is False
+        assert _effective_tensor_parallel(["--split-mode", "layer"], False, env = tensor_env) is False
         # Explicit extras/toggle tensor stays on regardless of env.
-        assert _effective_tensor_parallel(["--split-mode", "tensor"], False, env={}) is True
-        assert _effective_tensor_parallel(None, True, env={}) is True
+        assert _effective_tensor_parallel(["--split-mode", "tensor"], False, env = {}) is True
+        assert _effective_tensor_parallel(None, True, env = {}) is True
         # One-directional: a non-tensor env never downgrades, and no env -> no flip.
-        assert _effective_tensor_parallel(None, False, env={}) is False
+        assert _effective_tensor_parallel(None, False, env = {}) is False
         assert (
-            _effective_tensor_parallel(None, False, env={"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
+            _effective_tensor_parallel(None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
         )
 
     def test_tensor_parallel_matches_loaded_env_downgrade(self):
@@ -798,18 +798,18 @@ class TestExtraArgsMtpDetection:
         # an identical request -- not reload forever (#6312).
         tensor_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
         # Launched tensor: env-only request matches.
-        assert _tensor_parallel_matches_loaded(None, False, True, env=tensor_env) is True
+        assert _tensor_parallel_matches_loaded(None, False, True, env = tensor_env) is True
         # Downgraded to layer: same env-only request still matches (no reload loop).
-        assert _tensor_parallel_matches_loaded(None, False, False, env=tensor_env) is True
+        assert _tensor_parallel_matches_loaded(None, False, False, env = tensor_env) is True
         # No env: a plain request matches a layer server and mismatches a tensor one.
-        assert _tensor_parallel_matches_loaded(None, False, False, env={}) is True
-        assert _tensor_parallel_matches_loaded(None, False, True, env={}) is False
+        assert _tensor_parallel_matches_loaded(None, False, False, env = {}) is True
+        assert _tensor_parallel_matches_loaded(None, False, True, env = {}) is False
         # Explicit tensor request stays strict: must have a tensor server.
-        assert _tensor_parallel_matches_loaded(None, True, False, env={}) is False
-        assert _tensor_parallel_matches_loaded(None, True, True, env={}) is True
+        assert _tensor_parallel_matches_loaded(None, True, False, env = {}) is False
+        assert _tensor_parallel_matches_loaded(None, True, True, env = {}) is True
         # An explicit non-tensor --split-mode beats the env (no flip).
         assert (
-            _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env=tensor_env)
+            _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env = tensor_env)
             is False
         )
 
@@ -990,7 +990,7 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
     strictly lower one once the MTP draft reserve is accounted for."""
     b = _make_backend()
     b._can_estimate_kv = lambda: True
-    b._estimate_kv_cache_bytes = lambda n, _t=None, **_k: (0 if n <= 0 else int(n * 66_000))
+    b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: (0 if n <= 0 else int(n * 66_000))
     avail_mib = 24_000
     model = int(17.9 * GIB)  # UD-Q4_K_XL weights
     no_mtp = b._fit_context_to_vram(262144, avail_mib, model)
@@ -998,7 +998,7 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
         262144,
         avail_mib,
         model,
-        mtp_overhead_fn=lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
+        mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
     )
     assert 0 < with_mtp < no_mtp
 

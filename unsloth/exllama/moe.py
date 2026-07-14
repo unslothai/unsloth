@@ -324,8 +324,13 @@ def _model_device(model) -> torch.device:
 def _experts_have_bias(module) -> bool:
     """True if a fused-experts module carries per-expert bias (e.g. gpt_oss)."""
     for attr in (
-        "gate_up_proj_bias", "down_proj_bias", "gate_proj_bias",
-        "up_proj_bias", "w1_bias", "w2_bias", "w3_bias",
+        "gate_up_proj_bias",
+        "down_proj_bias",
+        "gate_proj_bias",
+        "up_proj_bias",
+        "w1_bias",
+        "w2_bias",
+        "w3_bias",
     ):
         if getattr(module, attr, None) is not None:
             return True
