@@ -102,7 +102,7 @@ export function notifyStudioDictationUnavailable(
   // the action sits below, not squeezed into a side column.
   const toastId = toast.error("Voice typing isn't available in this browser.", {
     description: (
-      <div className="mt-0.5 flex flex-col items-start gap-2 pb-2.5">
+      <div className="mt-0.5 flex flex-col items-start gap-2 pb-1.5">
         <span>
           Choose the local speech-to-text model in Voice settings to dictate
           here.
@@ -113,7 +113,7 @@ export function notifyStudioDictationUnavailable(
             useSettingsDialogStore.getState().openDialog("voice");
             toast.dismiss(toastId);
           }}
-          className="rounded-full bg-foreground px-2.5 py-1 text-xs font-medium text-background transition-colors hover:bg-foreground/90"
+          className="rounded-full bg-foreground px-2.5 pt-1 pb-1.5 text-xs font-medium text-background transition-colors hover:bg-foreground/90"
         >
           Open Voice settings
         </button>
