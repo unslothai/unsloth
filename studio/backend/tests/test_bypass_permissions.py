@@ -120,11 +120,33 @@ def captured_popen(monkeypatch):
 
 
 @_POSIX_ONLY
-def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
+def test_python_unsandboxed_fallback_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
+    # When the OS sandbox is unavailable, the non-bypass python path falls back
+    # to a direct interpreter launch with the full-hardening pre-exec and the
+    # credential-free environment.
+    monkeypatch.setattr(tools, "sandbox_available", lambda: False)
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._sandbox_preexec
     assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]
+    # Not OS-wrapped: the interpreter runs directly.
+    assert captured_popen["cmd"][0] == tools._normalized_sys_executable()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "bwrap pre-exec is Linux-only")
+def test_python_sandboxed_uses_bwrap_preexec_and_wraps_argv(captured_popen, monkeypatch):
+    # When bubblewrap is available on Linux, the non-bypass python path wraps the
+    # interpreter in the bwrap argv and uses the bwrap-specific pre-exec (which
+    # skips no-new-privs / NPROC on the host parent so the setuid helper works).
+    monkeypatch.setattr(tools, "sandbox_available", lambda: True)
+    monkeypatch.setattr(
+        tools, "build_sandbox_argv", lambda inner, wd: ["/usr/bin/bwrap", "--", *inner]
+    )
+    monkeypatch.setenv("HF_TOKEN", "secret-abc")
+    _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
+    assert captured_popen["kwargs"]["preexec_fn"] is tools._sandbox_preexec_for_bwrap
+    assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]
+    assert captured_popen["cmd"][0] == "/usr/bin/bwrap"
 
 
 @_POSIX_ONLY
