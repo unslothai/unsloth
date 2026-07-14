@@ -340,8 +340,12 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
-  const [initialMaxSeqLength] = useState(
-    () => normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096,
+  // Only the active model seeds its max sequence length from the loaded
+  // runtime params. A different, unloaded model with no saved config seeds the
+  // app default instead, so opening its settings and loading does not inherit
+  // the currently loaded model's context.
+  const [initialMaxSeqLength] = useState(() =>
+    isActiveModel ? (normalizeMaxSeqLength(runtimeMaxSeqLength) ?? 4096) : 4096,
   );
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(target.id, target.ggufVariant);
