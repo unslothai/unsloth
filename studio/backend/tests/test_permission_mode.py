@@ -307,6 +307,11 @@ def _clear_pending():
         ("file -C -m mymagic", True),  # file -C compiles a magic database (writes .mgc)
         ("file --compile -m mymagic", True),  # long form of the compile flag
         ("file report.txt", False),  # plain file identification stays read-only
+        ("sha256sum -c manifest", True),  # -c reads an arbitrary checklist of paths
+        ("md5sum --check list", True),  # --check reads the listed files
+        ("shasum -c manifest", True),  # shasum verify mode reads the checklist
+        ("sha256sum data.bin", False),  # hashing a named file stays read-only
+        ("md5sum file.txt", False),  # plain digest of a file stays read-only
     ],
 )
 def test_terminal_classifier(command, unsafe):
@@ -446,6 +451,20 @@ def test_terminal_classifier(command, unsafe):
             False,
         ),  # benign pathlib glob stays safe
         (
+            "from pathlib import Path\nlist(Path('/home').glob('*'))",
+            True,
+        ),  # globbing an absolute root enumerates host filenames
+        (
+            "from pathlib import Path\nlist(Path('/etc').rglob('*'))",
+            True,
+        ),  # recursive glob over a system dir
+        ("import glob\nglob.glob('/home/*')", True),  # glob.glob pattern rooted absolute
+        (
+            "from pathlib import Path\nlist(Path('~').expanduser().glob('*'))",
+            True,
+        ),  # glob over the home directory
+        ("import glob\nglob.glob('src/*.py')", False),  # relative glob pattern stays safe
+        (
             "import os\nbase = os.path.abspath('/etc')\nopen(base + '/passwd').read()",
             True,
         ),  # abspath keeps the sensitive root
@@ -569,6 +588,11 @@ def test_terminal_classifier(command, unsafe):
         ("import gzip\ngzip.GzipFile('o.gz', 'r')", False),  # gzip read stays safe
         ("import gzip\ngzip.GzipFile('o.gz')", False),  # gzip default (read) stays safe
         ("df.to_xml('out.xml')", True),  # pandas to_xml writer
+        ("df.to_html('report.html')", True),  # pandas to_html writer
+        ("df.to_markdown('out.md')", True),  # pandas to_markdown writer
+        ("df.to_latex('out.tex')", True),  # pandas to_latex writer
+        ("df.to_dict()", False),  # non-persisting pandas export stays safe
+        ("x = df.to_string()", False),  # to_string renders to memory, stays safe
         (
             "import websockets\nwebsockets.connect('ws://h')",
             True,
@@ -914,6 +938,11 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
     assert rh("<script>/* just a note */ var x = 1</script>") is False  # comment only
+    # A meta-refresh with a url navigates the frame to an external origin.
+    assert rh('<meta http-equiv="refresh" content="0;url=https://example.com">') is True
+    assert rh("<meta http-equiv='refresh' content='0; url=https://x'>") is True
+    assert rh('<meta http-equiv="refresh" content="30">') is False  # self-reload, no url
+    assert rh('<meta charset="utf-8"><h1>Hi</h1>') is False  # ordinary meta stays safe
 
 
 def test_unknown_tools_fail_closed():

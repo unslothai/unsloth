@@ -407,6 +407,15 @@ _AUTO_UNSAFE_COMMAND_FLAGS = {
     ),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
+    # -c/--check makes a checksum tool read a manifest file and then read every
+    # path it names, so a manifest listing /etc/passwd turns `sha256sum -c list`
+    # into an indirect host-file read; the digest form (sha256sum file) only reads
+    # the named files.
+    "md5sum": frozenset({"-c", "--check"}),
+    "sha1sum": frozenset({"-c", "--check"}),
+    "sha256sum": frozenset({"-c", "--check"}),
+    "shasum": frozenset({"-c", "--check"}),
+    "cksum": frozenset({"-c", "--check"}),
     # GNU time -o/--output/-a/--append FILE writes timing output; time is a
     # wrapper, so the flag is checked before the wrapped command like env -C.
     "time": frozenset({"-o", "--output", "-a", "--append"}),
@@ -692,6 +701,14 @@ _AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
         "to_stata",
         "to_sql",
         "to_xml",
+        # pandas text exporters that write when given a path/buffer (to_html /
+        # to_markdown / to_latex mirror to_csv); to_clipboard / to_gbq persist
+        # off-process. to_string is omitted: it is overwhelmingly display-only.
+        "to_html",
+        "to_markdown",
+        "to_latex",
+        "to_clipboard",
+        "to_gbq",
         "imwrite",
         "imsave",
         "write_image",
@@ -2087,13 +2104,24 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # Enumerating a directory outside the sandbox reads host
                     # filenames (and enables reading their contents) the direct
                     # /etc/passwd checks would prompt for: Path('/etc').iterdir(),
-                    # os.scandir('/etc'), os.listdir('/home'), os.walk('/'). Gate
-                    # when the target dir folds to an absolute/tilde/sensitive path;
-                    # a relative dir (Path('.').iterdir(), os.scandir('data')) stays
+                    # os.scandir('/etc'), os.listdir('/home'), os.walk('/'),
+                    # Path('/home').glob('*'), glob.glob('/home/*'). Gate when the
+                    # target dir folds to an absolute/tilde/sensitive path; a
+                    # relative dir (Path('.').iterdir(), glob.glob('src/*')) stays
                     # safe, and an unresolved dynamic dir is left to other checks.
                     _enum_dir = None
                     if func.attr == "iterdir":
                         _enum_dir = func.value
+                    elif func.attr in ("glob", "rglob", "iglob"):
+                        # Path('/home').glob('*') enumerates the receiver dir;
+                        # glob.glob('/home/*') enumerates the pattern's root dir.
+                        _recv = _folded_path(
+                            func.value, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                        )
+                        if isinstance(_recv, str) and _recv not in ("", "\x00"):
+                            _enum_dir = func.value
+                        elif node.args:
+                            _enum_dir = node.args[0]
                     elif (
                         func.attr in ("scandir", "listdir", "walk")
                         and isinstance(func.value, ast.Name)
@@ -2318,6 +2346,9 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
     r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
     r"sendBeacon|serviceWorker)[\"']\s*\]|"
+    # Declarative meta-refresh navigation to a URL (order-tolerant); a bare
+    # content="30" self-reload has no url= and stays static.
+    r"<meta\b(?=[^>]*http-equiv\s*=\s*[\"']?\s*refresh)(?=[^>]*\burl\s*=)|"
     r"\bwss?://",
     re.IGNORECASE,
 )
