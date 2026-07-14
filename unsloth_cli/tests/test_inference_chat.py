@@ -919,6 +919,7 @@ def test_inference_local_handles_stream(monkeypatch, chunk_kind, expected_exit):
     if chunk_kind == "real_error":
         assert isinstance(result.exception, RuntimeError)
         assert str(result.exception) == "generation failed"
+        assert "Error: generation failed" not in result.output
     else:
         assert chunks[0] in result.output
 
@@ -961,6 +962,7 @@ def test_chat_local_handles_stream(monkeypatch, chunk_kind):
     if chunk_kind == "real_error":
         assert calls[1] == [{"role": "user", "content": "second"}]
         assert "(error: generation failed)" in result.output
+        assert "Error: generation failed" not in result.output
     else:
         assert calls[1] == [
             {"role": "user", "content": "first"},
