@@ -77,8 +77,8 @@ def test_replaced_dead_generation_still_retires_its_workflow_key(monkeypatch):
     retired = []
 
     def replace_during_drain(_queue):
-        manager._job = Job(job_id="job-new", owner_subject="owner-b")
-        manager._proc = _FakeProc(alive=True)
+        manager._job = Job(job_id = "job-new", owner_subject = "owner-b")
+        manager._proc = _FakeProc(alive = True)
         manager._mp_q = _ScriptedQueue([])
         return []
 

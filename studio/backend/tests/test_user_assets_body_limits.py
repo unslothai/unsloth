@@ -18,7 +18,12 @@ MUTATION_PATHS = [
 ]
 
 
-async def _run_request(method: str, path: str, messages: list[dict], headers=()):
+async def _run_request(
+    method: str,
+    path: str,
+    messages: list[dict],
+    headers = (),
+):
     app_called = False
 
     async def inner(scope, receive, send):
@@ -29,8 +34,8 @@ async def _run_request(method: str, path: str, messages: list[dict], headers=())
 
     middleware = MaxBodyMiddleware(
         inner,
-        max_bytes_getter=lambda: 10,
-        protected_prefixes=_BODY_PROTECTED_PREFIXES,
+        max_bytes_getter = lambda: 10,
+        protected_prefixes = _BODY_PROTECTED_PREFIXES,
     )
     sent: list[dict] = []
 
@@ -60,7 +65,7 @@ async def test_user_asset_mutations_reject_declared_oversized_bodies(method, pat
         method,
         path,
         [{"type": "http.request", "body": b"", "more_body": False}],
-        headers=[(b"content-length", b"11")],
+        headers = [(b"content-length", b"11")],
     )
     assert not called
     assert sent[0]["status"] == 413

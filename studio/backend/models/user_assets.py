@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 URL_SEGMENT_ID_PATTERN = r"^[^/\\]+$"
 
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra = "forbid", strict = True)
 

@@ -461,9 +461,7 @@ def list_recipe_executions(
         return {
             "executions": [_execution_from_row(row) for row in page_rows],
             "nextCursor": next_cursor,
-            "resumable": _execution_from_row(resumable_row)
-            if resumable_row is not None
-            else None,
+            "resumable": _execution_from_row(resumable_row) if resumable_row is not None else None,
         }
     finally:
         conn.close()
@@ -816,8 +814,7 @@ def _already_imported(
     if row is None:
         return False
     if row["outcome"] == "missing_parent" or (
-        row["outcome"] == "rejected"
-        and row["reason"] not in {"already_exists", "parent_retired"}
+        row["outcome"] == "rejected" and row["reason"] not in {"already_exists", "parent_retired"}
     ):
         # Older builds accidentally terminalized deferred and validation
         # failures. Remove those rows so corrected input can be retried.
