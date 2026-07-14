@@ -474,7 +474,7 @@ _AUTO_UNSAFE_MCP_VERB_RE = re.compile(
     r"save|archive|submit|commit|push|sync|register|"
     r"clone|checkout|comment|fork|tag|invite|share|append|prepend|"
     r"copy|duplicate|import|export|download|backup|restore|snapshot|mirror|"
-    r"upsert|assign)(?:[_\-]|$)",
+    r"upsert|assign|mark|subscribe|unsubscribe)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -1878,6 +1878,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     # logging.basicConfig(filename=...) opens a log file for write.
                     if func.attr == "basicConfig" and _basicconfig_writes(node):
+                        return True
+                    # A qualified higher-order invoker (itertools.starmap(open, ...),
+                    # functools.reduce(open, ...)) calls its first arg like the bare
+                    # map/filter form; the writer-check on that arg keeps a benign
+                    # itertools.starmap(len, ...) / df.map(transform) safe.
+                    if (
+                        func.attr in _HIGHER_ORDER_INVOKERS
+                        and node.args
+                        and _wraps_write_callable(node.args[0])
+                    ):
                         return True
                     # fileinput.input(..., inplace=True) rewrites a file in place;
                     # the default fileinput.input(...) only reads, so gate inplace.

@@ -545,6 +545,22 @@ def test_terminal_classifier(command, unsafe):
             True,
         ),  # writer handed to map()
         ("list(map(len, ['abc']))", False),  # benign map() stays safe
+        (
+            "import itertools\nlist(itertools.starmap(open, [('out', 'w')]))",
+            True,
+        ),  # qualified higher-order invoker (itertools.starmap)
+        (
+            "import functools\nfunctools.reduce(open, xs)",
+            True,
+        ),  # qualified functools.reduce with a writer
+        (
+            "import itertools\nlist(itertools.starmap(len, xs))",
+            False,
+        ),  # benign qualified invoker stays safe
+        (
+            "import itertools\nlist(itertools.chain(xs, ys))",
+            False,
+        ),  # non-invoker itertools helper stays safe
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -732,7 +748,11 @@ def test_is_always_safe_tool():
         ("fetch_and_download_asset", True),  # download writes local state
         ("list_and_export_data", True),  # import/export/backup/restore/snapshot
         ("get_and_snapshot_volume", True),
+        ("get_and_mark_read", True),  # mark/subscribe change external state
+        ("get_and_subscribe", True),
+        ("list_and_unsubscribe", True),
         ("read_report", False),  # plain read stays safe
+        ("list_bookmarks", False),  # 'mark' substring in a token stays safe
     ],
 )
 def test_mcp_classifier(tool, unsafe):
