@@ -5,11 +5,9 @@ import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
 
-// Persisting appearance is best-effort. localStorage can be full or blocked
-// (private browsing), and unlike the theme store zustand's persist write path
-// is not guarded, so a throw here would bubble out of a store action (patch,
-// setColor, ...) and break the UI. Swallow storage errors and keep the
-// in-memory state instead.
+// Best-effort persistence: localStorage can be blocked (private browsing) and
+// zustand's persist write path is unguarded, so a throw would break a store
+// action. Swallow storage errors and keep the in-memory state.
 const guardedLocalStorage: StateStorage = {
   getItem: (name) => {
     try {

@@ -150,11 +150,8 @@ export function SettingsDialog() {
   // racing a single fixed delay (which silently missed under render lag).
   useEffect(() => {
     if (!pendingScroll) return;
-    // The panel renders from the deferred tab, so wait until the destination
-    // tab is actually mounted before matching. Otherwise a same-named row in
-    // the previous tab (for example "Storage" in both General and Resources)
-    // is found first, and pendingScroll is cleared without ever scrolling to
-    // the requested result.
+    // Wait until the destination tab is mounted before matching, so a same-named
+    // row in the previous tab (for example "Storage") is not scrolled to instead.
     if (panelTab !== pendingScroll.tab) return;
     let frame = 0;
     let tries = 0;
