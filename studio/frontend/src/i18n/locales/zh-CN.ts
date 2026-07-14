@@ -91,6 +91,8 @@ export const zhCN = {
       title: "设置",
       description: "管理你的 Unsloth Studio 偏好设置。",
       closeAriaLabel: "关闭设置",
+      searchPlaceholder: "搜索设置…",
+      searchNoResults: "未找到设置。",
     },
     tabs: {
       general: "通用",
@@ -112,7 +114,7 @@ export const zhCN = {
       showToken: "显示 token",
       tokenSaved: "Token 已保存",
       password: "密码",
-      passwordDescription: "更改此 Studio 账号的密码。",
+      passwordDescription: "更改此 Unsloth 账号的密码。",
       passwordDialog: {
         trigger: "更改密码",
         title: "更改密码",
@@ -240,7 +242,11 @@ export const zhCN = {
       avatarShape: "头像形状",
       avatarShapeCircle: "圆形",
       avatarShapeRounded: "圆角矩形",
-      chooseSloth: "或选择一只树懒",
+      greetingSloth: "问候语中显示树懒",
+      greetingSlothDescription: "在对话问候语中显示树懒。",
+      chooseSloth: "或选择一只树懒作为头像",
+      noPicture: "无头像",
+      noneLabel: "无",
       nameSaved: "个人资料名称已保存",
       namePersistErrorTitle: "无法持久保存个人资料名称",
       namePersistErrorDescription:
@@ -269,10 +275,105 @@ export const zhCN = {
         light: "浅色",
         dark: "深色",
       },
+      palette: {
+        label: "调色板",
+        description: "Unsloth 全局使用的配色，支持浅色和深色模式。",
+        standard: "标准",
+        classic: "经典",
+        minimal: "极简",
+      },
+      custom: {
+        reset: "重置",
+        resetAll: "重置自定义",
+        preferencesTitle: "偏好设置",
+        colors: {
+          lightGroup: "浅色主题",
+          darkGroup: "深色主题",
+          accent: "强调色",
+          background: "背景",
+          foreground: "前景",
+        },
+        fontDefault: "默认",
+        fontBundledGroup: "内置",
+        fontImportedGroup: "已导入",
+        fontDeviceGroup: "此设备",
+        fontFolderGroup: "来自文件夹",
+        fontDeviceLoading: "正在查找设备字体…",
+        fontSearch: "搜索字体…",
+        fontNoResults: "未找到字体。",
+        colorPicker: {
+          hue: "色相",
+          hex: "十六进制颜色",
+          eyedropper: "从屏幕取色",
+        },
+        uiFont: {
+          label: "界面字体",
+        },
+        headingFont: {
+          label: "标题字体",
+        },
+        chatFont: {
+          label: "聊天字体",
+        },
+        codeFont: {
+          label: "代码字体",
+        },
+        importFont: {
+          upload: "上传",
+          scanFolder: "选择文件夹",
+          alreadyAvailable: "该字体已可用，将使用现有字体。",
+          folderNoFonts: "在该文件夹中未找到字体文件。",
+          remove: "移除",
+          errorInvalidType:
+            "不支持的文件类型。请使用 .woff2、.woff、.ttf 或 .otf。",
+          errorTooLarge: "字体文件过大（最大 1.5 MB）。",
+          errorLimit: "最多可导入 3 个字体。",
+          errorStorageFull: "本地存储空间不足。请先删除一个已导入的字体。",
+          errorFailed: "无法加载此字体文件。",
+        },
+        uiFontSize: {
+          label: "界面字号",
+          description: "调整 Unsloth 界面的基准字号。",
+        },
+        codeFontSize: {
+          label: "代码字号",
+          description: "调整代码的基准字号。",
+        },
+        fontSmoothing: {
+          label: "字体平滑",
+          description: "使用平滑的字体抗锯齿。",
+        },
+        edgeFades: {
+          label: "边缘淡出",
+          description: "在面板边缘淡出内容。关闭后显示细分隔线。",
+        },
+        contrast: {
+          label: "对比度",
+          description: "边框和次要文本的强度。",
+        },
+        reduceMotion: {
+          label: "减少动态效果",
+          description: "减少动画，或跟随系统设置。",
+          system: "跟随系统",
+          on: "开",
+          off: "关",
+        },
+        pointerCursors: {
+          label: "使用指针光标",
+          description: "悬停在可交互元素上时将光标变为指针。",
+        },
+      },
       layout: {
         title: "布局",
         compactSidebar: "默认固定侧边栏",
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
+      },
+      sidebarMenu: {
+        title: "侧边栏菜单",
+        description:
+          "显示、隐藏和重新排序侧边栏个人菜单中的项目。设置、帮助、退出登录和关闭保持固定。",
+        darkModeToggle: "深色模式切换",
+        dragToReorder: "拖动以重新排序",
       },
     },
     resources: {
