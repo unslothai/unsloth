@@ -2083,8 +2083,7 @@ class LlamaCppBackend:
         """
         try:
             return [
-                x if math.isfinite(x) and x > 0.0 else 0.0
-                for x in (float(v) for v in tensor_split)
+                x if math.isfinite(x) and x > 0.0 else 0.0 for x in (float(v) for v in tensor_split)
             ]
         except (TypeError, ValueError, OverflowError):
             return []
