@@ -1638,6 +1638,13 @@ export function HubModelPicker({
         .then((outcome) => {
           if (outcome === "conflict") {
             setUpdateConflictKey(jobKeyOf("model", repoId, variant));
+          } else if (outcome === "busy") {
+            // A sibling variant/snapshot for this repo is already downloading,
+            // so this update did not start. Say so instead of closing the
+            // dialog as if it began and leaving the cached copy stale.
+            toast.info("A download for this model is already in progress", {
+              description: "Try updating again once it finishes.",
+            });
           } else if (outcome === "error") {
             throw new Error("Failed to start update");
           }
