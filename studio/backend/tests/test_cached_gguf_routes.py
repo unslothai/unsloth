@@ -8,9 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 # Keep this test runnable without optional logging deps.
-try:
-    import structlog  # noqa: F401
-except ImportError:
+if "structlog" not in sys.modules:
 
     class _DummyLogger:
         def __getattr__(self, _name):
