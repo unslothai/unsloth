@@ -553,6 +553,43 @@ class TestKnown211SetParity:
             text,
         ), "install.ps1 pinned-ROCm floor must be rocm7.2 only (no speculative >= 2)"
 
+    def test_ps1_pin_floor_gate_is_anchored(self):
+        """The floor-selection gate that reads $_pinRocm211 from the raw leaf must anchor
+        the rocm match ($), or a suffixed custom leaf (rocm7.2-private) matches the rocm7.2
+        prefix, takes the 2.11-floor branch, and is force-routed through the ROCm path
+        before the exact-match elseif can send it to the verbatim install (Codex P2)."""
+        for path, label in ((INSTALL_PS1, "install.ps1"), (SETUP_PS1, "setup.ps1")):
+            text = path.read_text(encoding = "utf-8")
+            assert "-match '^rocm(\\d+)\\.(\\d+)$'" in text, (
+                f"{label} floor gate must anchor the rocm match (^rocm(\\d+)\\.(\\d+)$) so a "
+                "suffixed custom leaf is not floored/routed as rocm7.2"
+            )
+            assert "-match '^rocm(\\d+)\\.(\\d+)'\n" not in text, (
+                f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
+            )
+
+    def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
+        """install.ps1's custom (non-cu-family) pinned-torch install must bound BOTH
+        companions, not just torch: a private mirror serving newer torchvision/torchaudio
+        must not pull a companion built for a newer torch ABI while the marker records the
+        pin as applied. A cu<digits> family index keeps bare companions (Codex P2)."""
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text, (
+            "install.ps1 custom-pin install must bound torchvision (>=0.19,<0.26.0)"
+        )
+        assert '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text, (
+            "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
+        )
+        # Gated on the leaf NOT being a cu<digits> family (a cu index bounds itself).
+        assert "$_pinCuLeaf -notmatch '^cu[0-9]+$'" in text, (
+            "install.ps1 must bound companions only for a non-cu-family (custom) pin"
+        )
+        # The bounded companions must actually be passed to the install command.
+        assert re.search(
+            r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
+            text,
+        ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
+
     def test_gfx_allowlist_matches_across_installers(self):
         # The gfx 2.11 allowlist {gfx120x-all, gfx1151, gfx1150} must appear in each.
         gfx = ("gfx120x-all", "gfx1151", "gfx1150")

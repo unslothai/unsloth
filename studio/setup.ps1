@@ -3272,7 +3272,10 @@ if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu
 if ($TorchIndexPinned -and -not $ROCmIndexUrl -and $PinnedTorchIndexUrl) {
     $_pinLeaf = Get-TorchIndexLeaf $PinnedTorchIndexUrl
     $_pinRocm211 = $false
-    if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
+    # Anchor the match ($): a suffixed custom leaf (rocm7.2-private) must NOT match the
+    # family here, or its rocm7.2 prefix would apply the 2.11 floor and route it through
+    # the ROCm path before the exact-match elseif below can send it verbatim.
+    if ($_pinLeaf -match '^rocm(\d+)\.(\d+)$') {
         # Only KNOWN-2.11 rocm indexes (rocm7.2) get the 2.11 floor; do not floor an
         # unknown newer rocm speculatively. Matches install.sh's rocm7.2 KNOWN-2.11
         # leaf and Test-RocmKnown211Version / _ROCM_KNOWN_TORCH211_VERSIONS.

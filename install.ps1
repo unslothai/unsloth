@@ -2192,7 +2192,10 @@ exit 0
     if ($TorchIndexPinned -and -not $ROCmIndexUrl -and -not $SkipTorch) {
         $_pinLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
         $_pinRocm211 = $false
-        if ($_pinLeaf -match '^rocm(\d+)\.(\d+)') {
+        # Anchor the match ($): a suffixed custom leaf (rocm7.2-private) must NOT match
+        # the family here, or its rocm7.2 prefix would apply the 2.11 floor and route it
+        # through the ROCm path before the exact-match elseif below can send it verbatim.
+        if ($_pinLeaf -match '^rocm(\d+)\.(\d+)$') {
             # Only KNOWN-2.11 rocm indexes (rocm7.2) get the 2.11 floor; do not floor
             # an unknown newer rocm speculatively (rocm7.3 does not exist). Matches
             # install.sh's rocm7.2 KNOWN-2.11 leaf, setup.ps1's Test-RocmKnown211Version
@@ -2382,7 +2385,19 @@ exit 0
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($(Remove-IndexUrlCredentials $TorchIndexUrl))..."
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --default-index $TorchIndexUrl }
+            # Bound the companions for a CUSTOM pin: a private mirror that also serves a
+            # newer torchvision/torchaudio must not pull a companion built for a newer
+            # torch ABI while the marker records the pin as applied. A cu<digits> family
+            # index bounds its own resolution, so it keeps bare companions. Mirrors
+            # setup.ps1's Test-CudaFamilyLeaf gate and _CUSTOM_INDEX_TORCH_PKG_SPEC.
+            $_pinCuLeaf = (($TorchIndexUrl -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1].ToLower()
+            $_pinVisionSpec = "torchvision"
+            $_pinAudioSpec = "torchaudio"
+            if ($_pinCuLeaf -notmatch '^cu[0-9]+$') {
+                $_pinVisionSpec = "torchvision>=0.19,<0.26.0"
+                $_pinAudioSpec = "torchaudio>=2.4,<2.11.0"
+            }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" $_pinVisionSpec $_pinAudioSpec --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
