@@ -3895,15 +3895,11 @@ class TestProgressStepCountMatchesTotal:
             return stack_mod._STEP, stack_mod._TOTAL
 
     def test_windows_progress_reaches_total(self, tmp_path):
-        step, total = self._run_stack(
-            tmp_path, is_windows = True, is_macos = False, is_mac_arm = False
-        )
+        step, total = self._run_stack(tmp_path, is_windows = True, is_macos = False, is_mac_arm = False)
         assert step == total, f"Windows progress {step} != total {total} (final step uncounted)"
 
     def test_linux_progress_reaches_total(self, tmp_path):
-        step, total = self._run_stack(
-            tmp_path, is_windows = False, is_macos = False, is_mac_arm = False
-        )
+        step, total = self._run_stack(tmp_path, is_windows = False, is_macos = False, is_mac_arm = False)
         assert step == total, f"Linux progress {step} != total {total}"
 
 
