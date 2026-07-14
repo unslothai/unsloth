@@ -337,6 +337,22 @@ def _local_main_gguf_blobs_by_quant(repo_id: str) -> dict[str, dict[str, set[str
     return result
 
 
+def _size_identity_matches(local_set: set[str], remote_size: int) -> bool:
+    """Whether a cached file with NO blob hash is current, judged by size.
+
+    A size token only lands in ``local_set`` for a file the cache has no blob for,
+    so it never loosens the hash comparison for a normal file. Tradeoff: an
+    equal-size requant is missed, versus the status quo where every no-blob GGUF
+    shows a phantom update that no re-download clears.
+    """
+    size = int(remote_size or 0)
+    if size <= 0:
+        return False
+    from hub.services.models import cache_inventory
+
+    return cache_inventory.local_size_identity(size) in local_set
+
+
 def _variant_update_available_from_requirement(
     local_blobs: dict[str, set[str]], requirement: Optional[_GgufVariantRequirement], variant: str
 ) -> bool:
@@ -355,8 +371,13 @@ def _variant_update_available_from_requirement(
         if not remote_blob:
             continue
         local_set = local_by_posix.get(path)
-        if not local_set or remote_blob not in local_set:
+        if not local_set:
             return True
+        if remote_blob in local_set:
+            continue
+        if _size_identity_matches(local_set, expected.size):
+            continue
+        return True
     return False
 
 
