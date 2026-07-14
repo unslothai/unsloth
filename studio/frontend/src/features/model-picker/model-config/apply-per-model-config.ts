@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  defaultInferenceParams,
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
   useChatRuntimeStore,
@@ -17,9 +18,15 @@ function cleanTemplate(value: string | null | undefined): string | null {
 }
 
 export function applyPerModelConfigToRuntime(config: PerModelConfig): void {
-  const maxSeqLength = normalizeMaxSeqLength(config.maxSeqLength);
+  // Fall back to the standing default when the model has no saved
+  // maxSeqLength. maxSeqLength is the only per-model field carried on
+  // params (the rest are reset below), so without this a model with no
+  // remembered config would inherit the previously loaded model's value.
+  const maxSeqLength =
+    normalizeMaxSeqLength(config.maxSeqLength) ??
+    defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
-  if (maxSeqLength != null && maxSeqLength !== store.params.maxSeqLength) {
+  if (maxSeqLength !== store.params.maxSeqLength) {
     store.setParams({ ...store.params, maxSeqLength });
   }
   useChatRuntimeStore.setState({
