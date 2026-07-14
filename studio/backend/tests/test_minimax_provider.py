@@ -94,6 +94,10 @@ def test_minimax_endpoint_matrix_routes_to_the_selected_protocol(
 
     assert captured["url"] == expected_url
     assert captured["headers"]["authorization"] == "Bearer test-key"
+    if base_url.endswith("/anthropic"):
+        assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    else:
+        assert "anthropic-version" not in captured["headers"]
     assert captured["body"]["thinking"] == {"type": "adaptive"}
     assert "presence_penalty" not in captured["body"]
 
@@ -120,6 +124,7 @@ def test_minimax_endpoint_matrix_routes_model_discovery(
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
+        captured["headers"] = request.headers
         return httpx.Response(200, json = {"data": [{"id": "MiniMax-M3"}]})
 
     monkeypatch.setattr(
@@ -140,6 +145,12 @@ def test_minimax_endpoint_matrix_routes_model_discovery(
 
     assert _drive(run()) == [{"id": "MiniMax-M3"}]
     assert captured["url"] == expected_url
+    if base_url.endswith("/anthropic"):
+        assert captured["headers"]["x-api-key"] == "test-key"
+        assert "authorization" not in captured["headers"]
+    else:
+        assert captured["headers"]["authorization"] == "Bearer test-key"
+        assert "x-api-key" not in captured["headers"]
 
 
 @pytest.mark.parametrize(

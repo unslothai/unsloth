@@ -2065,6 +2065,7 @@ export function createOpenAIStreamAdapter(
           isExternalModel: isExternalRequest,
           externalSupportsVision: providerTypeSupportsVision(
             externalProvider?.providerType,
+            externalSelection?.modelId,
           ),
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
@@ -2632,7 +2633,11 @@ export function createOpenAIStreamAdapter(
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+                  : {
+                      thinking: {
+                        type: externalReasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
                 : {}),
             };
           }

@@ -804,7 +804,7 @@ class ExternalProviderClient:
         elif enable_thinking is False:
             body["thinking"] = {"type": "disabled"}
 
-    def _auth_headers(self) -> dict[str, str]:
+    def _auth_headers(self, *, for_model_catalog: bool = False) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
         from core.inference.providers import get_provider_info
 
@@ -819,6 +819,9 @@ class ExternalProviderClient:
             if _host != "generativelanguage.googleapis.com":
                 auth_header = "Authorization"
                 auth_prefix = "Bearer "
+        if for_model_catalog and self._uses_minimax_anthropic_api():
+            auth_header = "x-api-key"
+            auth_prefix = ""
 
         headers = {"Content-Type": "application/json"}
         # Skip auth header when api_key is empty (optional for local providers);
@@ -827,6 +830,8 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        if self._uses_minimax_anthropic_api():
+            headers.setdefault("anthropic-version", "2023-06-01")
         return headers
 
     def _is_openai_compatible(self) -> bool:
@@ -6036,7 +6041,7 @@ class ExternalProviderClient:
         try:
             response = await _http_client.get(
                 f"{self._request_base_url()}/models",
-                headers = self._auth_headers(),
+                headers = self._auth_headers(for_model_catalog = True),
                 timeout = self._timeout,
             )
             response.raise_for_status()
@@ -6133,7 +6138,7 @@ class ExternalProviderClient:
             async with _http_client.stream(
                 "GET",
                 url,
-                headers = self._auth_headers(),
+                headers = self._auth_headers(for_model_catalog = True),
                 timeout = self._timeout,
             ) as response:
                 if response.status_code != 200:

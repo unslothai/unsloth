@@ -104,6 +104,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       );
       externalSupportsVision = providerTypeSupportsVision(
         provider?.providerType,
+        externalSelection.modelId,
       );
       externalModelLabel = externalSelection.modelId;
     }

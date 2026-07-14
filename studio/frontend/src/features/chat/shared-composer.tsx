@@ -550,6 +550,7 @@ export function SharedComposer({
     isExternalModel,
     externalSupportsVision: providerTypeSupportsVision(
       selectedExternalProvider?.providerType,
+      externalSelection?.modelId,
     ),
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
