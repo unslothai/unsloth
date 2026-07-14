@@ -13,3 +13,16 @@ def test_proxy_authorization_is_rejected_and_redacted_by_the_same_policy():
     clean, paths = validate_recipe_payload(payload, legacy = True)
     assert clean == {"headers": {}}
     assert paths == ['$.headers["Proxy-Authorization"]']
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["private_key", "privateKey", "access_key", "accessKeyId"],
+)
+def test_exact_private_and_access_key_names_are_rejected_and_redacted(key):
+    payload = {"credentials": {key: "secret"}}
+    with pytest.raises(UserAssetValidationError, match = "secret fields"):
+        validate_recipe_payload(payload)
+    clean, paths = validate_recipe_payload(payload, legacy = True)
+    assert clean == {"credentials": {}}
+    assert paths == [f"$.credentials.{key}"]

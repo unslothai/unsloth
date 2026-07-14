@@ -2,11 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
+import {
+  RecipeStudioPage,
+  readLegacyRecipeExecutions,
+  type RecipePayload,
+} from "@/features/recipe-studio";
+import { importLegacyUserAssetsFromIndexedDb } from "@/features/user-assets";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
+import { readLegacyRecipes } from "../data/legacy-recipes-db";
+import {
+  getCachedRecipe,
+  getRecipe,
+  primeRecipeCache,
+  saveRecipe,
+} from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
 
 type EditRecipePageProps = {
@@ -54,6 +65,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
       setLoadState({ status: "ready", record: cachedRecipe });
@@ -61,10 +73,25 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       setLoadState({ status: "loading" });
     }
 
-    void getRecipe(recipeId).then((record) => {
-      if (!active) {
-        return;
+    void getRecipe(recipeId).then(async (serverRecord) => {
+      let record = serverRecord;
+      if (!record) {
+        try {
+          await importLegacyUserAssetsFromIndexedDb({
+            readRecipes: readLegacyRecipes,
+            readExecutions: readLegacyRecipeExecutions,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            console.warn("Legacy recipe import failed:", error);
+          }
+        }
+        if (!controller.signal.aborted) {
+          record = await getRecipe(recipeId);
+        }
       }
+      if (!active) return;
       if (!record) {
         setLoadState({ status: "missing" });
         return;
@@ -74,6 +101,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     });
     return () => {
       active = false;
+      controller.abort();
     };
   }, [recipeId]);
 

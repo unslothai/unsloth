@@ -33,6 +33,13 @@ type LegacyImportCoordinatorProps = {
   readExecutions: LegacyPageReader<LegacyExecution>;
 };
 
+export type LegacyImportOptions = Omit<
+  LegacyImportCoordinatorProps,
+  "onImported"
+> & {
+  signal: AbortSignal;
+};
+
 type LegacyBatchPlan<T> = {
   batches: T[][];
 };
@@ -190,6 +197,19 @@ async function importExecutionPages(
   } while (cursor);
 }
 
+// Shared with the direct editor route so it can migrate before declaring a
+// legacy-only recipe missing.
+// eslint-disable-next-line react-refresh/only-export-components
+export async function importLegacyUserAssetsFromIndexedDb({
+  readRecipes,
+  readExecutions,
+  signal,
+}: LegacyImportOptions): Promise<void> {
+  const bootstrap = await bootstrapUserAssets();
+  await importRecipePages(bootstrap, readRecipes, signal);
+  await importExecutionPages(bootstrap, readExecutions, signal);
+}
+
 export function LegacyImportCoordinator({
   onImported,
   readRecipes,
@@ -203,14 +223,12 @@ export function LegacyImportCoordinator({
   useEffect(() => {
     const controller = new AbortController();
 
-    bootstrapUserAssets()
-      .then(async (bootstrap) => {
-        await importRecipePages(bootstrap, readRecipes, controller.signal);
-        await importExecutionPages(
-          bootstrap,
-          readExecutions,
-          controller.signal,
-        );
+    importLegacyUserAssetsFromIndexedDb({
+      readRecipes,
+      readExecutions,
+      signal: controller.signal,
+    })
+      .then(() => {
         if (!controller.signal.aborted) {
           onImportedRef.current();
         }

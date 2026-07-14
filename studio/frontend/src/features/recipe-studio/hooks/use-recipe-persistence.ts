@@ -243,10 +243,6 @@ export function useRecipePersistence({
   const [conflict, setConflict] = useState<"changed" | "unavailable" | null>(
     null,
   );
-  const [credentialProjection, setCredentialProjection] = useState<{
-    paths: string[];
-    editorSignature: string;
-  } | null>(null);
 
   const normalizedWorkflowName = useMemo(
     () => normalizeNonEmptyName(workflowName, "Unnamed"),
@@ -259,13 +255,14 @@ export function useRecipePersistence({
   );
   const isDirty =
     savedSignature.length > 0 && currentSignature !== savedSignature;
-  const activeCredentialProjection =
-    credentialProjection?.editorSignature === currentSignature
-      ? credentialProjection
-      : null;
   const saveTone: SaveTone =
     !isDirty && Boolean(lastSavedAt) ? "success" : "error";
-  const savedAtLabel = formatSavedLabel(lastSavedAt);
+  const savedAtLabel =
+    conflict === "changed"
+      ? "Changed elsewhere. Save again to overwrite."
+      : conflict === "unavailable"
+        ? "Recipe is no longer available."
+        : formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
     setInitialRecipeReady(false);
@@ -275,7 +272,6 @@ export function useRecipePersistence({
     setLastSavedAt(initialSavedAt);
     setCurrentRevision(initialRevision);
     setConflict(null);
-    setCredentialProjection(null);
     setCopied(false);
 
     const parsed = importRecipePayload(JSON.stringify(initialPayload), {
@@ -302,8 +298,18 @@ export function useRecipePersistence({
   ]);
 
   const persistRecipe = useCallback(async (): Promise<void> => {
-    if (saveLoading || conflict) {
+    if (saveLoading) {
       return;
+    }
+    if (conflict === "unavailable") {
+      toastError(
+        "Recipe is unavailable",
+        "It was deleted in another session and cannot be saved.",
+      );
+      return;
+    }
+    if (conflict === "changed") {
+      setConflict(null);
     }
     const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
     if (nextName !== workflowName) {
@@ -320,25 +326,40 @@ export function useRecipePersistence({
       });
       setLastSavedAt(result.updatedAt);
       setCurrentRevision(result.revision);
-      setSavedSignature(buildSignature(nextName, result.payload));
-      setCredentialProjection(
-        result.removedCredentialPaths.length > 0
-          ? {
-              paths: result.removedCredentialPaths,
-              editorSignature: currentSignature,
-            }
-          : null,
+      setConflict(null);
+      setSavedSignature(
+        buildSignature(
+          nextName,
+          result.removedCredentialPaths.length > 0
+            ? currentPayload
+            : result.payload,
+        ),
       );
       drainQueuedUploadCleanups(result.payload);
     } catch (error) {
       console.error("Save recipe failed:", error);
       if (error instanceof UserAssetApiError) {
         if (error.status === 409) {
+          if (
+            typeof error.detail.currentRevision === "number" &&
+            Number.isInteger(error.detail.currentRevision) &&
+            error.detail.currentRevision > 0
+          ) {
+            setCurrentRevision(error.detail.currentRevision);
+          }
           setConflict("changed");
+          toastError(
+            "Recipe changed elsewhere",
+            "Your edits are still here. Review them, then save again to overwrite the newer server version.",
+          );
           return;
         }
         if (error.status === 404 || error.status === 410) {
           setConflict("unavailable");
+          toastError(
+            "Recipe is unavailable",
+            "It was deleted in another session and cannot be saved.",
+          );
           return;
         }
       }
@@ -349,7 +370,6 @@ export function useRecipePersistence({
   }, [
     currentPayload,
     currentRevision,
-    currentSignature,
     conflict,
     onPersistRecipe,
     recipeId,
@@ -358,7 +378,7 @@ export function useRecipePersistence({
   ]);
 
   useEffect(() => {
-    if (!isDirty || saveLoading || conflict || activeCredentialProjection) {
+    if (!isDirty || saveLoading || conflict) {
       return;
     }
     const timeoutId = window.setTimeout(() => {
@@ -366,7 +386,6 @@ export function useRecipePersistence({
     }, 800);
     return () => window.clearTimeout(timeoutId);
   }, [
-    activeCredentialProjection,
     conflict,
     isDirty,
     persistRecipe,
