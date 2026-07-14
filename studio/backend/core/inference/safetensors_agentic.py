@@ -1032,9 +1032,7 @@ def run_safetensors_tool_loop(
             decisions.append((decision, tc, provisional_match))
             if decision.should_execute:
                 _seen_turn_keys.add(decision.key)
-                assistant_msg.setdefault("tool_calls", []).append(
-                    decision.as_assistant_tool_call()
-                )
+                assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
         # Only append assistant message if it has tool_calls or content text.
         assistant_appended = bool(assistant_msg.get("tool_calls") or content_text)

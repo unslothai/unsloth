@@ -285,15 +285,17 @@ def _repair_conversation_state(conversation: list[dict]) -> None:
         for tc in msg.get("tool_calls") or []:
             tc_id = tc.get("id") if isinstance(tc, dict) else None
             if tc_id and tc_id not in tool_call_ids_with_results:
-                insertions.append((
-                    i + 1 + len([pos for pos, _ in insertions if pos <= i]),
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "name": (tc.get("function") or {}).get("name", ""),
-                        "content": "This tool call was not completed.",
-                    },
-                ))
+                insertions.append(
+                    (
+                        i + 1 + len([pos for pos, _ in insertions if pos <= i]),
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "name": (tc.get("function") or {}).get("name", ""),
+                            "content": "This tool call was not completed.",
+                        },
+                    )
+                )
                 tool_call_ids_with_results.add(tc_id)
 
     for idx, msg in reversed(insertions):
