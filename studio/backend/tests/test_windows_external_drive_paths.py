@@ -140,6 +140,40 @@ def test_windows_drive_roots_skips_hung_drive(monkeypatch):
     assert elapsed < 3.0  # bounded by the per-drive timeout, not the 5s stall
 
 
+def test_windows_drive_roots_probes_hung_drives_in_parallel(monkeypatch):
+    # Several disconnected mapped drives must add ~one timeout total, not one per
+    # drive: C answers fast, D/E/F all stall. Serial probing would cost ~4x the
+    # timeout; the concurrent probe stays bounded by a single deadline.
+    import time
+
+    monkeypatch.setattr(external_media.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        external_media,
+        "_active_windows_drive_bitmask",
+        lambda: sum(1 << (ord(d) - ord("A")) for d in "CDEF"),
+    )
+    timeout = 0.2
+    monkeypatch.setattr(external_media, "_DRIVE_PROBE_TIMEOUT_S", timeout)
+
+    def _isdir(p):
+        if str(p) == "C:\\":
+            return True
+        time.sleep(5)  # every other drive simulates a reconnect stall
+        return True
+
+    monkeypatch.setattr(external_media.os.path, "isdir", _isdir)
+    monkeypatch.setattr(external_media.os, "access", lambda p, _mode: True)
+
+    start = time.monotonic()
+    roots = external_media.windows_drive_roots(drive_letters = "CDEF")
+    elapsed = time.monotonic() - start
+
+    assert roots == [Path("C:\\")]
+    # 3 stalled drives probed in parallel finish within ~1 timeout, well under
+    # the ~3*timeout a serial probe would take (and far under the 5s stall).
+    assert elapsed < 3 * timeout
+
+
 def test_browse_allowlist_includes_windows_drive_roots(monkeypatch, tmp_path):
     # End-to-end wiring: prove windows_drive_roots() output actually flows into
     # the browse allowlist built by routes/models.py, mirroring the Linux side's
