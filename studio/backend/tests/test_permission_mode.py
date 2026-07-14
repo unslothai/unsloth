@@ -511,6 +511,40 @@ def test_terminal_classifier(command, unsafe):
             "import fileinput\nfor line in fileinput.input('v.txt'):\n    pass",
             False,
         ),  # fileinput read stays safe
+        (
+            "import pathlib\nP = pathlib.Path\n(P('/etc') / 'passwd').read_text()",
+            True,
+        ),  # qualified path-ctor alias (P = pathlib.Path)
+        (
+            "import pathlib\nP = pathlib.Path\n(P('/tmp') / 'x').read_text()",
+            False,
+        ),  # benign qualified path-ctor alias stays safe
+        (
+            "import numpy as np\ndef f(s=np.save):\n    s('o.npy', a)\nf()",
+            True,
+        ),  # attribute writer captured as a default arg
+        (
+            "from functools import partial\ndef f(w=partial(open, mode='w')):\n    w('o')\nf()",
+            True,
+        ),  # partial(open) captured as a default arg
+        (
+            "import numpy as np\ndef f(s=np.mean):\n    s(a)\nf()",
+            False,
+        ),  # benign attribute default stays safe
+        (
+            "open('/et' + chr(99) + '/passwd').read()",
+            True,
+        ),  # dynamic char splitting a sensitive name
+        (
+            "open(a + '/' + b).read()",
+            False,
+        ),  # segment-spanning dynamic path stays safe
+        ("list(map(open, ['o.txt'], ['w']))", True),  # open handed to map()
+        (
+            "import numpy as np\nlist(map(np.save, ['o.npy'], [arr]))",
+            True,
+        ),  # writer handed to map()
+        ("list(map(len, ['abc']))", False),  # benign map() stays safe
         ("import numpy as np\nnp.mean([1, 2])", False),  # a benign numpy read stays safe
         (
             "from pathlib import Path\nP = Path\n(P('/etc') / 'passwd').read_text()",
@@ -798,6 +832,11 @@ def test_mcp_sensitive_arguments(args, unsafe):
             {"query": "SELECT count(*) INTO cnt FROM t"},
             False,
         ),  # PL/pgSQL SELECT INTO var stays safe
+        ({"query": "REFRESH MATERIALIZED VIEW mv"}, True),  # materialized view rewrite
+        ({"query": "REINDEX INDEX idx"}, True),  # index rebuild
+        ({"query": "REINDEX TABLE t"}, True),  # table reindex
+        ({"query": "SELECT refresh_count FROM t"}, False),  # 'refresh' column stays safe
+        ({"query": "please refresh the page"}, False),  # NL 'refresh' stays safe
     ],
 )
 def test_mcp_mutating_arguments(args, unsafe):

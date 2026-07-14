@@ -677,6 +677,11 @@ _ARCHIVE_CTOR_MODULES = {
 # Modules whose top-level open() takes the mode as its 2nd arg like builtin open,
 # so `from gzip import open as gopen` binds an open alias gated on write mode.
 _OPEN_ALIAS_MODULES = frozenset({"gzip", "bz2", "lzma"})
+# Builtins/itertools helpers that call their first argument once per item, so a
+# writer/open alias handed to one runs without a direct call(...) site
+# (list(map(open, names, modes)), starmap(np.save, ...)). filter's predicate is
+# also invoked, so a writer smuggled there runs too.
+_HIGHER_ORDER_INVOKERS = frozenset({"map", "filter", "starmap", "reduce"})
 _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
 # Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
@@ -1203,6 +1208,23 @@ def _folded_path(
     return fold(node)
 
 
+def _dynamic_name_hits_sensitive(folded) -> bool:
+    """True if a folded path with a dynamic piece (NUL) inside a path segment
+    could spell a credential target, e.g. open('/et' + chr(99) + '/passwd')
+    folds to '/et\\x00/passwd'. NUL matches any run of non-separator chars so the
+    dynamic split of a sensitive name resolves, while an all-dynamic ('\\x00\\x00')
+    or segment-spanning ('\\x00/\\x00') path cannot form a single credential name
+    and stays safe."""
+    if not folded or "\x00" not in folded:
+        return False
+    pattern = "".join(r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in folded)
+    try:
+        rx = re.compile(pattern + r"\Z")
+    except re.error:
+        return True  # pathological pattern: fail closed
+    return any(rx.match(t) for t in _SENSITIVE_GLOB_TARGETS)
+
+
 def _folded_is_sensitive(folded) -> bool:
     """A folded path is sensitive if it names a credential file, has a dynamic
     segment (NUL) directly under a sensitive directory (/etc/NUL), walks out of
@@ -1218,6 +1240,13 @@ def _folded_is_sensitive(folded) -> bool:
         # open(os.sep + "etc/passwd") folds to "\x00etc/passwd", so re-scan with
         # NUL as "/" (a benign "\x00data/file" -> "/data/file" stays safe).
         or ("\x00" in folded and _references_sensitive_path(folded.replace("\x00", "/")))
+        # A dynamic piece can also sit INSIDE a sensitive name: open('/et' +
+        # chr(99) + '/passwd') folds to "/et\x00/passwd", which none of the above
+        # catch. Match the literals around each NUL against a credential target,
+        # treating NUL as "any run of non-separator chars" so /et<dyn>/passwd
+        # resolves while an all-dynamic ("\x00\x00" from 1 + 1) or segment-spanning
+        # ("\x00/\x00" from a + '/' + b) path stays safe.
+        or _dynamic_name_hits_sensitive(folded)
         or _glob_token_sensitive(folded)
     )
 
@@ -1584,6 +1613,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 pathjoin_aliases.update(targets)  # j = join
             elif isinstance(value, ast.Attribute) and value.attr == "join":
                 pathjoin_aliases.update(targets)  # j = os.path.join
+            elif isinstance(value, ast.Attribute) and value.attr in _PATH_CTORS:
+                path_ctor_aliases.update(targets)  # P = pathlib.Path
             elif (
                 isinstance(value, ast.Attribute)
                 and value.attr == "open"
@@ -1707,23 +1738,43 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
             for _param, _default in _defaulted:
-                if not isinstance(_default, ast.Name):
-                    continue
-                _did = _default.id
-                if _did in open_aliases:
-                    open_aliases.add(_param.arg)
-                elif _did in writer_aliases:
-                    writer_aliases.add(_param.arg)
-                elif _did in archive_ctor_aliases:
-                    archive_ctor_aliases.add(_param.arg)
-                elif _did in getattr_aliases:
-                    getattr_aliases.add(_param.arg)
-                elif _did in partial_aliases:
-                    partial_aliases.add(_param.arg)
-                elif _did in code_exec_aliases:
-                    code_exec_aliases.add(_param.arg)
-                elif _did in dynamic_aliases:
-                    dynamic_aliases.add(_param.arg)
+                if isinstance(_default, ast.Name):
+                    _did = _default.id
+                    if _did in open_aliases:
+                        open_aliases.add(_param.arg)
+                    elif _did in writer_aliases:
+                        writer_aliases.add(_param.arg)
+                    elif _did in archive_ctor_aliases:
+                        archive_ctor_aliases.add(_param.arg)
+                    elif _did in getattr_aliases:
+                        getattr_aliases.add(_param.arg)
+                    elif _did in partial_aliases:
+                        partial_aliases.add(_param.arg)
+                    elif _did in code_exec_aliases:
+                        code_exec_aliases.add(_param.arg)
+                    elif _did in dynamic_aliases:
+                        dynamic_aliases.add(_param.arg)
+                elif isinstance(_default, ast.Attribute):
+                    # An attribute writer / archive ctor / captured .open used as
+                    # a default (def f(s=np.save), def f(z=zipfile.ZipFile),
+                    # def f(o=Path('x').open)) binds the parameter like the
+                    # equivalent assignment; a benign attribute (np.mean) does not.
+                    if _default.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                        writer_aliases.add(_param.arg)
+                    elif _default.attr in _ARCHIVE_CTOR_NAMES:
+                        archive_ctor_aliases.add(_param.arg)
+                    elif _default.attr == "open":
+                        dynamic_aliases.add(_param.arg)
+                elif (
+                    isinstance(_default, ast.Call)
+                    and (
+                        (isinstance(_default.func, ast.Name) and _default.func.id in partial_aliases)
+                        or (isinstance(_default.func, ast.Attribute) and _default.func.attr == "partial")
+                    )
+                    and _default.args
+                    and _wraps_write_callable(_default.args[0])
+                ):
+                    dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -1802,6 +1853,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # A bare-imported logging.basicConfig(filename=...) opens a
                     # log file for writing (from logging import basicConfig).
                     if func.id in basicconfig_aliases and _basicconfig_writes(node):
+                        return True
+                    # A writer/open alias handed to a higher-order invoker
+                    # (map(open, names, modes), starmap(np.save, ...)) is called
+                    # without a direct open(...)/save(...) site; the callable is
+                    # the first positional arg. A benign map(len, ...) is unaffected.
+                    if (
+                        func.id in _HIGHER_ORDER_INVOKERS
+                        and node.args
+                        and _wraps_write_callable(node.args[0])
+                    ):
                         return True
                 elif isinstance(func, ast.Attribute):
                     # Writer methods persist to disk without open() (np.save,
@@ -1894,6 +1955,10 @@ _MCP_ARG_MUTATION_RE = re.compile(
     r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
     r"grant\s+\w|revoke\s+\w|merge\s+into|"
+    # PostgreSQL maintenance writes: REFRESH MATERIALIZED VIEW rewrites the view,
+    # REINDEX rebuilds an index. Both need a following object keyword/name, so a
+    # column or word "refresh"/"reindex" in prose stays safe.
+    r"refresh\s+materialized\s+view|reindex\s+\w+|"
     # CALL proc(...) / EXEC[UTE] name / VACUUM mutate; CALL needs a following
     # "(", ";", or end so natural-language "call me back" stays safe.
     r"call\s+\w+(?=\s*[(;]|\s*$)|exec(?:ute)?\s+\w+|vacuum|"
