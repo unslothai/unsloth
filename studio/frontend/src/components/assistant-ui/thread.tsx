@@ -3842,9 +3842,12 @@ const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const isSpeaking = useAuiState(({ message }) => message.speech != null);
 
   const handleDelete = async () => {
-    aui.message().stopSpeaking();
+    // Guard: stopSpeaking throws unless this message is the one playing.
+    // Stop first so read-aloud does not outlive its only Stop control.
+    if (isSpeaking) aui.message().stopSpeaking();
     const remoteId = aui.threadListItem().getState().remoteId;
     const thread = aui.thread();
     try {
