@@ -39,6 +39,8 @@ export const zhCN = {
       hub: "Hub",
       train: "训练",
       recipes: "配方",
+      images: "图像",
+      video: "视频",
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",

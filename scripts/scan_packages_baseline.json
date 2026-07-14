@@ -131,6 +131,14 @@
       "evidence_hash": "512ecbb7539ddfd5296f8ea2d132ef4000a71033fd444d8a7539f6936dc9ad01"
     },
     {
+      "package": "gguf",
+      "file": "gguf/utility.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L268:         if os.environ.get(\"HF_TOKEN\"): | L269:             headers[\"Authorization\"] = f\"Bearer {os.environ['HF_TOKEN']}\"\nNetwork: L236:         response = requests.get(url, allow_redirects=True, headers=headers) | L258:             response = requests.head(url, allow_redirects=True, headers=headers)",
+      "evidence_hash": "231235fe72f6c47331494b67dd0cba2bdb7b75b901f4fe59b434ce9a1ffbd50e"
+    },
+    {
       "package": "httpx",
       "file": "httpx/_models.py",
       "check": "Enumerates filesystem AND makes network calls",

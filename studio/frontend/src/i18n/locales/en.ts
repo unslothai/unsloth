@@ -39,6 +39,8 @@ export const en = {
       hub: "Hub",
       train: "Train",
       recipes: "Recipes",
+      images: "Images",
+      video: "Video",
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",

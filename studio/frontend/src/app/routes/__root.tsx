@@ -32,6 +32,7 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  lazy,
   Suspense,
   useEffect,
   useLayoutEffect,
@@ -57,6 +58,20 @@ function RouteFallback() {
   );
 }
 
+// ImagesPage is mounted persistently below (not via the /images route) so an
+// in-flight image batch survives leaving the tab, mirroring ChatPage. Kept lazy
+// so its bundle still loads only on the first /images visit.
+const ImagesPage = lazy(() =>
+  import("@/features/images").then((m) => ({ default: m.ImagesPage })),
+);
+
+// VideoPage gets the same persistent-mount treatment as ImagesPage so an in-flight
+// generation survives leaving the tab. Kept lazy so its bundle loads only on the first
+// /video visit.
+const VideoPage = lazy(() =>
+  import("@/features/video").then((m) => ({ default: m.VideoPage })),
+);
+
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
   return null;
@@ -78,6 +93,10 @@ const CHAT_ONLY_ALLOWED = new Set([
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/")) return true;
+  // Images runs on CPU/MPS via the native sd.cpp engine, exactly the no-GPU (chat-only) setup it
+  // was added for. The chat-only flag is about training/export needing a GPU, so it must not
+  // redirect /images away here or the native image path is unreachable where it's needed.
+  if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   return false;
 }
 
@@ -143,6 +162,34 @@ function RootLayout() {
   }
   const chatSearch = isChatRoute ? liveChatSearch : frozenChatSearch;
   const shouldMountChat = isChatRoute || chatMounted;
+
+  // Same persistent-mount treatment for /images so a long image batch keeps
+  // generating when the user flips to another tab (ImagesPage reads no URL
+  // search, so it needs no freeze dance -- just the mount latch). Mounts lazily
+  // on first /images visit, then stays mounted, hidden+inert while off-route.
+  const isImagesRoute = pathname === "/images";
+  const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
+  if (isImagesRoute && !imagesMounted) {
+    setImagesMounted(true);
+  }
+  const shouldMountImages = isImagesRoute || imagesMounted;
+
+  // Same persistent-mount treatment for /video so a long generation keeps running when
+  // the user flips to another tab (VideoPage reads no URL search, so it needs no freeze
+  // dance -- just the mount latch). Mounts lazily on first /video visit, then stays
+  // mounted, hidden+inert while off-route.
+  const isVideoRoute = pathname === "/video";
+  const [videoMounted, setVideoMounted] = useState(isVideoRoute);
+  if (isVideoRoute && !videoMounted) {
+    setVideoMounted(true);
+  }
+  const shouldMountVideo = isVideoRoute || videoMounted;
+  // Chat, Images and Video all render their own full-height shell (fixed top rail +
+  // internally-scrolling body), so all three want the chat-style layout: no outer pt-14 inset, no
+  // outer scroll. Keying off isChatRoute alone gave /images and /video the non-chat pt-14 + outer
+  // overflow, pushing the picker down and clipping the gallery. Treat them the same for container
+  // padding/overflow only; the keep-alive mounts below stay keyed to each route.
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -235,10 +282,10 @@ function RootLayout() {
           className="!min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <AppSidebar />
-          <SidebarInset className={isChatRoute ? "overflow-hidden" : "overflow-y-auto"}>
+          <SidebarInset className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}>
             <Navbar />
             <div
-              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatRoute ? "overflow-hidden" : "overflow-visible"} ${isChatRoute ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
+              className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >
               {/* Stays mounted across navigation so an in-flight generation is
                   not cancelled when leaving /chat; hidden (not unmounted) off-route.
@@ -256,12 +303,47 @@ function RootLayout() {
                   <ChatPage search={chatSearch} active={isChatRoute} />
                 </div>
               )}
+              {/* Same keep-alive treatment for Images so a long batch keeps
+                  generating off-tab; `active` force-closes its body-portaled
+                  overlays (model selector, recipe popover, aspect dropdown) so
+                  none can bleed over another tab while hidden. */}
+              {shouldMountImages && (
+                <div
+                  className={
+                    isImagesRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isImagesRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <ImagesPage active={isImagesRoute} />
+                  </Suspense>
+                </div>
+              )}
+              {/* Same keep-alive treatment for Video so a long generation keeps running
+                  off-tab; `active` force-closes its body-portaled overlays (model selector,
+                  recipe popover) so none can bleed over another tab while hidden. */}
+              {shouldMountVideo && (
+                <div
+                  className={
+                    isVideoRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isVideoRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <VideoPage active={isVideoRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

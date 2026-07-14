@@ -35,6 +35,32 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
+# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp + each custom root's
+# <parent>/stable-diffusion.cpp sibling), each gated on the install-time owner marker so we never
+# stop a user-managed sd-server from an unrelated checkout at one of these paths.
+_owned_sd_cpp_roots() {
+    _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
+    [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
+    _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
+        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+    done
+}
+
+# pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
+# native server keeps running after its binary is unlinked). Anchored on the owned root.
+_stop_owned_sd_cpp_processes() {
+    _signal="$1"
+    command -v pkill >/dev/null 2>&1 || return 0
+    _owned_sd_cpp_roots | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        [ -d "$_root" ] || continue
+        _re=$(_pkill_escape "$_root")
+        pkill "-$_signal" -f "^${_re}/([^ ]*/)?sd-(server|cli)( |\$)" 2>/dev/null || true
+    done
+}
+
 _pkill_studio() {
     # Prefer PID files written by _spawn_terminal so we only touch our own installs.
     for _data_dir in "$HOME/.local/share/unsloth" $(_custom_studio_data_dirs); do
@@ -80,6 +106,12 @@ $_roots_from_conf"
             pkill -KILL -f "$_pat" 2>/dev/null || true
         done
     done
+
+    # Native diffusion servers (sd-server / sd-cli) survive unlinking their binary,
+    # so stop the ones under an owned sd.cpp root before those trees are removed.
+    _stop_owned_sd_cpp_processes TERM
+    sleep 0.5
+    _stop_owned_sd_cpp_processes KILL
 }
 
 _remove_path() {
@@ -210,12 +242,41 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
         continue
     fi
     _remove_path "$_custom_root"
+    # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
+    # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
+    # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
+    # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
+    # and "stable-diffusion.cpp" is exactly what `git clone` of leejet/stable-diffusion.cpp
+    # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
+    # and keep any unowned checkout. A pre-marker Studio build is left behind, never a user
+    # file deleted. Guard the derived parent path the same way.
+    _custom_sd_cpp="$(dirname "$_custom_root")/stable-diffusion.cpp"
+    if _is_unsafe_root "$_custom_sd_cpp"; then
+        echo "  refusing to remove unsafe path: $_custom_sd_cpp" >&2
+    elif [ -e "$_custom_sd_cpp" ] && [ ! -f "$_custom_sd_cpp/.unsloth-studio-owned" ]; then
+        echo "  keeping sd.cpp without Studio owner marker: $_custom_sd_cpp" >&2
+    else
+        _remove_path "$_custom_sd_cpp"
+    fi
 done
 _remove_path "$HOME/.unsloth/studio"
 # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
+# Default-mode native diffusion (stable-diffusion.cpp / sd-cli) build, a sibling of
+# studio like llama.cpp (install_sd_cpp_prebuilt.default_install_dir()). No-op in
+# env/custom mode and when absent. "stable-diffusion.cpp" is exactly what a `git clone` of
+# leejet/stable-diffusion.cpp produces, so a user may keep their own checkout (or point
+# UNSLOTH_SD_CPP_PATH) at this default path; require our owner marker (written by
+# install_sd_cpp_prebuilt) before rm, mirroring the custom-root guard above, so a user's own
+# checkout or a pre-marker Studio build is kept rather than deleted.
+_default_sd_cpp="$HOME/.unsloth/stable-diffusion.cpp"
+if [ -e "$_default_sd_cpp" ] && [ ! -f "$_default_sd_cpp/.unsloth-studio-owned" ]; then
+    echo "  keeping sd.cpp without Studio owner marker: $_default_sd_cpp" >&2
+else
+    _remove_path "$_default_sd_cpp"
+fi
 _remove_path "$HOME/.unsloth/.cache"
 # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
 # default mode. No-op in env/custom mode (nested under the custom root) and absent.

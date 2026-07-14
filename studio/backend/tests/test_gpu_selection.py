@@ -904,6 +904,58 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(exc_info.exception.status_code, 400)
         self.assertIn("GGUF", exc_info.exception.detail)
 
+    def test_inference_route_defers_gpu_handoff_until_after_validation(self):
+        # A doomed chat load (GGUF + gpu_ids -> 400) must NOT reclaim the CHAT arbiter owner
+        # first: the handoff is deferred past validation, so a resident Images/Video pipeline is
+        # never evicted for a load that then errors.
+        import core.inference.gpu_arbiter as arb
+
+        inference_route = _load_route_module(
+            "inference_route_module_for_handoff_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0, 1])
+        model_config = SimpleNamespace(
+            is_gguf = True,
+            is_lora = False,
+            gguf_hf_repo = None,
+            gguf_file = "/tmp/test.gguf",
+            gguf_mmproj_file = None,
+            gguf_variant = None,
+            identifier = "unsloth/test.gguf",
+            display_name = "unsloth/test.gguf",
+            is_vision = False,
+            is_audio = False,
+            audio_type = None,
+            has_audio_input = False,
+        )
+        acquired = []
+        with (
+            patch.object(
+                inference_route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: model_config),
+            ),
+            patch.object(inference_route, "_guard_chat_load_against_training", return_value = None),
+            patch.object(inference_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(inference_route, "_hf_offline_if_dns_dead", nullcontext),
+            patch.object(arb, "acquire_for", lambda owner: acquired.append(owner)),
+        ):
+            with self.assertRaises(HTTPException) as exc_info:
+                asyncio.run(
+                    inference_route._load_model_impl(
+                        request,
+                        SimpleNamespace(
+                            app = SimpleNamespace(
+                                state = SimpleNamespace(llama_parallel_slots = 1),
+                            ),
+                        ),
+                        current_subject = "test-user",
+                    )
+                )
+        self.assertEqual(exc_info.exception.status_code, 400)
+        self.assertEqual(acquired, [])  # no CHAT handoff before the doomed load errored
+
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(
             "training_route_module_for_test",

@@ -665,3 +665,309 @@ class TrainingRunDeleteResponse(BaseModel):
 
     status: str
     message: str
+
+
+class DiffusionTrainingStartRequest(BaseModel):
+    """Request to start a diffusion (SDXL) LoRA training job.
+
+    Field names mirror ``core.training.diffusion_lora_trainer.DiffusionLoraConfig`` so the
+    service can pass ``model_dump()`` straight through. Only the paths are required; the
+    rest carry the trainer's defaults.
+    """
+
+    model_config = ConfigDict(protected_namespaces = ())
+
+    base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
+    data_dir: str = Field(..., description = "Folder of training images (+ captions)")
+    output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
+    model_family: Optional[str] = Field(
+        None,
+        description = "Explicit trainer family (sdxl / flux.1 / ...); omitted = detect from base_model",
+    )
+    instance_prompt: Optional[str] = Field(
+        None, description = "Dreambooth caption applied to images without their own caption"
+    )
+    resolution: int = Field(
+        1024, ge = 64, le = 2048, description = "Square training resolution (multiple of 8)"
+    )
+    train_steps: int = Field(500, ge = 1, le = 100000)
+    num_epochs: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = (
+            "0 = use train_steps; > 0 overrides train_steps with epochs x "
+            "ceil(N / (batch x grad_accum)) optimizer steps over the N-image dataset"
+        ),
+    )
+    learning_rate: float = Field(1e-4, gt = 0)
+    train_batch_size: int = Field(1, ge = 1, le = 64)
+    gradient_accumulation_steps: int = Field(1, ge = 1, le = 256)
+    lora_rank: int = Field(16, ge = 1, le = 320)
+    lora_alpha: Optional[int] = Field(None, ge = 1, le = 640, description = "Defaults to lora_rank")
+    lora_dropout: float = Field(0.0, ge = 0.0, le = 1.0)
+    # Mirror the remaining training-affecting knobs of DiffusionLoraConfig so a client that sets
+    # them isn't silently trained with defaults. Default targets to the SDXL attention
+    # projections (the trainer's DEFAULT_LORA_TARGETS) so it is never None.
+    lora_target_modules: List[str] = Field(
+        default_factory = lambda: ["to_k", "to_q", "to_v", "to_out.0"],
+        description = "U-Net modules to attach LoRA to",
+    )
+    max_grad_norm: float = Field(
+        1.0, ge = 0, description = "Gradient clipping max-norm; 0 disables clipping"
+    )
+    seed: int = Field(42)
+    mixed_precision: Literal["bf16", "fp16", "no"] = Field("bf16")
+    snr_gamma: Optional[float] = Field(
+        5.0, gt = 0, description = "Min-SNR loss weighting; null disables"
+    )
+    gradient_checkpointing: bool = Field(True)
+    lr_scheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = Field("constant")
+    lr_warmup_steps: int = Field(0, ge = 0)
+    center_crop: bool = Field(False)
+    random_flip: bool = Field(True)
+    caption_column: str = Field("text")
+    hf_token: Optional[str] = Field(None)
+    cache_latents: bool = Field(
+        True, description = "Precompute VAE latents once and free the VAE for the run"
+    )
+    cache_variants: int = Field(
+        4, ge = 1, le = 16, description = "Frozen crop/flip variants per image in the latent cache"
+    )
+    compile_transformer: Literal["off", "on", "auto"] = Field(
+        "auto", description = "Regional torch.compile of the transformer blocks"
+    )
+    enable_tf32: bool = Field(
+        True, description = "TF32 matmuls + cudnn autotuning (near-lossless speedup)"
+    )
+    base_precision: Literal["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"] = Field(
+        "nf4",
+        description = (
+            "DiT base transformer precision: nf4 QLoRA (memory floor, default), bf16 dense, "
+            "int8 torchao weight-only, fp8 float8 training compute (Ada/Hopper/Blackwell), "
+            "mxfp8 block-scaled float8 compute (Blackwell, best at high resolution/batch), "
+            "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
+        ),
+    )
+
+
+class DiffusionTrainingStopRequest(BaseModel):
+    """Optional body for stopping a diffusion training job. ``save`` mirrors the LLM
+    trainer's stop: True (default) exports the partial adapter, False cancels without
+    leaving one behind."""
+
+    save: bool = Field(True)
+
+
+class DiffusionTrainingStartResponse(BaseModel):
+    """Response for starting a diffusion training job."""
+
+    job_id: str
+    status: str
+
+
+class DiffusionMetricHistory(BaseModel):
+    """Paired step-indexed history arrays for the live training charts. ``lr`` and
+    ``grad_norm`` entries may be null so those sparse series still align with ``steps``
+    by index."""
+
+    steps: List[int] = Field(default_factory = list)
+    loss: List[float] = Field(default_factory = list)
+    lr: List[Optional[float]] = Field(default_factory = list)
+    grad_norm: List[Optional[float]] = Field(default_factory = list)
+
+
+class DiffusionTrainingStatusResponse(BaseModel):
+    """A snapshot of the current diffusion training job (or idle)."""
+
+    active: bool
+    job_id: Optional[str] = None
+    status: str
+    message: str = ""
+    step: int = 0
+    total_steps: int = 0
+    loss: Optional[float] = None
+    avg_loss: Optional[float] = None
+    learning_rate: Optional[float] = None
+    # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts
+    # alongside the loss).
+    grad_norm: Optional[float] = None
+    num_images: Optional[int] = None
+    in_model_load: bool = False
+    output_dir: Optional[str] = None
+    lora_path: Optional[str] = None
+    # Where the adapter was mirrored into the Studio LoRA catalog, and what family / base it was
+    # trained from -- lets the UI deploy it onto the right base.
+    catalog_path: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    # Live throughput + peak VRAM (from the trainer's progress events).
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
+    started_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    # Bounded step/loss/lr history for the live loss + LR charts.
+    metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunSummary(BaseModel):
+    """One persisted diffusion training run (terminal), as listed in the Train tab's
+    previous-runs history. The heavy payload (config + metric logs) lives in the detail."""
+
+    job_id: str
+    status: str
+    message: str = ""
+    adapter: Optional[str] = None
+    family: Optional[str] = None
+    base_model: Optional[str] = None
+    step: int = 0
+    total_steps: int = 0
+    avg_loss: Optional[float] = None
+    # Whether this run left an adapter on disk (full completion or stop-and-save).
+    saved: bool = False
+    catalog_path: Optional[str] = None
+    instance_prompt: Optional[str] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+
+class DiffusionTrainingRunDetail(DiffusionTrainingRunSummary):
+    """The full persisted record: summary + scrubbed start config + metric logs."""
+
+    loss: Optional[float] = None
+    samples_per_second: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
+    num_images: Optional[int] = None
+    lora_path: Optional[str] = None
+    config: Optional[dict] = None
+    metric_history: Optional[DiffusionMetricHistory] = None
+
+
+class DiffusionTrainingRunsResponse(BaseModel):
+    runs: List[DiffusionTrainingRunSummary] = Field(default_factory = list)
+
+
+class DiffusionDatasetSummary(BaseModel):
+    """One image-dataset folder under the Studio datasets root."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+
+
+class DiffusionTrainableFamily(BaseModel):
+    """A base-model family the diffusion trainer supports, with UI-facing metadata."""
+
+    name: str
+    label: str
+    default_base: str
+    base_repos: List[str] = Field(default_factory = list)
+    defaults: dict = Field(default_factory = dict)
+    vram_note: str = ""
+    # base_precision modes this machine supports for the family (empty = no precision selector,
+    # e.g. SDXL), plus the recommended pick and whether regional torch.compile applies. Defaults
+    # keep older backends' payloads valid.
+    precision_modes: List[str] = Field(default_factory = list)
+    recommended_precision: str = "nf4"
+    supports_compile: bool = False
+    # When set, a LoRA trained on this family previews on this repo instead of the training base
+    # (Krea trains on Raw but runs adapters on Turbo). Null when it deploys on the training base.
+    deploy_base: Optional[str] = None
+
+
+class DiffusionTrainingInfoResponse(BaseModel):
+    """Where diffusion training reads/writes on this Studio, plus usable datasets and the
+    trainable model families (so the UI can offer a base picker with realistic guidance)."""
+
+    datasets_root: str
+    outputs_root: str
+    datasets: List[DiffusionDatasetSummary]
+    families: List[DiffusionTrainableFamily] = Field(default_factory = list)
+
+
+class DiffusionDatasetUploadResponse(BaseModel):
+    """Result of uploading images/captions into a named dataset folder. Counts are
+    for the whole folder after the upload, so repeat uploads show the running total."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+    uploaded: int
+
+
+class DiffusionDatasetImageRecord(BaseModel):
+    """One image in a training dataset folder, with its resolved caption. ``caption`` is
+    null when no caption exists from any source; ``caption_source`` records where the
+    shown caption came from (``metadata`` beats a per-image ``sidecar``; ``none`` when
+    uncaptioned) so the labeling UI can highlight images that still need a caption."""
+
+    filename: str
+    caption: Optional[str] = None
+    caption_source: Literal["sidecar", "metadata", "none"] = "none"
+    width: int
+    height: int
+    size_bytes: int
+
+
+class DiffusionDatasetImagesResponse(BaseModel):
+    """Every image in a dataset folder (including uncaptioned ones), for the labeling grid."""
+
+    name: str
+    path: str
+    images: List[DiffusionDatasetImageRecord]
+
+
+class DiffusionCaptionUpdateRequest(BaseModel):
+    """Write (or, when blank, clear) the per-image ``.txt`` caption sidecar."""
+
+    caption: str = ""
+
+
+class DiffusionDatasetExample(BaseModel):
+    """A curated, one-click-importable example image dataset. ``image_cap`` bounds how many
+    images are materialized; ``license`` is shown verbatim so users see the terms before
+    importing; ``suggested_trigger`` seeds the trigger prompt for uncaptioned subject sets."""
+
+    id: str
+    label: str
+    repo: str
+    description: str
+    license: str
+    image_cap: int
+    suggested_trigger: Optional[str] = None
+
+
+class DiffusionDatasetExamplesResponse(BaseModel):
+    """The curated example-dataset registry the Train tab offers for one-click import."""
+
+    examples: List[DiffusionDatasetExample]
+
+
+class DiffusionDatasetImportRequest(BaseModel):
+    """Import a curated example (``id``) into a dataset folder (``name``; defaults to the
+    example id)."""
+
+    id: str
+    name: Optional[str] = None
+
+
+class DiffusionDatasetImportResponse(BaseModel):
+    """Result of a one-click example import: folder counts plus provenance so the UI can
+    show what was fetched and under what license."""
+
+    name: str
+    path: str
+    image_count: int
+    caption_count: int
+    imported: int
+    license: str
+    source_repo: str

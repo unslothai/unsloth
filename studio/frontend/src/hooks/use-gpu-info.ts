@@ -8,7 +8,13 @@ import type { SystemInfoResponse } from "./use-system";
 export interface GpuInfo {
   available: boolean;
   name: string;
+  /** Sum across every GPU. Right for the chat/llama.cpp path (tensor-split
+   * shards across cards); wrong as a single-placement budget. */
   memoryTotalGb: number;
+  /** Largest single device. The diffusion/video backends place the whole
+   * pipeline on one device (pipe.to / cpu-offload, never device_map), so
+   * their fit budget must not credit VRAM from the other cards. */
+  maxDeviceMemoryGb: number;
   cpuCore: number;
   cpuThread: number;
   systemRamAvailableGb: number;
@@ -19,6 +25,7 @@ const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
   memoryTotalGb: 0,
+  maxDeviceMemoryGb: 0,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
@@ -59,6 +66,9 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
               available: true,
               name: devices[0]?.name ?? "Unknown",
               memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
+              maxDeviceMemoryGb: devices.reduce(
+                (max, d) => Math.max(max, d.memory_total_gb ?? 0), 0,
+              ),
             }
           : { ...DEFAULT_GPU, ...base };
       cachedGpu = info;

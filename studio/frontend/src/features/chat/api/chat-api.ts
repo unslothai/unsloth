@@ -204,6 +204,10 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for
+   * diffusion, "text-generation" otherwise). Lets the Images picker show only
+   * diffusion GGUFs. Optional for older-backend compatibility. */
+  task?: string | null;
 }
 
 export async function getGgufDownloadProgress(
@@ -286,6 +290,10 @@ export interface LocalModelInfo {
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
   updated_at?: number | null;
+  // HF pipeline task inferred from the GGUF architecture, so the Images picker
+  // can filter local models to diffusion ("text-to-image"). Optional for
+  // older-backend compatibility.
+  task?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -312,6 +320,16 @@ export interface CachedModelRepo {
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo
+   * (model_index.json present), so the chat picker can hide it. Absent = chat. */
+  task?: string | null;
+  /** True when the snapshot is incomplete (a cancelled/partial download). Such a
+   * repo must not count as downloaded, or a click re-downloads the full weights. */
+  partial?: boolean;
+  /** True for a diffusion repo with no model_index.json: a single-file checkpoint that
+   * loads only via from_single_file + a checkpoint filename. Task pickers must not offer
+   * it as a pipeline load unless the curated catalog carries its artifact. */
+  single_file?: boolean;
 }
 
 export async function listCachedModels(
@@ -767,9 +785,8 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled
-  // FolderBrowser navigation actually cancels the in-flight request
-  // server-side, instead of just dropping the response while the backend
+  // Forward the AbortSignal through authFetch -> fetch so a cancelled FolderBrowser navigation
+  // cancels the in-flight request server-side, instead of dropping the response while the backend
   // keeps walking large directory trees.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
@@ -930,10 +947,9 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
-    // EOF) the request is logically complete and the backend finalizes its
-    // api-monitor entry right after the sentinel; cancelling here can be seen as
-    // a disconnect and mark a successful request as cancelled.
+    // Only abort on an early/abnormal exit. After a natural [DONE] (or server EOF) the request is
+    // logically complete and the backend finalizes its api-monitor entry right after the sentinel;
+    // cancelling here can look like a disconnect and mark a successful request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();

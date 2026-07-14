@@ -315,7 +315,7 @@ function Uninstall-UnslothStudio {
         # 2. A loaded module under a target root (orphaned mp-fork python holding a
         #    venv DLL). Scoped to names that load our DLLs to keep the scan fast.
         try {
-            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli -ErrorAction SilentlyContinue
+            $cands = Get-Process -Name python, pythonw, unsloth, llama-server, llama-cli, sd-cli, sd-server -ErrorAction SilentlyContinue
             foreach ($proc in $cands) {
                 $hit = $false
                 try {
@@ -335,6 +335,10 @@ function Uninstall-UnslothStudio {
     # with it). A user-set UNSLOTH_LLAMA_CPP_PATH is left alone.
     $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
     $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
+    # Default-mode native diffusion build (install_sd_cpp_prebuilt.default_install_dir()),
+    # a sibling of studio like llama.cpp. No-op in env/custom mode and when absent. A
+    # user-set UNSLOTH_SD_CPP_PATH is left alone.
+    $defaultSdCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "stable-diffusion.cpp" } else { $null }
     $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
     # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
     # default mode. No-op in env/custom mode (nested under the custom root) and absent.
@@ -360,9 +364,25 @@ function Uninstall-UnslothStudio {
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
+    # Only stop the default sd.cpp dir when it carries our owner marker, so stop matches the
+    # marker-gated delete and a user's own sd-server at this default path is left running.
+    $defaultSdCppToStop = $null
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        $defaultSdCppToStop = $defaultSdCpp
+    }
+    # Custom/env-mode sd.cpp builds sit BESIDE each custom root at <parent>\stable-diffusion.cpp,
+    # outside $knownRoots. We delete those marker-owned dirs below, so add them to the handle scan
+    # too, gated on the same owner marker.
+    $customSdCppToStop = @()
+    foreach ($r in $customRoots) {
+        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
+            $customSdCppToStop += $sdc
+        }
+    }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -376,6 +396,21 @@ function Uninstall-UnslothStudio {
             continue
         }
         _RemovePath $r
+        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
+        # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
+        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
+        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
+        # and "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp
+        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
+        # and keep any unowned checkout. Guard the derived parent path the same way.
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if (_IsUnsafeRoot $customSdCpp) {
+            _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
+        } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+            _Substep "keeping sd.cpp without Studio owner marker: $customSdCpp" "Yellow"
+        } else {
+            _RemovePath $customSdCpp
+        }
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }
@@ -384,6 +419,15 @@ function Uninstall-UnslothStudio {
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
+    # "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp produces,
+    # so a user may keep their own checkout (or point UNSLOTH_SD_CPP_PATH) at this default path;
+    # require our owner marker (written by install_sd_cpp_prebuilt) before rm, mirroring the
+    # custom-root guard above, so a user's own checkout or a pre-marker Studio build is kept.
+    if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        _Substep "keeping sd.cpp without Studio owner marker: $defaultSdCpp" "Yellow"
+    } elseif ($defaultSdCpp) {
+        _RemovePath $defaultSdCpp
+    }
     if ($defaultCache) { _RemovePath $defaultCache }
     # Isolated Node.js runtime (sibling of studio under ~/.unsloth). No-op in env/
     # custom mode (nested under the custom root, removed with it) and when absent.

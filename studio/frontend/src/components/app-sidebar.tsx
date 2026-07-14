@@ -74,13 +74,15 @@ import {
   PinOffIcon,
   PlusSignIcon,
   PowerIcon,
+  PaintBrush02Icon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
-  TestTube01Icon,
+  Video01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -161,14 +163,6 @@ function getTourId(pathname: string): string | null {
   if (pathname.startsWith("/chat")) return "chat";
   return null;
 }
-
-// TestTube01Icon's last 2 paths are interior bubbles; slice to the first
-// 3 (outline + cap + liquid line) to drop them. Original export untouched.
-const TestTubeOutlineIcon = TestTube01Icon.slice(
-  0,
-  3,
-) as typeof TestTube01Icon;
-
 
 type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
 
@@ -1222,6 +1216,29 @@ export function AppSidebar() {
                 active={pathname === "/hub" || pathname.startsWith("/hub/")}
                 onClick={() => {
                   navigate({ to: "/hub" });
+                  closeMobileIfOpen();
+                }}
+              />
+              <NavItem
+                icon={PaintBrush02Icon}
+                label={t("shell.navigation.images")}
+                active={pathname === "/images" || pathname.startsWith("/images/")}
+                onClick={() => {
+                  navigate({ to: "/images" });
+                  closeMobileIfOpen();
+                }}
+              />
+              {/* Video is diffusers-only (no native CPU engine), so a chat-only host can
+                  never load it; disable with a hint instead of bouncing off the root
+                  guard's redirect. */}
+              <NavItem
+                icon={Video01Icon}
+                label={t("shell.navigation.video")}
+                active={pathname === "/video" || pathname.startsWith("/video/")}
+                disabled={chatOnly}
+                tooltip={chatOnly ? "Video generation needs an NVIDIA or AMD GPU." : undefined}
+                onClick={() => {
+                  navigate({ to: "/video" });
                   closeMobileIfOpen();
                 }}
               />

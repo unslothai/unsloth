@@ -1705,15 +1705,26 @@ jobs:
       - name: Install Pester v5
         shell: pwsh
         run: |
-          # PSGallery is intermittently absent from the repository list on GitHub's Windows
-          # runners, which makes `Set-PSRepository PSGallery` fail with "No repository with the
-          # name 'PSGallery' was found." Re-register the default gallery first so the policy
-          # change and module install below always have a repository to target.
-          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
-            Register-PSRepository -Default -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+          # Prefer PSResourceGet (preinstalled on the runner's PowerShell 7): it resolves PSGallery
+          # over HTTPS directly and avoids the legacy PackageManagement/nuget.exe bootstrap, which
+          # intermittently fails on GitHub's Windows runners with
+          # "NuGet.Commands.CommandException: Missing option value for: '-source'" (the install then
+          # aborts and Pester never runs). Fall back to the classic path when PSResourceGet is absent.
+          if (Get-Command Install-PSResource -ErrorAction SilentlyContinue) {
+            Install-PSResource -Name Pester -Version '[5.5.0,)' -Repository PSGallery -TrustRepository -Scope CurrentUser
+          } else {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            # PSGallery is intermittently absent from the repository list on GitHub's Windows
+            # runners, which makes `Set-PSRepository PSGallery` fail with "No repository with the
+            # name 'PSGallery' was found." Re-register the default gallery first so the policy
+            # change and module install below always have a repository to target.
+            if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+              Register-PSRepository -Default -ErrorAction SilentlyContinue
+            }
+            Set-PSRepository PSGallery -InstallationPolicy Trusted
+            Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
           }
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
           Import-Module Pester -MinimumVersion 5.5.0
           Get-Module Pester | Select-Object Name, Version | Format-Table
 
