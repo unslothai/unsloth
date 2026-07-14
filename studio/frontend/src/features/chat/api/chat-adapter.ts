@@ -1508,7 +1508,12 @@ async function autoLoadSmallestModel(): Promise<{
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: config.tensorParallel,
     });
-    saveSpeculativeType(effectiveSpeculativeType);
+    // Only persist the global preference when the value came from the global
+    // settings. A per-model config's choice must stay load-local, or autoloading
+    // a remembered model on startup would rewrite the global default.
+    if (config.speculativeType == null) {
+      saveSpeculativeType(effectiveSpeculativeType);
+    }
     useChatRuntimeStore
       .getState()
       .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);

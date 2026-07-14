@@ -1040,7 +1040,12 @@ export function SharedComposer({
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
         });
-        saveSpeculativeType(effectiveSpeculativeType);
+        // Keep a compare pane's per-model speculative choice load-local: only
+        // persist the global preference when it came from the global settings,
+        // matching the single-model load path.
+        if (ownConfig.speculativeType == null) {
+          saveSpeculativeType(effectiveSpeculativeType);
+        }
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
