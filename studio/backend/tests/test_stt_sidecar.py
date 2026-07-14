@@ -3,6 +3,8 @@
 
 import io
 import sys
+import threading
+import time
 import wave
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ import core.inference.stt_sidecar as stt_sidecar_module
 from core.inference.stt_sidecar import (
     DEFAULT_STT_MODEL,
     STT_MODELS,
+    SttAudioDecodeError,
     SttAudioTooLongError,
     SttLanguageError,
     SttModelNotDownloadedError,
@@ -31,6 +34,10 @@ def stub_audio_decoder(monkeypatch):
         stt_sidecar_module,
         "_decode_audio_bounded",
         lambda _audio: np.zeros(8000, dtype = np.float32),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda **_kwargs: "/cached/model",
     )
 
 
@@ -58,6 +65,14 @@ def test_only_unsloth_models_are_offered():
     assert set(STT_MODELS) == {"small", "large-v3-turbo", "large-v3"}
     assert all(repo.startswith("unsloth/") for repo in STT_MODELS.values())
     assert DEFAULT_STT_MODEL in STT_MODELS
+
+
+def test_av_is_required_for_stt_availability(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "av", None)
+
+    assert stt_sidecar_module.is_available() is False
 
 
 def test_unknown_model_id_falls_back_to_default():
@@ -265,6 +280,36 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
     assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)
 
 
+def test_model_cache_preflight_is_local_only(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda **kwargs: calls.append(kwargs) or "/cached/model",
+    )
+
+    WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded("small")
+
+    assert calls == [
+        {
+            "repo_id": "unsloth/whisper-small",
+            "local_files_only": True,
+        }
+    ]
+
+
+def test_model_cache_preflight_reports_missing_snapshot(monkeypatch):
+    class LocalEntryNotFoundError(RuntimeError):
+        pass
+
+    def missing(**_kwargs):
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", missing)
+
+    with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
+        WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded("large-v3")
+
+
 def test_load_reports_model_hub_cache_miss(monkeypatch):
     _install_fake_torch(monkeypatch)
 
@@ -288,6 +333,47 @@ def test_load_reports_model_hub_cache_miss(monkeypatch):
 
     with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
         WhisperSttSidecar(keep_alive_seconds = 0).load("large-v3")
+
+
+def test_missing_model_is_rejected_before_audio_decode(monkeypatch):
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+
+    def missing(_model_id):
+        raise SttModelNotDownloadedError("not downloaded")
+
+    def should_not_decode(_audio):
+        pytest.fail("missing models must be rejected before audio decode")
+
+    monkeypatch.setattr(sidecar, "_ensure_model_downloaded", missing, raising = False)
+    monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", should_not_decode)
+
+    with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
+        sidecar.transcribe(b"encoded audio", model = "large-v3")
+
+
+def test_missing_model_switch_keeps_resident_model(monkeypatch):
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    resident = object()
+    sidecar._engine = resident
+    sidecar._model_id = "small"
+    sidecar._device = "cpu"
+
+    def missing(_model_id):
+        raise SttModelNotDownloadedError("not downloaded")
+
+    monkeypatch.setattr(sidecar, "_ensure_model_downloaded", missing, raising = False)
+    monkeypatch.setattr(
+        sidecar,
+        "_build_model",
+        lambda *_args: pytest.fail("cache miss must be detected before model replacement"),
+    )
+    _install_fake_torch(monkeypatch)
+
+    with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
+        sidecar.load("large-v3")
+
+    assert sidecar._engine is resident
+    assert sidecar.loaded_model == "small"
 
 
 def test_loaded_model_stays_warm_until_idle_timer_fires(monkeypatch):
@@ -336,6 +422,38 @@ def test_reusing_loaded_model_refreshes_idle_timer(monkeypatch):
     assert first.cancelled
     assert timers[-1] is not first
 
+    first.fire()
+
+    assert sidecar.loaded_model == "small"
+
+
+def test_unload_waits_for_inflight_transcription(monkeypatch):
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    started = threading.Event()
+    release = threading.Event()
+
+    def transcribe(*_args):
+        started.set()
+        assert release.wait(timeout = 2)
+        return "hello"
+
+    monkeypatch.setattr(sidecar, "_transcribe_decoded", transcribe)
+    transcribe_thread = threading.Thread(target = lambda: sidecar.transcribe(b"audio"))
+    transcribe_thread.start()
+    assert started.wait(timeout = 2)
+
+    unload_thread = threading.Thread(target = sidecar.unload)
+    unload_thread.start()
+    time.sleep(0.02)
+    assert unload_thread.is_alive()
+
+    release.set()
+    transcribe_thread.join(timeout = 2)
+    unload_thread.join(timeout = 2)
+
+    assert not transcribe_thread.is_alive()
+    assert not unload_thread.is_alive()
+
 
 def test_new_stt_load_uses_cpu_while_training(monkeypatch):
     fake_torch = SimpleNamespace(
@@ -363,6 +481,52 @@ def test_new_stt_load_prefers_cuda_when_training_is_idle(monkeypatch):
     assert stt_sidecar_module._pick_device() == ("cuda", "float16")
 
 
+def test_new_stt_load_prefers_mps_when_cuda_is_unavailable(monkeypatch):
+    fake_torch = SimpleNamespace(
+        float16 = "float16",
+        float32 = "float32",
+        cuda = SimpleNamespace(is_available = lambda: False),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: True)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(stt_sidecar_module, "_training_active", lambda: False)
+
+    assert stt_sidecar_module._pick_device() == ("mps", "float32")
+
+
+def test_new_stt_load_uses_cpu_without_accelerators(monkeypatch):
+    fake_torch = SimpleNamespace(
+        float16 = "float16",
+        float32 = "float32",
+        cuda = SimpleNamespace(is_available = lambda: False),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: False)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(stt_sidecar_module, "_training_active", lambda: False)
+
+    assert stt_sidecar_module._pick_device() == ("cpu", "float32")
+
+
+def test_accelerator_load_failure_retries_on_cpu(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    calls = []
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+
+    def build(_repo, device, dtype):
+        calls.append((device, dtype))
+        if device == "cuda":
+            raise RuntimeError("accelerator allocation failed")
+        return object(), object()
+
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("cuda", "float16"))
+    monkeypatch.setattr(sidecar, "_build_model", build)
+
+    sidecar.load("small")
+
+    assert calls == [("cuda", "float16"), ("cpu", fake_torch.float32)]
+    assert sidecar.device == "cpu"
+
+
 def _wav_bytes(sample_count: int, sample_rate: int = 16000) -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
@@ -388,6 +552,30 @@ def test_bounded_decoder_rejects_audio_as_soon_as_sample_cap_is_crossed(monkeypa
 
     with pytest.raises(SttAudioTooLongError, match = "Audio must"):
         _REAL_DECODE_AUDIO_BOUNDED(_wav_bytes(16001))
+
+
+def test_bounded_decoder_resamples_stereo_48khz_to_mono_16khz():
+    pytest.importorskip("av")
+    output = io.BytesIO()
+    frames = np.zeros((4800, 2), dtype = np.int16)
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(48000)
+        wav.writeframes(frames.tobytes())
+
+    decoded = _REAL_DECODE_AUDIO_BOUNDED(output.getvalue())
+
+    assert decoded.dtype == np.float32
+    assert 1590 <= len(decoded) <= 1610
+
+
+@pytest.mark.parametrize("audio", [b"", b"not audio", b"RIFF\x00\x00"])
+def test_bounded_decoder_rejects_malformed_audio(audio):
+    pytest.importorskip("av")
+
+    with pytest.raises(SttAudioDecodeError, match = "Could not decode"):
+        _REAL_DECODE_AUDIO_BOUNDED(audio)
 
 
 def test_unload_releases_model_and_device():

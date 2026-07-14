@@ -28,6 +28,7 @@ import re as _re
 from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
+from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -5466,8 +5467,8 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
 # cap the encoded length to bound the upload. _MAX_AUDIO_SECONDS additionally
 # bounds the *decoded* length, since a small compressed file (opus/flac/etc.)
 # can expand to a far larger PCM array than the encoded-size cap implies.
-_MAX_AUDIO_RAW_BYTES = 25 * 1024 * 1024
-_MAX_AUDIO_B64_CHARS = _MAX_AUDIO_RAW_BYTES * 4 // 3
+_MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
+_MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 _MAX_AUDIO_SECONDS = 30 * 60
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000

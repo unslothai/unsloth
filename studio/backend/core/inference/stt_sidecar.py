@@ -96,8 +96,9 @@ def _known_whisper_languages() -> Optional[frozenset[str]]:
 
 
 def is_available() -> bool:
-    """True when the Transformers Whisper backend can be imported."""
+    """True when the complete local Whisper backend can be imported."""
     try:
+        import av  # noqa: F401
         import torch  # noqa: F401
         import transformers  # noqa: F401
     except Exception:
@@ -332,6 +333,26 @@ class WhisperSttSidecar:
         model.eval()
         return model, processor
 
+    def _ensure_model_downloaded(self, model_id: str) -> None:
+        """Fail before decode or model replacement when the cache is incomplete."""
+        with self._lock:
+            if self._engine is not None and self._model_id == model_id:
+                return
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id = STT_MODELS[model_id],
+                local_files_only = True,
+            )
+        except Exception as exc:
+            if _is_missing_local_model_error(exc):
+                raise SttModelNotDownloadedError(
+                    f"STT model '{model_id}' is not downloaded. "
+                    "Download it in Settings, then Voice, before loading it."
+                ) from exc
+            raise
+
     def load(self, model: Optional[str] = None):
         """Load (or switch to) a model, reusing it if already resident.
 
@@ -342,6 +363,7 @@ class WhisperSttSidecar:
             if self._engine is not None and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return self._engine
+            self._ensure_model_downloaded(model_id)
             try:
                 import torch
             except Exception as exc:
@@ -442,6 +464,7 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by STT model '{model_id}'."
             )
+        self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior
         # context, which otherwise causes runaway repeats.

@@ -8,7 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 # Keep this test runnable without optional logging deps.
-if "structlog" not in sys.modules:
+try:
+    import structlog  # noqa: F401
+except ImportError:
 
     class _DummyLogger:
         def __getattr__(self, _name):
@@ -124,6 +126,18 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
     # The exact-filename needle must not hide a real repo that merely
     # references stories260K in its name.
     assert not models_route._is_hidden_model("user/stories260K-finetune-GGUF")
+
+
+def test_is_hidden_model_hides_dictation_models():
+    assert models_route._is_hidden_model("unsloth/whisper-small")
+    assert models_route._is_hidden_model("unsloth/whisper-large-v3-turbo")
+    assert models_route._is_hidden_model(
+        "/hf/models--unsloth--whisper-large-v3/snapshots/abc/model.safetensors"
+    )
+    assert not models_route._is_hidden_model("user/whisper-finetune")
+    assert not models_route._is_hidden_model(
+        "C:\\cache\\models--unsloth--whisper-small-finetune\\model.safetensors"
+    )
 
 
 def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):

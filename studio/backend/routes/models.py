@@ -62,16 +62,27 @@ def _safe_is_dir(path) -> bool:
 # Hub repo id shape ("owner/name", no leading separator); anything else is
 # treated as a local filesystem path.
 _HF_REPO_ID_RE = re.compile(r"^[A-Za-z0-9][\w.\-]*/[\w.\-]+$")
+_HIDDEN_STT_REPO_IDS = frozenset(
+    {
+        "unsloth/whisper-small",
+        "unsloth/whisper-large-v3-turbo",
+        "unsloth/whisper-large-v3",
+    }
+)
+_HIDDEN_STT_CACHE_NAMES = tuple(
+    repo_id.replace("/", "--") for repo_id in _HIDDEN_STT_REPO_IDS
+)
 
 
 def _is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
     EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
-    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
-    None are usable chat models; the probe can be cached as a side effect of
-    installing the prebuilt llama-server and otherwise sorts smallest, so it
-    would be auto-selected. A local-path embedder is matched by exact resolved
-    path only: a generic basename like "model" must not substring-hide
+    (ggml-org/models / stories260K), or a curated STT model, so pickers hide
+    them (GGUF and non-GGUF). None are usable chat models; the probe can be
+    cached as a side effect of installing the prebuilt llama-server and
+    otherwise sorts smallest, so it would be auto-selected. A local-path
+    embedder is matched only by its exact resolved path: a generic basename
+    like "model" must not substring-hide
     unrelated chat models."""
     from core.rag import config as rag_config
 
@@ -97,6 +108,12 @@ def _is_hidden_model(*values: str | None) -> bool:
         if not v:
             continue
         low = v.lower()
+        normalized = low.strip().strip("/")
+        if normalized in _HIDDEN_STT_REPO_IDS:
+            return True
+        path_parts = re.split(r"[\\/]", low)
+        if any(f"models--{name}" in path_parts for name in _HIDDEN_STT_CACHE_NAMES):
+            return True
         if any(n in low for n in needles):
             return True
         if exact_paths:

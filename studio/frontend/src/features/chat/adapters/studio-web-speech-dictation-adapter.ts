@@ -231,9 +231,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
       const delay = Math.max(0, STOP_FINALIZATION_GRACE_MS - elapsed);
       stopFallbackTimer = window.setTimeout(() => {
         stopFallbackTimer = 0;
-        if (!ended && promoteInterim()) {
+        if (!ended) {
+          promoteInterim();
           finish("stopped");
-          // Stop any late recognition callbacks after the promoted result.
           recognition.abort();
         }
       }, delay);
