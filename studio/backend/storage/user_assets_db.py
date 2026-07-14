@@ -751,6 +751,10 @@ def list_legacy_imports(owner_subject: str, source: str) -> dict[str, list[str]]
             SELECT entity_kind, legacy_id FROM user_asset_legacy_imports
             WHERE owner_subject = ? AND source = ?
               AND outcome <> 'missing_parent'
+              AND (
+                outcome <> 'rejected'
+                OR reason IN ('already_exists', 'parent_retired')
+              )
             ORDER BY entity_kind, legacy_id
             """,
             (owner, source),

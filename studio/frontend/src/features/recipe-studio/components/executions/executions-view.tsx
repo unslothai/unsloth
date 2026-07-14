@@ -9,7 +9,7 @@ import {
   Share08Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { publishRecipeJob } from "../../api";
+import { getRecipeJobStatus, publishRecipeJob } from "../../api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -33,6 +33,7 @@ import {
   formatDuration,
   formatPercent,
   isExpandableCellValue,
+  isJobStatusPublishable,
   parseAnalysisColumns,
   parseModelUsageRows,
 } from "./executions-view-helpers";
@@ -66,6 +67,7 @@ export function ExecutionsView({
     Record<string, number>
   >({});
   const [publishDialogOpen, setPublishDialogOpen] = useState(false);
+  const [publishableJobId, setPublishableJobId] = useState<string | null>(null);
   const terminalRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTerminalToBottomRef = useRef(true);
   const selectedExecution = useMemo(
@@ -194,12 +196,34 @@ export function ExecutionsView({
   const canCancel = Boolean(
     selectedExecution?.jobId && isExecutionInProgress(selectedExecution.status),
   );
+  const publishCandidateJobId =
+    selectedExecution?.kind === "full" &&
+    selectedExecution.status === "completed"
+      ? selectedExecution.jobId
+      : null;
   const canPublish = Boolean(
-    selectedExecution &&
-      selectedExecution.kind === "full" &&
-      selectedExecution.status === "completed" &&
-      selectedExecution.jobId,
+    publishCandidateJobId && publishableJobId === publishCandidateJobId,
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(async () => {
+      if (cancelled) return;
+      setPublishableJobId(null);
+      if (!publishCandidateJobId) return;
+      try {
+        const status = await getRecipeJobStatus(publishCandidateJobId);
+        if (!cancelled && isJobStatusPublishable(status)) {
+          setPublishableJobId(publishCandidateJobId);
+        }
+      } catch {
+        // Persisted history can outlive the backend's in-memory job owner.
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [publishCandidateJobId]);
   const datasetPage = selectedExecution?.datasetPage ?? 1;
   const datasetPageSize = selectedExecution?.datasetPageSize ?? 20;
   const datasetTotal = selectedExecution?.datasetTotal ?? 0;

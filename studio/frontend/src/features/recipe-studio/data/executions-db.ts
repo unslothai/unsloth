@@ -251,14 +251,32 @@ export async function listRecipeExecutionPage(
 export async function listRecipeExecutions(
   recipeId: string,
 ): Promise<PersistedRecipeExecution[]> {
-  const page = await listRecipeExecutionPage(recipeId);
-  if (
-    page.resumable &&
-    !page.executions.some((execution) => execution.id === page.resumable?.id)
-  ) {
-    return [...page.executions, page.resumable];
+  const executions: PersistedRecipeExecution[] = [];
+  const executionIds = new Set<string>();
+  const seenCursors = new Set<string>();
+  let cursor: string | null | undefined;
+  let resumable: PersistedRecipeExecution | null = null;
+
+  do {
+    const page = await listRecipeExecutionPage(recipeId, { cursor });
+    for (const execution of page.executions) {
+      if (!executionIds.has(execution.id)) {
+        executions.push(execution);
+        executionIds.add(execution.id);
+      }
+    }
+    resumable ??= page.resumable ?? null;
+    if (page.nextCursor && seenCursors.has(page.nextCursor)) {
+      throw new Error("Execution history pagination returned a repeated cursor.");
+    }
+    if (page.nextCursor) seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  } while (cursor);
+
+  if (resumable && !executionIds.has(resumable.id)) {
+    executions.push(resumable);
   }
-  return page.executions;
+  return executions;
 }
 
 async function drainWrites(key: string, state: WriteState): Promise<void> {

@@ -86,11 +86,8 @@ function splitByLegacyBatchBytes<T extends { id: string }>(
 
   for (const item of items) {
     const itemBytes = utf8Encoder.encode(JSON.stringify(item)).byteLength;
-    const addedBytes = itemBytes + (current.length > 0 ? 1 : 0);
-    if (
-      current.length === 0 &&
-      currentBytes + addedBytes > MAX_LEGACY_BATCH_JSON_BYTES
-    ) {
+    const singleItemBytes = baseBytes + itemBytes;
+    if (singleItemBytes > MAX_LEGACY_BATCH_JSON_BYTES) {
       rejected.push({
         id: item.id,
         outcome: "rejected",
@@ -98,13 +95,14 @@ function splitByLegacyBatchBytes<T extends { id: string }>(
       });
       continue;
     }
+    const addedBytes = itemBytes + (current.length > 0 ? 1 : 0);
     if (
       current.length > 0 &&
       currentBytes + addedBytes > MAX_LEGACY_BATCH_JSON_BYTES
     ) {
       batches.push(current);
       current = [item];
-      currentBytes = baseBytes + itemBytes;
+      currentBytes = singleItemBytes;
     } else {
       current.push(item);
       currentBytes += addedBytes;

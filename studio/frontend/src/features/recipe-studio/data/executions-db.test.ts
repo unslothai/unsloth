@@ -147,7 +147,7 @@ describe("execution persistence", () => {
     vi.useRealTimers();
   });
 
-  it("hydrates one bounded page plus the server-selected resumable execution", async () => {
+  it("hydrates every execution page plus the server-selected resumable execution", async () => {
     const newest = {
       ...serializeExecutionMetadata(
         execution({ id: "newest", status: "completed" }),
@@ -162,20 +162,55 @@ describe("execution persistence", () => {
       revision: 1,
       updatedAt: 10,
     };
+    const older = {
+      ...serializeExecutionMetadata(
+        execution({ id: "older", status: "completed", createdAt: 5 }),
+      ),
+      revision: 1,
+      updatedAt: 5,
+    };
     mocks.list.mockResolvedValueOnce({
       executions: [newest],
       nextCursor: "cursor-1",
+      resumable: oldRunning,
+    }).mockResolvedValueOnce({
+      executions: [older],
+      nextCursor: null,
       resumable: oldRunning,
     });
 
     await expect(listRecipeExecutions("recipe-1")).resolves.toEqual([
       newest,
+      older,
       oldRunning,
     ]);
     expect(mocks.list).toHaveBeenCalledWith("recipe-1", {
       cursor: undefined,
       limit: 100,
     });
-    expect(mocks.list).toHaveBeenCalledTimes(1);
+    expect(mocks.list).toHaveBeenNthCalledWith(2, "recipe-1", {
+      cursor: "cursor-1",
+      limit: 100,
+    });
+    expect(mocks.list).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a repeated execution cursor instead of looping forever", async () => {
+    mocks.list
+      .mockResolvedValueOnce({
+        executions: [],
+        nextCursor: "cursor-1",
+        resumable: null,
+      })
+      .mockResolvedValueOnce({
+        executions: [],
+        nextCursor: "cursor-1",
+        resumable: null,
+      });
+
+    await expect(listRecipeExecutions("recipe-1")).rejects.toThrow(
+      "repeated cursor",
+    );
+    expect(mocks.list).toHaveBeenCalledTimes(2);
   });
 });

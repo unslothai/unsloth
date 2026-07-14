@@ -111,16 +111,6 @@ function sanitizeRecipeForPersistence(
       removedPaths,
     );
   }
-  if (
-    output.provider_type === "stdio" &&
-    output.env &&
-    typeof output.env === "object" &&
-    !Array.isArray(output.env)
-  ) {
-    output.env = Object.fromEntries(
-      Object.keys(output.env).map((envKey) => [envKey, ""]),
-    );
-  }
   return output;
 }
 

@@ -113,6 +113,8 @@ export type JobStatusResponse = {
   // biome-ignore lint/style/useNamingConvention: api schema
   artifact_path?: string | null;
   // biome-ignore lint/style/useNamingConvention: api schema
+  execution_type?: "preview" | "full" | null;
+  // biome-ignore lint/style/useNamingConvention: api schema
   started_at?: number | null;
   // biome-ignore lint/style/useNamingConvention: api schema
   finished_at?: number | null;

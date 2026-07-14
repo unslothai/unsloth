@@ -109,9 +109,10 @@ describe("LegacyImportCoordinator", () => {
     expect(document.body.textContent).toContain("Import localized data");
   });
 
-  it("rejects one unsplittable Unicode record locally and continues later records", async () => {
+  it("rejects an unsplittable record after a smaller item and continues", async () => {
     const huge = "é".repeat(4_200_000);
     const readRecipes = pageReader([
+      { id: "before", name: "Before", payload: {} },
       { id: "too-large", name: "Large", payload: { huge } },
       { id: "valid", name: "Valid", payload: {} },
     ]);
@@ -141,6 +142,7 @@ describe("LegacyImportCoordinator", () => {
     await flush();
     expect(mocks.importAssets).toHaveBeenCalledTimes(1);
     expect(mocks.importAssets.mock.calls[0][0].recipes).toEqual([
+      expect.objectContaining({ id: "before" }),
       expect.objectContaining({ id: "valid" }),
     ]);
     expect(document.body.textContent).toContain("too-large");

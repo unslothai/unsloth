@@ -74,6 +74,20 @@ def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):
     assert rejected["recipes"][0]["outcome"] == "rejected"
     assert user_assets_db.list_legacy_imports("owner", source)["recipes"] == []
 
+    # Older builds persisted validation failures as rejected ledger rows.
+    conn = studio_db.get_connection()
+    conn.execute(
+        """
+        INSERT INTO user_asset_legacy_imports
+            (owner_subject, source, entity_kind, legacy_id, outcome, reason, imported_at)
+        VALUES (?, ?, 'recipe', 'retry-me', 'rejected', 'invalid_name', ?)
+        """,
+        ("owner", source, 1_700_000_000_000),
+    )
+    conn.commit()
+    conn.close()
+    assert user_assets_db.list_legacy_imports("owner", source)["recipes"] == []
+
     monkeypatch.setattr(studio_db, "_schema_ready", False)
     corrected = user_assets_db.import_legacy_assets(
         "owner", source, [{**recipe("retry-me"), "createdAt": 1}], []
