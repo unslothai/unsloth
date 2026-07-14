@@ -694,7 +694,7 @@ export function VoiceTab() {
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
             >
-              <div className="flex w-64 flex-col items-stretch gap-2 sm:w-80">
+              <div className="flex w-56 flex-col items-stretch gap-2">
                 <Select
                   value={sttModel}
                   onValueChange={(value) => {

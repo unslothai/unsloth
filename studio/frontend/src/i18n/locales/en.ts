@@ -109,7 +109,7 @@ export const en = {
         engineBrowser: "Browser",
         engineModel: "Local transcription",
         engineBrowserDescription:
-          "Sends audio to the browser speech service, needs internet",
+          "Transcribes audio using your browser speech service. Select 'Local' to use a STT model.",
         engineModelDescription:
           "Runs locally and works offline. Download once, then load on demand; memory is released after dictation.",
         sttModelLabel: "Speech recognition model",
@@ -118,7 +118,7 @@ export const en = {
         sttModelFailed: "Could not load the STT model",
         sttModelUnsupported: "Recording is not supported in this browser",
         sttChecking: "Checking…",
-        sttOnDemand: "Downloaded and ready to load",
+        sttOnDemand: "Downloaded",
         sttLoadingModel: "Loading model…",
         sttReady: "Loaded on {device}",
         sttUnavailable:
