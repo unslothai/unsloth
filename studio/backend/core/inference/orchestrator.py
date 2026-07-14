@@ -1300,6 +1300,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        reasoning_prefilled: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -1364,6 +1365,7 @@ class InferenceOrchestrator:
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
             bypass_permissions = bypass_permissions,
+            reasoning_prefilled = reasoning_prefilled,
         )
 
     def generate_with_adapter_control(

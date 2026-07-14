@@ -8235,6 +8235,7 @@ async def openai_chat_completions(
                 bypass_permissions = bool(payload.bypass_permissions),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
+                reasoning_prefilled = _sf_reasoning_prefilled,
             )
 
         _sf_tool_sentinel = object()
