@@ -109,9 +109,8 @@ _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
 # A pinned custom/unknown-leaf index must bound the companions like the Python
-# _CUSTOM_INDEX_TORCH_PKG_SPEC, not leave them bare (a mirror exposing newer companions
-# could resolve a 2.12-built torchvision against the capped <2.11 torch). Structural:
-# the bounded assignments exist AND are gated on a custom (empty) flavor tag.
+# _CUSTOM_INDEX_TORCH_PKG_SPEC, not leave them bare. Structural: the bounded assignments
+# exist AND are gated on a custom (empty) flavor tag.
 _count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
 assert_eq "custom-leaf pin bounds torchvision (<0.26)" "1" "$_count"
 _count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"' "$INSTALL_SH" || true)
@@ -289,15 +288,14 @@ assert_contains "mock uv arm64+py312 receives torch>=2.4" "$_uv_got2" "torch>=2.
 echo ""
 echo "=== ROCm 2.11 floor case (leaf normalization) ==="
 
-# Structural: install.sh must lowercase _torch_index_leaf before the floor case,
-# so the canonical AMD RDNA4 leaf gfx120X-all (capital X) matches gfx120x-all.
+# Structural: install.sh lowercases _torch_index_leaf before the floor case, so the
+# canonical gfx120X-all (capital X) matches gfx120x-all.
 _has_lc=$(grep -c '_torch_index_leaf=$(printf .* | tr .\[:upper:\]. .\[:lower:\].)' "$INSTALL_SH" || true)
 _has_lc_ok=$([ "$_has_lc" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "install.sh lowercases _torch_index_leaf" "yes" "$_has_lc_ok"
 
-# Runtime: replicate the exact normalization + floor case from install.sh and
-# assert both gfx120X-all (capital X, canonical) and gfx120x-all get the floor,
-# while non-2.11 leaves (gfx110X-all, rocm6.4, cu128, cpu) keep the default.
+# Runtime: replicate install.sh's normalization + floor case and assert both gfx120X-all
+# and gfx120x-all get the floor, while non-2.11 leaves keep the default.
 run_floor_case() {
     _url="$1"
     bash -c '

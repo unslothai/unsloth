@@ -3,9 +3,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for studio/setup.ps1's torch-index MARKER helpers
 # (Get-NormalizedIndexUrl, Read-TorchIndexMarker, Write-TorchIndexMarker,
-# Test-MarkerPinMismatch, Test-RocmKnown211Version). These converge the ROCm/gfx
-# pin-change detection across install.sh / install_python_stack.py / setup.ps1 /
-# install.ps1. Pure helpers, AST-extracted and run in-process -- no GPU/venv.
+# Test-MarkerPinMismatch, Test-RocmKnown211Version), which converge the ROCm/gfx
+# pin-change detection across install.sh / py / setup.ps1 / install.ps1. AST-extracted,
+# run in-process.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_index_marker.ps1
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +41,7 @@ function Check($name, $cond) {
 }
 
 Write-Host "Get-NormalizedIndexUrl (trim / strip trailing slash / lowercase leaf)"
-# -ceq: PowerShell -eq is case-INsensitive for strings, which would make these
-# case-normalization checks vacuous (any casing would pass).
+# -ceq: PowerShell -eq is case-INsensitive, which would make these case checks vacuous.
 Check "trailing slashes + known family leaf lowered" `
     ((Get-NormalizedIndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all///") -ceq "https://repo.amd.com/rocm/whl/gfx120x-all")
 Check "whitespace trimmed" `
@@ -54,9 +53,9 @@ Check "gfx120X-all == gfx120x-all after normalize" `
 Check "empty -> null" ($null -eq (Get-NormalizedIndexUrl "   "))
 
 Write-Host "Get-NormalizedFamilyLeaf (exact rocm/gfx/cpu/cu lowered; custom keeps case)"
-# EXACT rocm/gfx/cpu/cu families are lowercased for equality; a suffixed private-mirror
-# leaf (rocm7.2-Private) or a find-links leaf (rocm-Rel-7.2.1) is a custom pin whose case
-# must survive so a case-only change is a real mismatch (Test-PipRocmFamilyLeaf gate).
+# EXACT rocm/gfx/cpu/cu families are lowercased; a suffixed leaf (rocm7.2-Private,
+# rocm-Rel-7.2.1) is a custom pin whose case must survive so a case-only change is a
+# real mismatch (Test-PipRocmFamilyLeaf gate).
 Check "rocm7.2 family lowered"          ((Get-NormalizedFamilyLeaf "ROCm7.2") -ceq "rocm7.2")
 Check "gfx120X-all family lowered"      ((Get-NormalizedFamilyLeaf "GFX120X-all") -ceq "gfx120x-all")
 Check "cu128 family lowered"            ((Get-NormalizedFamilyLeaf "CU128") -ceq "cu128")
@@ -92,8 +91,8 @@ Check "userinfo and query both stripped" `
     ((Remove-IndexUrlCredentials "https://u:p@mirror.local/simple?token=SECRET") -ceq "https://mirror.local/simple")
 Check "query stripped on host-only url" `
     ((Remove-IndexUrlCredentials "https://mirror.local?token=SECRET") -ceq "https://mirror.local")
-# Backward compatibility: an OLD marker that recorded credentials must compare
-# equal to the same pin with or without them (normalization strips both sides).
+# Backward compatibility: an OLD marker that recorded credentials compares equal to the
+# same pin with or without them (normalization strips both sides).
 Check "normalize: creds on either side compare equal" `
     ((Get-NormalizedIndexUrl "https://user:tok@x/cu128/") -ceq (Get-NormalizedIndexUrl "https://x/cu128"))
 
@@ -146,14 +145,13 @@ try {
     Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://mirror.local/simple"
     Check "custom /simple marker vs /current pin -> mismatch" `
         ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://mirror.local/current") -eq $true)
-    # Case-only custom-index change /Simple -> /simple is a mismatch: normalization
-    # preserves unknown-leaf case (URL paths can be case-sensitive) and the compare
-    # is -cne. A case-insensitive -ne would wrongly skip the needed reinstall.
+    # Case-only custom-index change /Simple -> /simple is a mismatch: normalization keeps
+    # unknown-leaf case and the compare is -cne (a case-insensitive -ne would skip it).
     Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://mirror.local/Simple"
     Check "custom /Simple marker vs /simple pin -> mismatch (case-sensitive)" `
         ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://mirror.local/simple") -eq $true)
-    # A genuine family leaf differing only in case is NOT a mismatch (rocm7.2 / gfx
-    # leaves are lowercased by normalization, so gfx120X-all == gfx120x-all).
+    # A genuine family leaf differing only in case is NOT a mismatch (family leaves are
+    # lowercased by normalization, so gfx120X-all == gfx120x-all).
     Write-TorchIndexMarker -VenvDir $venv -IndexUrl "https://repo.amd.com/rocm/whl/gfx120X-all"
     Check "family gfx120X-all marker vs gfx120x-all pin -> no mismatch" `
         ((Test-MarkerPinMismatch -VenvDir $venv -PinUrl "https://repo.amd.com/rocm/whl/gfx120x-all") -eq $false)

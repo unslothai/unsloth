@@ -3,8 +3,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for studio/setup.ps1's pinned-torch-index stale-venv helpers
 # (Test-RocmGfx211Leaf, Test-CudaFamilyLeaf, Get-RocmPinStaleTags). Pure helpers,
-# AST-extracted and run in-process -- no GPU/venv needed. Mirrors the Python
-# _rocm_pin_family_mismatch / _is_cuda_family_leaf tests so both stay in lockstep.
+# AST-extracted and run in-process. Mirrors the Python _rocm_pin_family_mismatch /
+# _is_cuda_family_leaf tests.
 # Run: pwsh -NoProfile -File tests/studio/test_setup_pin_stale.ps1
 
 $ErrorActionPreference = "Stop"
@@ -59,17 +59,15 @@ Write-Host "Get-RocmPinStaleTags (mirror of _rocm_pin_family_mismatch)"
 Check "rocm7.2 pin + 2.11.0+rocm7.2 -> not stale"  (-not (IsStale "rocm7.2" "2.11.0+rocm7.2"))
 Check "rocm7.2 pin + 2.10.0+rocm6.4 -> stale"      (IsStale "rocm7.2" "2.10.0+rocm6.4")
 Check "rocm6.4 pin + 2.10.0+rocm6.4 -> not stale"  (-not (IsStale "rocm6.4" "2.10.0+rocm6.4"))
-# rocm7.2 is a KNOWN-2.11 index (torch>=2.11,<2.12). A +rocm7.2 wheel whose RELEASE
-# drifted off 2.11 (2.12/2.13 from an out-of-band upgrade or a custom rocm7.2 mirror)
-# shares the rocm tag but violates the spec -> stale (mirror of _rocm_pin_family_mismatch).
+# rocm7.2 is a KNOWN-2.11 index. A +rocm7.2 wheel whose RELEASE drifted off 2.11 shares
+# the tag but violates the spec -> stale (mirror of _rocm_pin_family_mismatch).
 Check "rocm7.2 pin + 2.12.0+rocm7.2 -> stale"      (IsStale "rocm7.2" "2.12.0+rocm7.2")
 Check "rocm7.2 pin + 2.13.0+rocm7.2 -> stale"      (IsStale "rocm7.2" "2.13.0+rocm7.2")
 Check "rocm7.2 pin + 2.11.5+rocm7.2 -> not stale"  (-not (IsStale "rocm7.2" "2.11.5+rocm7.2"))
-# An UNKNOWN newer rocm (not on the 2.11 allowlist) is not floored to 2.11, so a
-# matching rocm version at any release line is NOT stale on this exact-compare branch.
+# An UNKNOWN newer rocm (off the 2.11 allowlist) isn't floored, so a matching version at
+# any release line is NOT stale on this exact-compare branch.
 Check "rocm8.0 pin + 2.12.0+rocm8.0 -> not stale"  (-not (IsStale "rocm8.0" "2.12.0+rocm8.0"))
-# rocm pin vs an untagged (no +rocm) wheel: a CPU/CUDA build never satisfies a
-# ROCm pin, regardless of its release line -> always stale (needs reinstall).
+# An untagged (no +rocm) wheel never satisfies a ROCm pin -> always stale.
 Check "rocm7.2 pin + 2.10.0 (untagged) -> stale"   (IsStale "rocm7.2" "2.10.0")
 Check "rocm7.2 pin + 2.11.0 (untagged) -> stale"   (IsStale "rocm7.2" "2.11.0")
 Check "rocm6.4 pin + 2.10.0 (untagged) -> stale"   (IsStale "rocm6.4" "2.10.0")
@@ -84,13 +82,12 @@ Check "gfx110x-all pin + 2.10.0+rocm6.4 -> not stale"  (-not (IsStale "gfx110x-a
 Check "gfx90a pin + 2.10.0+rocm6.3 -> not stale"       (-not (IsStale "gfx90a" "2.10.0+rocm6.3"))
 Check "gfx908 pin + 2.10.0+rocm7.0 -> not stale"       (-not (IsStale "gfx908" "2.10.0+rocm7.0"))
 Check "gfx110x-all pin + 2.11.0+rocm7.2 -> stale"      (IsStale "gfx110x-all" "2.11.0+rocm7.2")
-# Non-2.11 gfx pin over an untagged (no +rocm) wheel: never satisfies the pin ->
-# stale, so the explicit ROCm index is applied even when torch is already <2.11.
+# Non-2.11 gfx pin over an untagged wheel: never satisfies the pin -> stale, so the
+# explicit ROCm index is applied even when torch is already <2.11.
 Check "gfx110x-all pin + 2.10.0 (untagged) -> stale"   (IsStale "gfx110x-all" "2.10.0")
 Check "gfx90a pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx90a" "2.10.0")
-# Capital gfx120X-all leaf is lowercased by Get-TorchIndexLeaf before this helper;
-# the caller passes the normalised leaf, so the 2.11-allowlist branch fires and a
-# generic/untagged wheel is stale (the per-arch wheel is not).
+# Capital gfx120X-all is lowercased by Get-TorchIndexLeaf before this helper, so the
+# 2.11-allowlist branch fires and a generic/untagged wheel is stale.
 Check "gfx120x-all pin + 2.11.0+rocm7.2 (generic) -> stale" (IsStale "gfx120x-all" "2.11.0+rocm7.2")
 Check "gfx120x-all pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx120x-all" "2.10.0")
 
@@ -99,9 +96,9 @@ Check "rocm7.2 -> known 2.11"  (Test-RocmKnown211Version -Major 7 -Minor 2)
 Check "rocm7.1 -> not known"   (-not (Test-RocmKnown211Version -Major 7 -Minor 1))
 Check "rocm7.3 -> not known"   (-not (Test-RocmKnown211Version -Major 7 -Minor 3))
 Check "rocm8.0 -> not known"   (-not (Test-RocmKnown211Version -Major 8 -Minor 0))
-# Unreadable-installed fallback: a rocm7.3 pin (unknown -> <2.11 line) over a <2.11
-# +rocm wheel with an unreadable version is NOT stale (both on the non-2.11 line);
-# rocm7.2 (KNOWN-2.11) over the same wheel IS stale. This is the #2534 alignment.
+# Unreadable-installed fallback: a rocm7.3 pin (unknown -> <2.11 line) over a <2.11 +rocm
+# wheel with an unreadable version is NOT stale; rocm7.2 (KNOWN-2.11) over the same wheel
+# IS stale (#2534 alignment).
 Check "rocm7.3 pin + 2.10.0+rocm (unreadable ver) -> not stale" (-not (IsStale "rocm7.3" "2.10.0+rocm"))
 Check "rocm7.2 pin + 2.10.0+rocm (unreadable ver) -> stale"     (IsStale "rocm7.2" "2.10.0+rocm")
 

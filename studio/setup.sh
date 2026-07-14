@@ -971,16 +971,14 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
     fi
 fi
 
-# Honor an explicit torch-index pin on `studio update` even when unsloth is already
-# current: the fast "up to date" path above skips install_python_stack.py, which owns
-# the marker-driven torch reinstall, so a newly-set/changed UNSLOTH_TORCH_INDEX_URL /
-# _FAMILY would be ignored on Linux. Forcing the full pass every update is wasteful, so
-# ask the Python side (which has the exact marker normalization) whether the pin still
-# needs applying. Exit 0 -> apply; 1 -> already recorded, keep the fast path; other
-# (probe error) -> fail safe and run the pass. Mirrors setup.ps1's stale-venv pre-check.
+# Honor an explicit torch-index pin on `studio update` even when unsloth is current: the
+# fast "up to date" path above skips install_python_stack.py, which owns the marker-driven
+# torch reinstall, so a newly-set/changed pin would be ignored. Ask the Python side (which
+# has the exact marker normalization) whether the pin still needs applying. Exit 0 -> apply;
+# 1 -> already recorded, keep the fast path; other -> fail safe. Mirrors setup.ps1.
 if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" ]; then
-    # `|| _PIN_NEEDS_APPLY=$?` keeps the probe's nonzero exit (1 = already applied)
-    # from killing the script under `set -e`.
+    # `|| _PIN_NEEDS_APPLY=$?` keeps the probe's nonzero exit (1 = already applied) from
+    # killing the script under `set -e`.
     _PIN_NEEDS_APPLY=0
     "$VENV_DIR/bin/python" "$SCRIPT_DIR/install_python_stack.py" --torch-pin-needs-apply 2>/dev/null \
         || _PIN_NEEDS_APPLY=$?

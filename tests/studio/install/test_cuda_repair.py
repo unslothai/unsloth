@@ -89,8 +89,7 @@ def _run_cuda_repair(
 
     import tempfile as _tempfile
 
-    # Isolate the torch-index marker so _ensure_cuda_torch's post-reinstall marker
-    # write lands in a throwaway dir, never the real venv (and never leaks state).
+    # Isolate the torch-index marker so the post-reinstall write lands in a throwaway dir.
     _marker_dir = _tempfile.mkdtemp(prefix = "unsloth-marker-test-")
     _marker_path = Path(_marker_dir) / ".unsloth-torch-index"
 
@@ -143,15 +142,14 @@ class TestCudaRepairFires:
         assert mock_pip.call_args.kwargs["constrain"] is False
 
     def test_rocm_in_version_string_triggers_repair(self):
-        # AMD SDK / Radeon wheels may encode rocm in __version__ without
-        # torch.version.hip; the probe prints "hip" for both.
+        # AMD SDK / Radeon wheels may encode rocm in __version__ without torch.version.hip;
+        # the probe prints "hip" for both.
         mock_pip = _run_cuda_repair(torch_state = "hip")
         assert mock_pip.call_count == 1
 
     def test_no_gpu_but_explicit_cuda_pin_repairs(self):
-        # Headless / container / CI cross-install: an explicit cu* index pin
-        # commits to CUDA wheels even though no NVIDIA GPU is visible here, so a
-        # ROCm-poisoned venv is still repaired (to the pinned family).
+        # Headless / CI cross-install: an explicit cu* pin commits to CUDA wheels with no
+        # NVIDIA GPU visible, so a ROCm-poisoned venv is still repaired to the pinned family.
         mock_pip = _run_cuda_repair(
             nvidia = False,
             backend = "cuda",
@@ -162,10 +160,9 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_cvd_hidden_but_explicit_cuda_pin_repairs(self):
-        # CUDA_VISIBLE_DEVICES=-1 hides the GPU, but an explicit cu* pin skips ALL
-        # host-GPU probing (like install.sh's get_torch_index_url override), so the
-        # CVD hide gate must not suppress the repair. This is the exact GPU-less CI
-        # case the override targets: CVD=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128.
+        # CUDA_VISIBLE_DEVICES=-1 hides the GPU, but an explicit cu* pin skips ALL host-GPU
+        # probing, so the CVD hide gate must not suppress the repair (the GPU-less CI case:
+        # CVD=-1 UNSLOTH_TORCH_INDEX_FAMILY=cu128).
         for _cvd in ("-1", ""):
             mock_pip = _run_cuda_repair(
                 nvidia = False,
@@ -188,9 +185,8 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_untagged_cuda_build_under_pin_repairs(self):
-        # An untagged CUDA build (torch re-resolved from default PyPI, no +cuXXX
-        # local tag -> empty installed cu) cannot be confirmed to match the pin,
-        # so the pin is enforced with a reinstall to the pinned family.
+        # An untagged CUDA build (no +cuXXX tag -> empty installed cu) can't be confirmed
+        # to match the pin, so the pin is enforced with a reinstall.
         mock_pip = _run_cuda_repair(
             index_family = "cu128",
             torch_state = "cuda",  # marker cuda, empty installed cu
@@ -200,10 +196,9 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_pin_repairs(self):
-        # torch present but unimportable (probe exit != 0) under an explicit CUDA pin:
-        # _torch_pin_needs_apply forces the pass on the failed probe and the base update
-        # does not repair a broken already-installed torch, so reinstall from the pin
-        # instead of stranding it (Codex P2, Linux counterpart of the known-family fix).
+        # torch present but unimportable under an explicit CUDA pin: _torch_pin_needs_apply
+        # forces the pass on the failed probe and the base update won't repair a broken
+        # already-installed torch, so reinstall from the pin instead of stranding it.
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1, index_family = "cu128")
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
@@ -247,9 +242,8 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_torch_missing_no_pin_skips(self):
-        # Non-zero probe exit = torch missing / un-importable. With NO CUDA pin the base
-        # install step owns it, so leave it alone (a pinned build reinstalls -- see
-        # test_broken_probe_with_cuda_pin_repairs).
+        # Non-zero probe exit = torch missing/un-importable. With NO CUDA pin the base
+        # install owns it, so leave it alone (a pinned build reinstalls).
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1)
         mock_pip.assert_not_called()
 
@@ -292,9 +286,8 @@ class TestCudaRepairSkips:
         mock_pip.assert_not_called()
 
     def test_custom_mirror_leaf_not_treated_as_cuda_pin(self):
-        # A generic mirror URL whose leaf starts with "cu" but is not cuXXX
-        # (e.g. .../custom, .../current) must NOT be treated as a CUDA pin, so it
-        # cannot bypass the NVIDIA gate to force CUDA over a CPU/ROCm venv.
+        # A mirror leaf starting with "cu" but not cuXXX (.../custom, .../current) must
+        # NOT be treated as a CUDA pin, so it can't bypass the NVIDIA gate.
         for _leaf in ("custom", "current"):
             mock_pip = _run_cuda_repair(
                 nvidia = False,
@@ -332,8 +325,8 @@ class TestTorchBackendDerivationFromPin:
 
     @staticmethod
     def _derive(env):
-        # Re-run the exact derivation the module does at import time, using the
-        # module's own _is_cuda_family_leaf so this stays in lockstep with it.
+        # Re-run the module's import-time derivation, using its own _is_cuda_family_leaf
+        # so this stays in lockstep.
         idx_override = (
             env.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
             or env.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
@@ -359,8 +352,8 @@ class TestTorchBackendDerivationFromPin:
         assert self._derive({"UNSLOTH_TORCH_INDEX_FAMILY": "cu128"}) == "cuda"
 
     def test_current_leaf_not_cuda(self):
-        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD
-        # host still repairs a CPU/wrong torch instead of short-circuiting.
+        # ^cu[0-9] rejects /current -> backend stays "" (probe GPU), so an AMD host still
+        # repairs a CPU/wrong torch instead of short-circuiting.
         assert self._derive({"UNSLOTH_TORCH_INDEX_URL": "https://mymirror.example/current"}) == ""
 
     def test_custom_leaf_not_cuda(self):

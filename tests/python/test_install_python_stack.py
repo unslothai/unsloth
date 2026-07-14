@@ -209,8 +209,7 @@ class TestPinnedIndexClearsUvEnv:
             assert var not in env, f"{var} must be cleared for a pinned-index install"
 
     def test_pinned_default_index_strips_uv_index_vars(self):
-        # The uv-native spelling (--default-index) must be gated too, matching
-        # install.sh / install.ps1 which key off --default-index.
+        # --default-index must be gated too (matches install.sh / install.ps1).
         cmd = ["uv", "pip", "install", "torch", "--default-index", "https://x/cu126"]
         with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
             env = ips._install_env_for_cmd(cmd)
@@ -218,8 +217,8 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_INDEX" not in env
 
     def test_non_pinned_install_keeps_user_mirror(self):
-        # A plain install (no --index-url) must NOT scrub the env, so a user's
-        # UV_INDEX / UV_EXTRA_INDEX_URL mirror still applies to base packages.
+        # A plain install (no --index-url) must NOT scrub the env, so a user's mirror
+        # still applies to base packages.
         cmd = ["uv", "pip", "install", "unsloth", "unsloth-zoo"]
         with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
             env = ips._install_env_for_cmd(cmd)

@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for install.sh's torch-index MARKER helpers (_normalize_index_url,
-# _write_torch_index_marker). These converge the ROCm/gfx pin-change detection
-# across install.sh / install_python_stack.py / setup.ps1 / install.ps1 by
-# recording the resolved wheel --index-url so a later update can compare exactly.
-# Helpers are extracted from install.sh and sourced (parity with test_torch_flavor.sh).
+# _write_torch_index_marker), which record the resolved wheel --index-url so a later
+# update detects a ROCm/gfx pin change by exact compare. Helpers extracted and sourced.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -62,8 +60,8 @@ assert_eq "empty -> empty" "" "$(_normalize_index_url '   ')"
 assert_eq "rocm7.2 unchanged" \
     "https://download.pytorch.org/whl/rocm7.2" \
     "$(_normalize_index_url 'https://download.pytorch.org/whl/rocm7.2/')"
-# A suffixed rocm7.2-Private mirror is a CUSTOM pin, not a family: its case must survive
-# normalization (a case-only change is a real mismatch), unlike the exact rocm7.2 family.
+# A suffixed rocm7.2-Private mirror is a CUSTOM pin: its case must survive normalization
+# (a case-only change is a real mismatch), unlike the exact rocm7.2 family.
 assert_eq "suffixed rocm7.2-Private case preserved" \
     "https://co.internal/whl/rocm7.2-Private" \
     "$(_normalize_index_url 'https://co.internal/whl/rocm7.2-Private/')"
@@ -78,8 +76,8 @@ assert_eq "credential-free url unchanged" \
 assert_eq "@ in path preserved" \
     "https://h/pa@th" \
     "$(_strip_index_url_credentials 'https://u:p@h/pa@th')"
-# A token can also ride in the query string / fragment of a private feed URL;
-# both are dropped so the secret never lands in the marker or logged output.
+# A token can also ride in the query/fragment; both are dropped so it never lands in
+# the marker or logged output.
 assert_eq "query token stripped" \
     "https://mirror.local/simple" \
     "$(_strip_index_url_credentials 'https://mirror.local/simple?token=SECRET')"
@@ -92,8 +90,8 @@ assert_eq "userinfo and query both stripped" \
 assert_eq "query stripped on host-only url" \
     "https://mirror.local" \
     "$(_strip_index_url_credentials 'https://mirror.local?token=SECRET')"
-# Backward compatibility: an OLD marker that recorded credentials must compare
-# equal to the same pin with or without them (normalization strips both sides).
+# Backward compatibility: an OLD marker that recorded credentials compares equal to the
+# same pin with or without them (normalization strips both sides).
 assert_eq "normalize: creds on either side compare equal" \
     "$(_normalize_index_url 'https://x/cu128')" \
     "$(_normalize_index_url 'https://user:tok@x/cu128/')"

@@ -927,9 +927,8 @@ class TestEnsureRocmTorch:
         assert f(f"{base}/rocm7.2", "2.11.0+rocm7.2") is False
         assert f(f"{base}/rocm7.2", "2.10.0+rocm6.4") is True
         assert f(f"{base}/rocm6.4", "2.10.0+rocm6.4") is False
-        # rocm7.2 is KNOWN-2.11 (torch>=2.11,<2.12). A +rocm7.2 wheel whose RELEASE drifted
-        # off 2.11 (2.12/2.13+rocm7.2) shares the tag but violates the spec -> mismatch
-        # (the version compare alone would accept it, and >=2.11 accepts 2.12 too).
+        # rocm7.2 is KNOWN-2.11. A +rocm7.2 wheel whose RELEASE drifted off 2.11 shares the
+        # tag but violates the spec -> mismatch (a plain version compare would accept it).
         assert f(f"{base}/rocm7.2", "2.12.0+rocm7.2") is True
         assert f(f"{base}/rocm7.2", "2.13.0+rocm7.2") is True
         assert f(f"{base}/rocm7.2", "2.11.5+rocm7.2") is False  # patch on 2.11 is in-spec
@@ -952,9 +951,8 @@ class TestEnsureRocmTorch:
         # (no reinstall loop once the correct gfx wheel is present).
         assert f(f"{amd}/gfx120X-all", "2.11.0+rocm7.13.0") is False
         assert f(f"{amd}/gfx1150", "2.11.0+rocm7.13.0") is False
-        # A NON-2.11 gfx pin (gfx110X-all/gfx90a/gfx908) tracks the default <2.11
-        # spec: a correct 2.10+rocm wheel is NOT a mismatch (no reinstall loop);
-        # a 2.11 build is (the arch's index does not publish 2.11 wheels).
+        # A NON-2.11 gfx pin (gfx110X-all/gfx90a/gfx908) tracks the default <2.11 spec: a
+        # correct 2.10+rocm wheel is NOT a mismatch, a 2.11 build is.
         assert f(f"{amd}/gfx110X-all", "2.10.0+rocm6.4") is False
         assert f(f"{amd}/gfx90a", "2.10.0+rocm6.3") is False
         assert f(f"{amd}/gfx908", "2.10.0+rocm7.0") is False
@@ -965,10 +963,9 @@ class TestEnsureRocmTorch:
         assert f(f"{amd}/gfx90a", "2.10.0") is True
 
     def test_radeon_url_not_classified_as_pip_rocm_family(self):
-        """A repo.radeon.com find-links directory (leaf rocm-rel-7.2.1, which
-        install.sh records in the marker) starts with "rocm" but is NOT a pip
-        --index-url ROCm family: it must route to the verbatim/marker path, not a
-        --index-url reinstall that fails against a find-links listing (Codex P2)."""
+        """A repo.radeon.com find-links dir (leaf rocm-rel-7.2.1) starts with "rocm" but is
+        NOT a pip --index-url ROCm family: it must route to the verbatim/marker path, not a
+        --index-url reinstall that fails against a find-links listing."""
         leaf_f = stack_mod._is_pip_rocm_family_leaf
         # Real pip ROCm families (download.pytorch.org/whl/rocmX.Y, repo.amd.com gfx).
         assert leaf_f("rocm7.2") is True
@@ -983,10 +980,9 @@ class TestEnsureRocmTorch:
         assert leaf_f("current") is False
         assert leaf_f("cpu") is False
         assert leaf_f("cu128") is False
-        # A rocm<digit>-SUFFIX private mirror shares the family prefix but is a custom
-        # pin the verbatim path owns: a ^rocm\d PREFIX match wrongly treats it as a
-        # --index-url family (skipping the companion bounds and, on a pre-marker venv
-        # with a compatible +rocm wheel, never applying the pin). Match EXACTLY (Codex P2).
+        # A rocm<digit>-SUFFIX private mirror shares the family prefix but is a custom pin
+        # the verbatim path owns: a ^rocm\d PREFIX match would wrongly treat it as a
+        # --index-url family. Match EXACTLY.
         assert leaf_f("rocm7.2-private") is False
         assert leaf_f("rocm7-current") is False
         assert leaf_f("rocm7.2.1") is False  # two-part local suffix -> custom, not rocm7.2
@@ -1008,10 +1004,9 @@ class TestEnsureRocmTorch:
         assert _classify(amd_gfx, rocm_fn) == amd_gfx
         assert _classify(pip_rocm, unk_fn) is None
         assert _classify(amd_gfx, unk_fn) is None
-        # The Radeon find-links URL is NOT a pip ROCm family (so _ensure_rocm_torch
-        # skips it instead of a failing --index-url reinstall) and IS unknown, so it
-        # routes to the verbatim/marker path -- a no-op when the marker already matches
-        # (the finding's "leave the matching marker alone" scenario).
+        # The Radeon find-links URL is NOT a pip ROCm family (so _ensure_rocm_torch skips
+        # it) and IS unknown, so it routes to the verbatim/marker path (a no-op when the
+        # marker already matches).
         assert _classify(radeon, rocm_fn) is None
         assert _classify(radeon, unk_fn) == radeon
 
@@ -1039,10 +1034,8 @@ class TestEnsureRocmTorch:
                 stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
                 with patch("subprocess.run", return_value = mock_probe):
                     with patch.object(stack_mod, "_marker_pin_mismatch", return_value = mismatch):
-                        # Pin NO_TORCH False like the sibling tests: a suite run with
-                        # UNSLOTH_NO_TORCH=1 in the env sets stack_mod.NO_TORCH True at
-                        # import, and _ensure_cpu_torch returns early on it, which would
-                        # make the reinstall assertions below fail spuriously.
+                        # Pin NO_TORCH False: a suite run with UNSLOTH_NO_TORCH=1 sets it
+                        # True at import, and _ensure_cpu_torch returns early on it.
                         with patch.object(stack_mod, "NO_TORCH", False):
                             stack_mod._ensure_cpu_torch()
             return mock_pip.called
@@ -1242,9 +1235,8 @@ class TestTorchIndexMarkerHelpers:
         assert f("https://x/cu128") == f("https://user:tok@x/cu128")
 
     def test_torch_index_leaf_drops_query_and_fragment(self):
-        # A token-authenticated pin (.../cu128?token=x) must classify as the cu128
-        # family; the raw rsplit leaf ("cu128?token=x") passed the cu-prefix check
-        # but never equalled the installed cu128 tag -> reinstall every update.
+        # A token-authenticated pin (.../cu128?token=x) must classify as cu128; the raw
+        # leaf ("cu128?token=x") never equalled the installed cu128 tag -> reinstall loop.
         f = stack_mod._torch_index_leaf
         assert f("https://m/whl/cu128?token=x") == "cu128"
         assert f("https://m/whl/cu128#frag") == "cu128"
@@ -1289,10 +1281,8 @@ class TestEnsureRocmTorchMarker:
         # The verbatim clobber snapshot is per-run module state; reset it so one
         # test's snapshot can never leak into another's clobber comparison.
         stack_mod._VERBATIM_TRIO_SNAPSHOT = None
-        # _TORCH_BACKEND is computed once at import from UNSLOTH_TORCH_BACKEND; a runner
-        # that starts with a cuda/cpu backend (or an installer pin) makes _ensure_rocm_torch
-        # early-return and skip the mocked repair these tests exercise. Neutralize it so
-        # the marker tests are independent of the caller's installer-pin environment.
+        # _TORCH_BACKEND is computed once at import; a cuda/cpu backend (or installer pin)
+        # makes _ensure_rocm_torch early-return and skip the mocked repair. Neutralize it.
         with patch.object(stack_mod, "_torch_index_marker_path", return_value = self._marker_path):
             with patch.object(stack_mod, "_TORCH_BACKEND", ""):
                 yield
@@ -1423,9 +1413,8 @@ class TestEnsureRocmTorchMarker:
         assert "gfx120X-all" in torch_call or "gfx120x-all" in torch_call
         assert "gfx120X-all" in self._marker_path.read_text()
 
-        # (c) loop-safety: a SECOND run now sees the recorded marker == pin, so the
-        # exact compare (not the ambiguous tag) drives the decision and NO reinstall
-        # happens.
+        # (c) loop-safety: a SECOND run sees marker == pin, so the exact compare drives
+        # the decision and NO reinstall happens.
         mock_pip.reset_mock()
         with patch.dict(stack_mod.os.environ, env, clear = False):
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
@@ -1497,12 +1486,10 @@ class TestEnsureRocmTorchMarker:
         env = {"UNSLOTH_TORCH_INDEX_URL": "https://mirror.local/current"}
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                # The second call hits the matching-marker path, which probes torch
-                # health; pip_install is mocked so torch never becomes importable, and
-                # in a no-torch env the probe would return None and force another
-                # reinstall. Pin a healthy flavor so the idempotence check is about the
-                # marker, not ambient torch. (The first call takes the no-marker reinstall
-                # branch, which does not probe, so the mock does not affect it.)
+                # The second call hits the matching-marker path, which probes torch health;
+                # pip_install is mocked so torch never imports and the probe would return
+                # None and force another reinstall. Pin a healthy flavor so the idempotence
+                # check is about the marker, not ambient torch.
                 with patch.object(
                     stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
                 ):
@@ -1712,9 +1699,8 @@ class TestEnsureRocmTorchMarker:
         ]
         with patch.object(stack_mod, "NO_TORCH", False):
             with patch.object(stack_mod, "IS_MACOS", False):
-                # torch imports throughout (healthy probe), so the DRIFT signal is the
-                # snapshot, not the import health check -- this test exercises the
-                # clobber-via-version-drift path, not the broken-torch path.
+                # torch imports throughout, so the DRIFT signal is the snapshot, not the
+                # import check -- exercises the clobber-via-version-drift path.
                 with patch.object(
                     stack_mod, "_probe_torch_flavor", return_value = ("cpu", "", "2.10.0")
                 ):
@@ -1826,10 +1812,9 @@ class TestEnsureRocmTorchMarker:
     # --- _torch_flavor_matches_pin (shared by baseline + probe) ---------------
     def test_flavor_matches_pin_tristate(self):
         f = stack_mod._torch_flavor_matches_pin
-        # flavor is (marker, cutag, version). cuXXX pin: exact +cuXXX tag matches; a
-        # different family/tag is a definite mismatch. An UNTAGGED cuda build is NOT
-        # accepted (False, not None): _ensure_cuda_torch reinstalls it to enforce the
-        # pin, so the probe must force the pass too rather than trust it.
+        # flavor is (marker, cutag, version). cuXXX pin: exact +cuXXX matches; a different
+        # tag or an UNTAGGED cuda build is False (not None) -- _ensure_cuda_torch reinstalls
+        # it, so the probe must force the pass too.
         assert f("cu128", ("cuda", "cu128", "2.10.0+cu128")) is True
         assert f("cu128", ("cuda", "cu126", "2.10.0+cu126")) is False
         assert f("cu128", ("cpu", "", "2.10.0")) is False
@@ -1838,9 +1823,8 @@ class TestEnsureRocmTorchMarker:
         # cpu pin.
         assert f("cpu", ("cpu", "", "2.10.0")) is True
         assert f("cpu", ("cuda", "cu128", "2.10.0+cu128")) is False
-        # rocm pin reuses _rocm_pin_family_mismatch, so the probe is as strict as
-        # _ensure_rocm_torch's reinstall test: a matching rocm version is True, a wrong
-        # ROCm family is False (an old +rocm6.4 wheel under a rocm7.2 pin).
+        # rocm pin reuses _rocm_pin_family_mismatch (as strict as _ensure_rocm_torch): a
+        # matching version is True, a wrong family (+rocm6.4 under a rocm7.2 pin) is False.
         assert f("rocm7.2", ("hip", "", "2.11.0+rocm7.2")) is True
         assert f("rocm7.2", ("cpu", "", "2.10.0")) is False
         assert f("rocm7.2", ("hip", "", "2.10.0+rocm6.4")) is False
@@ -1862,9 +1846,8 @@ class TestEnsureRocmTorchMarker:
         if marker is not None:
             self._seed(marker)
         env = {"UNSLOTH_TORCH_INDEX_URL": url} if url else {}
-        # Pin NO_TORCH explicitly (default False): _torch_pin_needs_apply short-circuits
-        # on it, so a test process launched with UNSLOTH_NO_TORCH=1 would otherwise make
-        # every "needs apply" case return False spuriously (round-10 P3).
+        # Pin NO_TORCH False: _torch_pin_needs_apply short-circuits on it, so a process
+        # with UNSLOTH_NO_TORCH=1 would otherwise make every case return False.
         with patch.object(stack_mod, "NO_TORCH", no_torch):
             with patch.object(stack_mod, "_probe_torch_flavor", return_value = flavor):
                 with patch.dict(stack_mod.os.environ, env, clear = False):
@@ -1877,11 +1860,9 @@ class TestEnsureRocmTorchMarker:
         assert self._needs_apply("", None) is False
 
     def test_probe_no_torch_keeps_fast_path(self):
-        # UNSLOTH_NO_TORCH: torch is absent by design, so a pin never needs applying,
-        # regardless of env vars, marker state, or a failed flavor probe. Without this
-        # guard a torch-index env var + an absent marker would force the pass on EVERY
-        # update (the failed-probe branch), with no marker ever written to stop it, since
-        # the dependency pass also honors NO_TORCH and installs no torch (round-7 item 3).
+        # UNSLOTH_NO_TORCH: torch is absent by design, so a pin never needs applying.
+        # Without this guard a pin + absent marker would force the pass on EVERY update
+        # (the failed-probe branch), with no marker ever written to stop it.
         assert self._needs_apply("https://mirror.local/cu128", None, no_torch = True) is False
         assert (
             self._needs_apply(
@@ -1923,9 +1904,8 @@ class TestEnsureRocmTorchMarker:
         )
 
     def test_probe_untagged_cuda_under_pin_forces_pass(self):
-        # An untagged CUDA build under a cuXXX pin: the marker matches but the family
-        # cannot be confirmed and _ensure_cuda_torch would reinstall it, so the probe
-        # must force the pass (round-3 returned None here and skipped it -- item 2).
+        # An untagged CUDA build under a cuXXX pin: the marker matches but the family can't
+        # be confirmed and _ensure_cuda_torch would reinstall it, so the probe forces the pass.
         assert (
             self._needs_apply(
                 "https://mirror.local/cu128",
@@ -1937,8 +1917,7 @@ class TestEnsureRocmTorchMarker:
 
     def test_probe_generic_rocm_under_gfx_pin_forces_pass(self):
         # A generic two-part +rocm7.2 wheel under a per-arch gfx pin: _ensure_rocm_torch
-        # reinstalls it (per-arch mismatch), so the probe must force the pass instead of
-        # accepting any HIP build (round-3 accepted it -- item 3).
+        # reinstalls it, so the probe must force the pass instead of accepting any HIP build.
         assert (
             self._needs_apply(
                 "https://repo.amd.com/rocm/whl/gfx1151",
@@ -1961,10 +1940,9 @@ class TestEnsureRocmTorchMarker:
         )
 
     def test_probe_failed_flavor_forces_pass(self):
-        # A failed probe (torch missing/unimportable) under a matching marker must
-        # force the pass: the marker cannot vouch for a torch that does not import,
-        # and forcing is safe (the pass is idempotent and self-resolving once torch
-        # imports again). Round 4 kept the fast path here -- item 3 reverses that.
+        # A failed probe under a matching marker must force the pass: the marker can't
+        # vouch for a torch that doesn't import, and forcing is safe (idempotent, self-
+        # resolving once torch imports).
         assert (
             self._needs_apply(
                 "https://mirror.local/cu128", None, marker = "https://mirror.local/cu128"
@@ -1973,9 +1951,8 @@ class TestEnsureRocmTorchMarker:
         )
 
     def test_probe_custom_cu_suffix_leaf_keeps_fast_path(self):
-        # A custom mirror leaf like cu128-private is NOT a CUDA family (exact cu+digits
-        # only), so it routes through the unknown/verbatim path: a matching marker and a
-        # healthy torch must NOT force a reinstall on every update (item 2 loop fix).
+        # A custom leaf like cu128-private is NOT a CUDA family (exact cu+digits only), so
+        # it routes through the verbatim path: a matching marker + healthy torch is no-op.
         assert (
             self._needs_apply(
                 "https://mirror.local/cu128-private",
@@ -2208,10 +2185,8 @@ class TestEnsureRocmTorchMarker:
         mock_try.assert_not_called()
 
     # NOTE: the broken-probe (probe -> None) case now REINSTALLS from the pin rather than
-    # skipping -- see test_pinned_known_family_broken_probe_reinstalls /
-    # test_pinned_known_family_broken_probe_win_rocm_reinstalls above. Returning on a failed
-    # probe stranded a broken torch while _torch_pin_needs_apply forced the pass forever
-    # (Codex P2), so the old "skips_failed_probe" guard was intentionally replaced.
+    # skipping (see the *_broken_probe_reinstalls tests above): returning stranded a broken
+    # torch while _torch_pin_needs_apply forced the pass forever.
 
     def test_pinned_known_family_skips_no_torch_and_intel_mac(self):
         """NO_TORCH (headless no-torch) and Intel mac (already NO_TORCH) do nothing."""
@@ -3213,9 +3188,8 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1200"
 
     def test_returns_arch_on_crash_with_gcnarchname_in_output(self):
-        # Regression #6043: hipinfo may crash (0xC0000005 on RDNA 4) after
-        # printing gcnArchName. Accept the arch whenever gcnArchName is in
-        # stdout, regardless of exit code (previously a CPU fallback).
+        # Regression #6043: hipinfo may crash (0xC0000005 on RDNA 4) after printing
+        # gcnArchName. Accept the arch whenever gcnArchName is in stdout, any exit code.
         mock_result = MagicMock()
         mock_result.returncode = -1073741819  # 0xC0000005 STATUS_ACCESS_VIOLATION
         mock_result.stdout = b"gcnArchName : gfx1200\nsome other line\n"
@@ -4398,12 +4372,10 @@ class TestStrixRocm71Override:
         UNSLOTH_TORCH_BACKEND classification uses.
         """
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The 2.11 constraint block must switch on $_torch_index_leaf, not on the
-        # full $TORCH_INDEX_URL (which the earlier, buggy version matched with
-        # */gfx* and would false-positive on a mirror base path). Only the gfx
-        # families with the <2.11 _grouped_mm bug (gfx120X-all / gfx1151 / gfx1150)
-        # are pushed to 2.11 -- a bare gfx* would also floor gfx110X-all/gfx90a/
-        # gfx908, which the automatic AMD path intentionally leaves bare.
+        # The 2.11 constraint block must switch on $_torch_index_leaf, not the full
+        # $TORCH_INDEX_URL (a */gfx* match false-positives on a mirror base path). Only the
+        # _grouped_mm-bug gfx families (gfx120X-all / gfx1151 / gfx1150) are pushed to 2.11;
+        # a bare gfx* would also floor gfx110X-all/gfx90a/gfx908, left bare on purpose.
         assert 'case "$_torch_index_leaf" in\n    rocm7.2|gfx120x-all|gfx1151|gfx1150)' in source, (
             "the torch>=2.11 constraint must match the specific gfx leaves that need "
             "it (rocm7.2|gfx120x-all|gfx1151|gfx1150), not a bare gfx* or the whole URL"
@@ -4497,9 +4469,9 @@ class TestServerStartupRocmFixes:
         assert '"BNB_ROCM_VERSION" not in os.environ' in source
 
     # ── hipInfo.exe PATH prepend (bitsandbytes arch-probe fix) ────────────────
-    # bnb's get_rocm_gpu_arch() runs hipinfo.exe via PATH at import; the AMD
-    # wheel ships it in venv Scripts (on PATH only for activated venvs), so
-    # without the prepend bnb logs "[WinError 2]" when launched directly.
+    # bnb's get_rocm_gpu_arch() runs hipinfo.exe via PATH at import; the AMD wheel ships it
+    # in venv Scripts (on PATH only for activated venvs), so without the prepend bnb logs
+    # "[WinError 2]" when launched directly.
 
     def test_main_py_prepends_hipinfo_dir_to_path(self):
         """main.py must make hipInfo.exe resolvable before bnb imports."""
@@ -4741,11 +4713,10 @@ class TestRocmGfxForwarding:
         assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in source
         assert "$HelperReleaseRepo = if (" not in source
 
-    # The text pins above guard the literal. The tests below *execute* the real
-    # routing line from setup.sh / setup.ps1 and assert the resolved release repo,
-    # so a refactor that reintroduces a conditional (or a ggml-org branch) is still
-    # caught. Inputs are varied -- CPU-only, inferred/forwarded gfx, usable NVIDIA --
-    # to prove no host slips back onto ggml-org. No GPU, no tooling, no network.
+    # The text pins above guard the literal. The tests below execute the real routing line
+    # from setup.sh / setup.ps1 and assert the resolved release repo, so a refactor that
+    # reintroduces a conditional (or a ggml-org branch) is still caught. Inputs vary
+    # (CPU-only, inferred/forwarded gfx, usable NVIDIA) to prove no host hits ggml-org.
 
     @staticmethod
     def _resolve_setup_sh_repo(
@@ -4840,8 +4811,8 @@ class TestRocmGfxForwarding:
 
 
 # TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
-# Honours CUDA/HIP_VISIBLE_DEVICES so a mixed-arch host installs the prebuilt
-# for the selected GPU, not GPU 0.
+# Honours CUDA/HIP_VISIBLE_DEVICES so a mixed-arch host installs the prebuilt for the
+# selected GPU, not GPU 0.
 
 _pick_rocm_gfx_target = prebuilt_mod._pick_rocm_gfx_target
 

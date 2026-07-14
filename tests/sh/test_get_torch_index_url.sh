@@ -380,14 +380,12 @@ assert_eq "CVD=' -1 ' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu
 rm -rf "$_dir"
 
 # --- explicit overrides (headless / container / CI; no GPU probing) ----------
-# 39) UNSLOTH_TORCH_INDEX_FAMILY pins the family with no GPU present -> that
-#     family (not the cpu fallback detection would pick).
+# 39) UNSLOTH_TORCH_INDEX_FAMILY pins the family with no GPU present (not the cpu fallback).
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "none")
 assert_eq "family override (no GPU) -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
 
-# 40) Family override wins over a real detection: a host whose nvidia-smi reports
-#     12.6 still gets cu128. This is the exact Docker-build case (the builder sees
-#     the host driver but must publish a cu128 image).
+# 40) Family override beats real detection: an nvidia-smi 12.6 host still gets cu128
+#     (the Docker-build case -- builder sees the host driver but publishes a cu128 image).
 _dir=$(make_mock_smi "12.6")
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="cu128" run_func "$_dir")
 assert_eq "family override beats detected 12.6 -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"

@@ -63,24 +63,22 @@ assert_eq "amd gfx index"      "rocm"  "$(_expected_torch_flavor_tag 'https://re
 assert_eq "mirror cu130 leaf"  "cu130" "$(_expected_torch_flavor_tag 'https://my.mirror/pytorch/whl/cu130')"
 assert_eq "unrecognized leaf"  ""      "$(_expected_torch_flavor_tag 'https://my.mirror/whl/simple')"
 assert_eq "empty url"          ""      "$(_expected_torch_flavor_tag '')"
-# Query/fragment dropped before classification: a token-authenticated
-# .../cu128?token=x pin must classify as cu128, not as an opaque leaf that can
-# never equal the installed cu128 tag (which would reinstall on every run).
+# Query/fragment dropped before classification: .../cu128?token=x classifies as cu128,
+# not an opaque leaf that reinstalls every run.
 assert_eq "query-bearing cu128" "cu128" "$(_expected_torch_flavor_tag 'https://m/whl/cu128?token=x')"
 assert_eq "fragment-bearing cpu" "cpu"  "$(_expected_torch_flavor_tag 'https://m/whl/cpu#frag')"
 # A cu-suffixed CUSTOM leaf (cu128-private, cu128x) is NOT the cu128 family (exact
-# cu+digits only). Mirrors the Python re.fullmatch(cu[0-9]+) / PowerShell.
+# cu+digits only). Mirrors Python re.fullmatch(cu[0-9]+) / PowerShell.
 assert_eq "cu-suffix custom leaf" ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128-private')"
 assert_eq "cu-alnum custom leaf"  ""    "$(_expected_torch_flavor_tag 'https://m/whl/cu128x')"
 assert_eq "bare cu digits stays"  "cu126" "$(_expected_torch_flavor_tag 'https://m/whl/cu126')"
-# A custom leaf that merely STARTS with rocm (rocm-current, rocm-rel-7.2.1) is NOT a
-# pip rocm family -> "" (custom), so the companion bounds apply. Real families (rocm7.2)
-# and gfx indexes stay "rocm".
+# A custom leaf merely STARTING with rocm (rocm-current, rocm-rel-7.2.1) is NOT a pip
+# rocm family -> "" (custom); real families (rocm7.2) and gfx indexes stay "rocm".
 assert_eq "custom rocm-current"   ""    "$(_expected_torch_flavor_tag 'https://mirror/whl/rocm-current')"
 assert_eq "radeon rocm-rel leaf"  ""    "$(_expected_torch_flavor_tag 'https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1')"
 assert_eq "real rocm7.2 stays"    "rocm" "$(_expected_torch_flavor_tag 'https://download.pytorch.org/whl/rocm7.2')"
-# A rocm<digit>-SUFFIX private mirror (rocm7.2-private, rocm7-current) shares the prefix
-# but is a custom pin -> "" (custom); match the family exactly, not just the prefix.
+# A rocm<digit>-SUFFIX private mirror (rocm7.2-private, rocm7-current) is a custom pin ->
+# "" (custom); match the family exactly, not the prefix.
 assert_eq "suffixed rocm7.2-private" "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2-private')"
 assert_eq "suffixed rocm7-current"   "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7-current')"
 assert_eq "two-dot rocm7.2.1"        "" "$(_expected_torch_flavor_tag 'https://co.internal/whl/rocm7.2.1')"
@@ -117,16 +115,15 @@ assert_family "cu128 not rocm"        "no"  "cu128"
 assert_family "simple not rocm"       "no"  "simple"
 
 echo "=== _tauri_torch_index_family (credential redaction) ==="
-# A token/fragment in the pinned URL must be stripped BEFORE classification so it is
-# never emitted into the [TAURI:DIAG] line. The family is the last path segment, which
-# would otherwise carry the query verbatim.
+# A token/fragment must be stripped BEFORE classification so it never reaches the
+# [TAURI:DIAG] line (the family is the last path segment, which else carries the query).
 SKIP_TORCH=false
 assert_eq "token stripped from rocm"  "rocm7.2" "$(_tauri_torch_index_family 'https://mirror/whl/rocm7.2?token=SECRET')"
 assert_eq "token-bearing cu classifies" "cu128" "$(_tauri_torch_index_family 'https://m/whl/cu128?token=x')"
 assert_eq "fragment stripped cpu"     "cpu"     "$(_tauri_torch_index_family 'https://m/whl/cpu#frag')"
 assert_eq "plain rocm7.2 unchanged"   "rocm7.2" "$(_tauri_torch_index_family 'https://download.pytorch.org/whl/rocm7.2')"
-# A trailing slash must be stripped too (like _torch_index_url_leaf), or the exact-suffix
-# */cu128 and */cpu arms miss .../cu128/ and it falls through to "auto".
+# A trailing slash must be stripped too, or the */cu128 and */cpu arms miss .../cu128/
+# and it falls through to "auto".
 assert_eq "trailing slash cu128"      "cu128"   "$(_tauri_torch_index_family 'https://download.pytorch.org/whl/cu128/')"
 assert_eq "slash + token cu128"       "cu128"   "$(_tauri_torch_index_family 'https://m/whl/cu128/?token=x')"
 assert_eq "trailing slash cpu"        "cpu"     "$(_tauri_torch_index_family 'https://m/whl/cpu/')"

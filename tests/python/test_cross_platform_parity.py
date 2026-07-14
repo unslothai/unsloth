@@ -212,9 +212,8 @@ class TestTorchIndexOverrideParity:
         ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
 
     def test_cuda_pin_overrides_cvd_hide_gate(self):
-        # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must let it
-        # clear the CUDA_VISIBLE_DEVICES hide gate too (else CVD=-1 +
-        # UNSLOTH_TORCH_INDEX_FAMILY=cu128 studio update, the GPU-less CI case, bails).
+        # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
+        # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cuda_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
@@ -229,9 +228,8 @@ class TestTorchIndexOverrideParity:
         ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
 
     def test_cpu_repair_pins_supported_torch_range(self):
-        # The explicit-CPU repair must not install a bare trio: the /cpu index serves
-        # torch 2.11+, so a bare install off the exclusive --index-url could resolve out
-        # of range or ABI-mismatched. It must use the bounded CPU/CUDA spec.
+        # The explicit-CPU repair must use the bounded CPU/CUDA spec, not a bare trio (the
+        # /cpu index serves torch 2.11+, so a bare install could resolve out of range).
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cpu_torch"
@@ -242,9 +240,8 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_verbatim_update_pins_supported_torch_range(self):
-        # The unknown-family verbatim UPDATE must keep the SAME torch<2.11.0 ceiling a
-        # FRESH install from the same pin applies, not the wider cu* ceiling (<2.12.0),
-        # else a mirror publishing torch 2.11 upgrades to a state fresh installs never produce.
+        # The unknown-family verbatim UPDATE must keep the SAME torch<2.11.0 ceiling a fresh
+        # install applies, not the wider cu* ceiling (<2.12.0).
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_verbatim_torch_index\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_verbatim_torch_index"
@@ -262,9 +259,9 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
-        # The stale-venv check must expect ROCm torch only for arches the install path
-        # maps to a repo.amd.com index; an unmapped/unreadable arch installs CPU torch,
-        # so expecting "rocm" there marks a correct CPU venv stale every update.
+        # The stale-venv check must expect ROCm torch only for arches the install path maps
+        # to a repo.amd.com index; expecting "rocm" for an unmapped arch (which installs CPU
+        # torch) marks a correct CPU venv stale every update.
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "_rocmWheelArches" in text, (
             "setup.ps1 stale check should restrict the ROCm expected-tag to the "
@@ -273,10 +270,9 @@ class TestTorchIndexOverrideParity:
 
 
 class TestGfx211AllowlistParity:
-    """The gfx per-arch leaves that carry the torch 2.11 floor (gfx120X-all /
-    gfx1151 / gfx1150) must be the SAME set in every installer AND in each
-    installer's stale/mismatch check. When these diverged, a pinned gfx110X-all /
-    gfx90a / gfx908 wheel (which stays <2.11) was force-reinstalled every update."""
+    """The gfx per-arch 2.11-floor leaves (gfx120X-all / gfx1151 / gfx1150) must be the
+    SAME set in every installer and its stale/mismatch check. When they diverged, a
+    pinned gfx110X-all / gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update."""
 
     EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150"}
 
@@ -292,9 +288,8 @@ class TestGfx211AllowlistParity:
         assert m, "install.ps1 $_pinGfx211 allowlist not found / changed"
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
-        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and the
-        # install-spec path must reuse it, so the stale check and install spec can
-        # never disagree again.
+        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
+        # the stale check and install spec can't disagree.
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert (
             "function Test-RocmGfx211Leaf" in text
@@ -732,8 +727,7 @@ class TestFirstCustomPinAppliedWithoutMarker:
         body = text[text.find("def _ensure_verbatim_torch_index") :]
         body = body[: body.find("\ndef _record_torch_index_pin_baseline")]
         # The short-circuit must be "already this exact pin" (False), NOT the old
-        # "anything other than a definite mismatch" (is not True), which also bailed
-        # on a None (no-marker) result.
+        # "is not True", which also bailed on a None (no-marker) result.
         assert "if _mismatch is False:" in body, (
             "_ensure_verbatim_torch_index must reinstall on an absent marker (None), "
             "returning early only when the marker already records this exact pin (False)"
@@ -744,11 +738,10 @@ class TestFirstCustomPinAppliedWithoutMarker:
         )
 
     def test_setup_sh_forces_stack_pass_only_when_pin_needs_applying(self):
-        """On Linux, `studio update` runs setup.sh, which skips install_python_stack.py
-        (the only place the marker-driven torch reinstall lives) when unsloth is already
-        current. setup.sh must force the pass for an explicit pin -- but only when it is
-        not yet applied (marker absent/different), via the --torch-pin-needs-apply probe,
-        so a persistent already-applied pin keeps the fast path (no every-update regress)."""
+        """On Linux `studio update` runs setup.sh, which skips install_python_stack.py (the
+        only place the marker-driven torch reinstall lives) when unsloth is current. setup.sh
+        must force the pass for an explicit pin, but only when not yet applied (via the
+        --torch-pin-needs-apply probe), so an already-applied pin keeps the fast path."""
         setup_sh = REPO_ROOT / "studio" / "setup.sh"
         text = setup_sh.read_text(encoding = "utf-8")
         assert (
@@ -762,9 +755,8 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "setup.sh must keep the fast path only on an explicit exit 1 (already applied) "
             "and fail safe (run the pass) on exit 0 or a probe error"
         )
-        # setup.sh runs under `set -euo pipefail`: the probe's exit 1 (the common
-        # already-applied answer) must be absorbed with `|| _PIN_NEEDS_APPLY=$?` --
-        # a bare command would abort the whole update before the capture ran.
+        # Under `set -euo pipefail` the probe's exit 1 (already-applied) must be absorbed
+        # with `|| _PIN_NEEDS_APPLY=$?`, else it aborts the update before the capture.
         assert "|| _PIN_NEEDS_APPLY=$?" in text, (
             "setup.sh must capture the probe exit with `|| _PIN_NEEDS_APPLY=$?` so a "
             "nonzero probe result does not kill the script under set -e"
@@ -772,9 +764,8 @@ class TestFirstCustomPinAppliedWithoutMarker:
 
     def test_stack_py_exposes_torch_pin_needs_apply_probe(self):
         """install_python_stack.py must answer the setup.sh/setup.ps1 probe: exit 0 when a
-        pin is set and either the marker does not match it OR the installed torch flavor
-        drifted from the pinned family; exit 1 otherwise. Reusing the Python normalization
-        and flavor probe keeps the shell side from duplicating (and drifting from) it."""
+        pin is set and the marker doesn't match OR the torch flavor drifted; exit 1 otherwise.
+        Reusing the Python normalization keeps the shell side from drifting from it."""
         text = STACK_PY.read_text(encoding = "utf-8")
         assert (
             '"--torch-pin-needs-apply" in sys.argv' in text
@@ -852,32 +843,26 @@ class TestFirstCustomPinAppliedWithoutMarker:
             "the step-13 final repair must have a Windows/macOS-ARM branch so a custom "
             "pin is repaired/applied there, not only on Linux"
         )
-        # A KNOWN-family pin also needs a repair on Windows: setup.ps1 applies it to the
-        # main venv before install_python_stack.py, a later dependency step can clobber
-        # it, and _ensure_{cuda,rocm,cpu}_torch self-skip on Windows -- so the branch must
-        # call _ensure_pinned_known_family_torch (the known-family analog of the verbatim
-        # unknown-family repair).
+        # A KNOWN-family pin also needs a repair on Windows: a later dependency step can
+        # clobber it and _ensure_{cuda,rocm,cpu}_torch self-skip there, so the branch must
+        # call _ensure_pinned_known_family_torch.
         _win_start = text.find("elif IS_WINDOWS or IS_MAC_ARM:")
         win_branch = text[_win_start : text.find("# 14.", _win_start)]
         assert "_ensure_pinned_known_family_torch()" in win_branch, (
             "the Windows/macOS-ARM branch must repair a clobbered known-family pin "
             "via _ensure_pinned_known_family_torch (the family helpers no-op on Windows)"
         )
-        # An explicit rocm/gfx pin's wheel (installed by setup.ps1 from AMD's per-arch
-        # index) can be clobbered the same way. That repair is OWNED by
-        # _ensure_pinned_known_family_torch, which reinstalls from the PINNED url --
-        # NOT by _ensure_rocm_torch's Windows path, which reinstalls from the arch
-        # auto-detected via hipinfo (wrong source for a mismatched/private pin) and
-        # returns early on a headless box (round-7 item 2). So the Windows final branch
-        # must NOT auto-detect the ROCm index via _ensure_rocm_torch.
+        # An explicit rocm/gfx pin's wheel can be clobbered too. That repair is OWNED by
+        # _ensure_pinned_known_family_torch (reinstalls from the PINNED url), NOT
+        # _ensure_rocm_torch's Windows path (auto-detects the arch via hipinfo, wrong for a
+        # private pin, and returns early on a headless box), so the branch must NOT call it.
         assert "_ensure_rocm_torch()" not in win_branch, (
             "the Windows/macOS-ARM final branch must not auto-detect the ROCm index via "
             "_ensure_rocm_torch; an explicit rocm/gfx pin is repaired from the pinned URL "
             "by _ensure_pinned_known_family_torch"
         )
-        # _ensure_pinned_known_family_torch must own Windows rocm/gfx pins: gate ROCm on
-        # Windows via the pin leaf and reinstall from the explicit pin (never an
-        # auto-detected index).
+        # _ensure_pinned_known_family_torch must own Windows rocm/gfx pins: gate ROCm via
+        # the pin leaf and reinstall from the explicit pin, never an auto-detected index.
         _pinned_start = text.find("def _ensure_pinned_known_family_torch(")
         pinned_fn = text[_pinned_start : text.find("\ndef ", _pinned_start + 1)]
         assert "_is_win_rocm = IS_WINDOWS and _is_pip_rocm_family_leaf(leaf)" in pinned_fn, (
