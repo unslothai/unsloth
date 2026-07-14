@@ -27,9 +27,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import "@xyflow/react/dist/style.css";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { useT } from "@/i18n";
 import { BlockSheet } from "./components/block-sheet";
 import { LayoutControls } from "./components/controls/layout-controls";
 import { RunValidateFloatingControls } from "./components/controls/run-validate-floating-controls";
@@ -114,12 +112,6 @@ export type RecipeStudioPageProps = {
   initialSavedAt: number;
   initialRevision: number;
   onPersistRecipe: (input: PersistRecipeInput) => Promise<PersistRecipeResult>;
-  onReloadRecipe: () => Promise<{
-    name: string;
-    payload: RecipePayload;
-    revision: number;
-    updatedAt: number;
-  } | null>;
 };
 
 export function RecipeStudioPage({
@@ -129,9 +121,7 @@ export function RecipeStudioPage({
   initialSavedAt,
   initialRevision,
   onPersistRecipe,
-  onReloadRecipe,
 }: RecipeStudioPageProps): ReactElement {
-  const t = useT();
   const {
     nodes,
     edges,
@@ -219,11 +209,8 @@ export function RecipeStudioPage({
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
   const supportsEasyMode =
     initialPayload?.ui?.seed_source_type === "github_repo" ||
-    (
-      initialPayload?.recipe?.seed_config as
-        | { source?: { seed_type?: string } }
-        | undefined
-    )?.source?.seed_type === "github_repo";
+    (initialPayload?.recipe?.seed_config as { source?: { seed_type?: string } } | undefined)
+      ?.source?.seed_type === "github_repo";
   const viewModeStorageKey = `recipe-studio:view-mode:${recipeId}`;
   const [activeView, setActiveViewState] = useState<RecipeStudioView>(() => {
     if (typeof window !== "undefined") {
@@ -234,9 +221,7 @@ export function RecipeStudioPage({
     return supportsEasyMode ? "easy" : "editor";
   });
   const setActiveView = useCallback(
-    (
-      next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView),
-    ) => {
+    (next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView)) => {
       setActiveViewState((prev) => {
         const resolved = typeof next === "function" ? next(prev) : next;
         if (typeof window !== "undefined") {
@@ -380,12 +365,10 @@ export function RecipeStudioPage({
     validateResult,
     cancelExecution,
     loadExecutionDatasetPage,
+    runPreview,
     runFull,
     copyRecipe,
     importRecipe,
-    conflict,
-    reloadServerRecipe,
-    saveDraftAsNew,
   } = useRecipeStudioActions({
     recipeId,
     initialRecipeName,
@@ -394,7 +377,6 @@ export function RecipeStudioPage({
     initialRevision,
     payloadResult,
     onPersistRecipe,
-    onReloadRecipe,
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
@@ -818,40 +800,6 @@ export function RecipeStudioPage({
               void persistRecipe();
             }}
           />
-          {conflict ? (
-            <Alert
-              variant="destructive"
-              className="rounded-none border-x-0 border-t-0"
-            >
-              <AlertTitle>{t("dataRecipes.conflict.title")}</AlertTitle>
-              <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-                <span>
-                  {conflict === "unavailable"
-                    ? t("dataRecipes.conflict.unavailable")
-                    : t("dataRecipes.conflict.description")}
-                </span>
-                <span className="flex gap-2">
-                  {conflict === "changed" ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void reloadServerRecipe()}
-                    >
-                      {t("dataRecipes.conflict.reload")}
-                    </Button>
-                  ) : null}
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => void saveDraftAsNew()}
-                  >
-                    {t("dataRecipes.conflict.saveAsNew")}
-                  </Button>
-                </span>
-              </AlertDescription>
-            </Alert>
-          ) : null}
           <div
             className="h-[75vh] w-full rounded-t-none"
             ref={flowContainerRef}

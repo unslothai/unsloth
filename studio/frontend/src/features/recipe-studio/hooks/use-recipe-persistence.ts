@@ -15,7 +15,7 @@ import { useRecipeStudioStore } from "../stores/recipe-studio";
 import { type RecipeSnapshot, importRecipePayload } from "../utils/import";
 import type { RecipePayloadResult } from "../utils/payload/types";
 
-type SaveTone = "success" | "warning" | "error";
+type SaveTone = "success" | "error";
 
 type PersistRecipeFn = (input: {
   id: string | null;
@@ -25,19 +25,10 @@ type PersistRecipeFn = (input: {
 }) => Promise<{
   id: string;
   updatedAt: number;
-    revision: number;
-    payload: RecipePayloadResult["payload"];
-    removedCredentialPaths: string[];
-}>;
-
-type ReloadedRecipe = {
-  name: string;
-  payload: RecipePayloadResult["payload"];
   revision: number;
-  updatedAt: number;
-};
-
-export type RecipePersistenceConflict = "changed" | "unavailable";
+  payload: RecipePayloadResult["payload"];
+  removedCredentialPaths: string[];
+}>;
 
 type UseRecipePersistenceParams = {
   recipeId: string;
@@ -47,7 +38,6 @@ type UseRecipePersistenceParams = {
   initialRevision: number;
   payloadResult: RecipePayloadResult;
   onPersistRecipe: PersistRecipeFn;
-  onReloadRecipe: () => Promise<ReloadedRecipe | null>;
   resetRecipe: () => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   getCurrentPayloadFromStore: () => RecipePayloadResult["payload"];
@@ -67,9 +57,6 @@ type UseRecipePersistenceResult = {
   persistRecipe: () => Promise<void>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
-  conflict: RecipePersistenceConflict | null;
-  reloadServerRecipe: () => Promise<void>;
-  saveDraftAsNew: () => Promise<void>;
 };
 
 function stripApiKeys(value: unknown): unknown {
@@ -241,7 +228,6 @@ export function useRecipePersistence({
   initialRevision,
   payloadResult,
   onPersistRecipe,
-  onReloadRecipe,
   resetRecipe,
   loadRecipe,
   getCurrentPayloadFromStore,
@@ -254,7 +240,7 @@ export function useRecipePersistence({
   const [copied, setCopied] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [currentRevision, setCurrentRevision] = useState(initialRevision);
-  const [conflict, setConflict] = useState<RecipePersistenceConflict | null>(
+  const [conflict, setConflict] = useState<"changed" | "unavailable" | null>(
     null,
   );
   const [credentialProjection, setCredentialProjection] = useState<{
@@ -277,14 +263,9 @@ export function useRecipePersistence({
     credentialProjection?.editorSignature === currentSignature
       ? credentialProjection
       : null;
-  const saveTone: SaveTone = activeCredentialProjection
-    ? "warning"
-    : !isDirty && Boolean(lastSavedAt)
-      ? "success"
-      : "error";
-  const savedAtLabel = activeCredentialProjection
-    ? `Saved without ${activeCredentialProjection.paths.length} credential field${activeCredentialProjection.paths.length === 1 ? "" : "s"}. Re-enter after reload.`
-    : formatSavedLabel(lastSavedAt);
+  const saveTone: SaveTone =
+    !isDirty && Boolean(lastSavedAt) ? "success" : "error";
+  const savedAtLabel = formatSavedLabel(lastSavedAt);
 
   useEffect(() => {
     setInitialRecipeReady(false);
@@ -384,79 +365,13 @@ export function useRecipePersistence({
       void persistRecipe();
     }, 800);
     return () => window.clearTimeout(timeoutId);
-  }, [activeCredentialProjection, conflict, isDirty, persistRecipe, saveLoading]);
-
-  const reloadServerRecipe = useCallback(async (): Promise<void> => {
-    if (saveLoading) return;
-    setSaveLoading(true);
-    try {
-      const record = await onReloadRecipe();
-      if (!record) {
-        setConflict("unavailable");
-        return;
-      }
-      const nextName = normalizeNonEmptyName(record.name, "Unnamed");
-      const parsed = importRecipePayload(JSON.stringify(record.payload), {
-        preserveUnstructuredUploads: true,
-      });
-      if (!parsed.snapshot)
-        throw new Error(parsed.errors[0] ?? "Invalid recipe payload.");
-      resetRecipe();
-      loadRecipe(parsed.snapshot);
-      setWorkflowName(nextName);
-      setLastSavedAt(record.updatedAt);
-      setCurrentRevision(record.revision);
-      setSavedSignature(buildSignature(nextName, getCurrentPayloadFromStore()));
-      setConflict(null);
-      setCredentialProjection(null);
-    } catch (error) {
-      toastError(
-        "Reload failed",
-        error instanceof Error ? error.message : undefined,
-      );
-    } finally {
-      setSaveLoading(false);
-    }
   }, [
-    getCurrentPayloadFromStore,
-    loadRecipe,
-    onReloadRecipe,
-    resetRecipe,
+    activeCredentialProjection,
+    conflict,
+    isDirty,
+    persistRecipe,
     saveLoading,
   ]);
-
-  const saveDraftAsNew = useCallback(async (): Promise<void> => {
-    if (saveLoading) return;
-    const nextName = normalizeNonEmptyName(workflowName, "Unnamed");
-    setSaveLoading(true);
-    try {
-      const result = await onPersistRecipe({
-        id: null,
-        name: nextName,
-        payload: currentPayload,
-      });
-      setLastSavedAt(result.updatedAt);
-      setCurrentRevision(result.revision);
-      setSavedSignature(buildSignature(nextName, result.payload));
-      setCredentialProjection(
-        result.removedCredentialPaths.length > 0
-          ? {
-              paths: result.removedCredentialPaths,
-              editorSignature: currentSignature,
-            }
-          : null,
-      );
-      setConflict(null);
-      drainQueuedUploadCleanups(result.payload);
-    } catch (error) {
-      toastError(
-        "Save failed",
-        error instanceof Error ? error.message : undefined,
-      );
-    } finally {
-      setSaveLoading(false);
-    }
-  }, [currentPayload, currentSignature, onPersistRecipe, saveLoading, workflowName]);
 
   // Drain queued cleanups even when autosave is skipped: a net-zero edit (add
   // then remove an unstructured seed before the 800ms debounce) keeps isDirty
@@ -519,8 +434,5 @@ export function useRecipePersistence({
     persistRecipe,
     copyRecipe,
     importRecipe,
-    conflict,
-    reloadServerRecipe,
-    saveDraftAsNew,
   };
 }

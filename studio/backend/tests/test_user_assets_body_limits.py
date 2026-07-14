@@ -12,8 +12,6 @@ MUTATION_PATHS = [
     ("POST", "/api/user-assets/recipes"),
     ("PUT", "/api/user-assets/recipes/r1"),
     ("PUT", "/api/user-assets/recipes/r1/executions/e1"),
-    ("POST", "/api/user-assets/training-presets"),
-    ("PUT", "/api/user-assets/training-presets/p1"),
     ("POST", "/api/user-assets/legacy-import"),
 ]
 

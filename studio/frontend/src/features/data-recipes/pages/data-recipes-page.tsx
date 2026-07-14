@@ -27,7 +27,6 @@ import {
 import { ShineBorder } from "@/components/ui/shine-border";
 import { LegacyImportCoordinator } from "@/features/user-assets";
 import { readLegacyRecipeExecutions } from "@/features/recipe-studio";
-import { useT } from "@/i18n";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
@@ -317,9 +316,8 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
-  const t = useT();
   const navigate = useNavigate();
-  const { recipes, ready, error, refresh } = useRecipes();
+  const { recipes, ready, refresh } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
   const [learningDialogOpen, setLearningDialogOpen] = useState(false);
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
@@ -346,11 +344,6 @@ export function DataRecipesPage(): ReactElement {
         to: "/data-recipes/$recipeId",
         params: { recipeId: recipe.id },
       });
-    } catch (error) {
-      toastError(
-        "Failed to create recipe.",
-        error instanceof Error ? error.message : "Please try again.",
-      );
     } finally {
       setCreatingRecipe(false);
     }
@@ -405,14 +398,7 @@ export function DataRecipesPage(): ReactElement {
   async function handleDeleteRecipe(
     recipe: (typeof recipes)[number],
   ): Promise<void> {
-    try {
-      await deleteRecipe(recipe.id, recipe.revision);
-    } catch (caught) {
-      toastError(
-        "Failed to delete recipe.",
-        caught instanceof Error ? caught.message : undefined,
-      );
-    }
+    await deleteRecipe(recipe.id, recipe.revision);
   }
 
   const isBusy = creatingRecipe || Boolean(loadingTemplateId);
@@ -458,108 +444,7 @@ export function DataRecipesPage(): ReactElement {
           </DropdownMenu>
         </div>
 
-        {ready ? (
-          error ? (
-            <div
-              role="alert"
-              className="mt-8 rounded-2xl border border-destructive/30 bg-card px-6 py-10 text-center"
-            >
-              <p className="text-sm font-medium text-foreground">
-                {t("dataRecipes.server.loadError")}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {error.message}
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                className="mt-4"
-                onClick={refresh}
-              >
-                {t("dataRecipes.server.retry")}
-              </Button>
-            </div>
-          ) : recipes.length === 0 ? (
-            <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <HugeiconsIcon icon={CookBookIcon} className="size-5" />
-                </EmptyMedia>
-                <EmptyTitle>No recipes yet</EmptyTitle>
-                <EmptyDescription>
-                  Browse Learning Recipes below to understand how recipe
-                  workflows work.
-                </EmptyDescription>
-              </EmptyHeader>
-              <EmptyContent className="max-w-6xl items-stretch">
-                {/*<Button*/}
-                {/*  type="button"*/}
-                {/*  variant="secondary"*/}
-                {/*  className="mx-auto"*/}
-                {/*  onClick={() => setLearningDialogOpen(true)}*/}
-                {/*  disabled={isBusy}*/}
-                {/*>*/}
-                {/*  <HugeiconsIcon icon={CookBookIcon} className="size-4" />*/}
-                {/*  Start Tutorial*/}
-                {/*</Button>*/}
-                <LearningRecipeCards
-                  onSelect={(template) => {
-                    openLearningRecipe(template).catch(() => undefined);
-                  }}
-                  loadingTemplateId={loadingTemplateId}
-                />
-              </EmptyContent>
-            </Empty>
-          ) : (
-            <div className="mt-8 space-y-2">
-              {recipes.map((recipe) => (
-                <div
-                  key={recipe.id}
-                  className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3"
-                >
-                  <button
-                    type="button"
-                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                    onClick={() => openRecipe(recipe)}
-                  >
-                    <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
-                      <HugeiconsIcon
-                        icon={CookBookIcon}
-                        className="size-4 text-muted-foreground"
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="truncate text-sm font-medium">
-                          {recipe.name}
-                        </p>
-                        {recipe.learningRecipeId ? (
-                          <Badge variant="outline">Learning Recipe</Badge>
-                        ) : null}
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Last updated {formatRelativeTime(recipe.updatedAt)} |
-                        Created {formatRelativeTime(recipe.createdAt)}
-                      </p>
-                    </div>
-                  </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-8"
-                    onClick={() => {
-                      handleDeleteRecipe(recipe).catch(() => undefined);
-                    }}
-                    aria-label={`Delete ${recipe.name}`}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )
-        ) : (
+        {!ready ? (
           <div className="mt-8 rounded-2xl border border-border/70 bg-card px-6 py-10 text-center">
             <p className="text-sm font-medium text-foreground">
               Loading recipes
@@ -567,6 +452,85 @@ export function DataRecipesPage(): ReactElement {
             <p className="mt-1 text-xs text-muted-foreground">
               Fetching your saved recipes and learning templates.
             </p>
+          </div>
+        ) : recipes.length === 0 ? (
+          <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <HugeiconsIcon icon={CookBookIcon} className="size-5" />
+              </EmptyMedia>
+              <EmptyTitle>No recipes yet</EmptyTitle>
+              <EmptyDescription>
+                Browse Learning Recipes below to understand how recipe workflows
+                work.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent className="max-w-6xl items-stretch">
+              {/*<Button*/}
+              {/*  type="button"*/}
+              {/*  variant="secondary"*/}
+              {/*  className="mx-auto"*/}
+              {/*  onClick={() => setLearningDialogOpen(true)}*/}
+              {/*  disabled={isBusy}*/}
+              {/*>*/}
+              {/*  <HugeiconsIcon icon={CookBookIcon} className="size-4" />*/}
+              {/*  Start Tutorial*/}
+              {/*</Button>*/}
+              <LearningRecipeCards
+                onSelect={(template) => {
+                  openLearningRecipe(template).catch(() => undefined);
+                }}
+                loadingTemplateId={loadingTemplateId}
+              />
+            </EmptyContent>
+          </Empty>
+        ) : (
+          <div className="mt-8 space-y-2">
+            {recipes.map((recipe) => (
+              <div
+                key={recipe.id}
+                className="flex items-center gap-3 rounded-xl border bg-card px-4 py-3"
+              >
+                <button
+                  type="button"
+                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                  onClick={() => openRecipe(recipe)}
+                >
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/20">
+                    <HugeiconsIcon
+                      icon={CookBookIcon}
+                      className="size-4 text-muted-foreground"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="truncate text-sm font-medium">
+                        {recipe.name}
+                      </p>
+                      {recipe.learningRecipeId ? (
+                        <Badge variant="outline">Learning Recipe</Badge>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Last updated {formatRelativeTime(recipe.updatedAt)} |
+                      Created {formatRelativeTime(recipe.createdAt)}
+                    </p>
+                  </div>
+                </button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  onClick={() => {
+                      handleDeleteRecipe(recipe).catch(() => undefined);
+                  }}
+                  aria-label={`Delete ${recipe.name}`}
+                >
+                  <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                </Button>
+              </div>
+            ))}
           </div>
         )}
       </main>

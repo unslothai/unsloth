@@ -153,20 +153,23 @@ export function createServerRecipe<TPayload>(
   >,
   options: { signal?: AbortSignal } = {},
 ) {
-  return requestJson<RecipeAssetRecord<TPayload>>(
-    "/recipes",
-    { ...jsonInit("POST", recipe), signal: options.signal },
-  );
+  return requestJson<RecipeAssetRecord<TPayload>>("/recipes", {
+    ...jsonInit("POST", recipe),
+    signal: options.signal,
+  });
 }
 
-export function updateServerRecipe<TPayload>(input: {
-  id: string;
-  name: string;
-  payload: TPayload;
-  learningRecipeId?: string | null;
-  learningRecipeTitle?: string | null;
-  revision: number;
-}, options: { signal?: AbortSignal } = {}) {
+export function updateServerRecipe<TPayload>(
+  input: {
+    id: string;
+    name: string;
+    payload: TPayload;
+    learningRecipeId?: string | null;
+    learningRecipeTitle?: string | null;
+    revision: number;
+  },
+  options: { signal?: AbortSignal } = {},
+) {
   return requestJson<RecipeAssetRecord<TPayload>>(
     `/recipes/${assetPathSegment(input.id)}`,
     { ...jsonInit("PUT", input), signal: options.signal },
@@ -214,67 +217,17 @@ export function upsertServerRecipeExecution<TExecution>(input: {
 export function importLegacyUserAssets<
   TRecipe extends object,
   TExecution extends object,
->(input: {
-  source: string;
-  confirmSubject: string;
-  recipes: TRecipe[];
-  executions: TExecution[];
-}, options: { signal?: AbortSignal } = {}) {
-  return requestJson<LegacyImportResult>(
-    "/legacy-import",
-    { ...jsonInit("POST", input), signal: options.signal },
-  );
-}
-
-export type TrainingPresetRecord<TConfig = Record<string, unknown>> = {
-  id: string;
-  name: string;
-  config: TConfig;
-  revision: number;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export async function listServerTrainingPresets<TConfig>() {
-  const response = await requestJson<{
-    presets: TrainingPresetRecord<TConfig>[];
-  }>("/training-presets");
-  return response.presets;
-}
-
-export function getServerTrainingPreset<TConfig>(id: string) {
-  return requestJson<TrainingPresetRecord<TConfig>>(
-    `/training-presets/${assetPathSegment(id)}`,
-  );
-}
-
-export function createServerTrainingPreset<TConfig>(input: {
-  id: string;
-  name: string;
-  config: TConfig;
-}) {
-  return requestJson<TrainingPresetRecord<TConfig>>(
-    "/training-presets",
-    jsonInit("POST", input),
-  );
-}
-
-export function updateServerTrainingPreset<TConfig>(input: {
-  id: string;
-  name: string;
-  config: TConfig;
-  revision: number;
-}) {
-  return requestJson<TrainingPresetRecord<TConfig>>(
-    `/training-presets/${assetPathSegment(input.id)}`,
-    jsonInit("PUT", input),
-  );
-}
-
-export async function deleteServerTrainingPreset(id: string, revision: number) {
-  const response = await request(
-    `/training-presets/${assetPathSegment(id)}?revision=${revision}`,
-    { method: "DELETE" },
-  );
-  if (!response.ok) throw await readError(response);
+>(
+  input: {
+    source: string;
+    confirmSubject: string;
+    recipes: TRecipe[];
+    executions: TExecution[];
+  },
+  options: { signal?: AbortSignal } = {},
+) {
+  return requestJson<LegacyImportResult>("/legacy-import", {
+    ...jsonInit("POST", input),
+    signal: options.signal,
+  });
 }

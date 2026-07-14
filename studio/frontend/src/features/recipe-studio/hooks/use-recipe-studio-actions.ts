@@ -14,7 +14,7 @@ import type {
 import { useRecipeExecutions } from "./use-recipe-executions";
 import { useRecipePersistence } from "./use-recipe-persistence";
 
-type SaveTone = "success" | "warning" | "error";
+type SaveTone = "success" | "error";
 
 type PersistRecipeFn = (input: {
   id: string | null;
@@ -37,12 +37,6 @@ type UseRecipeStudioActionsParams = {
   initialRevision: number;
   payloadResult: RecipePayloadResult;
   onPersistRecipe: PersistRecipeFn;
-  onReloadRecipe: () => Promise<{
-    name: string;
-    payload: RecipePayload;
-    revision: number;
-    updatedAt: number;
-  } | null>;
   resetRecipe: () => void;
   loadRecipe: (snapshot: RecipeSnapshot) => void;
   getCurrentPayloadFromStore: () => RecipePayload;
@@ -95,9 +89,6 @@ type UseRecipeStudioActionsResult = {
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
-  conflict: "changed" | "unavailable" | null;
-  reloadServerRecipe: () => Promise<void>;
-  saveDraftAsNew: () => Promise<void>;
 };
 
 export function useRecipeStudioActions({
@@ -108,7 +99,6 @@ export function useRecipeStudioActions({
   initialRevision,
   payloadResult,
   onPersistRecipe,
-  onReloadRecipe,
   resetRecipe,
   loadRecipe,
   getCurrentPayloadFromStore,
@@ -123,7 +113,6 @@ export function useRecipeStudioActions({
     initialRevision,
     payloadResult,
     onPersistRecipe,
-    onReloadRecipe,
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
@@ -182,8 +171,5 @@ export function useRecipeStudioActions({
     loadExecutionDatasetPage: executions.loadExecutionDatasetPage,
     copyRecipe: persistence.copyRecipe,
     importRecipe: persistence.importRecipe,
-    conflict: persistence.conflict,
-    reloadServerRecipe: persistence.reloadServerRecipe,
-    saveDraftAsNew: persistence.saveDraftAsNew,
   };
 }

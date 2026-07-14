@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Canonical validation for account-scoped recipes, presets, and executions.
+"""Canonical validation for account-scoped recipes and executions.
 
 This module is deliberately independent of FastAPI/Pydantic so storage, normal
 CRUD routes, and the legacy importer all pass through the same byte-counting
@@ -25,7 +25,6 @@ with _POLICY_PATH.open(encoding = "utf-8") as _policy_file:
     _PERSISTENCE_POLICY = json.load(_policy_file)
 
 MAX_RECIPE_JSON_BYTES = int(_PERSISTENCE_POLICY["maxRecipeJsonBytes"])
-MAX_TRAINING_CONFIG_JSON_BYTES = int(_PERSISTENCE_POLICY["maxTrainingConfigJsonBytes"])
 MAX_EXECUTION_JSON_BYTES = int(_PERSISTENCE_POLICY["maxExecutionJsonBytes"])
 MAX_EXECUTION_ERROR_BYTES = 4 * 1024
 MAX_COMPLETED_COLUMNS = 1000
@@ -315,29 +314,6 @@ def validate_recipe_payload(
         legacy = legacy,
         max_bytes = MAX_RECIPE_JSON_BYTES,
         field_name = "recipe payload",
-    )
-
-
-@overload
-def validate_training_config(value: Any, legacy: bool = False) -> dict[str, Any]: ...
-
-
-@overload
-def validate_training_config(
-    value: Any, legacy: bool
-) -> dict[str, Any] | tuple[dict[str, Any], list[str]]: ...
-
-
-def validate_training_config(
-    value: Any, legacy: bool = False
-) -> dict[str, Any] | tuple[dict[str, Any], list[str]]:
-    """Validate a portable preset; strict DTO shape is enforced by the API."""
-
-    return _validate_secret_policy(
-        value,
-        legacy = legacy,
-        max_bytes = MAX_TRAINING_CONFIG_JSON_BYTES,
-        field_name = "training preset config",
     )
 
 

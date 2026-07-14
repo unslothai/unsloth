@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Owner-scoped SQLite persistence for Studio recipes and training presets."""
+"""Owner-scoped SQLite persistence for Studio recipes and executions."""
 
 from __future__ import annotations
 
@@ -24,11 +24,9 @@ from core.user_assets_validation import (
     validate_name,
     validate_recipe_payload,
     validate_timestamp,
-    validate_training_config,
     MAX_EXECUTION_JSON_BYTES,
     MAX_ID_CHARS,
     MAX_RECIPE_JSON_BYTES,
-    MAX_TRAINING_CONFIG_JSON_BYTES,
 )
 from storage import studio_db
 
@@ -146,17 +144,6 @@ def _execution_from_row(row: sqlite3.Row) -> dict[str, Any]:
         }
     )
     return metadata
-
-
-def _preset_from_row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "config": json.loads(row["config_json"]),
-        "revision": row["revision"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-    }
 
 
 def list_recipes(owner_subject: str) -> list[dict[str, Any]]:
@@ -572,174 +559,6 @@ def upsert_recipe_execution(
         conn.close()
 
 
-def list_training_presets(owner_subject: str) -> list[dict[str, Any]]:
-    owner = _require_owner(owner_subject)
-    conn = studio_db.get_connection()
-    try:
-        rows = conn.execute(
-            """
-            SELECT * FROM training_presets
-            WHERE owner_subject = ? AND deleted_at IS NULL
-            ORDER BY updated_at DESC, id
-            """,
-            (owner,),
-        ).fetchall()
-        return [_preset_from_row(row) for row in rows]
-    finally:
-        conn.close()
-
-
-def get_training_preset(owner_subject: str, preset_id: str) -> dict[str, Any] | None:
-    owner = _require_owner(owner_subject)
-    asset_id = validate_id(preset_id, "preset id")
-    conn = studio_db.get_connection()
-    try:
-        row = conn.execute(
-            """
-            SELECT * FROM training_presets
-            WHERE owner_subject = ? AND id = ? AND deleted_at IS NULL
-            """,
-            (owner, asset_id),
-        ).fetchone()
-        return _preset_from_row(row) if row is not None else None
-    finally:
-        conn.close()
-
-
-def create_training_preset(owner_subject: str, preset: Mapping[str, Any]) -> dict[str, Any]:
-    owner = _require_owner(owner_subject)
-    value = _require_mapping(preset, "training preset")
-    asset_id = validate_id(value.get("id"), "preset id")
-    name = validate_name(value.get("name"), "preset name")
-    config = validate_training_config(value.get("config"))
-    config_json = canonical_json(config, MAX_TRAINING_CONFIG_JSON_BYTES, "training preset config")
-    now = _now_ms()
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        existing = conn.execute(
-            "SELECT * FROM training_presets WHERE owner_subject = ? AND id = ?",
-            (owner, asset_id),
-        ).fetchone()
-        if existing is not None:
-            conn.rollback()
-            if existing["deleted_at"] is not None:
-                raise RetiredAssetError()
-            raise AssetAlreadyExistsError(_preset_from_row(existing))
-        conn.execute(
-            """
-            INSERT INTO training_presets
-                (owner_subject, id, name, config_json, revision, created_at,
-                 updated_at, deleted_at)
-            VALUES (?, ?, ?, ?, 1, ?, ?, NULL)
-            """,
-            (owner, asset_id, name, config_json, now, now),
-        )
-        conn.commit()
-        row = conn.execute(
-            "SELECT * FROM training_presets WHERE owner_subject = ? AND id = ?",
-            (owner, asset_id),
-        ).fetchone()
-        assert row is not None
-        return _preset_from_row(row)
-    except Exception:
-        if conn.in_transaction:
-            conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def update_training_preset(
-    owner_subject: str, preset_id: str, preset: Mapping[str, Any], expected_revision: int
-) -> dict[str, Any] | None:
-    owner = _require_owner(owner_subject)
-    asset_id = validate_id(preset_id, "preset id")
-    expected_revision = _validate_expected_revision(expected_revision)
-    value = _require_mapping(preset, "training preset")
-    name = validate_name(value.get("name"), "preset name")
-    config = validate_training_config(value.get("config"))
-    config_json = canonical_json(config, MAX_TRAINING_CONFIG_JSON_BYTES, "training preset config")
-    now = _now_ms()
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        changed = conn.execute(
-            """
-            UPDATE training_presets
-            SET name = ?, config_json = ?, revision = revision + 1,
-                updated_at = MAX(updated_at + 1, created_at, ?)
-            WHERE owner_subject = ? AND id = ? AND deleted_at IS NULL AND revision = ?
-            """,
-            (name, config_json, now, owner, asset_id, expected_revision),
-        ).rowcount
-        if not changed:
-            current = conn.execute(
-                "SELECT * FROM training_presets WHERE owner_subject = ? AND id = ?",
-                (owner, asset_id),
-            ).fetchone()
-            conn.rollback()
-            if current is None:
-                return None
-            if current["deleted_at"] is not None:
-                raise RetiredAssetError()
-            raise RevisionConflictError(_preset_from_row(current))
-        conn.commit()
-        row = conn.execute(
-            "SELECT * FROM training_presets WHERE owner_subject = ? AND id = ?",
-            (owner, asset_id),
-        ).fetchone()
-        assert row is not None
-        return _preset_from_row(row)
-    except Exception:
-        if conn.in_transaction:
-            conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def delete_training_preset(owner_subject: str, preset_id: str, expected_revision: int) -> bool:
-    owner = _require_owner(owner_subject)
-    asset_id = validate_id(preset_id, "preset id")
-    expected_revision = _validate_expected_revision(expected_revision)
-    now = _now_ms()
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        current = conn.execute(
-            "SELECT * FROM training_presets WHERE owner_subject = ? AND id = ?",
-            (owner, asset_id),
-        ).fetchone()
-        if current is None:
-            conn.rollback()
-            return False
-        if current["deleted_at"] is not None:
-            conn.commit()
-            return True
-        if current["revision"] != expected_revision:
-            conn.rollback()
-            raise RevisionConflictError(_preset_from_row(current))
-        conn.execute(
-            """
-            UPDATE training_presets
-            SET revision = revision + 1,
-                updated_at = MAX(updated_at + 1, created_at, ?),
-                deleted_at = MAX(updated_at + 1, created_at, ?)
-            WHERE owner_subject = ? AND id = ?
-            """,
-            (now, now, owner, asset_id),
-        )
-        conn.commit()
-        return True
-    except Exception:
-        if conn.in_transaction:
-            conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 def list_legacy_imports(owner_subject: str, source: str) -> dict[str, list[str]]:
     owner = _require_owner(owner_subject)
     if not isinstance(source, str) or not source:
@@ -1016,8 +835,3 @@ def import_legacy_assets(
 # Short aliases keep route call sites readable without duplicating behavior.
 list_executions = list_recipe_executions
 upsert_execution = upsert_recipe_execution
-list_presets = list_training_presets
-get_preset = get_training_preset
-create_preset = create_training_preset
-update_preset = update_training_preset
-delete_preset = delete_training_preset

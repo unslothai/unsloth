@@ -425,28 +425,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS training_presets (
-            owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
-            id TEXT NOT NULL CHECK(length(id) BETWEEN 1 AND 128),
-            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 200),
-            config_json TEXT NOT NULL
-                CHECK(length(CAST(config_json AS BLOB)) <= 65536),
-            revision INTEGER NOT NULL CHECK(revision >= 1),
-            created_at INTEGER NOT NULL CHECK(created_at >= 0),
-            updated_at INTEGER NOT NULL CHECK(updated_at >= created_at),
-            deleted_at INTEGER CHECK(deleted_at IS NULL OR deleted_at >= created_at),
-            PRIMARY KEY (owner_subject, id)
-        ) WITHOUT ROWID
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_training_presets_owner_active_updated
-        ON training_presets(owner_subject, deleted_at, updated_at DESC)
-        """
-    )
-    conn.execute(
-        """
         CREATE TABLE IF NOT EXISTS user_asset_legacy_imports (
             owner_subject TEXT NOT NULL CHECK(length(owner_subject) > 0),
             source TEXT NOT NULL CHECK(length(source) > 0),

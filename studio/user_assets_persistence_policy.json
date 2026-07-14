@@ -17,7 +17,6 @@
   ],
   "safeSecretLookingKeys": ["api_key_env"],
   "maxRecipeJsonBytes": 1048576,
-  "maxTrainingConfigJsonBytes": 65536,
   "maxExecutionJsonBytes": 262144,
   "maxLegacyBatchJsonBytes": 8388608
 }

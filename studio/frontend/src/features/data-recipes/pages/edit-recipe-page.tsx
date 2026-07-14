@@ -2,11 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { type RecipePayload, RecipeStudioPage } from "@/features/recipe-studio";
+import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
+import { getCachedRecipe, getRecipe, primeRecipeCache, saveRecipe } from "../data/recipes-db";
 import type { RecipeRecord } from "../types";
 
 type EditRecipePageProps = {
@@ -14,10 +14,9 @@ type EditRecipePageProps = {
 };
 
 type LoadState =
-  | { recipeId: string; status: "loading" }
-  | { recipeId: string; status: "missing" }
-  | { recipeId: string; status: "error"; message: string }
-  | { recipeId: string; status: "ready"; record: RecipeRecord };
+  | { status: "loading" }
+  | { status: "missing" }
+  | { status: "ready"; record: RecipeRecord };
 
 function RecipeLoadState({
   title,
@@ -34,12 +33,7 @@ function RecipeLoadState({
         <div className="w-full rounded-2xl border bg-card p-8 text-center">
           <h1 className="text-lg font-semibold">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>
-          <Button
-            type="button"
-            variant="outline"
-            className="mt-5"
-            onClick={onBack}
-          >
+          <Button type="button" variant="outline" className="mt-5" onClick={onBack}>
             Back to Recipes
           </Button>
         </div>
@@ -48,36 +42,36 @@ function RecipeLoadState({
   );
 }
 
-export function EditRecipePage({
-  recipeId,
-}: EditRecipePageProps): ReactElement {
+export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
   const navigate = useNavigate();
-  const [loadState, setLoadState] = useState<LoadState>({
-    recipeId,
-    status: "loading",
+  const [loadState, setLoadState] = useState<LoadState>(() => {
+    const cachedRecipe = getCachedRecipe(recipeId);
+    if (cachedRecipe) {
+      return { status: "ready", record: cachedRecipe };
+    }
+    return { status: "loading" };
   });
 
   useEffect(() => {
     let active = true;
-    void getRecipe(recipeId)
-      .then((record) => {
-        if (!active) return;
-        if (!record) {
-          setLoadState({ recipeId, status: "missing" });
-          return;
-        }
-        primeRecipeCache(record);
-        setLoadState({ recipeId, status: "ready", record });
-      })
-      .catch((error: unknown) => {
-        if (!active) return;
-        setLoadState({
-          recipeId,
-          status: "error",
-          message:
-            error instanceof Error ? error.message : "Failed to load recipe.",
-        });
-      });
+    const cachedRecipe = getCachedRecipe(recipeId);
+    if (cachedRecipe) {
+      setLoadState({ status: "ready", record: cachedRecipe });
+    } else {
+      setLoadState({ status: "loading" });
+    }
+
+    void getRecipe(recipeId).then((record) => {
+      if (!active) {
+        return;
+      }
+      if (!record) {
+        setLoadState({ status: "missing" });
+        return;
+      }
+      primeRecipeCache(record);
+      setLoadState({ status: "ready", record });
+    });
     return () => {
       active = false;
     };
@@ -91,26 +85,12 @@ export function EditRecipePage({
       revision?: number;
     }) => {
       const record = await saveRecipe({
-        id: input.id,
+        id: input.id ?? recipeId,
         name: input.name,
         payload: input.payload,
         revision: input.revision,
-        learningRecipeId:
-          loadState.recipeId === recipeId && loadState.status === "ready"
-            ? loadState.record.learningRecipeId
-            : undefined,
-        learningRecipeTitle:
-          loadState.recipeId === recipeId && loadState.status === "ready"
-            ? loadState.record.learningRecipeTitle
-            : undefined,
       });
       primeRecipeCache(record);
-      if (record.id !== recipeId) {
-        await navigate({
-          to: "/data-recipes/$recipeId",
-          params: { recipeId: record.id },
-        });
-      }
       return {
         id: record.id,
         updatedAt: record.updatedAt,
@@ -119,17 +99,10 @@ export function EditRecipePage({
         removedCredentialPaths: record.removedCredentialPaths ?? [],
       };
     },
-    [loadState, navigate, recipeId],
+    [recipeId],
   );
 
-  const handleReload = useCallback(async () => {
-    const record = await getRecipe(recipeId);
-    if (!record) return null;
-    primeRecipeCache(record);
-    return record;
-  }, [recipeId]);
-
-  if (loadState.recipeId !== recipeId || loadState.status === "loading") {
+  if (loadState.status === "loading") {
     return (
       <RecipeLoadState
         title="Loading recipe..."
@@ -149,16 +122,6 @@ export function EditRecipePage({
     );
   }
 
-  if (loadState.status === "error") {
-    return (
-      <RecipeLoadState
-        title="Could not load recipe"
-        description={loadState.message}
-        onBack={() => void navigate({ to: "/data-recipes" })}
-      />
-    );
-  }
-
   return (
     <RecipeStudioPage
       key={loadState.record.id}
@@ -168,7 +131,6 @@ export function EditRecipePage({
       initialSavedAt={loadState.record.updatedAt}
       initialRevision={loadState.record.revision}
       onPersistRecipe={handlePersist}
-      onReloadRecipe={handleReload}
     />
   );
 }
