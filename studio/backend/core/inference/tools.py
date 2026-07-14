@@ -402,7 +402,9 @@ _AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
 _AUTO_UNSAFE_COMMAND_FLAGS = {
     # --files0-from=F makes sort read the NUL-separated list of input files
     # named in F, so a crafted list reads arbitrary host files indirectly.
-    "sort": frozenset({"-o", "--output", "--compress-program", "-T", "--temporary-directory", "--files0-from"}),
+    "sort": frozenset(
+        {"-o", "--output", "--compress-program", "-T", "--temporary-directory", "--files0-from"}
+    ),
     "tree": frozenset({"-o"}),
     "xxd": frozenset({"-r"}),
     # GNU time -o/--output/-a/--append FILE writes timing output; time is a
