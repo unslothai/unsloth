@@ -8606,7 +8606,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
-        """Best-effort interrupt for a sync httpx request blocked before headers."""
+        """Best-effort interrupt for a sync httpx read blocked in recv(), whether
+        parked before headers (prefill) or mid-stream."""
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
             connections = list(getattr(pool, "_connections", []) or [])
@@ -8654,10 +8655,11 @@ class LlamaCppBackend:
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
                         try:
+                            # response.close() can't wake a read already blocked in
+                            # recv(); only a socket shutdown does, so shut down first.
+                            LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             if r is not None:
                                 r.close()
-                            else:
-                                LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             return
                         except Exception as e:
                             logger.debug(f"Error closing request in cancel watcher: {e}")
