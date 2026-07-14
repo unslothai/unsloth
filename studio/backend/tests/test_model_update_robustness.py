@@ -481,7 +481,9 @@ def test_repo_gguf_blob_map_ignores_repo_blobs_subdir_on_no_symlink():
         ],
     )
 
-    assert CI._repo_gguf_blob_map(repo_info) == {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
+    assert CI._repo_gguf_blob_map(repo_info) == {
+        "model-Q4_K_M.gguf": {CI.local_size_identity(4096)}
+    }
 
 
 def test_no_symlink_cache_matching_remote_size_reports_no_update():
