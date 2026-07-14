@@ -23,7 +23,7 @@ function getSeverityColor(percent: number): {
 } {
   if (percent > 85) return { bar: "bg-red-500", text: "text-red-500" };
   if (percent > 65) return { bar: "bg-amber-500", text: "text-amber-500" };
-  return { bar: "bg-emerald-500", text: "text-emerald-500" };
+  return { bar: "bg-control-accent", text: "text-control-accent" };
 }
 
 export const ContextUsageBar: FC<{

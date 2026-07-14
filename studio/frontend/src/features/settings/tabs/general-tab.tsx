@@ -30,6 +30,14 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Check, Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  EmbeddingModelBlockedError,
+  type EmbeddingModelSettings,
+  EmbeddingModelVerificationError,
+  loadEmbeddingModelSettings,
+  resetEmbeddingModelSettings,
+  updateEmbeddingModelSettings,
+} from "../api/embedding-model";
+import {
   type HelperPrecacheSettings,
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
@@ -42,14 +50,6 @@ import {
   updatePreviewSharing,
 } from "../api/preview-sharing";
 import {
-  EmbeddingModelBlockedError,
-  type EmbeddingModelSettings,
-  EmbeddingModelVerificationError,
-  loadEmbeddingModelSettings,
-  resetEmbeddingModelSettings,
-  updateEmbeddingModelSettings,
-} from "../api/embedding-model";
-import {
   DEFAULT_UPLOAD_LIMIT_MB,
   type UploadLimitSettings,
   loadUploadLimitSettings,
@@ -57,6 +57,7 @@ import {
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
+import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -70,6 +71,8 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
+  "palette",
+  "unsloth_appearance_customization",
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
@@ -146,8 +149,6 @@ export function GeneralTab() {
   });
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
-  const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
-  const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const redirectTo = `${pathname}${search}`;
@@ -577,12 +578,12 @@ export function GeneralTab() {
         </SettingsSection>
       ) : null}
 
-      <SettingsSection title={t("settings.general.chatDefaults")}>
+      <SettingsSection title={t("settings.appearance.language.title")}>
         <SettingsRow
-          label={t("settings.general.autoTitleNewChats")}
-          description={t("settings.general.autoTitleNewChatsDescription")}
+          label={t("settings.appearance.language.label")}
+          description={t("settings.appearance.language.description")}
         >
-          <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+          <LanguageSelect />
         </SettingsRow>
       </SettingsSection>
 
@@ -677,9 +678,7 @@ export function GeneralTab() {
                 }
                 onClick={() => void saveEmbeddingModel(false)}
               >
-                {isSavingEmbeddingModel
-                  ? t("common.saving")
-                  : t("common.save")}
+                {isSavingEmbeddingModel ? t("common.saving") : t("common.save")}
               </Button>
             </div>
             {embeddingModelError ? (
@@ -727,7 +726,7 @@ export function GeneralTab() {
         >
           <div className="flex flex-col items-end gap-1">
             <div className="flex items-center gap-2">
-              <div className="relative w-28">
+              <div className="flex items-center gap-1.5">
                 <Input
                   type="number"
                   min={uploadLimit?.minUploadSizeMb ?? 1}
@@ -736,9 +735,9 @@ export function GeneralTab() {
                   value={draftUploadLimit}
                   aria-label="Training dataset upload cap in MB"
                   onChange={(event) => setDraftUploadLimit(event.target.value)}
-                  className="h-8 w-full pr-10"
+                  className="h-8 w-24"
                 />
-                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs font-medium text-muted-foreground">
+                <span className="text-xs font-medium text-muted-foreground">
                   MB
                 </span>
               </div>

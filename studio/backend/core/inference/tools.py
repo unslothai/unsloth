@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.parse
 import urllib.request
 
 from core.inference.mcp_client import (
@@ -2858,6 +2859,7 @@ def execute_tool(
     cancel_event = None,
     timeout: int | None = _TIMEOUT_UNSET,
     session_id: str | None = None,
+    thread_id: str | None = None,
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
 ) -> str:
@@ -2865,6 +2867,8 @@ def execute_tool(
 
     ``timeout``: int seconds, ``None`` = no limit, unset = ``_EXEC_TIMEOUT``.
     ``session_id``: optional ID for per-conversation sandbox isolation.
+    ``thread_id``: optional conversation ID; scopes stateful MCP stdio sessions
+    per thread (session_id alone can be shared project-wide).
     ``rag_scope``: hidden per-request RAG context the model never sees; consumed
     by ``search_knowledge_base``.
     ``disable_sandbox``: Bypass Permissions; run python/terminal without the
@@ -2889,14 +2893,41 @@ def execute_tool(
             return f"Error: MCP server '{server_id}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+        # Persist a stateful stdio session only per conversation (thread_id).
+        # session_id is the project-wide sandbox id, so scoping by it alone leaks
+        # browser/DB/REPL state across conversations; fall back to one-shot. Tag +
+        # percent-quote the parts so ids can't collide or ":" merge conversations.
+        if thread_id:
+            mcp_scope = "s={}:t={}".format(
+                urllib.parse.quote(session_id or "", safe = ""),
+                urllib.parse.quote(thread_id, safe = ""),
+            )
+        else:
+            mcp_scope = None
+        headers = parse_server_headers(server)
+        url = server["url"]
+
+        def _config_current() -> bool:
+            # Re-read before a stdio session is cached: this call may have read
+            # the row just before an update/delete closed its sessions.
+            row = mcp_servers_db.get_server(server_id)
+            return (
+                row is not None
+                and bool(row.get("is_enabled"))
+                and row.get("url") == url
+                and parse_server_headers(row) == headers
+            )
+
         return call_tool_sync(
-            url = server["url"],
-            headers = parse_server_headers(server),
+            url = url,
+            headers = headers,
             name = tool_name,
             args = arguments,
             timeout = effective_timeout,
             use_oauth = bool(server.get("use_oauth")),
             cancel_event = cancel_event,
+            scope = mcp_scope,
+            config_check = _config_current,
         )
     if name == "web_search":
         return _web_search(
