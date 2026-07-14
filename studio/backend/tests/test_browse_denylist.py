@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import ntpath
 import os
+import posixpath
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -23,6 +24,7 @@ import pytest
 
 from hub.storage import scan_folders
 from storage import studio_db
+from utils.paths.external_media import is_local_filesystem_root
 
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -284,3 +286,37 @@ def test_hub_add_scan_folder_rejects_filesystem_root(monkeypatch):
     monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
     with pytest.raises(ValueError, match = "filesystem root"):
         scan_folders.add_scan_folder("/")
+
+
+# is_local_filesystem_root: reject "/" and "C:\\" (roots above denied system dirs),
+# but NOT a UNC share root -- registering \\server\share was allowed before this
+# guard and has no system dirs under it. _pathmod drives Windows semantics on POSIX CI.
+@pytest.mark.parametrize(
+    "path, pathmod, expected",
+    [
+        # Local filesystem roots -> rejected (True).
+        ("/", posixpath, True),
+        ("C:\\", ntpath, True),
+        ("c:\\", ntpath, True),
+        ("D:\\", ntpath, True),
+        # UNC share roots -> NOT a local root, stay registerable (False).
+        (r"\\server\share", ntpath, False),
+        (r"\\nas\models", ntpath, False),
+        ("//server/share", ntpath, False),
+        # Non-root paths are never a filesystem root (False).
+        ("C:\\Models", ntpath, False),
+        (r"\\server\share\models", ntpath, False),
+        ("/home/user", posixpath, False),
+    ],
+)
+def test_is_local_filesystem_root(path, pathmod, expected):
+    assert is_local_filesystem_root(path, _pathmod = pathmod) is expected
+
+
+def test_both_guards_use_the_shared_local_root_helper():
+    # Register-root parity: both browsers reject the same roots via one helper, so a
+    # UNC-share exemption can never drift between the legacy and hub code paths.
+    legacy_src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
+    hub_src = (_BACKEND_ROOT / "hub" / "storage" / "scan_folders.py").read_text(encoding = "utf-8")
+    assert "is_local_filesystem_root(normalized)" in legacy_src
+    assert "is_local_filesystem_root(normalized)" in hub_src

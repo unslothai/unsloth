@@ -27,7 +27,7 @@ from utils.paths import (
     project_workspaces_root,
     studio_db_path,
 )
-from utils.paths.external_media import is_linux_run_media_path
+from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
@@ -950,10 +950,11 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
-    # Reject a filesystem root ("/", or a bare Windows drive root "C:\\", for
-    # which dirname() == the path). Registering one would seed the browse
-    # allowlist with a root above denied system dirs; mirrors the scan_folders.py guard.
-    if os.path.dirname(normalized) == normalized:
+    # Reject a local filesystem root ("/", or a bare Windows drive root "C:\\"):
+    # registering one seeds the browse allowlist with a root above denied system
+    # dirs. A UNC share root (\\server\share) has none under it and was
+    # registerable before this guard, so it stays allowed. Mirrors scan_folders.py.
+    if is_local_filesystem_root(normalized):
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")

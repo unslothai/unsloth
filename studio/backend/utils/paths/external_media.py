@@ -20,6 +20,20 @@ from utils.paths.sensitive import (
 )
 
 
+def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
+    """True for a bare local filesystem root -- POSIX ``/`` or a drive root ``C:\\`` --
+    which sits above denied system dirs, but NOT a UNC share root
+    ``\\\\server\\share`` (no system dirs under it, and registerable before this
+    guard existed). ``splitdrive`` is empty on POSIX servers, so this reduces to
+    the plain ``dirname == self`` test there. ``_pathmod`` lets tests drive
+    ``ntpath`` semantics on a POSIX CI.
+    """
+    if _pathmod.dirname(path) != path:
+        return False
+    drive, _ = _pathmod.splitdrive(path)
+    return drive[:2] not in ("\\\\", "//")
+
+
 def _is_linux_media_mount_path(path: str, media_root: Path | str) -> bool:
     normalized = os.path.normpath(os.path.realpath(os.path.expanduser(path)))
     root = os.path.normpath(os.path.realpath(os.path.expanduser(str(media_root))))
