@@ -1530,7 +1530,9 @@ async function autoLoadSmallestModel(): Promise<{
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: effectiveChatTemplateOverride,
         loadedChatTemplateOverride: effectiveChatTemplateOverride,
-        customContextLength: null,
+        // Retain the saved requested context so re-saving the config keeps the
+        // override; null stays null (auto/VRAM-fit).
+        customContextLength: config.customContextLength,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),

@@ -704,9 +704,11 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // A successful reload has applied settings, so clear pending custom
-            // context state and display the backend-reported effective context.
-            const keepCustomCtx = null;
+            // Retain the user's requested context so re-opening or re-saving
+            // the config keeps the intended override, not the backend's
+            // effective (auto-fit) context; null stays null so an auto-fit
+            // never becomes a stored override.
+            const keepCustomCtx = loadCustomContextLength;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
@@ -856,6 +858,11 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  // Restore its KV cache dtype and chat template too, so the
+                  // rollback runs the model as it was, not with backend defaults.
+                  cache_type_kv: stateBeforeUnload.loadedKvCacheDtype ?? null,
+                  chat_template_override:
+                    stateBeforeUnload.loadedChatTemplateOverride ?? null,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,

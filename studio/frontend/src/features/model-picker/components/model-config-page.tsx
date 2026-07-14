@@ -443,7 +443,6 @@ export function ModelConfigPage({
       config.customContextLength ?? 0,
     ) || 32768,
   );
-  const contextBaseline = activeLoadedContext ?? nativeContextLength;
   const contextValue = Math.min(
     Math.max(
       config.customContextLength ??
@@ -457,7 +456,7 @@ export function ModelConfigPage({
   const setContextLength = (v: number) =>
     update({
       customContextLength:
-        contextBaseline != null && v === contextBaseline ? null : v,
+        nativeContextLength != null && v === nativeContextLength ? null : v,
     });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
@@ -482,10 +481,16 @@ export function ModelConfigPage({
   const runtimeConfig = target.isGguf
     ? {
         ...config,
+        // Persist the user's intent collapsed against native (not the loaded
+        // context, which equals the override): an explicit sub-native value is
+        // kept, "at native" becomes null. null stays null (auto/VRAM-fit).
         customContextLength:
-          contextBaseline == null && config.customContextLength == null
+          config.customContextLength == null
             ? null
-            : resolveCustomContextLength(contextValue, contextBaseline),
+            : resolveCustomContextLength(
+                config.customContextLength,
+                nativeContextLength,
+              ),
       }
     : {
         ...config,

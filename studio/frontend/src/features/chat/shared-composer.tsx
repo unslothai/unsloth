@@ -954,10 +954,16 @@ export function SharedComposer({
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
         const config = sel.config ?? null;
+        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no
+        // explicit context loads at native (0 -> n_ctx_train), not the session
+        // maxSeqLength, which would silently shrink the picker's shown context.
+        const isGgufLoad =
+          (sel.ggufVariant ?? null) != null ||
+          sel.id.toLowerCase().endsWith(".gguf");
         const effectiveMaxSeqLength =
           config?.customContextLength ??
           normalizeMaxSeqLength(config?.maxSeqLength) ??
-          maxSeqLength;
+          (isGgufLoad ? 0 : maxSeqLength);
         // Use this pane's own remembered template, never the other pane's
         // (store) template; a model with no saved config loads its default.
         const ownConfig =
