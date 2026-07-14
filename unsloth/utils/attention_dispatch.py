@@ -45,9 +45,7 @@ def _xformers_runs_on_device() -> bool:
         q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
         attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
         xformers_attention(q, q, q, attn_bias = attn_bias)
-        # Kernel launches are async, so the call can return before the GPU reports a
-        # failure; synchronize so a deferred launch/runtime error is caught here
-        # instead of slipping through as a false success and crashing a later op.
+        # Launches are async; synchronize so a deferred kernel failure fails the probe here.
         torch.cuda.synchronize()
         return True
     except Exception:
@@ -55,30 +53,23 @@ def _xformers_runs_on_device() -> bool:
 
 
 def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
-    # On the newest GPUs (sm_120, e.g. RTX 50-series) xformers' own cutlass kernel is
-    # capability-rejected (it caps at sm_90); memory_efficient_attention instead
-    # dispatches to the flash-2 op (torch's bundled FlashAttention-2), which runs only
-    # if the installed build ships an sm_120 kernel, and some don't. Below sm_120
-    # xformers is always supported, so skip the probe; at sm_120+ run one real forward
-    # and fall back to SDPA only when it genuinely can't run, instead of guessing by version.
+    # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (caps at
+    # sm_90) and its flash-2 op runs only if the build ships an sm_120 kernel, so run
+    # one real forward to decide. Below sm_120 xformers always works; skip the probe.
     if capability[0] < 12:
         return False
     return not probe()
 
 
 # FlashAttention always wins in select_attention_backend and nothing downgrades
-# flash -> xformers, so when it's installed xformers is never selected; skip the
-# import-time GPU probe entirely there rather than pay its launch/JIT for nothing.
+# flash -> xformers, so when it's installed xformers is never selected: skip the probe.
 if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
     if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
 
-# On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass kernel is capability-rejected
-# and only its flash-2 op runs, which takes fp16/bf16 only, so fp32 Q/K/V (DoRA promotes
-# them, #1013) must be downcast before the xformers call there or the op raises. Below
-# sm_100 the cutlass kernel handles fp32, so those inputs are left untouched. Read once
-# from the default device, like the probe gate above, so a mixed-GPU box keyed off a
-# lower-cc device 0 keeps main's behavior (no downcast) rather than gaining a new crash.
+# On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
+# only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
+# below sm_100 cutlass handles fp32 natively. Read once from device 0, like the probe gate.
 _XFORMERS_FP32_UNSUPPORTED = (
     torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
 )
