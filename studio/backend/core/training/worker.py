@@ -255,8 +255,7 @@ def _install_package_wheel_first(
     if pypi_status_message is None:
         if is_hip:
             pypi_status_message = (
-                f"Compiling {display_name} from source for ROCm "
-                "(this may take several minutes)..."
+                f"Compiling {display_name} from source for ROCm (this may take several minutes)..."
             )
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
@@ -344,7 +343,7 @@ def _install_package_wheel_first(
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after " f"{_run_kwargs.get('timeout')}s",
+            f"{display_name} installation timed out after {_run_kwargs.get('timeout')}s",
         )
         return False
 
@@ -1302,8 +1301,7 @@ def _normalize_mlx_studio_scheduler(value):
     if raw not in _MLX_STUDIO_LR_SCHEDULERS:
         supported = ", ".join(sorted(_MLX_STUDIO_LR_SCHEDULERS))
         raise ValueError(
-            f"Unsupported LR scheduler for MLX training: {value!r}. "
-            f"Supported values: {supported}."
+            f"Unsupported LR scheduler for MLX training: {value!r}. Supported values: {supported}."
         )
     return raw
 
@@ -1409,6 +1407,132 @@ def _resolve_mlx_output_dir(config, model_name):
             output_path = Path.cwd() / output_path
         return str(output_path.resolve())
     return str(resolve_output_dir(output_dir))
+
+
+def _resolve_mlx_training_steps(
+    requested_max_steps,
+    dataset_size,
+    batch_size,
+    gradient_accumulation_steps,
+    num_epochs,
+    world_size,
+):
+    if requested_max_steps > 0:
+        return requested_max_steps
+    global_batch_size = batch_size * world_size
+    return max(
+        1,
+        math.ceil(dataset_size / global_batch_size / gradient_accumulation_steps) * num_epochs,
+    )
+
+
+def _configure_mlx_training_schedule(
+    trainer,
+    requested_max_steps,
+    dataset_size,
+    batch_size,
+    gradient_accumulation_steps,
+    num_epochs,
+    warmup_ratio = None,
+    eval_steps_ratio = None,
+):
+    max_steps = _resolve_mlx_training_steps(
+        requested_max_steps,
+        dataset_size,
+        batch_size,
+        gradient_accumulation_steps,
+        num_epochs,
+        trainer.distributed_world_size,
+    )
+    trainer.args.max_steps = max_steps
+    if warmup_ratio is not None:
+        trainer.args.warmup_steps = int(round(warmup_ratio * max_steps))
+    if eval_steps_ratio is not None:
+        trainer.args.eval_steps = max(1, int(eval_steps_ratio * max_steps))
+    return max_steps, int(trainer.args.eval_steps)
+
+
+def _run_mlx_main_process_action(trainer, action, context):
+    """Run one worker side effect on rank 0 and synchronize failures."""
+    world_size = int(trainer.distributed_world_size)
+    if world_size <= 1:
+        return action()
+
+    raise_distributed_failure = getattr(trainer, "_raise_distributed_failure", None)
+    if not callable(raise_distributed_failure):
+        raise RuntimeError(
+            "Unsloth MLX DDP CLI requires MLXTrainer failure coordination. "
+            "Upgrade unsloth-zoo to a compatible version."
+        )
+
+    result = None
+    error = None
+    if bool(trainer.is_main_process):
+        try:
+            result = action()
+        except Exception as exc:
+            error = exc
+    raise_distributed_failure(error is not None, context, error)
+    return result
+
+
+def _prepare_mlx_output_dir(trainer, output_dir, ensure_dir):
+    return _run_mlx_main_process_action(
+        trainer,
+        lambda: ensure_dir(Path(output_dir)),
+        "output directory setup",
+    )
+
+
+def _setup_mlx_tracking(trainer, config, output_dir, send):
+    wandb_run = None
+    tb_writer = None
+    if config.get("enable_wandb", False):
+
+        def _setup_wandb():
+            try:
+                import wandb as _wandb
+
+                wandb_token = config.get("wandb_token")
+                if wandb_token:
+                    os.environ["WANDB_API_KEY"] = wandb_token
+                # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
+                _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
+                return _wandb.init(
+                    project = config.get("wandb_project") or "unsloth-mlx",
+                    config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
+                    reinit = True,
+                )
+            except Exception as e:
+                send("status", status_message = f"wandb init failed: {e}")
+                return None
+
+        wandb_run = _run_mlx_main_process_action(trainer, _setup_wandb, "Weights & Biases setup")
+    if config.get("enable_tensorboard", False):
+
+        def _setup_tensorboard():
+            try:
+                from tensorboardX import SummaryWriter
+            except ImportError:
+                try:
+                    from torch.utils.tensorboard import SummaryWriter
+                except ImportError:
+                    SummaryWriter = None
+            if SummaryWriter is None:
+                send(
+                    "status",
+                    status_message = "tensorboard unavailable (install tensorboardX)",
+                )
+                return None
+            try:
+                tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
+                return SummaryWriter(log_dir = tb_dir)
+            except Exception as e:
+                send("status", status_message = f"tensorboard init failed: {e}")
+                return None
+
+        tb_writer = _run_mlx_main_process_action(trainer, _setup_tensorboard, "TensorBoard setup")
+    return wandb_run, tb_writer
 
 
 def _run_mlx_training(event_queue, stop_queue, config):
@@ -1814,41 +1938,38 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
     # ── 4. Resolve training steps ──
-    max_steps = config.get("max_steps", 0) or 0
+    requested_max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)
     max_seq_length = config.get("max_seq_length", 2048)
     batch_size = config.get("batch_size", 4)
     grad_accum = config.get("gradient_accumulation_steps", 4)
-
-    if max_steps <= 0:
-        max_steps = max(
-            1,
-            math.ceil(len(dataset) / batch_size / grad_accum) * num_epochs,
-        )
 
     lr_value = float(config.get("learning_rate", "2e-4"))
 
     # Warmup: prefer warmup_steps; fall back to warmup_ratio
     warmup_steps = config.get("warmup_steps")
     warmup_ratio = config.get("warmup_ratio")
-    if warmup_steps is None and warmup_ratio is not None:
-        warmup_steps = int(round(warmup_ratio * max_steps))
+    warmup_uses_ratio = warmup_steps is None and warmup_ratio is not None
     if warmup_steps is None:
-        warmup_steps = 5
+        warmup_steps = 0 if warmup_uses_ratio else 5
 
     # ── 5. Build output dir ──
     # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
     from utils.paths import ensure_dir
 
     output_dir = _resolve_mlx_output_dir(config, model_name)
-    ensure_dir(Path(output_dir))
 
     # ── 6. Create trainer ──
     eval_steps_val = config.get("eval_steps", 0) or 0
-    if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
-        eval_steps_val = max(1, int(eval_steps_val * max_steps))
-    else:
+    eval_steps_ratio = (
+        float(eval_steps_val)
+        if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1
+        else None
+    )
+    if eval_steps_ratio is None:
         eval_steps_val = int(eval_steps_val)
+    else:
+        eval_steps_val = 0
 
     # Per-element clipping only; trainer owns the None default. Re-validate
     # for direct worker callers (training.py normalizes the main path).
@@ -1875,7 +1996,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
-        max_steps = max_steps,
+        max_steps = requested_max_steps,
         learning_rate = lr_value,
         warmup_steps = warmup_steps,
         lr_scheduler_type = lr_scheduler_type,
@@ -1923,6 +2044,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_dataset = eval_dataset,
         args = MLXTrainingConfig(**mlx_config_kwargs),
     )
+    max_steps, eval_steps_val = _configure_mlx_training_schedule(
+        trainer,
+        requested_max_steps,
+        len(dataset),
+        batch_size,
+        grad_accum,
+        num_epochs,
+        warmup_ratio = warmup_ratio if warmup_uses_ratio else None,
+        eval_steps_ratio = eval_steps_ratio,
+    )
+    _prepare_mlx_output_dir(trainer, output_dir, ensure_dir)
     _trainer_ref[0] = trainer
     if _stop_requested[0]:
         trainer.stop_requested = True
@@ -1955,43 +2087,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     # ── 8. Setup wandb / tensorboard ──
-    wandb_run = None
-    tb_writer = None
-    if config.get("enable_wandb", False):
-        try:
-            import wandb as _wandb
-
-            wandb_token = config.get("wandb_token")
-            if wandb_token:
-                os.environ["WANDB_API_KEY"] = wandb_token
-            # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
-            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
-            wandb_run = _wandb.init(
-                project = config.get("wandb_project") or "unsloth-mlx",
-                config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
-                reinit = True,
-            )
-        except Exception as e:
-            _send("status", status_message = f"wandb init failed: {e}")
-    if config.get("enable_tensorboard", False):
-        try:
-            from tensorboardX import SummaryWriter
-        except ImportError:
-            try:
-                from torch.utils.tensorboard import SummaryWriter
-            except ImportError:
-                SummaryWriter = None
-        if SummaryWriter is not None:
-            try:
-                tb_dir = config.get("tensorboard_dir") or f"{output_dir}/runs"
-                tb_writer = SummaryWriter(log_dir = tb_dir)
-            except Exception as e:
-                _send("status", status_message = f"tensorboard init failed: {e}")
-        else:
-            _send(
-                "status",
-                status_message = "tensorboard unavailable (install tensorboardX)",
-            )
+    wandb_run, tb_writer = _setup_mlx_tracking(trainer, config, output_dir, _send)
 
     # ── 9. Real-time progress callback ──
     _send("status", status_message = f"Training {model_name}...")
