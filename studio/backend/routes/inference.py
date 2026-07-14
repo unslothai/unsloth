@@ -3002,7 +3002,10 @@ def _should_strip_tensor_split(request: LoadRequest) -> bool:
     Tensor Parallelism toggle IS overriding the mode, _should_strip_split_mode
     (called alongside this at every site) strips --split-mode anyway.
     """
-    return request.gpu_memory_mode == "manual" and request.gpu_layers >= 0
+    return (
+        getattr(request, "gpu_memory_mode", "auto") == "manual"
+        and getattr(request, "gpu_layers", -1) >= 0
+    )
 
 
 def _carry_preserved_tensor_intent(
@@ -3912,8 +3915,9 @@ def _resolve_inherited_extra_args(
             strip_tensor_split = _should_strip_tensor_split(request),
             # manual emits its own --fit/--gpu-layers, so an inherited
             # offload flag must not last-wins-override it. auto leaves a
-            # user's inherited -ngl alone (offload_overridden).
-            strip_offload = request.gpu_memory_mode == "manual",
+            # user's inherited -ngl alone (offload_overridden). getattr: a
+            # validate request reuses this resolver but has no offload fields.
+            strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
         )
         try:
             extra_llama_args = validate_extra_args(stripped)
@@ -4713,7 +4717,9 @@ def _requires_security_review_for_model(
 
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
-    request: ValidateModelRequest, current_subject: str = Depends(get_current_subject)
+    request: ValidateModelRequest,
+    fastapi_request: Request = None,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Lightweight validation endpoint for model identifiers.
@@ -4775,16 +4781,37 @@ async def validate_model(
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-        )
+        # A metadata-only probe (include_context_length) just reads the GGUF
+        # header and allocates no VRAM, so it must not be refused by the training
+        # guard -- else the staging sliders it feeds (GPU Layers / MoE) are hidden
+        # exactly when the user needs them to reduce offload. A load-intent
+        # validate never sets it, and /load re-guards, so a real load can't skip
+        # the check here.
+        if not request.include_context_length:
+            # Size the guard with the same effective extras and slot count /load
+            # uses: a validate request omits the extras field, so this inherits
+            # the previous same-model load's, matching /load. Otherwise validate
+            # can pass a smaller estimate and /load then 409s after the frontend
+            # has already unloaded the current model.
+            effective_extra_args = _resolve_inherited_extra_args(
+                request, config, model_identifier, None
+            )
+            # Off-loop: guard does sync nvidia-smi / HF work.
+            await asyncio.to_thread(
+                _guard_chat_load_against_training,
+                config,
+                model_identifier = model_identifier,
+                hf_token = request.hf_token,
+                load_in_4bit = effective_load_in_4bit,
+                max_seq_length = request.max_seq_length,
+                requested_gpu_ids = effective_gpu_ids,
+                llama_extra_args = effective_extra_args,
+                n_parallel = (
+                    getattr(fastapi_request.app.state, "llama_parallel_slots", 1)
+                    if fastapi_request is not None
+                    else 1
+                ),
+            )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.

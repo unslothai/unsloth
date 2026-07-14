@@ -2817,6 +2817,11 @@ export function ChatPage({
             selectModel({
               id: state.params.checkpoint,
               ggufVariant: state.activeGgufVariant ?? undefined,
+              // A native (drag-drop / picked) GGUF's checkpoint is only a display
+              // label, so the reload needs its path token to re-mint a lease --
+              // else applying the now-exposed GPU/context controls can't resolve
+              // the file. Null for non-native loads, which reload by id as before.
+              nativePathToken: state.activeNativePathToken ?? undefined,
               forceReload: true,
               isDownloaded: true,
               loadingDescription: "Reloading with updated chat template.",

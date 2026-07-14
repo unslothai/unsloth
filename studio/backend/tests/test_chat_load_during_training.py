@@ -467,6 +467,68 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
 
+    def test_validate_forwards_inherited_extras_and_parallel_to_guard(self):
+        # Regression: /load resolves inherited same-model extras and passes the
+        # real slot count to the guard; validate must do the same, else it sizes
+        # a smaller estimate (no inherited -c/--model-draft, n_parallel=1) and
+        # /load then 409s after the frontend has already unloaded.
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(model_path = "unsloth/Qwen3-1.7B", max_seq_length = 4096)
+        cfg = SimpleNamespace(
+            identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B",
+            is_gguf = False, is_lora = False, is_vision = False, path = None, base_model = None,
+        )
+        captured = {}
+        with (
+            patch.object(
+                self.route, "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                self.route, "_resolve_inherited_extra_args", return_value = ["-c", "32768"]
+            ),
+            patch.object(
+                self.route, "_guard_chat_load_against_training",
+                lambda config, **kw: captured.update(kw),
+            ),
+        ):
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertEqual(captured.get("llama_extra_args"), ["-c", "32768"])
+        self.assertIn("n_parallel", captured)
+
+    def test_metadata_probe_skips_training_guard(self):
+        # A header-only probe (include_context_length) allocates no VRAM, so the
+        # training guard must not run -- else the staging GPU-layers / MoE sliders
+        # it feeds are hidden exactly when a during-training user needs them.
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "unsloth/Qwen3-1.7B", max_seq_length = 4096,
+            include_context_length = True,
+        )
+        cfg = SimpleNamespace(
+            identifier = "unsloth/Qwen3-1.7B", display_name = "Qwen3-1.7B",
+            is_gguf = False, is_lora = False, is_vision = False, path = None, base_model = None,
+        )
+        guard_called = []
+        with (
+            patch.object(
+                self.route, "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/Qwen3-1.7B", "unsloth/Qwen3-1.7B", False),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                self.route, "_guard_chat_load_against_training",
+                lambda *a, **kw: guard_called.append(True),
+            ),
+        ):
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertEqual(guard_called, [])
+
 
 # ── _estimate_gguf_required_gb (sizes the same weights the loader loads) ──────
 
