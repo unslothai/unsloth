@@ -71,12 +71,18 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         ("application/xml", True),
         ("application/xhtml+xml", True),
         ("application/ld+json", True),
+        ("application/yaml", True),  # raw configs / API specs
+        ("application/x-yaml", True),
+        ("application/x-ndjson", True),  # newline-delimited JSON is text
+        ("application/ndjson", True),
         ("application/pdf", False),
         ("image/png", False),
         ("image/svg+xml", False),  # SVG source isn't extracted downstream; reject
         ("application/octet-stream", False),
         ("application/zip", False),
-        ("", True),  # unlabeled: defer to the replacement-char fallback
+        # A .docx ZIP must not pass just because "xml" is inside "openxmlformats".
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", False),
+        ("", True),  # unlabeled: defer to the binary-char fallback
         (None, True),
     ],
 )
@@ -101,10 +107,26 @@ def test_image_rejected_by_content_type(monkeypatch):
 
 def test_binary_mislabeled_as_text_caught_by_fallback(monkeypatch):
     # A server sends binary but labels it text/plain -> the type check passes,
-    # so the replacement-char fallback must catch it.
+    # so the binary-char fallback must catch it.
     out = _fetch_with(monkeypatch, bytes(range(256)) * 20, "text/plain")
     assert "�" not in out
     assert "binary content" in out
+
+
+def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
+    # NUL/control-heavy binary is valid UTF-8, so it decodes with no U+FFFD;
+    # the fallback must still catch it via control-char density (codex #2).
+    body = bytes([0, 1, 2, 3, 4, 5, 6, 7]) * 400  # all valid UTF-8, 0 replacement chars
+    out = _fetch_with(monkeypatch, body, "text/plain")
+    assert "binary content" in out
+
+
+def test_ansi_colored_text_log_kept(monkeypatch):
+    # A text log with per-token ANSI color codes is text; ESC is excluded from
+    # the binary-char set so it isn't dropped as binary.
+    line = "".join(f"\x1b[32m+{i}\x1b[0m\n" for i in range(300)).encode()
+    out = _fetch_with(monkeypatch, line, "text/plain")
+    assert "binary content" not in out
 
 
 def test_binary_unlabeled_caught_by_fallback(monkeypatch):

@@ -1381,12 +1381,14 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # sections stripped during conversion; 512 KB reaches article content even
 # where <head> alone is ~200 KB.
 _MAX_FETCH_BYTES = 512 * 1024
-# A decoded page is treated as binary when more than 1/_BINARY_REPLACEMENT_DIVISOR
-# (12.5%) of its chars are U+FFFD, but always tolerating up to
-# _MIN_REPLACEMENT_CHARS stray bad bytes so minor encoding glitches don't drop a
-# real page.
-_MIN_REPLACEMENT_CHARS = 16
-_BINARY_REPLACEMENT_DIVISOR = 8
+# Chars that don't occur in real text: undecodable bytes (U+FFFD) plus control
+# chars (C0 minus tab/newline/CR and ESC, DEL, C1). ESC is excluded so a text
+# page of ANSI-colored terminal output isn't mistaken for binary. A decoded page
+# is treated as binary when more than 1/_BINARY_CHAR_DIVISOR (12.5%) of its chars
+# are these, tolerating up to _MIN_BINARY_CHARS so minor glitches don't drop it.
+_BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
+_MIN_BINARY_CHARS = 16
+_BINARY_CHAR_DIVISOR = 8
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -1488,23 +1490,33 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
-def _is_texty_content_type(content_type: str) -> bool:
+# Bare application/* subtypes that are text (the leading x- and the +json/+xml
+# structured-syntax suffixes are handled in the check).
+_TEXT_APPLICATION_SUBTYPES = frozenset(
+    {"json", "xml", "javascript", "ecmascript", "csv", "yaml", "ndjson", "jsonl"}
+)
+
+
+def _is_texty_content_type(content_type: str | None) -> bool:
     """True for MIME types safe to decode as text (HTML pages, plain text,
-    JSON/XML feeds). Binary types (PDF, images, archives, octet-stream) return
-    False so the fetcher never decodes them into a flood of U+FFFD replacement
-    chars that poison the model context (unslothai/unsloth#7084).
+    JSON/XML/YAML feeds). Binary types (PDF, images, archives, Office/ZIP,
+    octet-stream) return False so the fetcher never decodes them into a flood of
+    replacement chars that poison the model context (unslothai/unsloth#7084).
 
     A missing Content-Type coerces to ``text/plain`` upstream, so unlabeled
-    bodies pass here and are caught instead by the replacement-char fallback.
+    bodies pass here and are caught instead by the binary-char fallback.
     """
     ct = (content_type or "").lower()
     if not ct:
-        return True  # unlabeled: let the replacement-char fallback decide
+        return True  # unlabeled: let the binary-char fallback decide
     if ct.startswith("text/"):
         return True
     if ct.startswith("application/"):
-        # "xml" also covers xhtml+xml / *+xml; "json" covers *+json.
-        return any(marker in ct for marker in ("json", "xml", "javascript", "csv"))
+        # Match the exact subtype, not a loose substring, so a .docx labeled
+        # application/vnd.openxmlformats-... isn't read as xml. RFC 6839
+        # +json/+xml suffixes (ld+json, xhtml+xml, ...) pass too.
+        subtype = ct[len("application/") :].removeprefix("x-")
+        return subtype in _TEXT_APPLICATION_SUBTYPES or subtype.endswith(("+json", "+xml"))
     return False
 
 
@@ -1604,11 +1616,11 @@ def _fetch_page_text(
         charset = resp.headers.get_content_charset() or "utf-8"
         raw_html = raw_bytes.decode(charset, errors = "replace")
 
-        # Fallback for binary mislabeled as text/* or sent with no Content-Type:
-        # a real text page has only a few replacement chars, if any.
-        if raw_html.count("\ufffd") > max(
-            _MIN_REPLACEMENT_CHARS, len(raw_html) // _BINARY_REPLACEMENT_DIVISOR
-        ):
+        # Fallback for binary mislabeled as text/* or sent with no Content-Type,
+        # including valid-UTF-8 binary (NUL/control-heavy payloads) that decodes
+        # without replacement chars: a real text page has few binary chars.
+        binary_chars = len(_BINARY_CHAR_RE.findall(raw_html))
+        if binary_chars > max(_MIN_BINARY_CHARS, len(raw_html) // _BINARY_CHAR_DIVISOR):
             return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
