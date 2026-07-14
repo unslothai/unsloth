@@ -1,13 +1,24 @@
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Regression guard for the CUDA torch2110 optional-dependency extras.
 
-torch 2.11's DEFAULT PyPI wheel is CUDA 13.0 (torch 2.10 defaulted to CUDA 12.x).
-So the CUDA-12 `cuXXXonlytorch2110` extras must pin the torch trio to the matching
-`+cuXXX` local build; a bare `torch>=2.11` there would resolve a cu130 torch from
-PyPI alongside the cu126/cu128 xformers wheel and fail at import. The cu130 extra is
-pinned to +cu130 too: a bare or ===-pinned spec either lets a foreign CUDA index
-outrank the intended wheel or force-replaces official cu130-index installs.
-
-Hermetic: only parses pyproject.toml, no network or install.
+The cuXXXonlytorch2110 extras must pin the torch trio to the matching +cuXXX local
+build (torch 2.11 defaults to a CUDA-13 PyPI wheel), or resolution mismatches the
+xformers wheel. Hermetic: only parses pyproject.toml, no network or install.
 """
 
 from __future__ import annotations
@@ -17,7 +28,7 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-try:  # tomllib is stdlib on Python 3.11+; older interpreters need the tomli backport.
+try:  # tomllib is stdlib on 3.11+; older interpreters need the tomli backport.
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.9 / 3.10
     tomllib = pytest.importorskip("tomli")
@@ -33,9 +44,7 @@ def _extra(name: str) -> list[str]:
 
 
 def _reqs(specs: list[str]) -> dict[str, list[Requirement]]:
-    # Keyed by name -> list: each extra carries one Linux and one Windows
-    # xformers requirement, so a plain name -> Requirement dict would silently
-    # drop the Linux entry.
+    # name -> list: each extra has one Linux and one Windows xformers requirement.
     out: dict[str, list[Requirement]] = {}
     for spec in specs:
         r = Requirement(spec)
@@ -45,9 +54,7 @@ def _reqs(specs: list[str]) -> dict[str, list[Requirement]]:
 
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
-    # Each of torch/torchvision/torchaudio must pin the exact +cuXXX local build
-    # so it can only resolve from the matching PyTorch CUDA index, never the
-    # CUDA-13 default on PyPI.
+    # Each trio member must pin the exact +cuXXX local build.
     reqs = _reqs(_extra(f"{cuda}onlytorch2110"))
     for pkg in _TORCH_TRIO:
         (req,) = reqs[pkg]
@@ -65,9 +72,7 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
         assert (
             f"/whl/{cuda}/xformers-0.0.35-" in r.url
         ), f"xformers not on the {cuda} index: {r.url}"
-        # The wheels are x86-64 only, so the markers must exclude other machines
-        # (e.g. Linux aarch64 such as GB200/DGX Spark, Windows ARM64) where the
-        # torch trio resolves fine but these wheels would abort the install.
+        # x86-64-only wheels: markers must exclude aarch64 / ARM64.
         assert r.marker is not None
         assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
         assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
@@ -78,8 +83,7 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 @pytest.mark.parametrize("variant", ["", "ampere-"])
 def test_torch2110_wrapper_references_matching_leaf(cuda: str, variant: str):
-    # The six public wrappers must pull in the usual huggingface + bitsandbytes
-    # pair and reference the internal leaf of the SAME CUDA version.
+    # Wrappers pull huggingface + bitsandbytes and the leaf of the same CUDA version.
     specs = _extra(f"{cuda}-{variant}torch2110")
     assert specs == [
         "unsloth[huggingface]",
@@ -90,11 +94,8 @@ def test_torch2110_wrapper_references_matching_leaf(cuda: str, variant: str):
 
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 def test_cuda12_torch2100_keeps_torch_pinned_off_x86(cuda: str):
-    # The torch2100 leaves used to rely on the xformers 0.0.34 wheel's transitive
-    # torch==2.10.0 pin. Now that the x86-64-only wheels carry platform_machine
-    # markers, the leaf must pin torch explicitly so an ARM64 install stays on
-    # torch 2.10 (Linux aarch64 wheels exist) or fails loudly (Windows ARM64)
-    # instead of resolving an unpinned newer torch.
+    # Now the xformers wheels carry x86-64 markers, the leaf must pin torch
+    # explicitly so ARM64 installs stay on 2.10 instead of resolving newer.
     reqs = _reqs(_extra(f"{cuda}onlytorch2100"))
     (torch_req,) = reqs["torch"]
     assert str(torch_req.specifier) == "==2.10.0", (
