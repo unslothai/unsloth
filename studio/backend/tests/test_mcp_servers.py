@@ -198,7 +198,12 @@ def test_call_tool_sync_respects_pre_set_cancel_event(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             import asyncio as _asyncio
             await _asyncio.sleep(30)  # never finishes during the test
 
@@ -520,7 +525,12 @@ def test_call_tool_sync_short_circuits_on_pre_set_cancel(monkeypatch):
         async def __aexit__(self, *args):
             return False
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             return "ran"
 
     monkeypatch.setattr(mcp_client, "_client", lambda *a, **kw: _StubClient())
