@@ -11,11 +11,12 @@ import { TooltipIconButton } from "./tooltip-icon-button";
 
 // Dense row of dots that rise into centered recording bars.
 const BAR_COUNT = 84;
-// Peak multiple of a dot's height for the loudest audio (dot is 4px tall).
-const MAX_SCALE = 10;
-// Keep roughly nine seconds of movement visible. Peaks between these slower
-// advances are retained, so speech remains expressive without racing past.
-const PUSH_INTERVAL_MS = 110;
+// Peak height multiple for the loudest audio (dot is 4px). Kept under the 40px
+// pill so bars don't touch the edges.
+const MAX_SCALE = 8;
+// Time for a sample to slide one bar-width left; sets the drift speed. Bars
+// interpolate between samples each frame, so a slower interval stays smooth.
+const PUSH_INTERVAL_MS = 165;
 // If no real mic level arrives for this long (for example, Web Audio is
 // unavailable), fall back to a gentle idle shimmer so the bar is alive.
 const IDLE_AFTER_MS = 450;
@@ -42,7 +43,8 @@ export const ChatDictationBar: FC = () => {
   const [transcribing, setTranscribing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const transcribingRef = useRef(false);
-  const barsRef = useRef<number[]>(new Array(BAR_COUNT).fill(0));
+  // Extra slot: newest sample lands here; the last visible bar slides toward it.
+  const barsRef = useRef<number[]>(new Array(BAR_COUNT + 1).fill(0));
   const rowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -69,36 +71,9 @@ export const ChatDictationBar: FC = () => {
       el.style.opacity = "0.62";
     }
 
-    // Advance the rolling waveform by one dot and paint it.
-    const push = (level: number) => {
+    // Push one new sample, dropping the oldest.
+    const commitSample = () => {
       const bars = barsRef.current;
-      bars.push(level);
-      if (bars.length > BAR_COUNT) {
-        bars.shift();
-      }
-      for (let i = 0; i < barEls.length; i++) {
-        const v = bars[i] ?? 0;
-        barEls[i].style.transform = `scaleY(${1 + v * (MAX_SCALE - 1)})`;
-        barEls[i].style.opacity = `${0.62 + v * 0.38}`;
-      }
-    };
-
-    // Keep the loudest mic level between advances so quiet gaps at the mic frame
-    // rate don't swallow peaks when we downsample to PUSH_INTERVAL_MS.
-    const unsub = subscribeDictationLevel((level) => {
-      if (level > peak) {
-        peak = level;
-      }
-      lastLevelAt = Date.now();
-    });
-
-    // Single driver for the timer and the waveform. Frozen once the user
-    // confirms, so the timer stops and the waveform holds on stop.
-    const interval = window.setInterval(() => {
-      if (transcribingRef.current) {
-        return;
-      }
-      setElapsed(Date.now() - startedAt);
       let level = peak;
       peak = 0;
       if (Date.now() - lastLevelAt > IDLE_AFTER_MS) {
@@ -111,18 +86,74 @@ export const ChatDictationBar: FC = () => {
         visual >= smoothed
           ? smoothed * 0.2 + visual * 0.8
           : smoothed * 0.78 + visual * 0.22;
-      push(smoothed);
-    }, PUSH_INTERVAL_MS);
+      bars.push(smoothed);
+      while (bars.length > BAR_COUNT + 1) {
+        bars.shift();
+      }
+    };
+
+    // Keep the loudest mic level between advances so quiet gaps at the mic frame
+    // rate don't swallow peaks when we downsample to PUSH_INTERVAL_MS.
+    const unsub = subscribeDictationLevel((level) => {
+      if (level > peak) {
+        peak = level;
+      }
+      lastLevelAt = Date.now();
+    });
+
+    // Repaint every frame; bars interpolate between samples so the wave glides
+    // instead of hopping. Timer updates at most once per second.
+    let lastPushAt = performance.now();
+    let shownSecond = -1;
+    let raf = 0;
+
+    const frame = () => {
+      raf = requestAnimationFrame(frame);
+      if (transcribingRef.current) {
+        return;
+      }
+
+      const now = performance.now();
+      const bars = barsRef.current;
+      let steps = 0;
+      while (now - lastPushAt >= PUSH_INTERVAL_MS && steps < BAR_COUNT + 1) {
+        commitSample();
+        lastPushAt += PUSH_INTERVAL_MS;
+        steps++;
+      }
+      // Drop stale backlog if rAF was paused (tab backgrounded).
+      if (now - lastPushAt >= PUSH_INTERVAL_MS) {
+        lastPushAt = now;
+      }
+
+      const phase = Math.min(1, (now - lastPushAt) / PUSH_INTERVAL_MS);
+      for (let i = 0; i < barEls.length; i++) {
+        // Bar i drifts toward its right neighbour as phase goes 0 to 1.
+        const a = bars[i] ?? 0;
+        const b = bars[i + 1] ?? a;
+        const v = a + (b - a) * phase;
+        barEls[i].style.transform = `scaleY(${1 + v * (MAX_SCALE - 1)})`;
+        barEls[i].style.opacity = `${0.62 + v * 0.38}`;
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      const second = Math.floor(elapsedMs / 1000);
+      if (second !== shownSecond) {
+        shownSecond = second;
+        setElapsed(elapsedMs);
+      }
+    };
+    raf = requestAnimationFrame(frame);
 
     // Reset in cleanup (runs when dictation ends or on unmount) so the next
     // session starts fresh, without a synchronous setState in the effect body.
     return () => {
       unsub();
-      window.clearInterval(interval);
+      cancelAnimationFrame(raf);
       transcribingRef.current = false;
       setTranscribing(false);
       setElapsed(0);
-      barsRef.current = new Array(BAR_COUNT).fill(0);
+      barsRef.current = new Array(BAR_COUNT + 1).fill(0);
     };
   }, [isDictating]);
 
@@ -151,7 +182,7 @@ export const ChatDictationBar: FC = () => {
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-12 min-w-0 flex-1 items-center overflow-hidden px-2"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden px-2"
         style={{
           gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
           justifyContent: "space-between",
@@ -160,7 +191,7 @@ export const ChatDictationBar: FC = () => {
         {WAVE_BAR_IDS.map((barId) => (
           <span
             key={barId}
-            className="h-1 w-full origin-center rounded-full bg-foreground opacity-[0.62] transition-[transform,opacity] duration-200 ease-out will-change-transform"
+            className="h-1 w-full origin-center rounded-full bg-foreground opacity-[0.62] will-change-transform"
           />
         ))}
       </div>
