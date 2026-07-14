@@ -2407,13 +2407,11 @@ def _release_asset_download_url(repo: str, tag: str, asset_name: str) -> str:
 
 
 def _download_host_latest_release_tag(repo: str) -> str | None:
-    """Concrete tag GitHub serves as /releases/latest, read from the redirect
-    target (github.com, still no api.github.com rate limit). This is the
-    authoritative latest tag the fast path pins every URL to, instead of trusting
-    the checksum asset's own release_tag field. GitHub resolves /releases/latest
-    by created_at/make_latest, which can lag the published_at newest the freshness
-    detection uses. Returns None when the repo has no such release (404) so the
-    caller falls back to the API."""
+    """Authoritative latest tag from GitHub's /releases/latest redirect target
+    (github.com, no api.github.com rate limit); the fast path pins URLs to it rather
+    than the checksum asset's self-reported release_tag. /releases/latest resolves by
+    created_at/make_latest, which can lag the published_at newest the freshness
+    detection uses. None on 404 so the caller falls back to the API."""
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/latest"
     request = urllib.request.Request(
         url,
@@ -2447,13 +2445,10 @@ def _fetch_download_host_json(url: str) -> Any:
 
 def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
     """Resolve the latest fork release from the download host with zero
-    api.github.com calls, reusing the API path's parsing and validation. Returns
-    None (caller falls back to the API) when the release lacks the JSON assets.
-
-    The latest tag comes from GitHub's /releases/latest redirect, so it is
-    authoritative rather than self-reported by the checksum asset; the asset's own
-    release_tag is then cross-checked against it (a stale/mis-tagged asset falls
-    back to the API)."""
+    api.github.com calls, reusing the API path's parsing and validation. The latest
+    tag is the authoritative /releases/latest redirect tag, and the checksum asset's
+    self-reported release_tag is cross-checked against it. Returns None (caller falls
+    back to the API) on a missing JSON asset or a tag mismatch."""
     release_tag = _download_host_latest_release_tag(repo)
     if not release_tag:
         return None
@@ -2490,18 +2485,16 @@ def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | Non
     try:
         bundle = parse_published_release_bundle(repo, synthetic_release)
     except urllib.error.HTTPError as exc:
-        # An in-progress release can publish the checksum asset before the
-        # manifest; treat a missing manifest like the sha256 404 above and fall
-        # back to the API rather than surfacing a noisy warning.
+        # In-progress release: the checksum asset can land before the manifest;
+        # treat a manifest 404 like the sha256 404 above and fall back to the API.
         if exc.code == 404:
             return None
         raise
     if bundle is None:
         return None
-    # The manifest may name a binary under its fork tag while the checksum JSON
-    # keys the same hash under an upstream-tag alias, so add tag-pinned URLs for
-    # any manifest artifact missing above (the API path gets these from the real
-    # asset list); apply_approved_hashes still verifies each download's sha256.
+    # A manifest artifact can be keyed in the checksum JSON under an upstream-tag
+    # alias, so add a tag-pinned URL for any manifest artifact missing above (the
+    # API path gets these from the real asset list); sha256 is still verified.
     for artifact in bundle.artifacts:
         bundle.assets.setdefault(
             artifact.asset_name,
@@ -2598,11 +2591,10 @@ def iter_resolved_published_releases(
         return
 
     # Fast path: resolve the fork's latest release from the download host (no
-    # api.github.com rate limit). It only surfaces the single latest release, so
-    # the caller disables it when it needs the multi-release walk-back (macOS
-    # skipping too-new prebuilts); a broken latest asset then drops to a source
-    # build rather than an older release. A rejection or network error here is
-    # non-fatal and falls through to the API enumeration below.
+    # api.github.com rate limit). It surfaces only the single latest release, so the
+    # caller disables it when the multi-release walk-back is needed (macOS skipping
+    # too-new prebuilts); a broken latest then drops to source build, not an older
+    # release. Any rejection/network error is non-fatal and falls through to the API.
     if (
         allow_download_host_fast_path
         and repo == DEFAULT_PUBLISHED_REPO
