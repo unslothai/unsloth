@@ -52,3 +52,16 @@ def test_dns_rebinding_host_is_remote_despite_loopback_peer():
     from main import _is_local_bootstrap_request
     for host in ("attacker.example", "192.168.1.10", None):
         assert _is_local_bootstrap_request(_request("127.0.0.1", host)) is False, host
+
+
+def test_unparseable_request_host_fails_safe():
+    """A Host that makes ``request.url.hostname`` raise must fall to remote."""
+    from main import _is_local_bootstrap_request
+
+    class _RaisingURL:
+        @property
+        def hostname(self):
+            raise ValueError("malformed host")
+
+    request = SimpleNamespace(client = SimpleNamespace(host = "127.0.0.1", port = 0), headers = {}, url = _RaisingURL())
+    assert _is_local_bootstrap_request(request) is False
