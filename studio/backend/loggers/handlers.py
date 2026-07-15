@@ -44,8 +44,7 @@ _QUIET_POLL_PATHS = {
     "/api/models/checkpoints",
     "/api/models/local",
     "/api/rag/knowledge-bases",
-    # Legacy download polls: no progress events (unlike /api/hub/*), so heartbeat
-    # them instead of suppressing, to keep a signal.
+    # Legacy download polls emit no progress events (unlike /api/hub/*), so heartbeat them.
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
@@ -91,12 +90,9 @@ _QUIET_SUCCESS_PATHS = {
 # The token-refresh route. Its first 2xx means the client has obtained a valid
 # session, so from then on chat 401s are real failures and must stay visible.
 _AUTH_REFRESH_PATH = "/api/auth/refresh"
-# The high-frequency chat list polls; their 2xx is covered by generation/tool-call/
-# stats events. Exact paths only, so detail and message reads (/threads/{id},
-# /threads/{id}/messages, /projects/{id}, ...) keep their access and latency logs.
-# The pre-auth 401 race also fires on these list polls before the session's first
-# /api/auth/refresh runs. Mutations and post-refresh auth failures still log
-# (suppression is GET-only; /api/auth/* is never dropped).
+# High-frequency chat list polls; their 2xx is covered by generation/tool-call/stats
+# events. Exact paths only, so detail/message reads (/threads/{id}, .../messages,
+# /projects/{id}) keep their logs. The pre-auth 401 race also fires on these polls.
 _CHAT_LIST_PATHS = {
     "/api/chat/threads",
     "/api/chat/projects",

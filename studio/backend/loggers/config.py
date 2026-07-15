@@ -81,8 +81,7 @@ class LogConfig:
             cache_logger_on_first_use = True,
         )
 
-        # transformers logs "`torch_dtype` is deprecated! Use `dtype` instead!" once
-        # at model-config load via logger.warning_once; drop that cosmetic record.
+        # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see filter).
         _dtype_filter = _DropTorchDtypeDeprecation()
         for _name in (
             "transformers.configuration_utils",

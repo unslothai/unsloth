@@ -11,10 +11,9 @@ import os
 import sys
 import types
 
-# Off on Linux so datasets' forked map() workers can't deadlock. On spawn
-# platforms (Windows/macOS) map() runs in-process with no fork, so keep the fast
-# tokenizer's Rust threads on: it is the only parallelism single-process tokenize
-# gets, and disabling it makes dataset prep run serially on one core.
+# Off on Linux so datasets' forked map() workers can't deadlock. On spawn platforms
+# (Windows/macOS) map() runs in-process, so keep the fast tokenizer's Rust threads on
+# (the only parallelism single-process tokenize gets; off makes prep run serially).
 os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
 
 # Make compiled cache modules importable by any subprocess. On spawn platforms
