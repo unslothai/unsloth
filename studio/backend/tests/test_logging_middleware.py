@@ -291,6 +291,33 @@ def test_chat_pre_auth_401_suppressed_other_errors_logged(logs):
     assert _paths_logged(logs) == ["/api/chat/projects"]
 
 
+def test_chat_401_logged_after_first_auth_refresh(logs):
+    # A chat 401 before any successful token refresh is the bootstrap race and is
+    # dropped, but once /api/auth/refresh has succeeded on this instance later chat
+    # 401s are real failures and stay visible.
+    responses: dict[tuple[str, str], int] = {}
+
+    async def app(scope, receive, send):
+        status = responses.get((scope["method"], scope["path"]), 200)
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    mw = LoggingMiddleware(app)
+
+    responses[("GET", "/api/chat/threads")] = 401
+    _run(mw(_http_scope("/api/chat/threads"), _noop_receive, _drop))
+    assert logs.events == []  # bootstrap race: suppressed
+
+    # A successful refresh (POST, always logged) closes the bootstrap window.
+    responses[("POST", "/api/auth/refresh")] = 200
+    _run(mw(_http_scope("/api/auth/refresh", method = "POST"), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/auth/refresh"]
+
+    # Now the same chat 401 is a real failure and logs.
+    _run(mw(_http_scope("/api/chat/threads"), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/auth/refresh", "/api/chat/threads"]
+
+
 def test_export_status_error_still_logs(logs):
     # 2xx suppressed, but an HTTP-level error on export status remains visible.
     _run(

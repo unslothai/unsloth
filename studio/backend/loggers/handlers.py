@@ -88,23 +88,33 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
 }
+# The token-refresh route. Its first 2xx means the client has obtained a valid
+# session, so from then on chat 401s are real failures and must stay visible.
+_AUTH_REFRESH_PATH = "/api/auth/refresh"
 # Chat list-GET prefixes; their 2xx is covered by generation/tool-call/stats events.
-# Also drop the transient pre-auth 401 before /api/auth/refresh runs. Mutations and
-# real auth failures still log (suppression is GET-only; /api/auth/* is never dropped).
+# Also drop the transient pre-auth 401 that fires before the session's first
+# /api/auth/refresh runs. Mutations and post-refresh auth failures still log
+# (suppression is GET-only; /api/auth/* is never dropped).
 _QUIET_SUCCESS_PREFIXES = (
     "/api/chat/threads",
     "/api/chat/projects",
 )
 
 
-def _is_quiet_success(method: str, path: str, status_code: int) -> bool:
-    """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat
-    list poll's transient pre-auth 401. Mutations and other errors always log."""
+def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
+    """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
+    poll's transient pre-auth 401 (only in the bootstrap window before the first
+    successful token refresh). Mutations, real (post-refresh) auth failures, and
+    all other errors always log."""
     if method != "GET":
         return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
-    return status_code == 401 and path.startswith(_QUIET_SUCCESS_PREFIXES)
+    return (
+        pre_auth
+        and status_code == 401
+        and path.startswith(_QUIET_SUCCESS_PREFIXES)
+    )
 
 
 class LoggingMiddleware:
@@ -114,6 +124,9 @@ class LoggingMiddleware:
         self.app = app
         # (method, path, query, status_code) -> monotonic ts of the last EMITTED log.
         self._last_log: dict[tuple[str, str, bytes, int], float] = {}
+        # Flips True after the first successful /api/auth/refresh; before that, chat
+        # list-poll 401s are the transient bootstrap race and are suppressed.
+        self._auth_refreshed = False
 
     def _is_redundant_repeat(
         self, method: str, path: str, query: bytes, status_code: int, now: float
@@ -171,9 +184,13 @@ class LoggingMiddleware:
             raise
         else:
             end_time = time.perf_counter()
+            if 200 <= status_code < 300 and path == _AUTH_REFRESH_PATH:
+                self._auth_refreshed = True
             if (
                 not excluded
-                and not _is_quiet_success(scope["method"], path, status_code)
+                and not _is_quiet_success(
+                    scope["method"], path, status_code, not self._auth_refreshed
+                )
                 and not self._is_redundant_repeat(
                     scope["method"], path, scope.get("query_string", b""), status_code, end_time
                 )
