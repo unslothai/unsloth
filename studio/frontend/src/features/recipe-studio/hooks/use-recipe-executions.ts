@@ -38,6 +38,7 @@ import {
 } from "../executions/execution-helpers";
 import {
   findResumableExecution,
+  hydrateCompletedFullExecutionDataset,
   loadSortedRecipeExecutionPage,
 } from "../executions/hydration";
 import {
@@ -545,6 +546,7 @@ export function useRecipeExecutions({
     });
   const historyGenerationRef = useRef(0);
   const olderHistoryRequestRef = useRef<object | null>(null);
+  const datasetHydrationRequestsRef = useRef(new Set<string>());
   const [validateResult, setValidateResult] = useState<{
     valid: boolean;
     errors: string[];
@@ -629,6 +631,7 @@ export function useRecipeExecutions({
       setExecutions,
       setPreviewRows,
       setRunErrors,
+      upsertExecution,
       upsertAndPersist,
     }),
     [
@@ -640,6 +643,7 @@ export function useRecipeExecutions({
       setExecutions,
       setPreviewRows,
       setRunErrors,
+      upsertExecution,
       upsertAndPersist,
     ],
   );
@@ -665,6 +669,8 @@ export function useRecipeExecutions({
     };
     historyGenerationRef.current = owner.generation;
     olderHistoryRequestRef.current = null;
+    const datasetHydrationRequests = datasetHydrationRequestsRef.current;
+    datasetHydrationRequests.clear();
 
     const isActive = (): boolean =>
       !cancelled &&
@@ -700,6 +706,36 @@ export function useRecipeExecutions({
           cursor: page.nextCursor,
           loadingOlder: false,
         });
+        const initiallySelected = page.executions[0];
+        if (
+          initiallySelected?.kind === "full" &&
+          initiallySelected.status === "completed" &&
+          initiallySelected.jobId
+        ) {
+          const requestKey = `${owner.generation}:${initiallySelected.id}`;
+          datasetHydrationRequests.add(requestKey);
+          void hydrateCompletedFullExecutionDataset(initiallySelected)
+            .then((hydrated) => {
+              if (
+                isActive() &&
+                useRecipeExecutionsStore.getState().selectedExecutionId ===
+                  initiallySelected.id
+              ) {
+                // Dataset pages are memory-only and must not create a metadata
+                // CAS write simply because persisted history was opened.
+                historyLifecycle.upsertExecution(hydrated);
+              }
+            })
+            .catch((error) => {
+              if (isActive()) {
+                // biome-ignore lint/suspicious/noConsole: hydration failure is a non-blocking diagnostic
+                console.error("Load execution dataset page failed:", error);
+              }
+            })
+            .finally(() => {
+              datasetHydrationRequests.delete(requestKey);
+            });
+        }
         const resumable = findResumableExecution(page.executions);
         if (!resumable?.jobId) {
           return;
@@ -737,6 +773,7 @@ export function useRecipeExecutions({
         historyGenerationRef.current += 1;
       }
       olderHistoryRequestRef.current = null;
+      datasetHydrationRequests.clear();
     };
   }, [historyLifecycle]);
 
@@ -1197,8 +1234,57 @@ export function useRecipeExecutions({
   const setSelectedExecutionId = useCallback(
     (id: string): void => {
       selectExecution(id);
+      const owner = activeExecutionHistory?.owner;
+      const execution = owner
+        ? executions.find((entry) => entry.id === id)
+        : undefined;
+      const requestKey = owner ? `${owner.generation}:${id}` : id;
+      if (
+        !owner ||
+        !execution ||
+        execution.kind !== "full" ||
+        execution.status !== "completed" ||
+        !execution.jobId ||
+        execution.dataset.length > 0 ||
+        datasetHydrationRequestsRef.current.has(requestKey)
+      ) {
+        return;
+      }
+
+      datasetHydrationRequestsRef.current.add(requestKey);
+      void hydrateCompletedFullExecutionDataset(execution)
+        .then((hydrated) => {
+          const stillActive =
+            historyGenerationRef.current === owner.generation &&
+            getAuthSubjectKey() === owner.subjectKey &&
+            useRecipeExecutionsStore.getState().selectedExecutionId === id;
+          if (stillActive) {
+            // Dataset pages are intentionally memory-only; do not create an
+            // execution metadata CAS write just because history was viewed.
+            upsertExecution(hydrated);
+          }
+        })
+        .catch((error) => {
+          if (
+            historyGenerationRef.current === owner.generation &&
+            getAuthSubjectKey() === owner.subjectKey
+          ) {
+            toastError(
+              "Dataset page failed",
+              toErrorMessage(error, "Could not load dataset page."),
+            );
+          }
+        })
+        .finally(() => {
+          datasetHydrationRequestsRef.current.delete(requestKey);
+        });
     },
-    [selectExecution],
+    [
+      activeExecutionHistory,
+      executions,
+      selectExecution,
+      upsertExecution,
+    ],
   );
 
   return {

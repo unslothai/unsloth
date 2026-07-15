@@ -44,6 +44,68 @@ def test_explicitly_safe_secret_looking_key_still_round_trips():
     assert validate_recipe_payload(payload, legacy = True) == (payload, [])
 
 
+def test_structured_output_schema_preserves_secret_looking_property_names():
+    payload = {
+        "recipe": {
+            "columns": [
+                {
+                    "column_type": "llm-structured",
+                    "output_format": {
+                        "type": "object",
+                        "required": ["api_key", "password"],
+                        "properties": {
+                            "api_key": {"type": "string"},
+                            "password": {
+                                "type": "object",
+                                "properties": {
+                                    "secretKey": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+    }
+
+    assert validate_recipe_payload(payload) == payload
+    assert validate_recipe_payload(payload, legacy = True) == (payload, [])
+
+
+def test_schema_exception_does_not_allow_actual_or_malformed_credentials():
+    actual_credential = {
+        "recipe": {
+            "columns": [
+                {
+                    "column_type": "llm-structured",
+                    "api_key": "credential-value",
+                    "output_format": {"type": "object", "properties": {}},
+                }
+            ]
+        }
+    }
+    malformed_schema_credential = {
+        "recipe": {
+            "columns": [
+                {
+                    "column_type": "llm-structured",
+                    "output_format": {
+                        "type": "object",
+                        "properties": {"password": "credential-value"},
+                    },
+                }
+            ]
+        }
+    }
+
+    for payload in (actual_credential, malformed_schema_credential):
+        with pytest.raises(UserAssetValidationError, match = "secret fields"):
+            validate_recipe_payload(payload)
+        clean, paths = validate_recipe_payload(payload, legacy = True)
+        assert "credential-value" not in str(clean)
+        assert len(paths) == 1
+
+
 @pytest.mark.parametrize(
     "credential_key",
     [

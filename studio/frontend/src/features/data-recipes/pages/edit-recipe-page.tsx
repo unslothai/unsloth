@@ -184,13 +184,12 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         learningRecipeTitle: loadState.record.learningRecipeTitle,
       });
       primeRecipeCache(record);
-      setLoadState({
-        status: "ready",
-        subject,
-        recipeId,
-        reloadVersion,
-        record,
-      });
+      // The save response acknowledges the snapshot captured when the request
+      // started.  Do not feed it back through RecipeStudioPage's initial props:
+      // useRecipePersistence treats changes to those props as a fresh load and
+      // would reset edits made while this request was in flight.  saveRecipe
+      // has already updated the subject-scoped cache; the hook consumes the
+      // returned revision/timestamp directly below.
       return {
         id: record.id,
         updatedAt: record.updatedAt,

@@ -86,6 +86,19 @@ function isSecretField(path: string[], key: string, value: unknown): boolean {
   if (SAFE_SECRET_LOOKING_KEYS.has(normalizedKey)) {
     return false;
   }
+  // A structured-output JSON Schema may intentionally define fields named
+  // `api_key`, `password`, and similar.  Those keys describe output data; they
+  // are not credential values.  Limit the exception to valid JSON Schema
+  // definitions beneath output_format.properties.  A scalar in the same
+  // position is not a schema definition and remains subject to secret removal.
+  const isStructuredOutputPropertyDefinition =
+    path.at(-1) === "properties" &&
+    path.includes("output_format") &&
+    (typeof value === "boolean" ||
+      (Boolean(value) && typeof value === "object" && !Array.isArray(value)));
+  if (isStructuredOutputPropertyDefinition) {
+    return false;
+  }
   if (
     normalizedKey === "token" &&
     path.slice(-2).join(".") === "seed_config.source"

@@ -19,6 +19,7 @@ import type {
 } from "../execution-types";
 
 const revisions = new Map<string, number>();
+const persistedExecutions = new Map<string, PersistedRecipeExecution>();
 type WriteState = {
   subject: string;
   latest: RecipeExecutionRecord | null;
@@ -45,6 +46,7 @@ function syncSubject(): string {
       }
     }
     revisions.clear();
+    persistedExecutions.clear();
     writeStates.clear();
     activeSubjectKey = subject;
   }
@@ -201,10 +203,15 @@ function incomingWins(
 ): boolean {
   const incomingEvent = incoming.lastEventId ?? -1;
   const currentEvent = current.lastEventId ?? -1;
-  return (
-    incomingEvent > currentEvent ||
-    (TERMINAL.has(incoming.status) && !TERMINAL.has(current.status))
-  );
+  const incomingTerminal = TERMINAL.has(incoming.status);
+  const currentTerminal = TERMINAL.has(current.status);
+  if (currentTerminal) {
+    // Once the server has reached a terminal state, a delayed non-terminal
+    // snapshot can never revive it.  A later terminal event may still carry a
+    // genuine progression (for example, a newer authoritative completion).
+    return incomingTerminal && incomingEvent > currentEvent;
+  }
+  return incomingTerminal || incomingEvent > currentEvent;
 }
 
 async function persistOnce(
@@ -213,6 +220,20 @@ async function persistOnce(
   subject: string,
 ): Promise<void> {
   const metadata = serializeExecutionMetadata(record);
+  const knownCurrent = persistedExecutions.get(key);
+  if (knownCurrent && TERMINAL.has(knownCurrent.status)) {
+    const incomingTerminal = TERMINAL.has(metadata.status);
+    const incomingEvent = metadata.lastEventId ?? -1;
+    const currentEvent = knownCurrent.lastEventId ?? -1;
+    if (
+      !incomingTerminal ||
+      incomingEvent < currentEvent ||
+      (metadata.status !== knownCurrent.status &&
+        incomingEvent === currentEvent)
+    ) {
+      return;
+    }
+  }
   let expectedRevision = revisions.get(key) ?? record.revision;
   let lastConflict: UserAssetApiError | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -231,6 +252,7 @@ async function persistOnce(
       );
       assertSubjectUnchanged(subject);
       revisions.set(key, saved.revision);
+      persistedExecutions.set(key, saved);
       return;
     } catch (error) {
       assertSubjectUnchanged(subject);
@@ -241,6 +263,7 @@ async function persistOnce(
         | undefined;
       if (!current) throw error;
       revisions.set(key, current.revision);
+      persistedExecutions.set(key, current);
       if (!incomingWins(metadata, current)) return;
       expectedRevision = current.revision;
       lastConflict = error;
@@ -259,13 +282,20 @@ export async function listRecipeExecutionPage(
     { cursor: options.cursor, limit: options.limit ?? 100 },
   );
   assertSubjectUnchanged(subject);
-  for (const execution of page.executions)
+  for (const execution of page.executions) {
     revisions.set(executionKey(subject, execution.id), execution.revision);
-  if (page.resumable)
+    persistedExecutions.set(executionKey(subject, execution.id), execution);
+  }
+  if (page.resumable) {
     revisions.set(
       executionKey(subject, page.resumable.id),
       page.resumable.revision,
     );
+    persistedExecutions.set(
+      executionKey(subject, page.resumable.id),
+      page.resumable,
+    );
+  }
   return page;
 }
 

@@ -150,11 +150,32 @@ def _is_seed_source(path: JsonPath) -> bool:
     return len(string_parts) >= 2 and string_parts[-2:] == ["seed_config", "source"]
 
 
+def _is_structured_output_schema_property(path: JsonPath, value: Any) -> bool:
+    """Return whether ``value`` is a JSON Schema property definition.
+
+    Structured-output schemas legitimately use credential-looking field names
+    (for example, ``password``).  Only definitions nested below
+    ``output_format.properties`` receive this exception.  Requiring a mapping
+    or boolean schema keeps malformed scalar credential values covered by the
+    normal secret policy.
+    """
+
+    string_parts = [_normalize_key(part) for part in path if isinstance(part, str)]
+    return bool(
+        string_parts
+        and string_parts[-1] == "properties"
+        and "output_format" in string_parts
+        and (isinstance(value, Mapping) or isinstance(value, bool))
+    )
+
+
 def _is_secret_entry(path: JsonPath, key: str, value: Any) -> bool:
     if not _has_value(value):
         return False
     normalized = _normalize_key(key)
     if normalized in _SAFE_SECRET_LOOKING_KEYS:
+        return False
+    if _is_structured_output_schema_property(path, value):
         return False
     if normalized == "token" and _is_seed_source(path):
         return True
