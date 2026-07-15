@@ -340,11 +340,6 @@ export const en = {
           label: "Font smoothing",
           description: "Use smoothed font anti-aliasing.",
         },
-        edgeFades: {
-          label: "Edge fades",
-          description:
-            "Fade content at panel edges. Off shows a thin divider line instead.",
-        },
         contrast: {
           label: "Contrast",
           description: "Strength of borders and secondary text.",
