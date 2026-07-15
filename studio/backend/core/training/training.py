@@ -869,7 +869,9 @@ class TrainingBackend:
                     logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
             if defer_auto_selection:
-                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    None, **gpu_selection_kwargs
+                )
                 config["resolved_gpu_ids"] = resolved_gpu_ids
                 config["gpu_selection"] = gpu_selection
 

@@ -515,10 +515,7 @@ def test_before_spawn_runs_inside_active_window(monkeypatch):
     def before_spawn():
         active_during_free["value"] = b.is_training_active()
 
-    assert (
-        b.start_training("job_active_window", model_name = "m", before_spawn = before_spawn)
-        is True
-    )
+    assert b.start_training("job_active_window", model_name = "m", before_spawn = before_spawn) is True
     if b._pump_thread is not None:
         b._pump_thread.join(timeout = 2.0)
 
