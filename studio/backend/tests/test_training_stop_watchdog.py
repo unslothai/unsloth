@@ -691,10 +691,10 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
     assert b._metric_buffer == [], "the captured batch must be drained"
 
 
-def test_escalation_does_not_claim_finalize_before_row_exists(monkeypatch):
-    # If the DB row is not created yet (an early create failed and the pump is retrying),
-    # the escalation must not claim _run_finalized or call _finish_stopped_run, so the
-    # pump's later create-then-finalize still records the run.
+def test_escalation_defers_when_row_cannot_be_created_here(monkeypatch):
+    # If the row does not exist and cannot be created here (no db_config, or the pump is
+    # mid-create), the escalation must not claim _run_finalized or call _finish_stopped_run,
+    # so the pump's create-then-finalize records the run. Parent state still clears.
     b = TrainingBackend()
     called: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a: called.append(a))
@@ -702,47 +702,95 @@ def test_escalation_does_not_claim_finalize_before_row_exists(monkeypatch):
     b._proc = _FakeProc(alive = False)
     b.current_job_id = "job_q"
     b._db_run_created = False  # row not created yet
+    b._db_config = None  # ... and cannot be created here
     b._run_finalized = False
     b._progress.is_training = True
 
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_q")
 
-    assert called == [], "must not finalize before the row exists"
+    assert called == [], "must not finalize when the row can't be established here"
     assert b._run_finalized is False, "must not claim the finalize the pump still owes"
     assert b._progress.is_training is False, "parent state must still clear so the UI unsticks"
     assert b._proc is None
 
 
-def test_finish_stopped_run_requeues_on_db_error(monkeypatch):
-    # A transient DB error must unclaim the finalize and requeue the drained metrics
-    # (when the run is still current) so a later retry can record it stopped.
+def test_escalation_creates_row_then_finalizes_when_start_create_failed(monkeypatch):
+    # A wedged worker's pump can never finalize and would bail once _proc is dropped, so if
+    # the row was never created (start-time create failed) the escalation creates it and
+    # finalizes by id itself, recording the terminal state before dropping the handle.
+    recs = _install_fake_db(monkeypatch)
+    b = TrainingBackend()
+    b.current_job_id = "job_s"
+    b._db_config = {"model_name": "m"}  # so _ensure_db_run_created can create the row
+    b._db_run_created = False  # start-time create failed
+    b._proc = _FakeProc(alive = True)  # wedged: still reports alive
+    b._should_stop = True
+    b._progress.is_training = True
+
+    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_s")
+
+    assert [c["id"] for c in recs["created"]] == ["job_s"], "must create the missing row"
+    assert [f["id"] for f in recs["finished"]] == ["job_s"], "must finish the created row by id"
+    assert b._proc is None, "handle dropped only after the terminal state is recorded"
+    assert b._db_run_created is True
+
+
+def test_escalation_does_not_drop_a_new_runs_handle(monkeypatch):
+    # If a run replaces the worker while the finalize DB write is in flight, the final _proc
+    # drop must leave the new run's handle intact (re-guarded on target_proc).
+    b = TrainingBackend()
+    b.current_job_id = "job_old"
+    b._db_run_created = True
+    old_proc = _FakeProc(alive = False)
+    new_proc = _FakeProc(alive = True)
+    b._proc = old_proc
+
+    def hijack(*a):
+        b._proc = new_proc  # a new run takes over during the finalize
+
+    monkeypatch.setattr(b, "_finish_stopped_run", hijack)
+
+    b._finalize_stopped_after_escalation(target_proc = old_proc, watched_job_id = "job_old")
+
+    assert b._proc is new_proc, "must not drop the handle a new run installed during finalize"
+
+
+def _make_finish_raise(monkeypatch, calls):
+    fn = sys.modules["storage.studio_db"]
+
+    def _boom(**kw):
+        calls.append(kw)
+        raise RuntimeError("database is locked")
+
+    fn.finish_run = _boom
+
+
+def test_finish_stopped_run_retries_then_unclaims_on_db_error(monkeypatch):
+    # The watchdog is the sole finalizer once _proc is dropped, so a transient DB error is
+    # retried a few times; on final failure the finalize is unclaimed (run still current).
+    monkeypatch.setitem(_G, "_DB_FINALIZE_RETRY_S", 0.0)
     _install_fake_db(monkeypatch)
-    sys.modules["storage.studio_db"].finish_run = lambda **kw: (_ for _ in ()).throw(
-        RuntimeError("database is locked")
-    )
+    tries: list = []
+    _make_finish_raise(monkeypatch, tries)
     b = TrainingBackend()
     b.current_job_id = "job_r"
     b._run_finalized = True  # the caller (escalation) already claimed
-    b._metric_buffer[:] = []  # the caller already drained the batch
 
     b._finish_stopped_run("job_r", None, [{"step": 1}], 1, None, None, [])
 
-    assert b._run_finalized is False, "a DB error must unclaim so the pump can retry"
-    assert b._metric_buffer == [{"step": 1}], "the drained batch must be requeued for retry"
+    assert len(tries) == 3, "a transient DB error must be retried before giving up"
+    assert b._run_finalized is False, "a persistent DB error must unclaim the finalize"
 
 
 def test_finish_stopped_run_error_leaves_new_run_untouched(monkeypatch):
-    # If the watched run was superseded, a DB error must not unclaim/requeue onto the new run.
+    # If the watched run was superseded, a DB error must not unclaim the new run's finalize.
+    monkeypatch.setitem(_G, "_DB_FINALIZE_RETRY_S", 0.0)
     _install_fake_db(monkeypatch)
-    sys.modules["storage.studio_db"].finish_run = lambda **kw: (_ for _ in ()).throw(
-        RuntimeError("database is locked")
-    )
+    _make_finish_raise(monkeypatch, [])
     b = TrainingBackend()
     b.current_job_id = "job_new"  # a new run is live
     b._run_finalized = True  # the new run's flag
-    b._metric_buffer[:] = [{"step": 99}]  # the new run's buffer
 
     b._finish_stopped_run("job_old", None, [{"step": 1}], 1, None, None, [])
 
     assert b._run_finalized is True, "must not unclaim the new run's finalize"
-    assert b._metric_buffer == [{"step": 99}], "must not corrupt the new run's buffer"
