@@ -139,6 +139,130 @@ def test_tool_exception_propagates_after_stream():
         raise AssertionError("expected RuntimeError")
 
 
+def test_output_before_worker_raises_is_preserved():
+    # A tool that streams then raises: the already-streamed output survives and
+    # the exception still propagates.
+    def tool(callback):
+        callback("partial before crash\n")
+        time.sleep(0.02)
+        raise RuntimeError("late boom")
+
+    gen = stream_tool_execution(tool, tool_name = "python", poll_interval_s = 0.01)
+    events = []
+    with pytest.raises(RuntimeError, match = "late boom"):
+        while True:
+            events.append(next(gen))
+    streamed = "".join(e["text"] for e in events if e["type"] == "tool_output")
+    assert "partial before crash" in streamed
+
+
+def test_generator_close_cancels_observing_tool():
+    # Closing the stream early (an SSE client disconnect calls gen.close()) sets
+    # the shared cancel_event so a cancel-observing tool returns at once.
+    cancel_event = threading.Event()
+    started = threading.Event()
+    returned = threading.Event()
+
+    def tool(_cb):
+        started.set()
+        cancel_event.wait(timeout = 5)  # cancel-observing: unblocks on cancel
+        returned.set()
+        return "cancelled cleanly"
+
+    gen = stream_tool_execution(
+        tool,
+        tool_name = "web_search",
+        cancel_event = cancel_event,
+        heartbeat_interval_s = 0.02,
+        poll_interval_s = 0.01,
+    )
+    next(gen)  # prime the worker; returns a heartbeat while the tool blocks
+    assert started.wait(timeout = 2)
+    gen.close()  # GeneratorExit -> sets cancel_event, then bounded join
+    assert cancel_event.is_set()
+    assert returned.wait(timeout = 2)  # the tool actually observed cancellation
+
+
+def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
+    # A tool that ignores cancel_event must not stall teardown: gen.close() waits
+    # at most the bounded join, not the tool's full runtime.
+    monkeypatch.setattr("core.inference.tool_stream_exec._WORKER_JOIN_TIMEOUT_S", 0.2)
+    release = threading.Event()
+
+    def tool(_cb):
+        # Ignores cancel_event entirely; the long wait stands in for a
+        # web_search / MCP call that does not poll cancellation mid-flight.
+        release.wait(timeout = 30)
+        return "slow"
+
+    gen = stream_tool_execution(
+        tool,
+        tool_name = "web_search",
+        cancel_event = threading.Event(),
+        heartbeat_interval_s = 0.02,
+        poll_interval_s = 0.01,
+    )
+    next(gen)
+    started = time.monotonic()
+    gen.close()
+    elapsed = time.monotonic() - started
+    release.set()  # let the daemon worker finish so no sleeper lingers
+    assert elapsed < 2.0  # bounded by _WORKER_JOIN_TIMEOUT_S, not the 30s tool
+
+
+def test_cancel_event_not_set_on_clean_finish():
+    # cancel_event is shared across a turn's tool calls; a clean finish must
+    # leave it unset so the next tool in the same turn is not aborted.
+    cancel_event = threading.Event()
+
+    def tool(_cb):
+        return "ok"
+
+    events, result = _run_stream(
+        tool, tool_name = "python", cancel_event = cancel_event,
+    )
+    assert result == "ok"
+    assert not cancel_event.is_set()
+
+
+def test_no_worker_thread_leak_under_repeated_close(monkeypatch):
+    # Repeatedly starting then closing the wrapper must not accumulate live
+    # worker threads: each cancel-observing worker exits once close() signals it.
+    monkeypatch.setattr("core.inference.tool_stream_exec._WORKER_JOIN_TIMEOUT_S", 0.2)
+
+    def _live_tool_workers():
+        return [t for t in threading.enumerate() if t.name.startswith("tool-exec-")]
+
+    for _ in range(50):  # let workers from earlier tests drain
+        if not _live_tool_workers():
+            break
+        time.sleep(0.02)
+    baseline = len(_live_tool_workers())
+
+    for _ in range(60):
+        cancel_event = threading.Event()
+
+        def tool(_cb, _ev = cancel_event):
+            _ev.wait(timeout = 5)
+            return "done"
+
+        gen = stream_tool_execution(
+            tool,
+            tool_name = "soak",
+            cancel_event = cancel_event,
+            heartbeat_interval_s = 0.02,
+            poll_interval_s = 0.01,
+        )
+        next(gen)
+        gen.close()  # sets cancel_event -> tool returns -> worker exits
+
+    for _ in range(100):
+        if len(_live_tool_workers()) <= baseline:
+            break
+        time.sleep(0.02)
+    assert len(_live_tool_workers()) <= baseline
+
+
 def test_streamed_output_is_capped_but_result_is_not():
     big = "x" * (TOOL_OUTPUT_STREAM_MAX_CHARS + 5000)
 

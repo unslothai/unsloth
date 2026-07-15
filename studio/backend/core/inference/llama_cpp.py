@@ -10163,6 +10163,7 @@ class LlamaCppBackend:
                             _invoke_tool,
                             tool_name = decision.tool_name,
                             tool_call_id = decision.tool_call_id,
+                            cancel_event = cancel_event,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1

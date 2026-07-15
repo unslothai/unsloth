@@ -1192,6 +1192,7 @@ def run_safetensors_tool_loop(
                         _invoke_tool,
                         tool_name = decision.tool_name,
                         tool_call_id = decision.tool_call_id,
+                        cancel_event = cancel_event,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)

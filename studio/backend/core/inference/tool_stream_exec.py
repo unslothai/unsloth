@@ -55,6 +55,13 @@ TOOL_HEARTBEAT_INTERVAL_S = 10.0
 # How often the wrapper wakes to poll for output / completion / cancellation.
 _POLL_INTERVAL_S = 0.25
 
+# Upper bound on how long teardown waits for the worker once the stream is
+# closed (client disconnect) or errors. A cancel-observing tool returns well
+# within this after ``cancel_event`` is set; a cancel-ignoring one is a daemon
+# and is left to finish on its own rather than blocking request teardown for the
+# tool's full timeout.
+_WORKER_JOIN_TIMEOUT_S = 5.0
+
 # Cap on total streamed live-output characters per tool call, bounding the
 # transient UI stream so a tight print loop cannot flood the SSE channel. Much
 # higher than the model-visible result cap (tools._MAX_OUTPUT_CHARS) since the
@@ -105,6 +112,7 @@ def stream_tool_execution(
     *,
     tool_name: str,
     tool_call_id: str = "",
+    cancel_event: Any = None,
     heartbeat_interval_s: float = TOOL_HEARTBEAT_INTERVAL_S,
     poll_interval_s: float = _POLL_INTERVAL_S,
 ) -> Generator[dict, None, str]:
@@ -113,6 +121,14 @@ def stream_tool_execution(
     ``invoke`` receives a thread-safe ``callable(str)`` it may call with
     incremental output chunks (or ignore entirely). Exceptions raised by the
     tool propagate to the caller unchanged after the worker thread finishes.
+
+    ``cancel_event`` is the request-level cancellation signal already handed to
+    the tool. If the consumer closes this generator early (an SSE client
+    disconnect calls ``gen.close()``, raising ``GeneratorExit`` at a ``yield``),
+    the wrapper sets it so a cancel-observing tool stops, then joins the worker
+    with a bounded timeout. It is set ONLY on that abnormal-exit path, never on a
+    clean finish, because the event is shared across the tool calls in a turn and
+    setting it early would abort the next tool.
     """
     output_queue: queue.Queue[Any] = queue.Queue()
     done_sentinel = object()
@@ -188,55 +204,76 @@ def stream_tool_execution(
                 finished = True
                 return
 
-    while not finished:
-        try:
-            item = output_queue.get(timeout = poll_interval_s)
-        except queue.Empty:
-            idle_polls += 1
-            if idle_polls >= idle_polls_per_heartbeat:
-                idle_polls = 0
-                yield {"type": "heartbeat"}
-            continue
+    try:
+        while not finished:
+            try:
+                item = output_queue.get(timeout = poll_interval_s)
+            except queue.Empty:
+                idle_polls += 1
+                if idle_polls >= idle_polls_per_heartbeat:
+                    idle_polls = 0
+                    yield {"type": "heartbeat"}
+                continue
 
-        if item is done_sentinel:
-            break
-
-        if stream_capped:
-            # Past the cap, drop this chunk and every queued sibling without
-            # concatenating (see _drain_and_drop). Pace the drain with one
-            # time.sleep per poll (not time.monotonic -- tests patch the clock)
-            # counted as an idle poll, so heartbeats keep flowing while a chatty
-            # tool keeps the queue non-empty.
-            _drain_and_drop()
-            if finished:
+            if item is done_sentinel:
                 break
-            time.sleep(poll_interval_s)
-            idle_polls += 1
-            if idle_polls >= idle_polls_per_heartbeat:
-                idle_polls = 0
-                yield {"type": "heartbeat"}
-            continue
 
-        # Bound the join to the remaining budget so the crossing batch can't
-        # allocate far past the cap (surplus is truncated below anyway); the
-        # prefix is long enough that truncation stays byte-identical.
-        budget = TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars
-        chunk = item + _drain_pending(max_chars = budget - len(item))
-        idle_polls = 0
-        if streamed_chars + len(chunk) > TOOL_OUTPUT_STREAM_MAX_CHARS:
-            chunk = chunk[: max(0, TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars)]
-            chunk += _STREAM_CAPPED_NOTICE
-            stream_capped = True
-        streamed_chars += len(chunk)
-        if chunk:
-            yield {
-                "type": "tool_output",
-                "tool_name": tool_name,
-                "tool_call_id": tool_call_id,
-                "text": chunk,
-            }
+            if stream_capped:
+                # Past the cap, drop this chunk and every queued sibling without
+                # concatenating (see _drain_and_drop). Pace the drain with one
+                # time.sleep per poll (not time.monotonic -- tests patch the clock)
+                # counted as an idle poll, so heartbeats keep flowing while a chatty
+                # tool keeps the queue non-empty.
+                _drain_and_drop()
+                if finished:
+                    break
+                time.sleep(poll_interval_s)
+                idle_polls += 1
+                if idle_polls >= idle_polls_per_heartbeat:
+                    idle_polls = 0
+                    yield {"type": "heartbeat"}
+                continue
 
-    worker.join()
+            # Bound the join to the remaining budget so the crossing batch can't
+            # allocate far past the cap (surplus is truncated below anyway); the
+            # prefix is long enough that truncation stays byte-identical.
+            budget = TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars
+            chunk = item + _drain_pending(max_chars = budget - len(item))
+            idle_polls = 0
+            if streamed_chars + len(chunk) > TOOL_OUTPUT_STREAM_MAX_CHARS:
+                chunk = chunk[: max(0, TOOL_OUTPUT_STREAM_MAX_CHARS - streamed_chars)]
+                chunk += _STREAM_CAPPED_NOTICE
+                stream_capped = True
+            streamed_chars += len(chunk)
+            if chunk:
+                yield {
+                    "type": "tool_output",
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "text": chunk,
+                }
+    except BaseException:
+        # The only way the loop raises is the consumer closing us early: an SSE
+        # client disconnect calls gen.close() (GeneratorExit at the current
+        # yield), or the route throws in. Signal cancellation so a cancel-observing
+        # tool returns, then fall through to the bounded join. Re-raise so the
+        # caller still sees the real cause (GeneratorExit must not be swallowed).
+        # This runs ONLY on abnormal exit, so the shared cancel_event is never
+        # set out from under the next tool in a clean multi-tool turn.
+        if cancel_event is not None:
+            try:
+                cancel_event.set()
+            except Exception:
+                pass
+        raise
+    finally:
+        # On a clean finish the worker already recorded its result and queued the
+        # sentinel we consumed, so this returns at once. On disconnect/error it
+        # waits at most _WORKER_JOIN_TIMEOUT_S instead of the tool's full timeout;
+        # the worker is a daemon and cannot outlive the process, so a
+        # cancel-ignoring tool can no longer stall request teardown.
+        worker.join(timeout = _WORKER_JOIN_TIMEOUT_S)
+
     error = outcome.get("error")
     if error is not None:
         raise error
