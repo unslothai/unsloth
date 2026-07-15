@@ -26,16 +26,21 @@ def _load_route_module():
     return module
 
 
-def _load_failure(message: str) -> HTTPException:
+def _load_failure(
+    message: str,
+    exception_type: type[Exception] = RuntimeError,
+    native: bool = False,
+) -> HTTPException:
     inference_route = _load_route_module()
     model_path = "unsloth/Qwen3.6-35B-A3B-NVFP4-Fast"
+    model_label = "Qwen3.6-35B-A3B-NVFP4-Fast" if native else model_path
     request = LoadRequest(model_path = model_path)
     backend = MagicMock(active_model_name = None)
     with (
         patch.object(
             inference_route,
             "_resolve_model_identifier_for_request",
-            return_value = (model_path, model_path, False),
+            return_value = (model_path, model_label, native),
         ),
         patch.object(
             inference_route,
@@ -45,7 +50,9 @@ def _load_failure(message: str) -> HTTPException:
         patch.object(inference_route, "get_inference_backend", return_value = backend),
         patch.object(inference_route, "get_llama_cpp_backend", return_value = MagicMock()),
         patch.object(
-            inference_route.ModelConfig, "from_identifier", side_effect = RuntimeError(message)
+            inference_route.ModelConfig,
+            "from_identifier",
+            side_effect = exception_type(message),
         ),
         pytest.raises(HTTPException) as exc,
     ):
@@ -53,11 +60,15 @@ def _load_failure(message: str) -> HTTPException:
     return exc.value
 
 
-def test_nvfp4_mlx_metadata_error_is_replaced_with_short_message():
+@pytest.mark.parametrize("exception_type", [Exception, RuntimeError, ValueError])
+@pytest.mark.parametrize("native", [False, True])
+def test_nvfp4_mlx_metadata_error_is_replaced_with_short_message(exception_type, native):
     error = _load_failure(
         "Unsloth: 'unsloth/Qwen3.6-35B-A3B-NVFP4-Fast' has per-module MLX "
         "quantization metadata {'config_groups': {'group_0': {'format': "
-        "'float-quantized'}, 'group_1': {'format': 'nvfp4-pack-quantized'}}}"
+        "'float-quantized'}, 'group_1': {'format': 'nvfp4-pack-quantized'}}}",
+        exception_type = exception_type,
+        native = native,
     )
 
     assert error.status_code == 500
@@ -72,3 +83,11 @@ def test_unrelated_load_error_keeps_existing_message():
 
     assert error.status_code == 500
     assert error.detail == "Failed to load model: Network connection timed out"
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_unrelated_value_error_keeps_existing_message(native):
+    error = _load_failure("Invalid gpu_ids [99]", exception_type = ValueError, native = native)
+
+    assert error.status_code == 400
+    assert error.detail == "Invalid gpu_ids [99]"

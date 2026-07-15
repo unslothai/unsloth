@@ -4546,8 +4546,17 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
     except HTTPException:
         raise
     except ValueError as e:
+        redacted_msg = redact_native_paths(str(e))
+        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+            logger.warning(
+                "NVFP4 inference is not supported yet while loading '%s'",
+                model_log_label,
+            )
+            raise HTTPException(
+                status_code = 500,
+                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+            )
         if native_grant_backed:
-            redacted_msg = redact_native_paths(str(e))
             logger.warning(
                 "Rejected inference selection for native model %s: %s",
                 model_log_label,
@@ -4556,7 +4565,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
         # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
-        raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
+        raise HTTPException(status_code = 400, detail = redacted_msg)
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic 500.
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
