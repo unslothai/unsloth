@@ -170,14 +170,15 @@ export function buildSeedDropProcessor(
   let cols: string[] = [];
 
   if (seedSourceType === "unstructured") {
-    if (selectedDropColumns.length > 0) {
-      cols = selectedDropColumns;
-    } else {
-      if (!config.drop) {
-        return null;
-      }
-      cols = loadedCols.length > 0 ? loadedCols : ["chunk_text", "source_file"];
+    if (!config.drop) {
+      return null;
     }
+    cols =
+      selectedDropColumns.length > 0
+        ? selectedDropColumns
+        : loadedCols.length > 0
+          ? loadedCols
+          : ["chunk_text", "source_file"];
   } else {
     if (selectedDropColumns.length === 0) {
       return null;
