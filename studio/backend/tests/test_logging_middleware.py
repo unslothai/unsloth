@@ -267,6 +267,24 @@ def test_quiet_success_get_2xx_suppressed(logs):
     assert logs.events == []
 
 
+def test_chat_detail_and_message_reads_still_log(logs):
+    # Only the exact list polls are suppressed; detail/message reads carry latency
+    # signal and keep their access line.
+    for path in (
+        "/api/chat/threads/abc123",
+        "/api/chat/threads/abc123/messages",
+        "/api/chat/threads/abc123/messages/m1",
+        "/api/chat/projects/p1",
+    ):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert _paths_logged(logs) == [
+        "/api/chat/threads/abc123",
+        "/api/chat/threads/abc123/messages",
+        "/api/chat/threads/abc123/messages/m1",
+        "/api/chat/projects/p1",
+    ]
+
+
 def test_quiet_success_is_get_only(logs):
     # Mutations on the same paths still log (suppression is GET-only).
     for method in ("POST", "PUT", "DELETE"):

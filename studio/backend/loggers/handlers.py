@@ -91,14 +91,16 @@ _QUIET_SUCCESS_PATHS = {
 # The token-refresh route. Its first 2xx means the client has obtained a valid
 # session, so from then on chat 401s are real failures and must stay visible.
 _AUTH_REFRESH_PATH = "/api/auth/refresh"
-# Chat list-GET prefixes; their 2xx is covered by generation/tool-call/stats events.
-# Also drop the transient pre-auth 401 that fires before the session's first
+# The high-frequency chat list polls; their 2xx is covered by generation/tool-call/
+# stats events. Exact paths only, so detail and message reads (/threads/{id},
+# /threads/{id}/messages, /projects/{id}, ...) keep their access and latency logs.
+# The pre-auth 401 race also fires on these list polls before the session's first
 # /api/auth/refresh runs. Mutations and post-refresh auth failures still log
 # (suppression is GET-only; /api/auth/* is never dropped).
-_QUIET_SUCCESS_PREFIXES = (
+_CHAT_LIST_PATHS = {
     "/api/chat/threads",
     "/api/chat/projects",
-)
+}
 
 
 def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
@@ -109,8 +111,8 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     if method != "GET":
         return False
     if 200 <= status_code < 300:
-        return path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
-    return pre_auth and status_code == 401 and path.startswith(_QUIET_SUCCESS_PREFIXES)
+        return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS
+    return pre_auth and status_code == 401 and path in _CHAT_LIST_PATHS
 
 
 class LoggingMiddleware:
