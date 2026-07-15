@@ -386,7 +386,16 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             gguf_hf_repo = "unsloth/DiffusionGemma-GGUF",
             gguf_file = None,
         )
-        self.assertTrue(self.route._is_diffusion_gguf(config))
+        self.assertTrue(self.route._classify_diffusion_gguf(config))
+
+    def test_uncached_gguf_classification_remains_unknown(self):
+        config = SimpleNamespace(
+            identifier = "owner/renamed-model",
+            gguf_hf_repo = "owner/renamed-model",
+            gguf_variant = "Q4_K_M",
+            gguf_file = None,
+        )
+        self.assertIsNone(self.route._classify_diffusion_gguf(config))
 
     def test_diffusion_detection_reuses_loader_metadata_probe(self):
         import tempfile
@@ -395,6 +404,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
 
         class _Probe:
             is_diffusion = False
+            _architecture = None
 
             def _read_gguf_metadata(self, path):
                 seen.append(path)
@@ -405,26 +415,66 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             model.write_bytes(b"GGUF")
             config = SimpleNamespace(identifier = "local", gguf_file = str(model))
             with patch.object(self.route, "LlamaCppBackend", _Probe):
-                self.assertTrue(self.route._is_diffusion_gguf(config))
+                self.assertTrue(self.route._classify_diffusion_gguf(config))
         self.assertEqual(seen, [str(model)])
 
-    def test_manual_gguf_bypasses_training_estimate(self):
+    def test_local_chat_gguf_classification_is_definitive(self):
+        import tempfile
+
+        class _Probe:
+            is_diffusion = False
+            _architecture = "llama"
+
+            def _read_gguf_metadata(self, _path):
+                pass
+
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "renamed.gguf"
+            model.write_bytes(b"GGUF")
+            config = SimpleNamespace(identifier = "local", gguf_file = str(model))
+            with patch.object(self.route, "LlamaCppBackend", _Probe):
+                self.assertFalse(self.route._classify_diffusion_gguf(config))
+
+    def test_manual_known_normal_gguf_bypasses_training_estimate(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
-        self._guard(
-            config = config,
-            captured = captured,
-            training_active = True,
-            decision = (False, {"reason": "must not run"}),
-            gpu_memory_mode = "manual",
-        )
+        with patch.object(self.route, "_classify_diffusion_gguf", return_value = False):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (False, {"reason": "must not run"}),
+                gpu_memory_mode = "manual",
+            )
         self.assertEqual(captured, [])
+
+    def test_manual_unknown_gguf_keeps_single_device_training_guard(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = None),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_gpu_arg",
+                return_value = "2",
+            ),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+                gpu_memory_mode = "manual",
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["single_device_gpu"], "2")
 
     def test_manual_diffusion_uses_single_device_guard(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
         with (
-            patch.object(self.route, "_is_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
         ):
             self._guard(
@@ -443,7 +493,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         captured = []
         config = SimpleNamespace(is_gguf = True)
         with (
-            patch.object(self.route, "_is_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = True),
             patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
             patch.object(
                 self.route.LlamaCppBackend,

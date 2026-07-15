@@ -259,6 +259,29 @@ def test_auto_layers_never_sends_ctx_size_zero():
     assert guard != -1 and zero - guard < 120, '"-c 0" must sit under the not-auto_fit guard'
 
 
+def test_manual_mode_clears_inherited_main_model_placement_env():
+    env = {
+        name: "inherited" for name in LlamaCppBackend._MANUAL_PLACEMENT_ENV_VARS
+    }
+    env["LLAMA_ARG_N_GPU_LAYERS_DRAFT"] = "7"
+    env["UNRELATED"] = "kept"
+
+    LlamaCppBackend._clear_manual_placement_env(env)
+
+    assert not (set(env) & set(LlamaCppBackend._MANUAL_PLACEMENT_ENV_VARS))
+    assert env["LLAMA_ARG_N_GPU_LAYERS_DRAFT"] == "7"
+    assert env["UNRELATED"] == "kept"
+
+
+def test_load_model_sanitizes_manual_env_after_building_child_env():
+    src = _load_model_source()
+    env_build = src.find("env = self._llama_server_env_for_binary(binary)")
+    env_clear = src.find("self._clear_manual_placement_env(env)", env_build)
+    launch = src.find("subprocess.Popen", env_build)
+    assert env_build != -1
+    assert env_build < env_clear < launch
+
+
 # ── Manual offload (--gpu-layers + --fit off + --n-cpu-moe) ───────────
 
 

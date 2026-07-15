@@ -3076,6 +3076,20 @@ class LlamaCppBackend:
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
 
+    # Main-model placement settings that Manual mode owns. They must not leak
+    # from Studio's parent environment into llama-server and silently override
+    # the command assembled from the current request. Draft-model placement is
+    # intentionally separate and remains available to speculative decoding.
+    _MANUAL_PLACEMENT_ENV_VARS = (
+        "LLAMA_ARG_CPU_MOE",
+        "LLAMA_ARG_N_CPU_MOE",
+        "LLAMA_ARG_N_GPU_LAYERS",
+        "LLAMA_ARG_TENSOR_SPLIT",
+        "LLAMA_ARG_FIT",
+        "LLAMA_ARG_FIT_TARGET",
+        "LLAMA_ARG_FIT_CTX",
+    )
+
     # (binary, mtime, model) that aborted on --split-mode tensor this process (#6415
     # geometry limit, e.g. MQA n_head_kv=1). Model-keyed so one model's abort doesn't
     # skip tensor for others; tensor is tried by default, recorded only on a real abort.
@@ -3239,6 +3253,12 @@ class LlamaCppBackend:
             env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
         return env
+
+    @classmethod
+    def _clear_manual_placement_env(cls, env: dict[str, str]) -> None:
+        """Remove inherited main-model placement owned by Manual mode."""
+        for name in cls._MANUAL_PLACEMENT_ENV_VARS:
+            env.pop(name, None)
 
     @staticmethod
     def _select_gpus(
@@ -7174,6 +7194,8 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                if gpu_memory_mode == "manual":
+                    self._clear_manual_placement_env(env)
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692

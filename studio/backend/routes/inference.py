@@ -3771,8 +3771,14 @@ def _estimate_gguf_required_gb(
         return None
 
 
-def _is_diffusion_gguf(config: ModelConfig) -> bool:
-    """Match the GGUFs that ``load_model`` routes to the single-GPU runner."""
+def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
+    """Classify a GGUF as diffusion, normal, or unknown before it is loaded.
+
+    ``None`` is important here: a remote GGUF whose header is not cached can
+    still be routed to the single-GPU diffusion runner after download. Treating
+    that case as normal would let Manual mode skip the training guard even
+    though the runner ignores Manual's llama-server placement controls.
+    """
     identity = " ".join(
         str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
@@ -3788,14 +3794,21 @@ def _is_diffusion_gguf(config: ModelConfig) -> bool:
                 from hub.utils.gguf import resolve_local_gguf_path
                 main = resolve_local_gguf_path(repo, variant)
         if not main or not Path(main).is_file():
-            return False
+            return None
 
         probe = LlamaCppBackend()
         probe._read_gguf_metadata(str(main))
-        return probe.is_diffusion
+        if probe.is_diffusion:
+            return True
+        # A successfully decoded architecture proves that this is a normal
+        # llama-server GGUF. No architecture means the lightweight probe could
+        # not establish the routing decision, so preserve the unknown state.
+        if getattr(probe, "_architecture", None):
+            return False
+        return None
     except Exception as e:
         logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
-        return False
+        return None
 
 
 def _guard_chat_load_against_training(
@@ -3817,8 +3830,9 @@ def _guard_chat_load_against_training(
     placement is an explicit override: Auto layers delegate fitting to
     llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
     estimated here. Diffusion is still guarded because its mode-agnostic runner
-    ignores those controls and uses one GPU. Other loads raise HTTP 409 when
-    they would not fit beside training.
+    ignores those controls and uses one GPU. An unclassified GGUF is guarded as
+    potentially diffusion until its local header proves otherwise. Other loads
+    raise HTTP 409 when they would not fit beside training.
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
@@ -3831,12 +3845,12 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    is_diffusion = is_gguf and _is_diffusion_gguf(config)
-    if is_gguf and gpu_memory_mode == "manual" and not is_diffusion:
+    diffusion_kind = _classify_diffusion_gguf(config) if is_gguf else False
+    if is_gguf and gpu_memory_mode == "manual" and diffusion_kind is False:
         return
 
     diffusion_gpu = None
-    if is_diffusion:
+    if is_gguf and diffusion_kind is not False:
         # Use the same token selection as the runner: an explicit pick wins,
         # followed by DG_GPU, the first parent-visible token, then GPU 0.
         diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
