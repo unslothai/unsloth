@@ -1433,7 +1433,6 @@ const Composer: FC<{
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
   // More than 4 pills: collapse to icons only. Search and Code always show; the
   // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
@@ -1557,8 +1556,7 @@ const Composer: FC<{
   }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
-  // Bypass permissions counts too: turning it on should drop the composer into
-  // the two-row layout immediately, same as Search/Code.
+  // Keep the composer expanded whenever the permission pill is visible.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -1569,7 +1567,7 @@ const Composer: FC<{
     ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat ||
-    bypassPermissions;
+    permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
