@@ -3675,6 +3675,26 @@ def _is_preview_resident(ident: str) -> bool:
     return marked is not None and marked.lower() == ident.lower()
 
 
+def _preview_slot_is_owned() -> bool:
+    """True when the resident slot is currently preview-owned, so a non-preview turn
+    adopting it would clear that ownership."""
+    with _preview_slot_lock:
+        return _preview_resident_ident is not None
+
+
+def _should_validate_before_switch() -> bool:
+    """Whether a route must run its shape validation before _maybe_auto_switch_model.
+
+    True when an automatic load could run (resolver auto-switch or an idle-reload),
+    and also when the slot is preview-owned: with both features off no load runs, but
+    _maybe_auto_switch_model still claims the slot (clears the preview marker) for a
+    non-preview turn. A request rejected after that claim would have converted the
+    preview-owned model into a Studio-owned one for nothing, stranding the next
+    preview for a different checkpoint on the 503 slot guard, so validate first.
+    """
+    return _automatic_model_load_may_run() or _preview_slot_is_owned()
+
+
 def _loaded_slot_ident() -> Optional[str]:
     active = getattr(get_inference_backend(), "active_model_name", None)
     if active:
@@ -6864,11 +6884,13 @@ async def openai_chat_completions(
     # Reject a system-only chat before any automatic load so an invalid request
     # never swaps or reloads the resident model (as /responses and /messages
     # already validate before switching). Gate on every automatic-load trigger,
-    # not just auto-switch, since a standalone idle TTL can also reload here.
-    # Parse once and reuse below.
+    # not just auto-switch, since a standalone idle TTL can also reload here, and
+    # also when the slot is preview-owned: even with both features off the switch
+    # helper claims the slot, so a later-rejected request must not clear that
+    # ownership first. Parse once and reuse below.
     _pre_parsed = None
     _needs_vision = False
-    if _automatic_model_load_may_run():
+    if _should_validate_before_switch():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
             raise HTTPException(
@@ -9786,8 +9808,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
     # Reject a request with no prompt before any automatic load so an invalid
     # request never swaps or reloads the resident model (as chat/embeddings already
-    # validate before switching). Gate on every automatic-load trigger.
-    if _automatic_model_load_may_run():
+    # validate before switching). Gate on every automatic-load trigger, and also on a
+    # preview-owned slot the switch helper would claim even with both features off.
+    if _should_validate_before_switch():
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
@@ -9999,8 +10022,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # Reject a request with no input before any automatic load so an invalid
     # request never swaps or reloads the resident model (as chat/responses/messages
     # already validate before switching). Gate on every automatic-load trigger,
-    # not just auto-switch, since a standalone idle TTL can also reload here.
-    if _automatic_model_load_may_run():
+    # not just auto-switch, since a standalone idle TTL can also reload here, and also
+    # on a preview-owned slot the switch helper would claim even with both features off.
+    if _should_validate_before_switch():
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):

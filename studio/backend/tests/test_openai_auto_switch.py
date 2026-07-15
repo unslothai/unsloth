@@ -1518,6 +1518,65 @@ def test_already_serving_clears_preview_marker(monkeypatch):
     inference_route._set_preview_resident(None)  # cleanup
 
 
+def test_should_validate_before_switch_fires_on_preview_owned_slot(monkeypatch):
+    # With both auto-switch and idle-unload off no load runs, but the switch helper
+    # still claims a preview-owned slot; the pre-load validation must run in that case
+    # too, so the predicate is True whenever the slot is preview-owned.
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(None)
+    assert inference_route._should_validate_before_switch() is False
+    inference_route._set_preview_resident("/outputs/run/ckpt")
+    assert inference_route._should_validate_before_switch() is True
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_chat_system_only_preserves_preview_marker_when_both_off(monkeypatch):
+    # Both features off: a system-only chat is rejected, but it still reaches the slot
+    # claim in _maybe_auto_switch_model. The pre-load validation must run because the
+    # slot is preview-owned, so the 400 fires before the claim converts the preview
+    # model to Studio-owned and strands the next preview for a different checkpoint.
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    assert inference_route._is_preview_resident(path)
+    payload = ChatCompletionRequest(model = path, messages = [{"role": "system", "content": "sys"}])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_completions_missing_prompt_preserves_preview_marker_when_both_off(monkeypatch):
+    # Same both-off gap on /v1/completions: a body with no prompt is rejected but
+    # reaches the slot claim via _auto_switch_from_request_body, so the missing-prompt
+    # 400 must fire first when the slot is preview-owned, or it strands the preview.
+    from fastapi import HTTPException
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(_json_body_request({"model": path}), "tester")
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
 def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
     # A manual /unload is a deliberate action: it tears down immediately even with
     # a request in flight (only the automatic idle loop defers). No 409.
