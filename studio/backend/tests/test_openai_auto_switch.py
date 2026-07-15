@@ -1555,6 +1555,46 @@ def test_chat_system_only_preserves_preview_marker_when_both_off(monkeypatch):
     inference_route._set_preview_resident(None)  # cleanup
 
 
+def test_completions_non_object_body_preserves_preview_marker(monkeypatch):
+    # A valid JSON body that is not an object ([]) is rejected as "Request body must
+    # be a JSON object", but reaches the slot claim via _auto_switch_from_request_body
+    # (which passes model=None). Reject it before the claim so a preview-owned model
+    # is not converted to Studio-owned for a request that never runs.
+    from fastapi import HTTPException
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request([]), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_embeddings_non_object_body_preserves_preview_marker(monkeypatch):
+    # Same as completions: a non-object /v1/embeddings body ([]) must be rejected
+    # before the slot claim so it cannot strand a preview-owned model.
+    from fastapi import HTTPException
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_json_body_request([]), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
 def test_completions_missing_prompt_preserves_preview_marker_when_both_off(monkeypatch):
     # Same both-off gap on /v1/completions: a body with no prompt is rejected but
     # reaches the slot claim via _auto_switch_from_request_body, so the missing-prompt

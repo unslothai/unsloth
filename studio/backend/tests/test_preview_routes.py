@@ -910,3 +910,63 @@ def test_claim_slot_for_non_preview_gates_on_preview_path(slot_state):
     )
     assert inference._is_preview_resident("/outputs/run/ckpt")
     inference._set_preview_resident(None)
+
+
+def test_preview_same_target_compares_case_sensitively(fake_slot):
+    # Two checkpoints differing only by case are different files on a case-sensitive
+    # filesystem, so a preview for /outputs/run must not borrow a resident /outputs/Run
+    # (serving the wrong checkpoint); it must load the requested path.
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/Run"),
+            SimpleNamespace(app = None, scope = {"path": "/p/a/v1/chat/completions"}),
+            "admin",
+        )
+    )
+    assert fake_slot["loads"] == ["/outputs/Run"]
+    assert inference._is_preview_resident("/outputs/Run")
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run"),
+            SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
+            "admin",
+        )
+    )
+    # Not borrowed: the differently-cased path was actually loaded, not served stale.
+    assert fake_slot["loads"] == ["/outputs/Run", "/outputs/run"]
+    assert inference._is_preview_resident("/outputs/run")
+
+
+def test_preview_reload_failure_restores_prior_ownership(slot_state, monkeypatch):
+    # _load_model_impl clears the preview marker mid-load (reclaiming the slot for
+    # Studio). If it then fails while the prior preview model is still resident, the
+    # marker must be restored to that model, not left cleared -- otherwise the next
+    # preview for a different checkpoint sees a still-preview model as Studio-owned and
+    # 503s.
+    resident = {"ident": "/outputs/run/ckpt-A"}
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: resident["ident"])
+    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda **kw: 0)
+    monkeypatch.setattr(llama_keepwarm, "other_preview_inflight_count", lambda **kw: 0)
+    llama_keepwarm._pending = 0
+    llama_keepwarm._preview_pending = 0
+    inference._set_preview_resident("/outputs/run/ckpt-A")  # A is preview-owned
+
+    async def _clear_then_fail(load_req, fastapi_request, subject):
+        inference._set_preview_resident(None)  # mirror _load_model_impl reclaiming slot
+        raise HTTPException(status_code = 500, detail = "spawn failed")  # A still resident
+
+    monkeypatch.setattr(inference, "_load_model_impl", _clear_then_fail)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-B"),
+                SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 500
+    # A is still resident and its preview ownership is restored (not Studio-owned).
+    assert inference._is_preview_resident("/outputs/run/ckpt-A")

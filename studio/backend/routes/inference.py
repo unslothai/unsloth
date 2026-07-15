@@ -3682,6 +3682,13 @@ def _preview_slot_is_owned() -> bool:
         return _preview_resident_ident is not None
 
 
+def _get_preview_resident() -> Optional[str]:
+    """The current preview-ownership marker, for callers that must restore it (e.g. a
+    preview reload that fails after _load_model_impl already cleared it)."""
+    with _preview_slot_lock:
+        return _preview_resident_ident
+
+
 def _should_validate_before_switch() -> bool:
     """Whether a route must run its shape validation before _maybe_auto_switch_model.
 
@@ -3755,7 +3762,11 @@ async def load_model_for_preview(
                         headers = {"Retry-After": "10"},
                     )
                 loaded = _loaded_slot_ident()
-                same_target = loaded is not None and loaded.lower() == request.model_path.lower()
+                # Compare checkpoint paths exactly: on a case-sensitive filesystem
+                # /outputs/Run and /outputs/run are different checkpoints, so a
+                # lowercased match would borrow the resident model and serve the wrong
+                # one instead of loading the requested path.
+                same_target = loaded is not None and loaded == request.model_path
                 preview_resident = loaded is not None and _is_preview_resident(loaded)
                 if loaded is not None and not same_target and not preview_resident:
                     untrack_current_request(scope)
@@ -3789,8 +3800,19 @@ async def load_model_for_preview(
                     # #5401). Ownership is unchanged: Studio's model stays Studio's, a
                     # preview-owned one stays preview-owned.
                     return
-                await _load_model_impl(request, fastapi_request, current_subject)
-                _set_preview_resident(request.model_path)
+                # _load_model_impl clears the preview marker mid-load (it reclaims the
+                # slot for Studio). If the load then fails while the prior model is
+                # still resident (e.g. a GPU-selection or pre-spawn error), leaving the
+                # marker cleared would make the next preview for another checkpoint see
+                # that still-preview model as Studio-owned and 503. Restore the prior
+                # ownership on failure; only a successful load takes the new marker.
+                prior_marker = _get_preview_resident()
+                loaded_ok = False
+                try:
+                    await _load_model_impl(request, fastapi_request, current_subject)
+                    loaded_ok = True
+                finally:
+                    _set_preview_resident(request.model_path if loaded_ok else prior_marker)
         finally:
             _auto_switch_process_lock.release()
 
@@ -9786,6 +9808,12 @@ def _flatten_monitor_prompt(value) -> str:
     return str(value)
 
 
+# Distinguishes an unparseable raw body (defer to the post-switch re-read, which
+# preserves the pre-feature malformed-body error) from a valid JSON body that simply
+# is not an object (e.g. [] or null), which is rejected before the switch.
+_UNPARSEABLE_BODY = object()
+
+
 def _completions_prompt_present(body: dict) -> bool:
     """Whether a completions body carries a usable ``prompt`` (non-empty)."""
     prompt = body.get("prompt")
@@ -9814,7 +9842,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
-            _pre = None
+            _pre = _UNPARSEABLE_BODY
         if isinstance(_pre, dict):
             _pre_prompt = _pre.get("prompt")
             if _pre_prompt is not None and not isinstance(_pre_prompt, (str, list, tuple)):
@@ -9824,6 +9852,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 raise HTTPException(status_code = 400, detail = "'prompt' must be a string or array.")
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
+        elif _pre is not _UNPARSEABLE_BODY:
+            # A valid JSON body that is not an object (e.g. [] or null) is rejected
+            # below as "Request body must be a JSON object"; reject it here, before the
+            # switch, so the slot claim can't convert a preview-owned model to
+            # Studio-owned for a request that never runs.
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
@@ -10028,7 +10062,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
-            _pre = None
+            _pre = _UNPARSEABLE_BODY
         if isinstance(_pre, dict):
             _pre_input = _pre.get("input")
             if _pre_input is not None and not isinstance(_pre_input, (str, list, tuple)):
@@ -10038,6 +10072,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+        elif _pre is not _UNPARSEABLE_BODY:
+            # A valid JSON body that is not an object (e.g. [] or null) is rejected
+            # below as "Request body must be a JSON object"; reject it here, before the
+            # switch, so the slot claim can't convert a preview-owned model to
+            # Studio-owned for a request that never runs.
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
     # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
     # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers

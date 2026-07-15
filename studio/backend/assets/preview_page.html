@@ -335,25 +335,31 @@
       }
       function showError(out, status, body) {
         out.classList.add("error");
+        // FastAPI wraps errors as {detail: ...}; detail may be a string or a
+        // structured {error: {message}} envelope, so read the string form.
+        let detailText = "";
+        try {
+          const parsed = JSON.parse(body);
+          const detail = parsed.detail;
+          detailText =
+            (typeof detail === "string" ? detail : detail?.error?.message) ||
+            parsed.error?.message ||
+            "";
+        } catch (_) {
+          if (body) detailText = body.slice(0, 300);
+        }
         if (status === 503) {
+          // 503 covers both "a different model is loaded" (unload it) and a transient
+          // "busy, try again shortly" state; show the server's own message so a
+          // retryable busy response isn't reported as needing a manual unload.
           out.textContent =
+            detailText ||
             "Studio is currently using another model. To chat with this preview, unload that model in Studio, then try again.";
           return;
         }
-        let message = "Something went wrong. Please try again.";
-        try {
-          const parsed = JSON.parse(body);
-          // FastAPI wraps errors as {detail: ...}; detail may be a string or a
-          // structured {error: {message}} envelope, so read the string form.
-          const detail = parsed.detail;
-          message =
-            (typeof detail === "string" ? detail : detail?.error?.message) ||
-            parsed.error?.message ||
-            message;
-        } catch (_) {
-          if (body) message = body.slice(0, 300);
-        }
-        out.textContent = "Couldn’t send your message: " + message;
+        out.textContent =
+          "Couldn’t send your message: " +
+          (detailText || "Something went wrong. Please try again.");
       }
       async function send() {
         // One path for button + Enter; ignore while a request is in flight.
