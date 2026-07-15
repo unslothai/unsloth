@@ -41,8 +41,8 @@ def test_patch_unsloth_gguf_save_protects_only_the_save_directory(tmp_path):
 
     original_rmtree = shutil.rmtree
     with patch_unsloth_gguf_save(str(save_dir)):
-        shutil.rmtree(str(save_dir))   # protected: no-op
-        shutil.rmtree(str(subdir))     # inside the protected tree: no-op
+        shutil.rmtree(str(save_dir))  # protected: no-op
+        shutil.rmtree(str(subdir))  # inside the protected tree: no-op
         shutil.rmtree(str(unrelated))  # unrelated temp dir: still deleted
 
         assert save_dir.exists(), "save directory must survive the guard"
