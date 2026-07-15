@@ -17,7 +17,7 @@ def test_proxy_authorization_is_rejected_and_redacted_by_the_same_policy():
 
 @pytest.mark.parametrize(
     "key",
-    ["private_key", "privateKey", "access_key", "accessKeyId"],
+    ["private_key", "privateKey", "access_key", "access_key_id", "accessKeyId"],
 )
 def test_exact_private_and_access_key_names_are_rejected_and_redacted(key):
     payload = {"credentials": {key: "secret"}}
@@ -26,3 +26,59 @@ def test_exact_private_and_access_key_names_are_rejected_and_redacted(key):
     clean, paths = validate_recipe_payload(payload, legacy = True)
     assert clean == {"credentials": {}}
     assert paths == [f"$.credentials.{key}"]
+
+
+@pytest.mark.parametrize(
+    "credential_key",
+    [
+        "private_key",
+        "access_key_id",
+        "AWS_ACCESS_KEY_ID",
+        "MY_SERVICE_KEY",
+        "MY_SERVICE_TOKEN",
+    ],
+)
+def test_mcp_stdio_env_credentials_are_rejected_and_redacted(credential_key):
+    payload = {
+        "recipe": {
+            "mcp_providers": [
+                {
+                    "provider_type": "stdio",
+                    "env": {
+                        "NODE_ENV": "production",
+                        credential_key: "credential-value",
+                    },
+                }
+            ]
+        }
+    }
+
+    with pytest.raises(UserAssetValidationError, match = "secret fields"):
+        validate_recipe_payload(payload)
+
+    clean, paths = validate_recipe_payload(payload, legacy = True)
+    env = clean["recipe"]["mcp_providers"][0]["env"]
+    assert env == {"NODE_ENV": "production"}
+    assert paths == [f'$.recipe.mcp_providers[0].env.{credential_key}']
+
+
+def test_mcp_stdio_operational_env_values_round_trip():
+    payload = {
+        "recipe": {
+            "mcp_providers": [
+                {
+                    "provider_type": "stdio",
+                    "env": {
+                        "NODE_ENV": "production",
+                        "LOG_LEVEL": "debug",
+                        "SERVICE_REGION": "eu-west-1",
+                    },
+                }
+            ]
+        }
+    }
+
+    assert validate_recipe_payload(payload) == payload
+    clean, paths = validate_recipe_payload(payload, legacy = True)
+    assert clean == payload
+    assert paths == []

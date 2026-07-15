@@ -42,6 +42,7 @@ export type LegacyImportOptions = Omit<
 
 type LegacyBatchPlan<T> = {
   batches: T[][];
+  rejected: LegacyImportItemResult[];
 };
 
 function withoutRevision(recipe: LegacyRecipe) {
@@ -54,6 +55,7 @@ function splitByLegacyBatchBytes<T extends { id: string }>(
   confirmSubject: string,
 ): LegacyBatchPlan<T> {
   const batches: T[][] = [];
+  const rejected: LegacyImportItemResult[] = [];
   let current: T[] = [];
   const emptyEnvelope = {
     source: SOURCE,
@@ -70,6 +72,11 @@ function splitByLegacyBatchBytes<T extends { id: string }>(
     const itemBytes = utf8Encoder.encode(JSON.stringify(item)).byteLength;
     const singleItemBytes = baseBytes + itemBytes;
     if (singleItemBytes > MAX_LEGACY_BATCH_JSON_BYTES) {
+      rejected.push({
+        id: item.id,
+        outcome: "rejected",
+        reason: "legacy_batch_limit_exceeded",
+      });
       continue;
     }
     const addedBytes = itemBytes + (current.length > 0 ? 1 : 0);
@@ -104,7 +111,15 @@ function splitByLegacyBatchBytes<T extends { id: string }>(
       );
     }
   }
-  return { batches };
+  return { batches, rejected };
+}
+
+function reportRejectedItems(
+  kind: "recipes" | "executions",
+  rejected: LegacyImportItemResult[],
+): void {
+  if (rejected.length === 0) return;
+  console.error(`Legacy ${kind} exceeded the import batch limit.`, rejected);
 }
 
 async function importRecipePages(
@@ -123,6 +138,7 @@ async function importRecipePages(
       .filter((item) => !importedIds.has(item.id))
       .map(withoutRevision);
     const plan = splitByLegacyBatchBytes(recipes, "recipes", bootstrap.subject);
+    reportRejectedItems("recipes", plan.rejected);
     for (const recipeBatch of plan.batches) {
       await importLegacyUserAssets(
         {
@@ -167,6 +183,7 @@ async function importExecutionPages(
       "executions",
       bootstrap.subject,
     );
+    reportRejectedItems("executions", plan.rejected);
     for (const executionBatch of plan.batches) {
       const result = await importLegacyUserAssets(
         {

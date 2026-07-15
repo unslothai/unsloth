@@ -10,6 +10,13 @@ export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 
 type PostAuthRoute = "/change-password" | "/chat";
+type AuthSubjectListener = () => void;
+
+const authSubjectListeners = new Set<AuthSubjectListener>();
+
+function notifyAuthSubjectChanged(): void {
+  for (const listener of authSubjectListeners) listener();
+}
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -48,6 +55,20 @@ export function getAuthSubjectKey(): string {
   }
 }
 
+export function subscribeAuthSubject(
+  listener: AuthSubjectListener,
+): () => void {
+  authSubjectListeners.add(listener);
+  const handleStorage = (event: StorageEvent): void => {
+    if (event.key === AUTH_TOKEN_KEY || event.key === null) listener();
+  };
+  if (canUseStorage()) window.addEventListener("storage", handleStorage);
+  return () => {
+    authSubjectListeners.delete(listener);
+    if (canUseStorage()) window.removeEventListener("storage", handleStorage);
+  };
+}
+
 export function getRefreshToken(): string | null {
   if (!canUseStorage()) return null;
   return localStorage.getItem(AUTH_REFRESH_TOKEN_KEY);
@@ -63,6 +84,7 @@ export function storeAuthTokens(
   if (!canUseStorage()) return;
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
+  notifyAuthSubjectChanged();
 }
 
 export function clearAuthTokens(): void {
@@ -70,6 +92,7 @@ export function clearAuthTokens(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);
+  notifyAuthSubjectChanged();
 }
 
 // Flag stored as key presence (constant "1" or absence), not a derived boolean,

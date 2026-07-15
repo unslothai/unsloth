@@ -71,6 +71,8 @@ type UseRecipeStudioActionsResult = {
   fullLoading: boolean;
   currentSignature: string;
   executions: RecipeExecutionRecord[];
+  hasOlderExecutions: boolean;
+  olderExecutionsLoading: boolean;
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
   persistRecipe: () => Promise<void>;
@@ -86,6 +88,7 @@ type UseRecipeStudioActionsResult = {
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
+  loadOlderExecutions: () => Promise<void>;
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
   copyRecipe: () => Promise<void>;
   importRecipe: (value: string) => string | null;
@@ -157,6 +160,8 @@ export function useRecipeStudioActions({
     fullLoading: executions.fullLoading,
     currentSignature: persistence.currentSignature,
     executions: executions.executions,
+    hasOlderExecutions: executions.hasOlderExecutions,
+    olderExecutionsLoading: executions.olderExecutionsLoading,
     selectedExecutionId: executions.selectedExecutionId,
     setSelectedExecutionId: executions.setSelectedExecutionId,
     persistRecipe: persistence.persistRecipe,
@@ -168,6 +173,7 @@ export function useRecipeStudioActions({
     runPreview: executions.runPreview,
     runFull: executions.runFull,
     cancelExecution: executions.cancelExecution,
+    loadOlderExecutions: executions.loadOlderExecutions,
     loadExecutionDatasetPage: executions.loadExecutionDatasetPage,
     copyRecipe: persistence.copyRecipe,
     importRecipe: persistence.importRecipe,

@@ -59,6 +59,9 @@ EXECUTION_METADATA_FIELDS = frozenset(
 
 _DENIED_SECRET_KEYS = frozenset(_PERSISTENCE_POLICY["deniedSecretKeys"])
 _SAFE_SECRET_LOOKING_KEYS = frozenset(_PERSISTENCE_POLICY["safeSecretLookingKeys"])
+_MCP_ENV_DENIED_KEY_PARTS = tuple(_PERSISTENCE_POLICY["mcpEnvDeniedKeyParts"])
+_MCP_ENV_DENIED_KEY_SUFFIXES = tuple(_PERSISTENCE_POLICY["mcpEnvDeniedKeySuffixes"])
+_MCP_ENV_DENIED_EXACT_KEYS = frozenset(_PERSISTENCE_POLICY["mcpEnvDeniedExactKeys"])
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _FIRST_CAMEL_BOUNDARY_RE = re.compile(r"(.)([A-Z][a-z]+)")
 _SECOND_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
@@ -160,7 +163,11 @@ def _is_secret_entry(path: JsonPath, key: str, value: Any) -> bool:
     # MCP env blocks commonly use provider-specific variable names.  Keep the
     # broader heuristic scoped to that typed container, not arbitrary payloads.
     if _is_mcp_env(path):
-        return any(token in normalized for token in ("secret", "token", "password", "credential"))
+        return (
+            normalized in _MCP_ENV_DENIED_EXACT_KEYS
+            or normalized.endswith(_MCP_ENV_DENIED_KEY_SUFFIXES)
+            or any(part in normalized for part in _MCP_ENV_DENIED_KEY_PARTS)
+        )
     # Header names normalize hyphens (Set-Cookie -> set_cookie), so the exact
     # denylist above catches authorization/cookie without inspecting values.
     return False

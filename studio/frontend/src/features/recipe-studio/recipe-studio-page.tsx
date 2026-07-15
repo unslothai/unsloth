@@ -355,6 +355,8 @@ export function RecipeStudioPage({
     fullLoading,
     currentSignature,
     executions,
+    hasOlderExecutions,
+    olderExecutionsLoading,
     selectedExecutionId,
     setSelectedExecutionId,
     persistRecipe,
@@ -364,6 +366,7 @@ export function RecipeStudioPage({
     validateLoading,
     validateResult,
     cancelExecution,
+    loadOlderExecutions,
     loadExecutionDatasetPage,
     runPreview,
     runFull,
@@ -828,9 +831,14 @@ export function RecipeStudioPage({
                 executions={executions}
                 selectedExecutionId={selectedExecutionId}
                 currentSignature={currentSignature}
+                hasOlderExecutions={hasOlderExecutions}
+                olderExecutionsLoading={olderExecutionsLoading}
                 onSelectExecution={setSelectedExecutionId}
                 onCancelExecution={(executionId) => {
                   void cancelExecution(executionId);
+                }}
+                onLoadOlderExecutions={() => {
+                  void loadOlderExecutions();
                 }}
                 onLoadDatasetPage={(executionId, page) => {
                   void loadExecutionDatasetPage(executionId, page);

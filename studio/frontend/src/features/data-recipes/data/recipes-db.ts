@@ -12,7 +12,13 @@ import {
 } from "@/features/user-assets";
 // Shared persistence policy is infrastructure, not a feature UI dependency.
 // eslint-disable-next-line no-restricted-imports
-import { DENIED_SECRET_KEYS } from "@/features/user-assets/persistence-policy";
+import {
+  DENIED_SECRET_KEYS,
+  MCP_ENV_DENIED_EXACT_KEYS,
+  MCP_ENV_DENIED_KEY_PARTS,
+  MCP_ENV_DENIED_KEY_SUFFIXES,
+  SAFE_SECRET_LOOKING_KEYS,
+} from "@/features/user-assets/persistence-policy";
 import { normalizeNonEmptyName } from "@/utils";
 import { useCallback, useEffect, useState } from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
@@ -69,7 +75,7 @@ function isSecretField(path: string[], key: string, value: unknown): boolean {
     return false;
   }
   const normalizedKey = normalizeSecretKey(key);
-  if (normalizedKey === "api_key_env") {
+  if (SAFE_SECRET_LOOKING_KEYS.has(normalizedKey)) {
     return false;
   }
   if (
@@ -97,11 +103,15 @@ function isSecretField(path: string[], key: string, value: unknown): boolean {
   const inMcpEnv =
     path.at(-1) === "env" &&
     path.slice(0, -1).some((part) => part.includes("mcp"));
-  return (
+  return Boolean(
     inMcpEnv &&
-    ["secret", "token", "password", "credential"].some((part) =>
-      normalizedKey.includes(part),
-    )
+      (MCP_ENV_DENIED_EXACT_KEYS.has(normalizedKey) ||
+        MCP_ENV_DENIED_KEY_SUFFIXES.some((suffix) =>
+          normalizedKey.endsWith(suffix),
+        ) ||
+        MCP_ENV_DENIED_KEY_PARTS.some((part) =>
+          normalizedKey.includes(part),
+        )),
   );
 }
 

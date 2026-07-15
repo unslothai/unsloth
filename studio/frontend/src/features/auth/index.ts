@@ -17,6 +17,7 @@ export {
   resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
+  subscribeAuthSubject,
 } from "./session";
 export {
   clearTauriAuthFailure,

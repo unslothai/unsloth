@@ -72,6 +72,7 @@ def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):
         "owner", source, [{**recipe("retry-me"), "name": "", "createdAt": 1}], []
     )
     assert rejected["recipes"][0]["outcome"] == "rejected"
+
     assert user_assets_db.list_legacy_imports("owner", source)["recipes"] == []
 
     # Older builds persisted validation failures as rejected ledger rows.

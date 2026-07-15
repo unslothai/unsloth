@@ -2,9 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus, loadModel } from "@/features/chat";
+import {
+  getAuthSubjectKey,
+  subscribeAuthSubject,
+} from "@/features/auth";
 import { toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   cancelRecipeJob,
@@ -27,7 +38,7 @@ import {
 } from "../executions/execution-helpers";
 import {
   findResumableExecution,
-  loadSortedRecipeExecutions,
+  loadSortedRecipeExecutionPage,
 } from "../executions/hydration";
 import {
   buildExecutionPayload,
@@ -45,6 +56,36 @@ import type {
 } from "../utils/payload/types";
 
 const GGUF_MODEL_PATTERN = /gguf/i;
+
+type ExecutionHistoryOwner = {
+  subjectKey: string;
+  recipeId: string;
+  generation: number;
+  lifecycle: object;
+};
+
+type ExecutionHistoryState = {
+  owner: ExecutionHistoryOwner | null;
+  cursor: string | null;
+  loadingOlder: boolean;
+};
+
+function sameExecutionHistoryOwner(
+  left: ExecutionHistoryOwner | null,
+  right: ExecutionHistoryOwner,
+): boolean {
+  return Boolean(
+    left === right &&
+      left &&
+      left.subjectKey === right.subjectKey &&
+      left.recipeId === right.recipeId &&
+      left.generation === right.generation,
+  );
+}
+
+function getServerAuthSubjectKey(): string {
+  return "anonymous";
+}
 
 function collectUsedLlmModelAliases(payload: RecipePayload): Set<string> {
   const columns = Array.isArray(payload.recipe.columns)
@@ -442,6 +483,8 @@ type UseRecipeExecutionsResult = {
   previewLoading: boolean;
   fullLoading: boolean;
   executions: RecipeExecutionRecord[];
+  hasOlderExecutions: boolean;
+  olderExecutionsLoading: boolean;
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
   openRunDialog: (kind: RecipeExecutionKind) => void;
@@ -456,6 +499,7 @@ type UseRecipeExecutionsResult = {
   runPreview: () => Promise<boolean>;
   runFull: () => Promise<boolean>;
   cancelExecution: (id: string) => Promise<void>;
+  loadOlderExecutions: () => Promise<void>;
   loadExecutionDatasetPage: (id: string, page: number) => Promise<void>;
 };
 
@@ -487,7 +531,20 @@ export function useRecipeExecutions({
   onExecutionStart,
   onPreviewSuccess,
 }: UseRecipeExecutionsParams): UseRecipeExecutionsResult {
+  const authSubjectKey = useSyncExternalStore(
+    subscribeAuthSubject,
+    getAuthSubjectKey,
+    getServerAuthSubjectKey,
+  );
   const [validateLoading, setValidateLoading] = useState(false);
+  const [executionHistory, setExecutionHistory] =
+    useState<ExecutionHistoryState>({
+      owner: null,
+      cursor: null,
+      loadingOlder: false,
+    });
+  const historyGenerationRef = useRef(0);
+  const olderHistoryRequestRef = useRef<object | null>(null);
   const [validateResult, setValidateResult] = useState<{
     valid: boolean;
     errors: string[];
@@ -515,6 +572,7 @@ export function useRecipeExecutions({
     setPreviewLoading,
     setFullLoading,
     setExecutions,
+    mergeExecutions,
     upsertExecution,
     selectExecution,
     resetForRecipe,
@@ -541,6 +599,7 @@ export function useRecipeExecutions({
       setPreviewLoading: state.setPreviewLoading,
       setFullLoading: state.setFullLoading,
       setExecutions: state.setExecutions,
+      mergeExecutions: state.mergeExecutions,
       upsertExecution: state.upsertExecution,
       selectExecution: state.selectExecution,
       resetForRecipe: state.resetForRecipe,
@@ -560,48 +619,111 @@ export function useRecipeExecutions({
     [upsertExecution],
   );
 
+  const historyLifecycle = useMemo(
+    () => ({
+      subjectKey: authSubjectKey,
+      recipeId,
+      initialRunRows,
+      onPreviewSuccess,
+      resetForRecipe,
+      setExecutions,
+      setPreviewRows,
+      setRunErrors,
+      upsertAndPersist,
+    }),
+    [
+      authSubjectKey,
+      initialRunRows,
+      onPreviewSuccess,
+      recipeId,
+      resetForRecipe,
+      setExecutions,
+      setPreviewRows,
+      setRunErrors,
+      upsertAndPersist,
+    ],
+  );
+  const activeExecutionHistory =
+    executionHistory.owner?.lifecycle === historyLifecycle
+      ? executionHistory
+      : null;
+  const executionHistoryCursor = activeExecutionHistory?.cursor ?? null;
+  const olderExecutionsLoading =
+    activeExecutionHistory?.loadingOlder ?? false;
+  const visibleExecutions = activeExecutionHistory ? executions : [];
+  const visibleSelectedExecutionId = activeExecutionHistory
+    ? selectedExecutionId
+    : null;
+
   useEffect(() => {
     let cancelled = false;
+    const owner: ExecutionHistoryOwner = {
+      subjectKey: historyLifecycle.subjectKey,
+      recipeId: historyLifecycle.recipeId,
+      generation: historyGenerationRef.current + 1,
+      lifecycle: historyLifecycle,
+    };
+    historyGenerationRef.current = owner.generation;
+    olderHistoryRequestRef.current = null;
 
-    resetForRecipe();
+    const isActive = (): boolean =>
+      !cancelled &&
+      historyGenerationRef.current === owner.generation &&
+      getAuthSubjectKey() === owner.subjectKey;
+
+    historyLifecycle.resetForRecipe();
 
     // Seed previewRows from the recipe's original run.rows (the loaded JSON, not
     // the rebuilt payload, which hardcodes 5). Templates ship a suggested preview
     // size (e.g. GitHub Support Bot: 10); honor it so users don't see a surprise 5.
     if (
-      typeof initialRunRows === "number" &&
-      Number.isFinite(initialRunRows) &&
-      initialRunRows > 0 &&
-      initialRunRows !== 5
+      typeof historyLifecycle.initialRunRows === "number" &&
+      Number.isFinite(historyLifecycle.initialRunRows) &&
+      historyLifecycle.initialRunRows > 0 &&
+      historyLifecycle.initialRunRows !== 5
     ) {
-      setPreviewRows(Math.floor(initialRunRows));
+      historyLifecycle.setPreviewRows(
+        Math.floor(historyLifecycle.initialRunRows),
+      );
     }
 
     async function hydrate(): Promise<void> {
       try {
-        const records = await loadSortedRecipeExecutions(recipeId);
-        if (cancelled) {
+        const page = await loadSortedRecipeExecutionPage(owner.recipeId);
+        if (!isActive()) {
           return;
         }
 
-        setExecutions(records);
-        const resumable = findResumableExecution(records);
+        historyLifecycle.setExecutions(page.executions);
+        setExecutionHistory({
+          owner,
+          cursor: page.nextCursor,
+          loadingOlder: false,
+        });
+        const resumable = findResumableExecution(page.executions);
         if (!resumable?.jobId) {
           return;
         }
 
-        trackRecipeExecution({
+        void trackRecipeExecution({
           label: executionLabel(resumable.kind),
           kind: resumable.kind,
           rows: resumable.rows,
           jobId: resumable.jobId,
           initialExecution: resumable,
           notify: false,
-          onUpsert: upsertAndPersist,
-          onSetPreviewErrors: setRunErrors,
-          onPreviewSuccess,
+          onUpsert: (record) => {
+            if (isActive()) historyLifecycle.upsertAndPersist(record);
+          },
+          onSetPreviewErrors: (errors) => {
+            if (isActive()) historyLifecycle.setRunErrors(errors);
+          },
+          onPreviewSuccess: () => {
+            if (isActive()) historyLifecycle.onPreviewSuccess?.();
+          },
         });
       } catch (error) {
+        if (!isActive()) return;
         // biome-ignore lint/suspicious/noConsole: hydration failures are non-blocking diagnostics
         console.error("Load recipe executions failed:", error);
       }
@@ -611,16 +733,68 @@ export function useRecipeExecutions({
 
     return () => {
       cancelled = true;
+      if (historyGenerationRef.current === owner.generation) {
+        historyGenerationRef.current += 1;
+      }
+      olderHistoryRequestRef.current = null;
     };
+  }, [historyLifecycle]);
+
+  const loadOlderExecutions = useCallback(async (): Promise<void> => {
+    const owner = activeExecutionHistory?.owner;
+    if (
+      !owner ||
+      !executionHistoryCursor ||
+      olderExecutionsLoading ||
+      olderHistoryRequestRef.current
+    ) {
+      return;
+    }
+    const cursor = executionHistoryCursor;
+    const request = {};
+    olderHistoryRequestRef.current = request;
+    const isActive = (): boolean =>
+      historyGenerationRef.current === owner.generation &&
+      getAuthSubjectKey() === owner.subjectKey;
+    setExecutionHistory((current) =>
+      sameExecutionHistoryOwner(current.owner, owner)
+        ? { ...current, loadingOlder: true }
+        : current,
+    );
+    try {
+      const page = await loadSortedRecipeExecutionPage(owner.recipeId, cursor);
+      if (!isActive()) {
+        return;
+      }
+      mergeExecutions(page.executions);
+      setExecutionHistory((current) =>
+        sameExecutionHistoryOwner(current.owner, owner)
+          ? { ...current, cursor: page.nextCursor }
+          : current,
+      );
+    } catch (error) {
+      if (!isActive()) return;
+      toastError(
+        "Could not load older runs",
+        toErrorMessage(error, "Execution history could not be loaded."),
+      );
+    } finally {
+      if (olderHistoryRequestRef.current === request) {
+        olderHistoryRequestRef.current = null;
+        if (isActive()) {
+          setExecutionHistory((current) =>
+            sameExecutionHistoryOwner(current.owner, owner)
+              ? { ...current, loadingOlder: false }
+              : current,
+          );
+        }
+      }
+    }
   }, [
-    initialRunRows,
-    onPreviewSuccess,
-    recipeId,
-    resetForRecipe,
-    setExecutions,
-    setPreviewRows,
-    setRunErrors,
-    upsertAndPersist,
+    activeExecutionHistory,
+    executionHistoryCursor,
+    mergeExecutions,
+    olderExecutionsLoading,
   ]);
 
   const readPayload = useCallback((): RecipePayload | null => {
@@ -1043,8 +1217,10 @@ export function useRecipeExecutions({
     setRunSettings,
     previewLoading,
     fullLoading,
-    executions,
-    selectedExecutionId,
+    executions: visibleExecutions,
+    hasOlderExecutions: executionHistoryCursor !== null,
+    olderExecutionsLoading,
+    selectedExecutionId: visibleSelectedExecutionId,
     setSelectedExecutionId,
     openRunDialog,
     runFromDialog,
@@ -1054,6 +1230,7 @@ export function useRecipeExecutions({
     runPreview,
     runFull,
     cancelExecution,
+    loadOlderExecutions,
     loadExecutionDatasetPage,
   };
 }

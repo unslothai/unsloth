@@ -19,6 +19,17 @@
     "s3_secret_access_key"
   ],
   "safeSecretLookingKeys": ["api_key_env"],
+  "mcpEnvDeniedKeyParts": [
+    "api_key",
+    "access_key",
+    "private_key",
+    "token",
+    "secret",
+    "password",
+    "credential"
+  ],
+  "mcpEnvDeniedKeySuffixes": ["_key", "_key_id"],
+  "mcpEnvDeniedExactKeys": ["key"],
   "maxRecipeJsonBytes": 1048576,
   "maxExecutionJsonBytes": 262144,
   "maxLegacyBatchJsonBytes": 8388608

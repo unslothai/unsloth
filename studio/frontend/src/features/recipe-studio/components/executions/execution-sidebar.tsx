@@ -20,13 +20,19 @@ import {
 type ExecutionSidebarProps = {
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
+  hasOlderExecutions: boolean;
+  loadingOlderExecutions: boolean;
   onSelectExecution: (id: string) => void;
+  onLoadOlderExecutions: () => void;
 };
 
 export function ExecutionSidebar({
   executions,
   selectedExecutionId,
+  hasOlderExecutions,
+  loadingOlderExecutions,
   onSelectExecution,
+  onLoadOlderExecutions,
 }: ExecutionSidebarProps): ReactElement {
   return (
     <aside className="w-72 shrink-0 border-r border-border/60 bg-card/20">
@@ -86,6 +92,16 @@ export function ExecutionSidebar({
             );
           })
         )}
+        {hasOlderExecutions ? (
+          <button
+            type="button"
+            className="w-full rounded-xl border border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/25 disabled:cursor-wait disabled:opacity-60"
+            disabled={loadingOlderExecutions}
+            onClick={onLoadOlderExecutions}
+          >
+            {loadingOlderExecutions ? "Loading older runs…" : "Load older runs"}
+          </button>
+        ) : null}
       </div>
     </aside>
   );
