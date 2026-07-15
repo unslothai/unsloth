@@ -4845,8 +4845,17 @@ async def validate_model(
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        redacted_msg = redact_native_paths(str(e))
+        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+            logger.warning(
+                "NVFP4 inference is not supported yet while validating '%s'",
+                model_log_label,
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+            )
         if native_grant_backed:
-            redacted_msg = redact_native_paths(str(e))
             logger.error(
                 "Error validating native model %s: %s",
                 model_log_label,
@@ -4867,7 +4876,7 @@ async def validate_model(
         # Path-redact for safety and keep any other exception type generic so an
         # unexpected internal error never leaks its details to the client.
         if isinstance(e, (RuntimeError, ValueError)):
-            msg = redact_native_paths(str(e)).strip()
+            msg = redacted_msg.strip()
             if msg:
                 msg = _maybe_unsupported_message(msg)
                 raise HTTPException(
