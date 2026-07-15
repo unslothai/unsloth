@@ -1739,7 +1739,9 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls[0][0] == "plain"
 
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
-        # Mirror of the previous test for the default (None) policy.
+        # Mirror of the previous test for the default (None) policy. An omitted
+        # permission_mode still runs here because web_search is a safe server tool
+        # (only a selected terminal/python would require the missing gate).
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
@@ -1760,6 +1762,126 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
         assert backend.calls == []
+
+    def test_permission_mode_gating_for_server_tools(self, monkeypatch):
+        # ask is a request for a per-call pause this channel cannot honor, so it is
+        # always rejected, even for a safe-only server tool (web_search).
+        safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = safe_tools, permission_mode = "ask")
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "no confirmation channel" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
+
+        # auto only gates unsafe calls, so a safe-only selection runs (nothing to
+        # gate), like the omitted default. Both keep existing callers working.
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(tools = safe_tools, **extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+        # But auto or an omitted mode that would run a local tool (terminal/python,
+        # via a bare Anthropic tool type or enabled_tools) is rejected, since that
+        # tool could need the gate this channel lacks.
+        for local_payload in (
+            _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
+            _basic_payload(
+                tools = [{"type": "terminal", "name": "terminal"}], permission_mode = "auto"
+            ),
+            _basic_payload(tools = safe_tools, enable_tools = True, enabled_tools = ["python"]),
+        ):
+            backend = _mock_backend(monkeypatch)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(local_payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert "terminal" in exc.value.detail["error"]["message"]
+            assert backend.calls == []
+
+        # off, full, and a legacy confirm_tool_calls=False opt-out all run, even
+        # with a local tool selected. The explicit opt-out wins over the mode
+        # (mirrors _permission_mode_confirm and the GGUF path), so it runs even
+        # under ask, which otherwise always rejects.
+        for extra in (
+            {"tools": safe_tools, "permission_mode": "off"},
+            {"tools": safe_tools, "permission_mode": "full"},
+            {"tools": safe_tools, "enabled_tools": ["python"], "confirm_tool_calls": False},
+            {"tools": safe_tools, "permission_mode": "ask", "confirm_tool_calls": False},
+            {
+                "tools": [{"type": "terminal", "name": "terminal"}],
+                "permission_mode": "ask",
+                "confirm_tool_calls": False,
+            },
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(**extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+    def test_render_html_gated_for_server_tools(self, monkeypatch):
+        # render_html is no longer unconditionally safe: a networked canvas prompts
+        # in auto and this channel cannot present that gate, so selecting it under
+        # ask/auto/omitted rejects like terminal/python; off/full (and an explicit
+        # confirm opt-out) run it.
+        rh = {"enable_tools": True, "enabled_tools": ["render_html"]}
+        for mode in ("ask", "auto", None):
+            backend = _mock_backend(monkeypatch)
+            fields = dict(rh)
+            if mode is not None:
+                fields["permission_mode"] = mode
+            payload = _basic_payload(**fields)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert "no confirmation channel" in exc.value.detail["error"]["message"]
+            assert backend.calls == []
+        for extra in (
+            {"permission_mode": "off"},
+            {"permission_mode": "full"},
+            {"confirm_tool_calls": False},
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(**{**rh, **extra})
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+    def test_permission_mode_rejected_before_auto_switch(self, monkeypatch):
+        # The unsupported-mode rejection must run before _maybe_auto_switch_model,
+        # so an invalid confirm-gated request never evicts the resident model
+        # (mirrors the pre-switch malformed- and mixed-tool guards).
+        import routes.inference as inf_mod
+
+        switch_calls = []
+
+        async def _rec_switch(*_args, **_kwargs):
+            switch_calls.append(1)
+
+        monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _rec_switch)
+        safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        local_tools = [{"type": "terminal", "name": "terminal"}]
+
+        # ask (any server tool), auto with a local tool, and an omitted mode
+        # selecting a local tool are all rejected up front, before the switch runs.
+        for payload in (
+            _basic_payload(tools = safe_tools, permission_mode = "ask"),
+            _basic_payload(tools = local_tools, permission_mode = "auto"),
+            _basic_payload(tools = local_tools),
+        ):
+            switch_calls.clear()
+            _mock_backend(monkeypatch)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert switch_calls == [], "rejection must precede the auto-switch"
+
+        # A supported request (off) still reaches the switch and runs the loop.
+        switch_calls.clear()
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = safe_tools, permission_mode = "off")
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert switch_calls == [1]
 
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)

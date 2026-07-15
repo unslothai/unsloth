@@ -79,6 +79,7 @@ import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
@@ -131,7 +132,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -1428,11 +1428,14 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  // More than 4 pills: collapse to icons only. Search and Code always show;
+  // More than 4 pills: collapse to icons only. Search and Code always show; the
+  // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
+      (permissionMode !== "off" ? 1 : 0) +
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
@@ -1856,9 +1859,9 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Active-mode badge: always visible when bypass is on, even while
-              the pill row is collapsed (returns null when off). */}
-          <BypassPermissionsToggle />
+          {/* Permission-level pill: always visible, even while the pill row
+              is collapsed; opens the permission level dropdown. */}
+          <PermissionModeComposerPill side={effectiveMenuSide} />
           {composerExpanded ? (
             <>
               <WebSearchToggle />
@@ -2616,36 +2619,6 @@ const ArtifactsToggle: FC = () => {
         />
       </PillGlyph>
       <span>Canvas</span>
-    </button>
-  );
-};
-
-// Claude gold pill shown while Bypass permissions is on; click to turn it off.
-// Mirror of shared-composer's badge so both composers surface the state.
-const BypassPermissionsToggle: FC = () => {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
-  if (!bypassPermissions) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => setBypassPermissions(false)}
-      className="composer-pill-btn"
-      data-active="true"
-      data-variant="danger"
-      aria-label="Disable Bypass permissions"
-      title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-    >
-      <PillGlyph>
-        <HugeiconsIcon
-          icon={ShieldBanIcon}
-          strokeWidth={2}
-          className="size-[15px]"
-        />
-      </PillGlyph>
-      <span>Bypass permissions</span>
     </button>
   );
 };
