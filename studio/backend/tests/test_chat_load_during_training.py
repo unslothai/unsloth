@@ -420,7 +420,6 @@ class TestChatLoadGuardRoute(unittest.TestCase):
 
     def test_local_chat_gguf_classification_is_definitive(self):
         import tempfile
-
         class _Probe:
             is_diffusion = False
             _architecture = "llama"

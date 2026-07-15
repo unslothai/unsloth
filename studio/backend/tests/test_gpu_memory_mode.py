@@ -260,9 +260,7 @@ def test_auto_layers_never_sends_ctx_size_zero():
 
 
 def test_manual_mode_clears_inherited_main_model_placement_env():
-    env = {
-        name: "inherited" for name in LlamaCppBackend._MANUAL_PLACEMENT_ENV_VARS
-    }
+    env = {name: "inherited" for name in LlamaCppBackend._MANUAL_PLACEMENT_ENV_VARS}
     env["LLAMA_ARG_N_GPU_LAYERS_DRAFT"] = "7"
     env["UNRELATED"] = "kept"
 
