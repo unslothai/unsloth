@@ -67,6 +67,10 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -929,6 +933,10 @@ export function SharedComposer({
         return parts[parts.length - 1] || id;
       }
 
+      // Set when an accepted transformers install unloaded the active model
+      // server-side; a later failure must then clear the stale checkpoint.
+      let upgradeUnloadedActive = false;
+
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -955,6 +963,31 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
         });
+        // Upgrade dialog first (mirrors the primary load path).
+        if (validation.requires_transformers_upgrade) {
+          const upgraded = await confirmTransformersUpgradeIfNeeded({
+            modelName: sel.id,
+            upgrade: validation.transformers_upgrade,
+            // No installable release: custom-code models may fall back to the trust_remote_code gate below.
+            trustRemoteCodeFallback: validation.requires_trust_remote_code,
+          });
+          // The install unloads the active model before the swap (even when the
+          // swap then fails); if a later gate cancels or the load fails, the UI
+          // must stop pointing at that unloaded model.
+          if (
+            useTransformersUpgradeDialogStore
+              .getState()
+              .consumeServerUnloadedChat()
+            && currentStore.params.checkpoint
+          ) {
+            upgradeUnloadedActive = true;
+          }
+          if (!upgraded) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+            );
+          }
+        }
         if (
           validation.requires_trust_remote_code ||
           validation.requires_security_review
@@ -990,6 +1023,7 @@ export function SharedComposer({
           tensor_parallel: currentStore.tensorParallel,
         });
         saveSpeculativeType(specSettings.speculativeType);
+        upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1097,6 +1131,11 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
+        // The install already unloaded the previously active model; drop the
+        // checkpoint so the UI does not keep pointing at an unloaded model.
+        if (upgradeUnloadedActive) {
+          useChatRuntimeStore.getState().clearCheckpoint();
+        }
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",

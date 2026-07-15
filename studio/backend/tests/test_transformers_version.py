@@ -2550,3 +2550,649 @@ class TestHfEndpointUnreachable:
         t0 = time.time()
         result = hf_endpoint_unreachable(timeout = 2)
         assert result is True and (time.time() - t0) < 6.0
+
+
+class TestLatestTierActiveFor:
+    """latest_tier_active_for: the 16-bit guard for the consented latest sidecar."""
+
+    @staticmethod
+    def _pin(
+        monkeypatch,
+        tv,
+        version = "5.13.1",
+    ):
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: version)
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: None)
+
+    def test_true_when_tier_latest(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        self._pin(monkeypatch, tv)
+        monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, **k: "latest")
+        assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is True
+
+    def test_false_for_fixed_tiers(self, monkeypatch):
+        import utils.transformers_version as tv
+        self._pin(monkeypatch, tv)
+        for tier in ("default", "530", "550", "510"):
+            monkeypatch.setattr(tv, "get_transformers_tier", lambda *a, _t = tier, **k: _t)
+            assert tv.latest_tier_active_for("some/model") is False
+
+    def test_false_without_pin_and_no_resolution(self, monkeypatch):
+        """No sidecar pin returns False before any tier or network resolution."""
+        import utils.transformers_version as tv
+
+        def _boom(*a, **k):
+            raise AssertionError("must not resolve without a pin")
+
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
+        monkeypatch.setattr(tv, "_remote_lora_base", _boom)
+        monkeypatch.setattr(tv, "get_transformers_tier", _boom)
+        assert tv.latest_tier_active_for("Zyphra/ZAYA1-8B") is False
+
+    def test_never_raises(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        def _boom(*a, **k):
+            raise RuntimeError("tier resolution exploded")
+
+        self._pin(monkeypatch, tv)
+        monkeypatch.setattr(tv, "get_transformers_tier", _boom)
+        assert tv.latest_tier_active_for("some/model") is False
+
+    def test_remote_lora_base_is_resolved(self, monkeypatch):
+        """A remote adapter is judged by its base model, like worker activation."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.13.1")
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda name, hf_token = None: "Zyphra/ZAYA1-8B")
+        tiers = {"Zyphra/ZAYA1-8B": "latest"}
+        monkeypatch.setattr(
+            tv, "get_transformers_tier", lambda name, *a, **k: tiers.get(name, "default")
+        )
+        assert tv.latest_tier_active_for("someuser/zaya-lora") is True
+
+    def test_local_checkpoint_config_upgrades(self, monkeypatch, tmp_path):
+        """An adapter dir with its own config.json merges tiers like activation does."""
+        import utils.transformers_version as tv
+
+        adapter = tmp_path / "ckpt"
+        adapter.mkdir()
+        (adapter / "adapter_config.json").write_text("{}")
+        (adapter / "adapter_model.safetensors").write_text("x")
+        (adapter / "config.json").write_text("{}")
+        self._pin(monkeypatch, tv)
+        monkeypatch.setattr(tv, "_resolve_base_model", lambda name: "base/model")
+        tiers = {"base/model": "default", str(adapter): "latest"}
+        monkeypatch.setattr(
+            tv, "get_transformers_tier", lambda name, *a, **k: tiers.get(name, "default")
+        )
+        assert tv.latest_tier_active_for(str(adapter)) is True
+
+
+class TestLatestTierForces16Bit:
+    """The inference worker and load route refuse bnb 4-bit on the latest sidecar."""
+
+    def _read(self, rel):
+        backend_dir = Path(__file__).resolve().parent.parent
+        return (backend_dir / rel).read_text()
+
+    def test_worker_guard_present(self):
+        src = self._read("core/inference/worker.py")
+        assert "latest_tier_active_for" in src, (
+            "core/inference/worker.py must force load_in_4bit=False when "
+            "latest_tier_active_for(model) is true: transformers' grouped-MoE "
+            "kernels crash on bnb-quantized expert weights for brand-new "
+            "architectures."
+        )
+
+    def test_route_guard_present(self):
+        src = self._read("routes/inference.py")
+        assert "latest_tier_active_for" in src, (
+            "routes/inference.py must size the VRAM guard with the same 16-bit "
+            "flip the worker applies for latest-sidecar models."
+        )
+
+    def test_validate_route_mirrors_16bit_flip(self):
+        # Without the same flip, /validate sizes 4-bit and /load then 409s.
+        src = self._read("routes/inference.py")
+        body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
+        assert "latest_tier_active_for" in body, (
+            "validate_model must apply the latest-sidecar 16-bit flip before "
+            "_guard_chat_load_against_training so /validate and /load agree."
+        )
+        # First-time loads have no pin yet, so an installable upgrade must also size 16-bit.
+        assert body.index("check_upgrade_for_model") < body.index(
+            "_guard_chat_load_against_training"
+        ), "the upgrade check must run before the training guard"
+        assert (
+            "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0]
+        ), "an installable upgrade must force 16-bit sizing for the guard"
+
+    def test_validate_offered_upgrade_preserves_custom_code_4bit(self):
+        # A merely-offered (not installed) upgrade must NOT force 16-bit sizing when the
+        # model has a custom-code (auto_map) fallback: /load loads it 4-bit without the
+        # install, and the install route refuses during active training, so 16-bit sizing
+        # here would 409 the only viable 4-bit path.
+        src = self._read("routes/inference.py")
+        body = src.split("async def validate_model", 1)[1].split("\nasync def ", 1)[0]
+        flip = body.split("Mirror /load's latest-sidecar 16-bit flip", 1)[1].split(
+            "_guard_chat_load_against_training", 1
+        )[0]
+        assert "not requires_trust_remote_code" in flip, (
+            "the offered-upgrade 16-bit flip must be gated on the absence of a custom-code "
+            "fallback so /validate does not 409 a 4-bit load /load would allow"
+        )
+        # requires_trust_remote_code must be resolved before the flip consumes it.
+        assert body.index("requires_trust_remote_code = any(") < body.index(
+            "not requires_trust_remote_code"
+        )
+
+    def test_install_route_guards_active_latest_workers(self):
+        # Stage-and-swap replaces .venv_t5_latest in place, so a live worker on the
+        # old sidecar would lazy-import files from the new version.
+        src = self._read("routes/inference.py")
+        body = src.split("async def install_latest_transformers_route", 1)[1].split(
+            "\nasync def ", 1
+        )[0]
+        assert (
+            "is_training_active" in body
+            and "is_export_active" in body
+            and "inference_lifecycle_gate" in body
+        ), (
+            "install_latest_transformers_route must refuse while training or export "
+            "runs, and hold the lifecycle gate while unloading the chat model and "
+            "swapping the sidecar."
+        )
+        # The unload (via before_swap so failed installs keep the model), the export-worker
+        # teardown, and the install must all sit INSIDE the gate so no /load interleaves.
+        assert "unload_model(active)" in body
+        assert "cleanup_memory()" in body
+        # Export teardown precedes the chat unload so its failure aborts with the model still loaded.
+        assert body.index("cleanup_memory()") < body.index("unload_model(active)")
+        assert "install_latest_transformers(" in body and "_unload_before_swap" in body
+        # The gate must be owned by the shielded task, not the request coroutine: a cancelled
+        # POST unwinding an async-with would release the only guard /load honors mid-install.
+        gated_task = body.split("async def _gated_install", 1)[1]
+        assert "inference_lifecycle_gate():" in gated_task
+        assert "asyncio.to_thread(_run_install)" in gated_task
+        # The reservation must be taken BEFORE the (awaitable) gate wait, or a
+        # training/export start could slip in while this request queues on the gate.
+        assert body.index("try_begin_sidecar_swap()") < body.index(
+            "inference_lifecycle_gate():"
+        ), "the swap reservation must be raised before waiting on the lifecycle gate"
+        # A failed teardown must abort the swap (raise), not fall through to it.
+        assert body.count("raise RuntimeError") >= 3, (
+            "export, chat-unload, and idle-worker teardown failures must raise so "
+            "the staged install never swaps under a live worker"
+        )
+        # The installer thread owns (and releases) the reservation, shielded from
+        # request cancellation, so a cancelled POST cannot unlock a live swap.
+        assert "asyncio.shield" in body and "end_sidecar_swap()" in body
+        # In-flight generation streams predate the gate; the route refuses rather than kill them
+        # via the before_swap unload. The count is rechecked UNDER the gate, since a wait on a
+        # long /load outlasts the pre-gate fast path and streams take this same gate.
+        assert "other_inference_request_count" in body
+        gated_task = body.split("async def _gated_install", 1)[1]
+        assert "other_inference_request_count" in gated_task
+
+    def test_start_routes_refuse_during_install(self):
+        # A worker spawned mid-swap could activate a half-replaced sidecar.
+        training = self._read("routes/training.py")
+        start = training.split("async def start_training", 1)[1].split("\nasync def ", 1)[0]
+        assert (
+            "is_install_in_progress" in start
+        ), "training /start must refuse while a transformers install is in progress"
+        export = self._read("routes/export.py")
+        helper = export.split("def _ensure_export_supported", 1)[1].split("\ndef ", 1)[0]
+        assert (
+            "is_install_in_progress" in helper
+        ), "mutating export routes must refuse while a transformers install is in progress"
+
+    def test_spawn_sites_recheck_reservation(self):
+        # The route-level guards are one-shot; validation between them and the
+        # actual spawn can outlast an install's start, so the spawn itself rechecks.
+        training = self._read("core/training/training.py")
+        assert (
+            training.count("sidecar_swap_in_progress()") >= 2
+        ), "both training spawn sites must recheck the sidecar swap reservation"
+        export = self._read("core/export/orchestrator.py")
+        spawn = export.split("def _spawn_subprocess", 1)[1].split("\n    def ", 1)[0]
+        assert (
+            "sidecar_swap_kind()" in spawn
+        ), "the export subprocess spawn must recheck the sidecar swap reservation"
+        # Training marks the spawn active BEFORE its recheck, so either side sees the other:
+        # is_training_active covers the window between proc.start() and the _proc assignment.
+        assert training.index("self._spawn_in_progress = True") < training.index(
+            "if sidecar_swap_in_progress():"
+        )
+        active = training.split("def is_training_active", 1)[1].split("\n    def ", 1)[0]
+        assert "_spawn_in_progress" in active
+        # Export load-checkpoint refuses BEFORE tearing down the old worker, so a
+        # lost race against an install keeps the loaded checkpoint (no bare 500).
+        loadck = export.split("def load_checkpoint", 1)[1].split("\n    def ", 1)[0]
+        assert loadck.index("sidecar_swap_in_progress()") < loadck.index("_shutdown_subprocess()")
+        # The training handshake precedes the VRAM-freeing before_spawn hook, so
+        # losing the race never tears down chat/export for a run that won't spawn.
+        assert training.index("self._spawn_in_progress = True") < training.index("before_spawn()")
+        # The spawn-time export check is op-aware for installs (the install side
+        # aborts on is_export_active) but always refuses for repairs, which have
+        # no such abort and can be rebuilding the sidecar right now.
+        assert (
+            '_swap_kind == "repair" or (_swap_kind is not None and not self._export_active)'
+            in spawn
+        )
+
+
+class TestSidecarSwapReservation:
+    """The lazy repair takes the same reservation the install route and worker starts use."""
+
+    def _repair_setup(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        monkeypatch.setattr(
+            tv,
+            "_latest_pin_data",
+            lambda: {
+                "version": "5.99.0",
+                "packages": ["transformers==5.99.0"],
+            },
+        )
+        monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: False)
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        return tv
+
+    def test_repair_holds_reservation_during_swap(self, monkeypatch, tmp_path):
+        tv = self._repair_setup(monkeypatch, tmp_path)
+        seen = {}
+
+        def _fake_swap(
+            version,
+            packages,
+            before_swap = None,
+        ):
+            seen["active_during_swap"] = tv.sidecar_swap_in_progress()
+            return True
+
+        monkeypatch.setattr(tv, "_stage_and_swap_latest_venv", _fake_swap)
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert seen["active_during_swap"] is True
+        assert tv.sidecar_swap_in_progress() is False
+
+    def test_foreign_process_lock_file_visible(self, monkeypatch, tmp_path):
+        """A repair in a LIVE worker subprocess is seen (via the lock file) by this
+        process, and its lock is never broken while the owner is alive."""
+        import os
+        import time
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        lock = tv._swap_lock_path()
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        # A live owner (this process): visible and never reclaimed, even once aged past
+        # the cutoff -- a slow but live pip install must keep its lock.
+        lock.write_text('{"pid": %d}' % os.getpid())
+        assert tv.sidecar_swap_in_progress() is True
+        assert tv.try_begin_sidecar_swap() is False
+        old_ts = time.time() - 3 * 60 * 60
+        os.utime(lock, (old_ts, old_ts))
+        assert tv.sidecar_swap_in_progress() is True
+        assert tv.try_begin_sidecar_swap() is False
+
+    def test_dead_owner_lock_reclaimed_promptly(self, monkeypatch, tmp_path):
+        """A fresh lock whose recorded owner is dead is reclaimed at once, not after the
+        long cutoff: a crash mid-install must not wedge loads/training/export for hours."""
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        lock = tv._swap_lock_path()
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        # 999999 is not a live PID: a fresh dead-owner lock is immediately stale.
+        lock.write_text('{"pid": 999999, "kind": "install"}')
+        assert tv._pid_alive(999999) is False
+        assert tv.sidecar_swap_in_progress() is False
+        assert tv.try_begin_sidecar_swap() is True
+        try:
+            assert lock.is_file()
+        finally:
+            tv.end_sidecar_swap()
+        assert not lock.exists()
+
+    def test_unreadable_pid_lock_uses_age_cutoff(self, monkeypatch, tmp_path):
+        """A lock with no readable owner PID (mid create-before-write, or corrupt) is not
+        reclaimed while fresh -- only after the long cutoff -- so a lock a live owner just
+        created is not stolen before its PID lands."""
+        import os
+        import time
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        lock = tv._swap_lock_path()
+        lock.parent.mkdir(parents = True, exist_ok = True)
+        lock.write_text("")  # created but metadata not yet written
+        assert tv.sidecar_swap_in_progress() is True
+        old_ts = time.time() - (tv._SWAP_LOCK_STALE_SECS + 60)
+        os.utime(lock, (old_ts, old_ts))
+        assert tv.sidecar_swap_in_progress() is False
+
+    def test_repair_refused_while_install_holds_reservation(self, monkeypatch, tmp_path):
+        tv = self._repair_setup(monkeypatch, tmp_path)
+
+        def _must_not_run(*a, **k):
+            raise AssertionError("repair must not swap while an install is in progress")
+
+        monkeypatch.setattr(tv, "_stage_and_swap_latest_venv", _must_not_run)
+        assert tv.try_begin_sidecar_swap() is True
+        try:
+            assert tv._ensure_venv_t5_latest_exists() is False
+        finally:
+            tv.end_sidecar_swap()
+
+
+class TestRecoverStrandedSidecar:
+    """A swap whose activation rename AND rollback both fail strands the previous sidecar
+    at .old with no live dir (its pin marker went with it). Reading the pin self-heals it,
+    but never while a swap legitimately holds the reservation."""
+
+    def _setup(self, monkeypatch, tmp_path):
+        import utils.transformers_version as tv
+
+        live = str(tmp_path / "venv_t5_latest")
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", live)
+        # Stranded state: live gone, previous sidecar (with its marker) sits at .old.
+        retired = Path(live + ".old")
+        retired.mkdir(parents = True)
+        (retired / tv._LATEST_PIN_MARKER).write_text(
+            '{"version": "5.99.0", "packages": ["transformers==5.99.0"]}'
+        )
+        return tv, Path(live), retired
+
+    def test_stranded_old_recovered_on_pin_read(self, monkeypatch, tmp_path):
+        tv, live, retired = self._setup(monkeypatch, tmp_path)
+        data = tv._latest_pin_data()
+        assert live.is_dir()
+        assert not retired.exists()
+        assert data is not None and data["version"] == "5.99.0"
+
+    def test_stranded_recovery_skipped_during_swap(self, monkeypatch, tmp_path):
+        tv, live, retired = self._setup(monkeypatch, tmp_path)
+        assert tv.try_begin_sidecar_swap() is True
+        try:
+            # A swap holds the reservation and may be mid-rename; do not race it.
+            assert tv._latest_pin_data() is None
+            assert not live.exists()
+            assert retired.is_dir()
+        finally:
+            tv.end_sidecar_swap()
+        # Once the swap is done, the next pin read recovers the stranded sidecar.
+        assert tv._latest_pin_data() is not None
+        assert live.is_dir()
+
+
+class TestCachedLatestMappingRevalidated:
+    """A cached 'latest' mapping is dropped and re-resolved when the sidecar since broke
+    in-process, so routing self-heals instead of trusting a mapping parsed from a sidecar
+    that no longer exists (which would keep routing latest-only models to a broken tier)."""
+
+    def test_broken_sidecar_drops_cached_latest_mapping(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
+        monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: False)
+        seen = {"n": 0}
+
+        def _fake_overlay(tier):
+            seen["n"] += 1
+            return None  # broken/unavailable -> empty, uncached
+
+        monkeypatch.setattr(tv, "_overlay_transformers_dir", _fake_overlay)
+        assert tv._config_model_types("latest") == frozenset()
+        assert seen["n"] == 1  # re-resolved, not served from the stale cache
+        assert "latest" not in tv._config_mapping_cache
+
+    def test_intact_sidecar_serves_cached_latest_mapping(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
+        monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: True)
+        monkeypatch.setattr(
+            tv,
+            "_overlay_transformers_dir",
+            lambda tier: pytest.fail("intact sidecar must serve the cache without re-resolving"),
+        )
+        assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+    def test_non_latest_cache_not_revalidated(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"530": frozenset({"gemma3"})})
+        monkeypatch.setattr(
+            tv,
+            "_latest_sidecar_intact",
+            lambda: pytest.fail("non-latest tiers must not pay the sidecar-intact check"),
+        )
+        assert tv._config_model_types("530") == frozenset({"gemma3"})
+
+    def test_deleted_pin_drops_cached_latest_mapping(self, monkeypatch, tmp_path):
+        # A pin marker deleted after the mapping was cached makes _latest_pin_data None;
+        # the cache must be dropped (not trusted), so routing re-resolves to no latest tier
+        # rather than routing to a latest tier that then fails worker activation.
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(tmp_path / "venv_t5_latest"))
+        monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
+        monkeypatch.setattr(tv, "_config_mapping_cache", {"latest": frozenset({"brandnew"})})
+        # No pin marker on disk -> _latest_pin_data() is None -> not intact.
+        assert tv._latest_sidecar_intact() is False
+        assert tv._config_model_types("latest") == frozenset()
+        assert "latest" not in tv._config_mapping_cache
+
+
+class TestOverlayRepairsIncompleteSidecar:
+    """Routing self-heals a pinned latest sidecar that is present but incomplete,
+    not only one whose transformers/ dir vanished: workers refuse parent-only
+    repairs, so a sidecar missing a pinned package would fail every load."""
+
+    def _setup(self, monkeypatch, tmp_path, valid):
+        import utils.transformers_version as tv
+
+        live = tmp_path / "venv_t5_latest"
+        (live / "transformers").mkdir(parents = True)
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
+        monkeypatch.setattr(
+            tv,
+            "_latest_pin_data",
+            lambda: {"version": "5.99.0", "packages": ["transformers==5.99.0", "tiktoken"]},
+        )
+        monkeypatch.setattr(tv, "_venv_dir_is_valid", lambda d, p: valid)
+        monkeypatch.setattr(tv, "_latest_repair_failed_at", 0.0)
+        return tv
+
+    def test_incomplete_sidecar_triggers_repair(self, monkeypatch, tmp_path):
+        tv = self._setup(monkeypatch, tmp_path, valid = False)
+        called = {"n": 0}
+
+        def _fake_repair():
+            called["n"] += 1
+            return True
+
+        monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
+        src = tv._overlay_transformers_dir("latest")
+        assert called["n"] == 1
+        assert src == str(tmp_path / "venv_t5_latest" / "transformers")
+
+    def test_intact_sidecar_skips_repair(self, monkeypatch, tmp_path):
+        tv = self._setup(monkeypatch, tmp_path, valid = True)
+
+        def _must_not_run():
+            raise AssertionError("intact sidecar must not trigger a repair")
+
+        monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _must_not_run)
+        assert tv._overlay_transformers_dir("latest") == str(
+            tmp_path / "venv_t5_latest" / "transformers"
+        )
+
+    def test_failed_repair_backs_off(self, monkeypatch, tmp_path):
+        tv = self._setup(monkeypatch, tmp_path, valid = False)
+        called = {"n": 0}
+
+        def _fake_repair():
+            called["n"] += 1
+            return False
+
+        monkeypatch.setattr(tv, "_ensure_venv_t5_latest_exists", _fake_repair)
+        # A failed repair must not route through the broken sidecar, neither on
+        # the failing attempt nor while the backoff suppresses the next attempt.
+        assert tv._overlay_transformers_dir("latest") is None
+        assert tv._overlay_transformers_dir("latest") is None
+        assert called["n"] == 1
+
+
+class TestStageAndSwapBeforeSwap:
+    """before_swap fires only when the staged install succeeded and the swap is next."""
+
+    def _setup(self, monkeypatch, tmp_path, build_ok):
+        import utils.transformers_version as tv
+
+        live = tmp_path / "venv_latest"
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+
+        def _fake_build(target, packages, label):
+            if build_ok:
+                Path(target).mkdir(parents = True, exist_ok = True)
+            return build_ok
+
+        monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_build)
+        return tv, live
+
+    def test_called_after_successful_staging(self, monkeypatch, tmp_path):
+        tv, live = self._setup(monkeypatch, tmp_path, build_ok = True)
+        calls = []
+        assert tv._stage_and_swap_latest_venv(
+            "5.99.0", ("transformers==5.99.0",), before_swap = lambda: calls.append(1)
+        )
+        assert calls == [1] and live.is_dir()
+
+    def test_not_called_when_staging_fails(self, monkeypatch, tmp_path):
+        tv, live = self._setup(monkeypatch, tmp_path, build_ok = False)
+        calls = []
+        assert not tv._stage_and_swap_latest_venv(
+            "5.99.0", ("transformers==5.99.0",), before_swap = lambda: calls.append(1)
+        )
+        assert calls == [] and not live.exists()
+
+    def test_failure_in_before_swap_keeps_previous_sidecar(self, monkeypatch, tmp_path):
+        tv, live = self._setup(monkeypatch, tmp_path, build_ok = True)
+        live.mkdir()
+        (live / "sentinel").write_text("old")
+
+        def _boom():
+            raise RuntimeError("worker teardown failed")
+
+        assert not tv._stage_and_swap_latest_venv(
+            "5.99.0", ("transformers==5.99.0",), before_swap = _boom
+        )
+        assert (live / "sentinel").read_text() == "old"
+
+
+class TestKillSwitchBeatsMappingCache:
+    def test_cached_latest_probe_ignored_when_disabled(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        key = tv._probe_cache_key("some/model")
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
+        # With the switch set, the cached latest entry must not short-circuit;
+        # the probe re-resolves against the non-latest order (stub it to 530).
+        monkeypatch.setattr(tv, "_probe_tier_venvs", lambda: {})
+        monkeypatch.setattr(tv, "_probe_tier_order", lambda: ())
+        assert tv._probe_tier("some/model", None, "test") != "latest"
+        # Cached non-latest entries and the unset switch still short-circuit.
+        monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS")
+        assert tv._probe_tier("some/model", None, "test") == "latest"
+
+    def test_cached_latest_mapping_ignored_when_disabled(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setitem(tv._config_mapping_cache, "latest", frozenset({"brandnew"}))
+        # The cache is trusted only when the sidecar is intact; hold it intact so this
+        # test isolates the kill switch, not the sidecar-revalidation path.
+        monkeypatch.setattr(tv, "_latest_sidecar_intact", lambda: True)
+        monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
+        assert tv._config_model_types("latest") == frozenset()
+        monkeypatch.delenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS")
+        assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+
+class TestRaiseTierForNested:
+    """_raise_tier_for_nested: a wrapper's nested model_type can raise a fast-path tier."""
+
+    def _patch_types(self, monkeypatch, per_tier):
+        import utils.transformers_version as tv
+        monkeypatch.setattr(
+            tv, "_config_model_types", lambda tier: frozenset(per_tier.get(tier, ()))
+        )
+
+    def test_nested_latest_only_type_raises(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}})
+        cfg = {"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}}
+        assert tv._raise_tier_for_nested(cfg, "550") == "latest"
+
+    def test_never_lowers_a_fast_path_tier(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        # Mapping alone would say 530, but the fast path (e.g. a name override) said 550.
+        self._patch_types(monkeypatch, {"530": {"qwen3_5"}, "550": {"qwen3_5"}})
+        assert tv._raise_tier_for_nested({"model_type": "qwen3_5"}, "550") == "550"
+
+    def test_no_config_keeps_tier(self):
+        import utils.transformers_version as tv
+        assert tv._raise_tier_for_nested(None, "550") == "550"
+
+    def test_unknown_nested_type_never_vetoes(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        # A nested type unknown everywhere (not even latest) keeps the fast path.
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4"}})
+        cfg = {"model_type": "gemma4", "text_config": {"model_type": "unreleased"}}
+        assert tv._raise_tier_for_nested(cfg, "550") == "550"
+
+    def test_name_fast_path_folds_when_latest_pinned(self, monkeypatch):
+        """A fixed-tier name match with a latest-only model_type routes to latest
+        once the sidecar is pinned; without a pin the name tier stands (no I/O)."""
+        import utils.transformers_version as tv
+
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"brandnew_arch"}})
+        monkeypatch.setattr(tv, "_tier_from_name", lambda name: ("550", "gemma-4"))
+        monkeypatch.setattr(
+            tv, "_load_config_json", lambda name, tok = None: {"model_type": "brandnew_arch"}
+        )
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
+        assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "latest"
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: None)
+        monkeypatch.setattr(
+            tv,
+            "_load_config_json",
+            lambda name, tok = None: (_ for _ in ()).throw(AssertionError("no I/O without a pin")),
+        )
+        assert tv.get_transformers_tier("org/gemma-4-new", probe = False) == "550"
+
+    def test_fast_path_folds_nested_tier(self, monkeypatch, tmp_path):
+        """End to end: a local wrapper config on a fixed fast path routes to latest
+        when its nested type only exists in the installed latest sidecar."""
+        import utils.transformers_version as tv
+
+        ckpt = tmp_path / "wrapper"
+        ckpt.mkdir()
+        (ckpt / "config.json").write_text(
+            json.dumps({"model_type": "gemma4", "text_config": {"model_type": "brandnew_arch"}})
+        )
+        self._patch_types(monkeypatch, {"550": {"gemma4"}, "latest": {"gemma4", "brandnew_arch"}})
+        monkeypatch.setattr(tv, "_config_needs_510", lambda cfg: False)
+        monkeypatch.setattr(tv, "_config_needs_550", lambda cfg: True)
+        assert tv.get_transformers_tier(str(ckpt), probe = False) == "latest"

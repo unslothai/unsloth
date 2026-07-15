@@ -270,7 +270,7 @@ try:
             return fast_rms_layernorm(self, X, gemma = False)
 
 
-except:
+except (ImportError, AttributeError):
     pass
 
 
@@ -281,7 +281,7 @@ def patch_rms_layernorm():
     try:
         import transformers.models.mllama.modeling_mllama
         transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = Unsloth_MllamaTextRMSNorm
-    except:
+    except (ImportError, AttributeError, NameError):
         pass
     return
 
@@ -293,7 +293,7 @@ def unpatch_rms_layernorm():
     try:
         import transformers.models.mllama.modeling_mllama
         transformers.models.mllama.modeling_mllama.MllamaTextRMSNorm = MllamaTextRMSNorm
-    except:
+    except (ImportError, AttributeError, NameError):
         pass
     return
 

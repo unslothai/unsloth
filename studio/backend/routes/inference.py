@@ -1693,6 +1693,9 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    TransformersUpgradeInfo,
+    InstallLatestTransformersRequest,
+    InstallLatestTransformersResponse,
     TextContentPart,
     ImageContentPart,
     ImageUrl,
@@ -3836,11 +3839,25 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    # A sidecar install that has reserved the swap must not lose to a load that
+    # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
+    # install can reserve while this request queues on the gate, so the pre-gate
+    # check alone is only a fast path.
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    _swap_409 = HTTPException(
+        status_code = 409,
+        detail = "A transformers installation is in progress. Retry when it completes.",
+    )
+    if sidecar_swap_in_progress():
+        raise _swap_409
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
     async with inference_lifecycle_gate():
+        if sidecar_swap_in_progress():
+            raise _swap_409
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
@@ -4037,6 +4054,17 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
+        # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard
+        # to match. Off-loop: tier resolution reads configs.
+        if effective_load_in_4bit and not config.is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
+                effective_load_in_4bit = False
+                logger.info(
+                    f"Latest-transformers sidecar active for '{model_log_label}' - "
+                    "sizing and loading in 16-bit (4-bit is disabled for brand-new "
+                    "architectures)"
+                )
 
         # Refuse a load that would OOM active training, before the unload step below
         # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
@@ -4470,6 +4498,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Lost the spawn-time race to a sidecar install/repair: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))
@@ -4598,16 +4631,6 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-        )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
@@ -4624,16 +4647,69 @@ async def validate_model(
         security_targets = list(dict.fromkeys(security_targets))
 
         is_gguf = getattr(config, "is_gguf", False)
-        # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
-        # mixed repo are inert for this load, so gating on them is a false positive. Only
-        # run the remote-code/security preflight for non-GGUF loads.
+        # Does a newer transformers ship this model_type? Static overlay first, cached
+        # PyPI/main snapshot only for unknown types. Never fails validation; run before
+        # the training guard so an installable upgrade sizes as 16-bit.
+        transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+        if not is_gguf:
+            from utils.transformers_latest import check_upgrade_for_model
+
+            # Cover [adapter, base]: the worker activates transformers for the base model.
+            for _target in security_targets:
+                _upgrade = await asyncio.to_thread(
+                    check_upgrade_for_model, _target, request.hf_token
+                )
+                if _upgrade is not None:
+                    transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
+                    break
+
+        # Whether the model can load on the CURRENT transformers through its own remote
+        # code (auto_map, or the YAML trust default). Computed before the 16-bit flip
+        # because a model with this fallback still loads 4-bit without the offered install,
+        # exactly as /load does.
         requires_trust_remote_code = False
-        requires_security_review = False
         if not is_gguf:
             requires_trust_remote_code = any(
                 _requires_trust_remote_code_for_model(_t, request.hf_token)
                 for _t in security_targets
             )
+
+        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way. An
+        # ALREADY-ACTIVE latest sidecar always forces 16-bit (the worker will). A merely
+        # OFFERED (not yet installed) upgrade forces 16-bit only when the model has NO
+        # custom-code fallback: with auto_map it still loads 4-bit on the current
+        # transformers (as /load does without a successful install), and the install route
+        # refuses while training is active, so sizing 16-bit here would 409 the only viable
+        # 4-bit path. /load re-sizes 16-bit after a successful install and re-guards there.
+        if effective_load_in_4bit and not is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+            _install_only_upgrade = (
+                transformers_upgrade is not None
+                and transformers_upgrade.supported_in_pypi
+                and transformers_upgrade.pypi_version
+                and not requires_trust_remote_code
+            )
+            if _install_only_upgrade or await asyncio.to_thread(
+                latest_tier_active_for, config.identifier, request.hf_token
+            ):
+                effective_load_in_4bit = False
+        # Off-loop: guard does sync nvidia-smi / HF work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
+            config,
+            model_identifier = model_identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = effective_load_in_4bit,
+            max_seq_length = request.max_seq_length,
+            requested_gpu_ids = effective_gpu_ids,
+        )
+
+        # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
+        # mixed repo are inert for this load, so gating on them is a false positive. Only
+        # run the security preflight for non-GGUF loads (requires_trust_remote_code was
+        # already resolved above for the sizing flip).
+        requires_security_review = False
+        if not is_gguf:
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )
@@ -4676,6 +4752,8 @@ async def validate_model(
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,
+            requires_transformers_upgrade = transformers_upgrade is not None,
+            transformers_upgrade = transformers_upgrade,
         )
 
     except HTTPException:
@@ -4718,6 +4796,217 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+
+
+# studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.
+@studio_router.post(
+    "/install-latest-transformers", response_model = InstallLatestTransformersResponse
+)
+async def install_latest_transformers_route(
+    request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Consented install of the latest transformers release into the persistent
+    .venv_t5_latest sidecar.
+
+    Called after the user confirms the transformers-upgrade dialog raised by /validate
+    (requires_transformers_upgrade). The requested version must match the current latest
+    PyPI release (re-verified server-side); the sidecar then participates in routing on
+    this and every future start. A pip install runs off-loop, so this can take a minute.
+    """
+    from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    # The install stage-and-swaps .venv_t5_latest in place; a live worker would
+    # lazy-import from the new version mid-run, mixing incompatible modules. Gate on
+    # worker LIVENESS not tier (no HF token here, so tier re-resolution is unreliable
+    # for gated repos): training and export are refused, the chat model unloaded.
+    # Reserve the swap FIRST, before any await: training/export starts check this
+    # reservation, so raising it after the gate wait would let a worker slip in.
+    if not try_begin_sidecar_swap():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is already in progress.",
+        )
+    # Until the installer thread takes over, this coroutine owns the reservation
+    # and must release it on any early exit (the 409 refusals below).
+    owns_reservation = True
+    try:
+        from core.export import get_export_backend
+        from core.training import get_training_backend
+
+        if get_training_backend().is_training_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "A training run is active. Wait for it to finish before "
+                    "installing a new transformers version."
+                ),
+            )
+        _export = get_export_backend()
+        if _export.is_export_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An export is running. Wait for it to finish before "
+                    "installing a new transformers version."
+                ),
+            )
+        # A loaded (idle) export checkpoint would be torn down by the pre-swap
+        # cleanup; if the swap then failed, that state would be silently lost
+        # with no rollback signal. Make the user unload it deliberately first.
+        if getattr(_export, "current_checkpoint", None):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An export checkpoint is loaded. Unload it from the Export "
+                    "page before installing a new transformers version."
+                ),
+            )
+        # In-flight streams passed the middleware already, so the lifecycle gate can't
+        # protect them and the swap's unload would kill them mid-stream; mirror the
+        # auto-switch busy check. This route is not middleware-counted and pending
+        # requests stay blocked in the middleware, so neither is subtracted here.
+        from core.inference.llama_keepwarm import (
+            inference_lifecycle_gate,
+            note_model_unloaded,
+            other_inference_request_count,
+        )
+
+        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Another inference request is in progress. Wait for it to "
+                    "finish before installing a new transformers version."
+                ),
+            )
+
+        # Hold the lifecycle gate /load holds so no HF worker can start (or be mid-load
+        # with active_model_name unset) while the sidecar is swapped. Teardown runs via
+        # before_swap, only once the staged install succeeded: a failed pip/compat check
+        # must not leave the user with their model gone. GGUF stays loaded (llama-server
+        # never imports transformers).
+        backend = get_inference_backend()
+        export_backend = get_export_backend()
+
+        unloaded_chat = {"v": False}
+
+        def _unload_before_swap() -> None:
+            # Runs on the install thread, inside the gate held by _gated_install. Any
+            # failure raises so the previous sidecar stays untouched (a worker that did
+            # not tear down cleanly may still lazy-import from it). Export teardown runs
+            # FIRST so its failure aborts while the chat model is still loaded;
+            # cleanup_memory shuts the subprocess down even when its command fails, so
+            # judge by worker liveness, not its return value.
+            export_backend.cleanup_memory()
+            export_alive = getattr(export_backend, "is_worker_alive", None)
+            if callable(export_alive) and export_alive():
+                raise RuntimeError("Export worker still alive before the transformers swap")
+            active = getattr(backend, "active_model_name", None)
+            if active:
+                if not backend.unload_model(active):
+                    # A failed unload still clears the orchestrator's model state,
+                    # so the model is gone from the parent's view even though the
+                    # swap aborts: report it so the client rolls back instead of
+                    # pointing at an unloaded model.
+                    if getattr(backend, "active_model_name", None) != active:
+                        unloaded_chat["v"] = True
+                        note_model_unloaded()
+                    raise RuntimeError(f"Could not unload '{active}' before the transformers swap")
+                note_model_unloaded()
+                unloaded_chat["v"] = True
+                logger.info(
+                    "Unloaded '%s' before swapping in transformers %s",
+                    active,
+                    request.version,
+                )
+            # A failed load can leave a live worker with no active model that
+            # still holds sidecar modules (and blocks the rename on Windows).
+            worker_alive = getattr(backend, "is_worker_alive", None)
+            if callable(worker_alive) and worker_alive():
+                # _shutdown_subprocess keeps the handle when the worker outlives SIGKILL,
+                # so both its False result and the liveness recheck catch a survivor
+                # rather than the recheck being fooled by a nulled handle.
+                stopped = backend._shutdown_subprocess()
+                if not stopped or worker_alive():
+                    raise RuntimeError("Inference worker still alive before the transformers swap")
+
+        def _run_install() -> dict:
+            # Owns the reservation from here: releasing in the thread, not the route,
+            # keeps it held if the request is cancelled while the install still stages.
+            try:
+                return install_latest_transformers(request.version, _unload_before_swap, True)
+            finally:
+                end_sidecar_swap()
+
+        # Snapshot before waiting on the gate: a /load already holding it can
+        # complete meanwhile (including a same-model reload with new settings),
+        # and the installer must not unload a model whose successful LoadResponse
+        # the client is about to render. The generation counter catches reloads
+        # the name alone would miss.
+        active_before_gate = (
+            getattr(backend, "active_model_name", None),
+            getattr(backend, "load_generation", 0),
+        )
+
+        async def _gated_install() -> dict:
+            # Held by THIS task, not the request coroutine: a cancelled POST unwinding an
+            # `async with` here would drop the only guard /load honors mid-install.
+            async with inference_lifecycle_gate():
+                _active_now = (
+                    getattr(backend, "active_model_name", None),
+                    getattr(backend, "load_generation", 0),
+                )
+                if _active_now != active_before_gate:
+                    end_sidecar_swap()
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "A model load completed while the install was waiting. "
+                            "Retry the install."
+                        ),
+                    )
+                # Recheck under the gate: new streams bump their in-flight count while
+                # holding it, so once held nothing slips past (the pre-gate check is only
+                # a fast path and can be outlasted by a wait on a long /load).
+                if (
+                    other_inference_request_count(
+                        current_request_counted = False, include_pending = False
+                    )
+                    > 0
+                ):
+                    end_sidecar_swap()
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "Another inference request is in progress. Wait for "
+                            "it to finish before installing a new transformers "
+                            "version."
+                        ),
+                    )
+                return await asyncio.to_thread(_run_install)
+
+        install_task = asyncio.ensure_future(_gated_install())
+        owns_reservation = False
+        # shield: a cancelled request stops waiting, but the installer runs to
+        # completion (holding the gate) instead of being torn down mid-swap.
+        result = await asyncio.shield(install_task)
+    finally:
+        if owns_reservation:
+            end_sidecar_swap()
+    if not result["success"]:
+        if result.get("latest_version"):
+            # Structured failure so the dialog can update to the newer release
+            # and offer a retry that can actually succeed.
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
+        if unloaded_chat["v"]:
+            # The chat model is already gone even though the swap failed; return a
+            # structured failure (not a bare 400) so the client can restore its
+            # model state instead of pointing at an unloaded model.
+            return InstallLatestTransformersResponse(**result, model_unloaded = True)
+        raise HTTPException(status_code = 400, detail = result["message"])
+    return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
 
 
 @router.post("/unload", response_model = UnloadResponse)

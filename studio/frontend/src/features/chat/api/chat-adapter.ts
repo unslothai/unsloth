@@ -1454,6 +1454,11 @@ async function autoLoadSmallestModel(): Promise<{
       blockedByTrustRemoteCode = true;
       return false;
     }
+    // Never install packages from a background load; explicit loads raise the upgrade dialog.
+    if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
+      return false;
+    }
     return true;
   }
 
