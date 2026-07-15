@@ -232,7 +232,7 @@ export function ParamsSection(): ReactElement {
         title={t("studio.params.title")}
         description={t("studio.params.description")}
         accent="orange"
-        className="min-h-studio-config-column duration-150"
+        className="min-h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
