@@ -29,6 +29,7 @@ from core.inference.stt_sidecar import (
 )
 
 _REAL_DECODE_AUDIO_BOUNDED = stt_sidecar_module._decode_audio_bounded
+_REAL_ENSURE_STT_AVAILABLE = stt_sidecar_module.ensure_stt_available
 
 
 @pytest.fixture(autouse = True)
@@ -43,6 +44,10 @@ def stub_audio_decoder(monkeypatch):
         "huggingface_hub.snapshot_download",
         lambda **_kwargs: "/cached/model",
     )
+    # transcribe() gates on the runtime up front; treat it as present so these
+    # orchestration tests run without PyTorch/Transformers/PyAV installed.
+    # The runtime-specific tests restore the real check.
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", lambda: None)
 
 
 class _CaptureInference:
@@ -77,6 +82,7 @@ def test_five_curated_whisper_models_are_offered():
 
 
 def test_av_is_required_for_stt_availability(monkeypatch):
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", _REAL_ENSURE_STT_AVAILABLE)
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "av", None)
@@ -85,6 +91,7 @@ def test_av_is_required_for_stt_availability(monkeypatch):
 
 
 def test_transformers_is_required_for_stt_availability(monkeypatch):
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", _REAL_ENSURE_STT_AVAILABLE)
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "av", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "transformers", None)
@@ -95,6 +102,7 @@ def test_transformers_is_required_for_stt_availability(monkeypatch):
 @pytest.mark.parametrize("missing", ["transformers", "av"])
 def test_load_rejects_an_incomplete_stt_runtime(monkeypatch, missing):
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", _REAL_ENSURE_STT_AVAILABLE)
     for module in ("torch", "transformers", "av"):
         monkeypatch.setitem(sys.modules, module, SimpleNamespace())
     monkeypatch.setitem(sys.modules, missing, None)
