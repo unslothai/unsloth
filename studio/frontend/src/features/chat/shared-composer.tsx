@@ -1068,8 +1068,29 @@ export function SharedComposer({
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          // Record the context this pane actually loaded with, mirroring the
+          // single-model load path, so that when the last-loaded pane becomes
+          // the active model the settings UI and any subsequent reload or save
+          // use its context instead of the previous/default one.
+          customContextLength: isGgufLoad
+            ? (ownConfig.customContextLength ?? null)
+            : null,
+          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
+          ggufNativeContextLength: resp.is_gguf
+            ? (resp.native_context_length ?? null)
+            : null,
+          ggufMaxContextLength: resp.is_gguf
+            ? (resp.max_context_length ?? null)
+            : null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
+        if (!isGgufLoad) {
+          // Non-GGUF panes carry their context in params.maxSeqLength.
+          store.setParams({
+            ...store.params,
+            maxSeqLength: effectiveMaxSeqLength,
+          });
+        }
         loadedFromConfig = config != null;
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
