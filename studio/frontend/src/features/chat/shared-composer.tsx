@@ -1890,6 +1890,7 @@ export function SharedComposer({
                     type="button"
                     disabled={reasoningDisabled}
                     className="unsloth-thinking-pill"
+                    data-pill-label="Thinking settings"
                     data-active={thinkingActiveLook ? "true" : "false"}
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
@@ -1899,7 +1900,7 @@ export function SharedComposer({
                   >
                     <BulbIcon className="size-[15.5px]" />
                     {thinkingActiveLook ? (
-                      <span>
+                      <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
                               reasoningEffort,
@@ -1908,7 +1909,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="size-[15px]" />
+                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -2055,6 +2056,7 @@ export function SharedComposer({
                   }
                 }}
                 className="unsloth-thinking-pill"
+                data-pill-label="Thinking"
                 data-active={thinkingActiveLook ? "true" : "false"}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
@@ -2066,7 +2068,9 @@ export function SharedComposer({
                 <PillGlyph>
                   <BulbIcon className="size-[15.5px]" />
                 </PillGlyph>
-                {thinkingActiveLook ? <span>Thinking</span> : null}
+                {thinkingActiveLook ? (
+                  <span className="unsloth-thinking-label">Thinking</span>
+                ) : null}
               </button>
             )
           ) : null}
