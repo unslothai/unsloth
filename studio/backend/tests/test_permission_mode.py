@@ -157,6 +157,8 @@ def _clear_pending():
         ("cat /proc/self/environ", True),  # procfs env dump
         ("cat /proc/1/cmdline", True),
         ("head /proc/self/maps", True),
+        ("cat /proc/self/fd/3", True),  # procfs fd symlink to an open file
+        ("cat /proc/1234/task/1234/fd/3", True),  # per-thread fd symlink
         ("LD_PRELOAD=/tmp/hook.so ls", True),  # code-loading env prefix
         ("PATH=. ls", True),  # command-lookup env prefix
         ("IFS=x ls", True),
@@ -892,6 +894,24 @@ def test_terminal_classifier(command, unsafe):
             "from functools import partial\np = partial(print, end='')\np('hi')",
             False,
         ),  # partial wrapping a safe callable stays safe
+        (
+            "open(*('result.txt', 'w')).write('x')",
+            True,
+        ),  # *args splat can hide the write mode
+        ("open(*args).write('x')", True),  # dynamic *args splat fails closed
+        ("__builtins__.__import__('subprocess')", True),  # __builtins__ dynamic import
+        (
+            "import builtins\nbuiltins.__import__('os')",
+            True,
+        ),  # builtins.__import__ dynamic import
+        (
+            "import builtins\nbuiltins.print(builtins.len([1]))",
+            False,
+        ),  # benign builtins.print/len stay safe
+        (
+            "import os\nopen(f'/proc/{os.getppid()}/fd/3').read()",
+            True,
+        ),  # f-string procfs fd symlink read
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -937,6 +957,11 @@ def test_render_html_gated_only_when_networked():
     # Obfuscated egress: a block comment splitting fetch(, or bracket access.
     assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
+    # A computed bracket key spliced from string fragments on a global host object.
+    assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
+    assert rh("<script>self['open' + '']('https://x')</script>") is True
+    # A computed key on a plain object (not a global host) stays a static canvas.
+    assert rh("<script>var o={}; o['a'+'b']=1</script>") is False
     assert rh("<script>/* just a note */ var x = 1</script>") is False  # comment only
     # A meta-refresh with a url navigates the frame to an external origin.
     assert rh('<meta http-equiv="refresh" content="0;url=https://example.com">') is True

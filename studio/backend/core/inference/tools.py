@@ -782,8 +782,9 @@ _SENSITIVE_PATH_RE = re.compile(
     # Docker/Kubernetes secret mounts hold injected credentials.
     r"|/(?:var/)?run/secrets(?:[/\\]|$)"
     # procfs leaks a (possibly parent) process env/args/memory to a read,
-    # including the per-thread aliases under /proc/<pid>/task/<tid>/.
-    r"|/proc/[^/\s'\"]+/(?:task/[^/\s'\"]+/)?(?:environ|cmdline|mem|maps)\b"
+    # including the per-thread aliases under /proc/<pid>/task/<tid>/. The fd/
+    # dir holds symlinks to a process's open files (a held credential/db file).
+    r"|/proc/[^/\s'\"]+/(?:task/[^/\s'\"]+/)?(?:environ|cmdline|mem|maps|fd)\b"
     # A .pem/.key file (basename before the extension), not a bare ".key"
     # (e.g. a jq '.key' filter).
     r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
@@ -1093,6 +1094,8 @@ def _builtin_open_writes(node) -> bool:
     """Write check for builtin ``open(file, mode)`` (mode is the 2nd arg)."""
     if _has_kwarg_splat(node):
         return True  # **{"mode": "w"} could request a write
+    if any(isinstance(a, ast.Starred) for a in node.args):
+        return True  # *("f", "w") could splat a write mode into the positionals
     mode = node.args[1] if len(node.args) >= 2 else None
     for kw in node.keywords or []:
         if kw.arg == "mode":
@@ -1974,9 +1977,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # without an immediate call (rm = os.remove; rm("x")).
                 if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
-                # builtins.exec / builtins.eval are dynamic code execution.
+                # builtins.exec / builtins.eval / builtins.__import__ (and
+                # compile/breakpoint) are dynamic code execution, matching the
+                # bare-name code_exec_aliases path; __builtins__.__import__(...)
+                # is a dynamic import that dodges the static import check.
                 if (
-                    node.attr in ("exec", "eval")
+                    node.attr in ("exec", "eval", "__import__", "breakpoint", "compile")
                     and isinstance(node.value, ast.Name)
                     and node.value.id in builtins_aliases
                 ):
@@ -2346,6 +2352,11 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
     r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
     r"sendBeacon|serviceWorker)[\"']\s*\]|"
+    # Computed bracket key spliced at runtime on a global host object
+    # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
+    # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.
+    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
+    r"(?:[\"']\s*\+|\+\s*[\"'])[^\]]*\]|"
     # Declarative meta-refresh navigation to a URL (order-tolerant); a bare
     # content="30" self-reload has no url= and stays static.
     r"<meta\b(?=[^>]*http-equiv\s*=\s*[\"']?\s*refresh)(?=[^>]*\burl\s*=)|"
