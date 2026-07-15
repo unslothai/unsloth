@@ -12,6 +12,7 @@ summing stale blobs against the wrong total)."""
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -33,6 +34,28 @@ logger = get_logger(__name__)
 
 # (repo_id, hf_token) -> (expected_total_bytes, expected_blob_hashes)
 SnapshotMetadataResolver = Callable[[str, Optional[str]], "tuple[int, frozenset[str]]"]
+
+# One progress log per 10% step per job, so an active download reports progress
+# without emitting a line on every poll.
+_progress_step_lock = threading.Lock()
+_last_progress_step: dict[str, int] = {}
+
+
+def _log_progress_step(job_key: str, repo_id: str, variant: Optional[str], progress: float) -> None:
+    step = int(progress * 10)
+    with _progress_step_lock:
+        last = _last_progress_step.get(job_key, -1)
+        if step == last:
+            return
+        _last_progress_step[job_key] = step
+        if step < last:
+            return  # download restarted; resync without logging
+    logger.info(
+        "hub_download_progress",
+        repo_id = repo_id,
+        variant = variant or "",
+        percent = step * 10,
+    )
 
 
 def _empty_progress(expected_bytes: int) -> dict:
@@ -215,6 +238,8 @@ def compute_snapshot_progress(
             else 0
         )
     )
+    if force_active:
+        _log_progress_step(job_key, repo_id, variant, progress)
     return {
         "downloaded_bytes": display_downloaded_bytes,
         "completed_bytes": display_completed_bytes,

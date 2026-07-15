@@ -6,7 +6,27 @@ export {
   loadPersonalization,
   savePersonalization,
 } from "./api/personalization";
-export { setTheme, useTheme } from "./stores/theme-store";
+export {
+  isPalette,
+  setPalette,
+  setTheme,
+  usePalette,
+  useTheme,
+} from "./stores/theme-store";
+export {
+  DEFAULT_CUSTOMIZATION,
+  applyCustomizationToDocument,
+  isDefaultCustomization,
+  prefersReducedMotion,
+  sanitizeCustomization,
+  useAppearanceCustomStore,
+} from "./stores/appearance-custom-store";
+export type {
+  AppearanceCustomization,
+  CustomModeColors,
+  ReduceMotionSetting,
+} from "./stores/appearance-custom-store";
+export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export type {
   Personalization,
   PersonalizationAppearance,
@@ -14,4 +34,4 @@ export type {
 } from "./api/personalization";
 export { useSettingsDialogStore } from "./stores/settings-dialog-store";
 export type { SettingsTab } from "./stores/settings-dialog-store";
-export type { ResolvedTheme, Theme } from "./stores/theme-store";
+export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";

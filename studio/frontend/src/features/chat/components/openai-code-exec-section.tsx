@@ -60,18 +60,6 @@ const TTL_MAX = 20; // OpenAI hard cap on expires_after.minutes
 // minute without hammering /v1/containers.
 const REFRESH_POLL_MS = 30_000;
 
-function ageLabel(epochSeconds: number | null | undefined): string {
-  if (!epochSeconds) return "";
-  const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
-  if (ageSec < 60) return `${ageSec}s ago`;
-  const ageMin = Math.floor(ageSec / 60);
-  if (ageMin < 60) return `${ageMin}m ago`;
-  const ageHr = Math.floor(ageMin / 60);
-  if (ageHr < 48) return `${ageHr}h ago`;
-  const ageDay = Math.floor(ageHr / 24);
-  return `${ageDay}d ago`;
-}
-
 function shortContainerId(id: string): string {
   // Mid-truncate keeps the "cntr_" prefix readable and still surfaces the
   // tail digits users sometimes copy off OpenAI's dashboard.
@@ -463,7 +451,7 @@ export function OpenAICodeExecSection({
           max={TTL_MAX}
           value={ttlValue}
           onChange={(e) => onTtlChange(e.target.value)}
-          className="h-8 w-14 px-2 text-center text-sm tabular-nums"
+          className="h-8 w-[72px] pl-3 text-sm tabular-nums"
         />
       </div>
 
@@ -509,7 +497,7 @@ export function OpenAICodeExecSection({
                   key={c.id}
                   className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs transition-colors ${
                     isActive
-                      ? "border-primary/30 bg-primary/5"
+                      ? "border-ring-strong bg-primary/5"
                       : "border-border/60 hover:bg-muted/40"
                   } ${canActivate ? "cursor-pointer" : ""} ${
                     running ? "" : "opacity-60"

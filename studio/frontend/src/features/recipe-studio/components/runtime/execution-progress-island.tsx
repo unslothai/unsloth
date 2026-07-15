@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ArrowDown01Icon,
-  ArrowUp01Icon,
-  CheckmarkCircle02Icon,
-  Flag02Icon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement } from "react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  ChevronDownStandardIcon,
+  ChevronUpStandardIcon,
+} from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
+import { CheckmarkCircle02Icon, Flag02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import type { ReactElement } from "react";
 import type { RecipeExecutionRecord } from "../../execution-types";
 import { isExecutionInProgress } from "../../executions/execution-helpers";
 import {
@@ -112,8 +111,11 @@ export function ExecutionProgressIsland({
         execution.source_progress?.status === "rate_limited" ||
         execution.source_progress?.status === "retrying"),
   );
-  const sourcePercent = showSourceProgress ? execution.source_progress?.percent : null;
-  const progressPercent = sourcePercent ?? execution.progress?.percent ?? (complete ? 100 : 0);
+  const sourcePercent = showSourceProgress
+    ? execution.source_progress?.percent
+    : null;
+  const progressPercent =
+    sourcePercent ?? execution.progress?.percent ?? (complete ? 100 : 0);
   const hasProgressSignal = Boolean(
     (execution.progress &&
       (typeof execution.progress.done === "number" ||
@@ -165,7 +167,7 @@ export function ExecutionProgressIsland({
             title={minimized ? "Expand" : "Minimize"}
           >
             <HugeiconsIcon
-              icon={minimized ? ArrowDown01Icon : ArrowUp01Icon}
+              icon={minimized ? ChevronDownStandardIcon : ChevronUpStandardIcon}
               className="size-3.5"
             />
           </button>
@@ -179,16 +181,28 @@ export function ExecutionProgressIsland({
       {!minimized && (
         <>
           <div className="grid grid-cols-2 gap-2 px-3 pt-2 text-[11px] text-muted-foreground sm:grid-cols-4">
-            <p className="truncate" title={`Done: ${formatMetricValue(execution.progress?.done)}`}>
+            <p
+              className="truncate"
+              title={`Done: ${formatMetricValue(execution.progress?.done)}`}
+            >
               Done: {formatMetricValue(execution.progress?.done)}
             </p>
-            <p className="truncate" title={`Total: ${formatMetricValue(execution.progress?.total)}`}>
+            <p
+              className="truncate"
+              title={`Total: ${formatMetricValue(execution.progress?.total)}`}
+            >
               Total: {formatMetricValue(execution.progress?.total)}
             </p>
-            <p className="truncate" title={`Rate: ${formatMetricValue(execution.progress?.rate)}`}>
+            <p
+              className="truncate"
+              title={`Rate: ${formatMetricValue(execution.progress?.rate)}`}
+            >
               Rate: {formatMetricValue(execution.progress?.rate)}
             </p>
-            <p className="truncate" title={`ETA: ${formatEta(execution.progress?.eta_sec)}`}>
+            <p
+              className="truncate"
+              title={`ETA: ${formatEta(execution.progress?.eta_sec)}`}
+            >
               ETA: {formatEta(execution.progress?.eta_sec)}
             </p>
           </div>
@@ -208,10 +222,7 @@ export function ExecutionProgressIsland({
                 icon={currentColumnIcon}
                 className="size-3.5 shrink-0"
               />
-              <p
-                className="truncate"
-                title={execution.current_column ?? "--"}
-              >
+              <p className="truncate" title={execution.current_column ?? "--"}>
                 Column: {execution.current_column ?? "--"}
               </p>
             </div>
@@ -221,7 +232,8 @@ export function ExecutionProgressIsland({
               className="mt-1 truncate px-3 text-[11px] text-muted-foreground"
               title={`Batch: ${execution.batch?.idx ?? "--"}/${execution.batch?.total ?? "--"}`}
             >
-              Batch: {execution.batch?.idx ?? "--"}/{execution.batch?.total ?? "--"}
+              Batch: {execution.batch?.idx ?? "--"}/
+              {execution.batch?.total ?? "--"}
             </div>
           )}
           <div className="px-3 pb-2 pt-2">

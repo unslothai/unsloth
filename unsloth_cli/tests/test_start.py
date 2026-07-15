@@ -128,6 +128,32 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
 
 
+def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
+    # Before the confirm, a remote installer must name the URL it fetches so the
+    # user consents to a specific source rather than blindly accepting.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)  # decline: nothing runs
+    hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+    assert start._install_agent("hermes", hint) is None
+    err = capsys.readouterr().err
+    assert "https://hermes-agent.nousresearch.com/install.ps1" in err
+    assert "download and RUN" in err
+    assert "signature or hash" in err
+
+
+def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
+    # An npm-style installer has no URL to fetch, but still runs with the user's
+    # privileges, so the warning names the command instead.
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
+    assert start._install_agent("codex", "npm install -g @openai/codex") is None
+    err = capsys.readouterr().err
+    assert "npm install -g @openai/codex" in err
+    assert "with your privileges" in err
+
+
 def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
 
@@ -268,15 +294,56 @@ def test_merge_codex_config_keeps_user_oss_provider():
     assert _parse_toml(merged)["oss_provider"] == "ollama"
 
 
-def test_write_codex_config_profile(tmp_path):
+def test_write_codex_config_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     start.write_codex_config(BASE, MODEL, tmp_path)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
     assert profile["model"] == MODEL["id"]
     assert profile["model_context_window"] == 131072
+
+    catalog_path = Path(profile["model_catalog_json"])
+    assert catalog_path == Path("model-catalog.json")
+    catalog = json.loads((tmp_path / catalog_path).read_text())
+    assert catalog["models"][0]["slug"] == MODEL["id"]
+    assert catalog["models"][0]["context_window"] == 131072
+    assert catalog["models"][0]["max_context_window"] == 131072
+    assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
+    assert catalog["models"][0]["supports_parallel_tool_calls"] is False
+
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
+
+
+def test_write_codex_config_catalog_without_context_length(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    start.write_codex_config(BASE, {"id": "unsloth/no-window"}, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    catalog = json.loads((tmp_path / profile["model_catalog_json"]).read_text())
+    entry = catalog["models"][0]
+    assert entry["slug"] == "unsloth/no-window"
+    assert "context_window" not in entry
+    assert "max_context_window" not in entry
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [("codex-cli 0.109.0", False), ("codex-cli 0.110.0", True), ("codex-cli 0.144.4", True)],
+)
+def test_codex_model_catalog_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._codex_supports_model_catalog() is expected
+
+
+def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    start.write_codex_config(BASE, MODEL, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    assert "model_catalog_json" not in profile
+    assert not (tmp_path / "model-catalog.json").exists()
 
 
 @pytest.fixture()
@@ -716,7 +783,12 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     assert result.exit_code == 0, result.output
     inline = _opencode_inline_config(result.output)
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
-    assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert inline["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
     assert "sk-unsloth" not in result.output  # key stays in the private file, not the env
 
 
@@ -1585,10 +1657,48 @@ def test_write_openclaw_config_fresh(tmp_path):
     ]
     # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert (tmp_path / "workspace").is_dir()
     assert config["gateway"]["mode"] == "local"
     assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
     if os.name != "nt":  # the file holds an API key
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "list": [
+                        {
+                            "id": "main",
+                            "default": True,
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        {
+                            "id": "reviewer",
+                            "workspace": "/old/reviewer-workspace",
+                            "agentDir": "/old/reviewer-agent",
+                        },
+                    ],
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["list"] == [
+        {"id": "main", "default": True, "model": "keep/me"},
+        {"id": "reviewer"},
+    ]
 
 
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
@@ -1634,9 +1744,30 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["agents"]["defaults"]["workspace"] == str(
+        tmp_path / "agents" / "openclaw" / "workspace"
+    )
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_connect_openclaw_wsl_windows_shim_translates_workspace(fake_studio, tmp_path, monkeypatch):
+    windows_workspace = r"\\wsl.localhost\Ubuntu\tmp\openclaw\workspace"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/openclaw"
+    )
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_workspace)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config = json.loads(config_path.read_text())
+    assert config["agents"]["defaults"]["workspace"] == windows_workspace
+    assert (config_path.parent / "workspace").is_dir()
 
 
 def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
@@ -2064,7 +2195,12 @@ def test_yolo_opencode_writes_permission_block(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
-    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
 
 
 def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
@@ -2086,6 +2222,7 @@ def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
         "edit": "allow",
         "bash": "allow",
         "webfetch": "allow",
+        "external_directory": {"*": "allow"},
     }
     plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert plain.exit_code == 0, plain.output
@@ -2093,6 +2230,7 @@ def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
         "edit": "ask",
         "bash": "ask",
         "webfetch": "ask",
+        "external_directory": {"*": "ask"},
     }
 
 
@@ -2126,7 +2264,12 @@ def test_write_opencode_config_yolo_unit(tmp_path):
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
-    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
 
 
 def test_write_openclaw_config_yolo_unit(tmp_path):
@@ -2154,7 +2297,12 @@ def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp
     config = json.loads(config_path.read_text())
     # The yolo allow policy is replaced by a prompting one, not deleted (which would
     # revert to OpenCode's permissive "allow" default).
-    assert config["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
     # The session provider survives the cleanup.
     assert start._OPENCODE_PROVIDER in config["provider"]
 
@@ -2192,7 +2340,12 @@ def test_write_opencode_config_yolo_then_plain_unit(tmp_path):
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
     config = json.loads(path.read_text())
     # A plain rerun replaces the yolo allow policy with a prompting one.
-    assert config["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
 
 
 def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
@@ -2522,3 +2675,273 @@ def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path
     with start._session_config("codex", launch = False) as home2:
         assert home2 == home
         assert (home2 / "sessions" / "live.sqlite").read_text() == "state"
+
+
+# ── --persist: persist the agent session so it can be resumed ────────────────
+def test_session_config_persist_uses_stable_dir_and_survives(monkeypatch, tmp_path):
+    # --persist routes a launch to the stable Unsloth agents dir (the one --no-launch
+    # already uses) instead of a throwaway temp dir, and never wipes it on exit.
+    monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
+    with start._session_config("codex", launch = True, persist = True) as home:
+        assert home == tmp_path / "agents" / "codex"
+        (home / "marker").write_text("kept")
+    assert home.exists()
+    assert (home / "marker").read_text() == "kept"
+
+
+def test_session_config_default_launch_is_ephemeral():
+    # Default launch (no --persist) still uses a throwaway temp dir wiped on exit.
+    with start._session_config("codex", launch = True) as home:
+        assert home.exists()
+        assert "unsloth-codex-" in home.name
+    assert not home.exists()
+
+
+# The temp-dir agents: --persist points each one's home/state env at the stable dir;
+# without it, at an ephemeral temp path. opencode is handled separately (only its
+# config overlay is relocated; its session data was never in the temp dir).
+_RESUME_ENV_VAR = {
+    "codex": "CODEX_HOME",
+    "openclaw": "OPENCLAW_STATE_DIR",
+    "hermes": "HERMES_HOME",
+    "pi": "HOME",
+}
+
+
+def _capture_launch(monkeypatch, argv):
+    captured = {}
+
+    def run(
+        command,
+        env = None,
+        **kwargs,
+    ):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, argv)
+    assert result.exit_code == 0, result.output
+    return captured
+
+
+@pytest.mark.parametrize("agent", sorted(_RESUME_ENV_VAR))
+def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    captured = _capture_launch(monkeypatch, [agent, "--persist"])
+    stable = tmp_path / "agents" / agent
+    assert captured["env"][_RESUME_ENV_VAR[agent]] == str(stable)
+    # The stable dir survives the agent exit, so the session can be resumed.
+    assert stable.exists()
+
+
+@pytest.mark.parametrize("agent", sorted(_RESUME_ENV_VAR))
+def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    captured = _capture_launch(monkeypatch, [agent])
+    home = captured["env"][_RESUME_ENV_VAR[agent]]
+    assert f"unsloth-{agent}-" in home
+    assert str(tmp_path / "agents") not in home
+
+
+def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch):
+    # opencode's session data lives in ~/.local/share/opencode (never relocated), so
+    # resume already survives exit; --persist also stabilizes its config overlay dir.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
+    stable = tmp_path / "agents" / "opencode"
+    assert captured["env"]["OPENCODE_CONFIG"] == str(stable / "opencode.json")
+    assert stable.exists()
+
+
+def test_persist_bare_codex_launch_has_no_resume_token(fake_studio, monkeypatch):
+    # A bare `--persist` only persists the session dir; it must NOT auto-append a native
+    # resume token, or the very first launch (no session yet) would send codex down its
+    # no-session error path. The user resumes explicitly: `unsloth start codex --persist resume`.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = _capture_launch(monkeypatch, ["codex", "--persist"])
+    assert "resume" not in captured["command"]
+    # command[0] is the resolved executable path; assert the argv after it.
+    assert captured["command"][1:] == ["--oss", "--profile", start._CODEX_PROFILE]
+
+
+def test_persist_bare_opencode_launch_has_no_resume_token(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
+    assert "--continue" not in captured["command"]
+    assert captured["command"][1:] == ["--model", f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"]
+
+
+def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    captured = _capture_launch(monkeypatch, ["claude", "--persist"])
+    assert "--continue" not in captured["command"]
+    assert captured["command"][1:] == ["--model", MODEL["id"]]
+
+
+def test_resume_with_passthrough_does_not_auto_append(fake_studio, monkeypatch):
+    # When the caller drives their own subcommand, --persist only persists the dir; it
+    # must not inject a resume token that would collide with the user's command.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = _capture_launch(monkeypatch, ["codex", "--persist", "exec", "hello"])
+    assert "resume" not in captured["command"]
+    assert captured["command"][-2:] == ["exec", "hello"]
+
+
+def test_default_launch_has_no_resume_token(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = _capture_launch(monkeypatch, ["codex"])
+    assert "resume" not in captured["command"]
+
+
+def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatch):
+    # Persistence alone must not select a session.
+    for agent in ("openclaw", "hermes"):
+        monkeypatch.setattr(start.shutil, "which", lambda _, a = agent: f"/usr/local/bin/{a}")
+        captured = _capture_launch(monkeypatch, [agent, "--persist"])
+        assert "resume" not in captured["command"]
+        assert "--continue" not in captured["command"]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (
+            ["--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["-rsession-id", "-zfollow up"],
+            ["chat", "-Q", "--yolo", "--accept-hooks", "-rsession-id", "-qfollow up"],
+        ),
+        (
+            ["-c=project", "-z=follow up"],
+            ["chat", "-Q", "--yolo", "--accept-hooks", "-c=project", "-q=follow up"],
+        ),
+        (
+            ["-r", "session-id", "--oneshot=follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "-r",
+                "session-id",
+                "--query=follow up",
+            ],
+        ),
+        (
+            ["--continue", "project", "--oneshot", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--continue",
+                "project",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--yolo", "--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--accept-hooks",
+                "--yolo",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--accept-hooks", "--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--resume", "chat", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "chat",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (["--resume", "session-id"], ["--resume", "session-id"]),
+        (["-z", "new session"], ["-z", "new session"]),
+    ],
+)
+def test_hermes_resume_oneshot_args(args, expected):
+    assert start._hermes_resume_oneshot_args(args) == expected
+
+
+def test_hermes_resume_oneshot_uses_session_aware_chat(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
+    captured = _capture_launch(
+        monkeypatch,
+        ["hermes", "--persist", "--resume", "session-id", "-z", "follow up"],
+    )
+    assert captured["command"][1:] == [
+        "chat",
+        "-Q",
+        "--yolo",
+        "--accept-hooks",
+        "--resume",
+        "session-id",
+        "-q",
+        "follow up",
+    ]
+
+
+@pytest.mark.parametrize("usage_arg", ["--usage-file", "--usage-file=usage.json"])
+def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: pytest.fail("argument validation must run before connect"),
+    )
+    argv = ["hermes", "--resume", "session-id", "-z", "follow up", usage_arg]
+    if usage_arg == "--usage-file":
+        argv.append("usage.json")
+    result = CliRunner().invoke(start.start_app, argv)
+    assert result.exit_code == 2
+    assert "cannot resume a one-shot session with --usage-file" in result.output
+
+
+def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
+    # The persistence flag is --persist, NOT --resume, so an agent's own
+    # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
+    # through to the agent verbatim and is not swallowed as a Studio option.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
+    assert captured["command"][-2:] == ["--resume", "some-session-guid"]
+    # Studio never auto-appends its own resume token when the user drives resume.
+    assert captured["command"].count("--resume") == 1
+    assert "--continue" not in captured["command"]
