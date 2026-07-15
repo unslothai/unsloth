@@ -8871,7 +8871,10 @@ async def openai_chat_completions(
                 await _drain_pending_next_task(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
-                        gen.close()
+                        # Offload the close: it drives the tool-stream generator's
+                        # cleanup off the event loop, matching the GGUF SSE path so
+                        # a disconnect can never stall the loop.
+                        await asyncio.to_thread(gen.close)
                     except (RuntimeError, ValueError):
                         pass
                 _sf_tracker.__exit__(None, None, None)
@@ -9232,7 +9235,10 @@ async def openai_chat_completions(
                 await _drain_pending_next_task(_next_task, cancel_event)
                 if gen is not None:
                     try:
-                        gen.close()
+                        # Offload the close: it drives the tool-stream generator's
+                        # cleanup off the event loop, matching the GGUF SSE path so
+                        # a disconnect can never stall the loop.
+                        await asyncio.to_thread(gen.close)
                     except (RuntimeError, ValueError):
                         pass
                 _tracker.__exit__(None, None, None)

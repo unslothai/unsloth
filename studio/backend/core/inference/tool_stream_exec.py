@@ -204,11 +204,19 @@ def stream_tool_execution(
                 finished = True
                 return
 
+    abnormal_exit = False
     try:
         while not finished:
             try:
                 item = output_queue.get(timeout = poll_interval_s)
             except queue.Empty:
+                # A disconnect sets cancel_event while the worker is silent;
+                # surface a heartbeat this poll so the route regains control and
+                # can tear down at once, instead of waiting up to a full
+                # heartbeat interval for the next scheduled keepalive.
+                if cancel_event is not None and cancel_event.is_set():
+                    yield {"type": "heartbeat"}
+                    continue
                 idle_polls += 1
                 if idle_polls >= idle_polls_per_heartbeat:
                     idle_polls = 0
@@ -256,10 +264,12 @@ def stream_tool_execution(
         # The only way the loop raises is the consumer closing us early: an SSE
         # client disconnect calls gen.close() (GeneratorExit at the current
         # yield), or the route throws in. Signal cancellation so a cancel-observing
-        # tool returns, then fall through to the bounded join. Re-raise so the
-        # caller still sees the real cause (GeneratorExit must not be swallowed).
-        # This runs ONLY on abnormal exit, so the shared cancel_event is never
-        # set out from under the next tool in a clean multi-tool turn.
+        # tool returns; the daemon worker is then abandoned (see the finally).
+        # Re-raise so the caller still sees the real cause (GeneratorExit must
+        # not be swallowed). This runs ONLY on abnormal exit, so the shared
+        # cancel_event is never set out from under the next tool in a clean
+        # multi-tool turn.
+        abnormal_exit = True
         if cancel_event is not None:
             try:
                 cancel_event.set()
@@ -267,12 +277,14 @@ def stream_tool_execution(
                 pass
         raise
     finally:
-        # On a clean finish the worker already recorded its result and queued the
-        # sentinel we consumed, so this returns at once. On disconnect/error it
-        # waits at most _WORKER_JOIN_TIMEOUT_S instead of the tool's full timeout;
-        # the worker is a daemon and cannot outlive the process, so a
-        # cancel-ignoring tool can no longer stall request teardown.
-        worker.join(timeout = _WORKER_JOIN_TIMEOUT_S)
+        # Clean finish: the worker already recorded its result and queued the
+        # sentinel we consumed, so this join returns at once. Abnormal exit
+        # (disconnect/error): cancel_event is set and the daemon worker is
+        # abandoned, so there is nothing to wait for -- join with a zero timeout
+        # so teardown never blocks the caller (the route may close this generator
+        # on the event loop). A cancel-ignoring tool can no longer stall teardown,
+        # and the daemon cannot outlive the process.
+        worker.join(timeout = 0 if abnormal_exit else _WORKER_JOIN_TIMEOUT_S)
 
     error = outcome.get("error")
     if error is not None:
