@@ -226,6 +226,48 @@ def test_minimax_m27_keeps_always_on_thinking_implicit(monkeypatch):
     assert "thinking" not in captured["body"]
 
 
+@pytest.mark.parametrize(
+    ("model", "expects_explicit_cache"),
+    [
+        ("MiniMax-M3", False),
+        ("MiniMax-M2.7", True),
+    ],
+)
+def test_minimax_anthropic_prompt_caching_matches_model_support(
+    monkeypatch, model: str, expects_explicit_cache: bool
+):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return _response_for_request(request)
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "minimax",
+            base_url = "https://api.minimax.io/anthropic",
+            api_key = "test-key",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hello"}],
+                model = model,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+
+    has_explicit_cache = "cache_control" in json.dumps(captured["body"])
+    assert has_explicit_cache is expects_explicit_cache
+
+
 def test_minimax_registry_uses_current_models_and_request_capabilities():
     entry = PROVIDER_REGISTRY["minimax"]
 

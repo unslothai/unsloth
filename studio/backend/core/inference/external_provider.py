@@ -1949,6 +1949,10 @@ class ExternalProviderClient:
         # Anthropic caches a prefix only with a cache_control marker. Treat None
         # as True (frontend default); pass False to opt out.
         prompt_caching_enabled = enable_prompt_caching is not False
+        # MiniMax-M3 uses automatic caching and does not support explicit
+        # Anthropic cache_control writes. MiniMax-M2.7 still supports them.
+        if self.provider_type == "minimax" and model == "MiniMax-M3":
+            prompt_caching_enabled = False
         # Optional 1h cache TTL is GA (no beta header). 1h writes cost 2x vs 5m's
         # 1.25x but reads are 0.1x for both, so 1h wins after one extra hit.
         cache_marker: dict[str, Any] = {"type": "ephemeral"}
