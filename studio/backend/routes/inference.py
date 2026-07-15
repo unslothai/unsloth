@@ -3689,6 +3689,17 @@ def _get_preview_resident() -> Optional[str]:
         return _preview_resident_ident
 
 
+def _same_loaded_identifier(loaded: Optional[str], requested: str) -> bool:
+    """Whether a loaded model identifier is the exact one requested, for the
+    already-loaded dedup. Filesystem-aware via os.path.normcase: on a case-sensitive
+    filesystem two checkpoint paths differing only by case are different models, so
+    they must not dedup to the already-loaded fast path (which would keep serving the
+    wrong checkpoint); a case-insensitive filesystem still treats them as the same."""
+    if not loaded:
+        return False
+    return os.path.normcase(loaded) == os.path.normcase(requested)
+
+
 def _should_validate_before_switch() -> bool:
     """Whether a route must run its shape validation before _maybe_auto_switch_model.
 
@@ -4152,8 +4163,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             if (
                 llama_backend.is_loaded
                 and gguf_variant_matches
-                and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == model_identifier.lower()
+                and _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
                     request,
@@ -4206,10 +4216,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     tensor_parallel = llama_backend.tensor_parallel,
                 )
         else:
-            if (
-                backend.active_model_name
-                and backend.active_model_name.lower() == model_identifier.lower()
-            ):
+            if _same_loaded_identifier(backend.active_model_name, model_identifier):
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
                 # A no-op Studio load of a preview-owned checkpoint still claims it.
                 _set_preview_resident(None)
@@ -5463,11 +5470,6 @@ async def generate_stream(
         raise HTTPException(
             status_code = 400, detail = "No model loaded. Call POST /inference/load first."
         )
-    # Studio generating directly against the resident model claims it: a model first
-    # loaded by a shared /p preview must not stay preview-owned, or a later preview
-    # could swap it out from under Studio between chat turns.
-    _claim_slot_for_non_preview(fastapi_request)
-
     # Decode image if provided (vision models)
     image = None
     if request.image_base64:
@@ -5498,6 +5500,13 @@ async def generate_stream(
                 event = "inference.decode_image_failed",
                 log = logger,
             )
+
+    # Studio generating directly against the resident model claims it (a model first
+    # loaded by a shared /p preview must not stay preview-owned, or a later preview
+    # could swap it out between turns). Claim only after the modality checks above
+    # that can still reject the request, so an image-on-text-only 400 doesn't leave a
+    # preview-owned checkpoint marked Studio-owned without ever generating.
+    _claim_slot_for_non_preview(fastapi_request)
 
     cancel_event = threading.Event()
 

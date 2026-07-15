@@ -970,3 +970,38 @@ def test_preview_reload_failure_restores_prior_ownership(slot_state, monkeypatch
     assert exc.status_code == 500
     # A is still resident and its preview ownership is restored (not Studio-owned).
     assert inference._is_preview_resident("/outputs/run/ckpt-A")
+
+
+def test_generate_stream_image_on_text_model_preserves_preview_marker(slot_state, monkeypatch):
+    # An image request against a text-only resident model is rejected (400) before
+    # generation. The ownership claim must run only after that modality check, so a
+    # preview-owned checkpoint is not stranded as Studio-owned by a request that
+    # never generated.
+    from models.inference import GenerateRequest
+
+    backend = SimpleNamespace(
+        active_model_name = "/outputs/run/ckpt-a",
+        models = {"/outputs/run/ckpt-a": {"is_vision": False}},
+    )
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+    req = GenerateRequest(messages = [{"role": "user", "content": "hi"}], image_base64 = "aGVsbG8=")
+    fake_req = SimpleNamespace(scope = {"path": "/api/inference/generate/stream"})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference.generate_stream(req, fake_req, "tester"))
+    assert exc.value.status_code == 400
+    # The claim runs only after the (failed) modality check, so ownership is intact.
+    assert inference._is_preview_resident("/outputs/run/ckpt-a")
+
+
+def test_same_loaded_identifier_is_filesystem_aware():
+    # The already-loaded dedup must be filesystem-aware: on a case-sensitive filesystem
+    # two checkpoint paths differing only by case are different models and must reload.
+    import os.path
+
+    assert inference._same_loaded_identifier("/outputs/Run", "/outputs/Run")
+    assert not inference._same_loaded_identifier(None, "/outputs/Run")
+    assert not inference._same_loaded_identifier("", "/outputs/Run")
+    # Case-distinct paths dedup only where the filesystem is case-insensitive.
+    expected = os.path.normcase("/outputs/Run") == os.path.normcase("/outputs/run")
+    assert inference._same_loaded_identifier("/outputs/Run", "/outputs/run") is expected
