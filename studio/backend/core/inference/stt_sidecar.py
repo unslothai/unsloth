@@ -569,6 +569,9 @@ class WhisperSttSidecar:
         Accepts any container PyAV can decode: wav, mp3, opus/webm, ogg,
         m4a/aac. Returns {text, language, duration, model}.
         """
+        # Reject a missing runtime before the model cache and the bounded decode,
+        # so an unavailable server 501s up front instead of decoding first.
+        ensure_stt_available()
         # A set language is faster/more accurate than auto-detect. The API takes
         # BCP-47 locales; Whisper wants short codes like en or fr.
         lang = normalize_whisper_language(language)

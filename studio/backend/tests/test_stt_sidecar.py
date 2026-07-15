@@ -381,6 +381,22 @@ def test_load_reports_model_hub_cache_miss(monkeypatch):
         WhisperSttSidecar(keep_alive_seconds = 0).load("large-v3")
 
 
+def test_unavailable_runtime_is_rejected_before_audio_decode(monkeypatch):
+    sidecar = WhisperSttSidecar()
+
+    def unavailable() -> None:
+        raise SttUnavailableError("needs PyTorch, Transformers, and PyAV")
+
+    def should_not_decode(_audio):
+        pytest.fail("runtime must be checked before audio decode")
+
+    monkeypatch.setattr(stt_sidecar_module, "ensure_stt_available", unavailable)
+    monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", should_not_decode)
+
+    with pytest.raises(SttUnavailableError, match = "needs PyTorch"):
+        sidecar.transcribe(b"encoded audio", model = "small")
+
+
 def test_missing_model_is_rejected_before_audio_decode(monkeypatch):
     sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
 

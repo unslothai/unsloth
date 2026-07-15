@@ -733,6 +733,9 @@ class TrainingBackend:
     def __init__(self):
         # Subprocess state
         self._proc: Optional[mp.Process] = None
+        # True from the moment start_training frees VRAM until _proc is live, so
+        # concurrent STT loads treat the startup window as training-active.
+        self._starting: bool = False
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
@@ -854,89 +857,96 @@ class TrainingBackend:
 
         # Synchronous validation passed -> free VRAM (export + chat) now, before
         # auto-selection and the spawn, so placement sees the freed memory.
-        if before_spawn is not None:
-            try:
-                before_spawn()
-            except Exception:
-                logger.warning("before_spawn hook failed; continuing", exc_info = True)
-
-        if defer_auto_selection:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
-            config["resolved_gpu_ids"] = resolved_gpu_ids
-            config["gpu_selection"] = gpu_selection
-
-        from .worker import run_training_process
-
+        # Mark the startup window active up front so a concurrent STT load picks
+        # CPU rather than the GPU this hook frees, until _proc goes live below.
+        # The finally clears it on every exit; on success _proc keeps us active.
+        self._starting = True
         try:
-            with native_path_secret_removed_for_child_start():
-                event_queue = _CTX.Queue()
-                stop_queue = _CTX.Queue()
+            if before_spawn is not None:
+                try:
+                    before_spawn()
+                except Exception:
+                    logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
-                proc = _CTX.Process(
-                    target = run_without_native_path_secret,
-                    args = (run_training_process,),
-                    kwargs = {
-                        "event_queue": event_queue,
-                        "stop_queue": stop_queue,
-                        "config": config,
-                    },
-                    daemon = True,
-                )
-                proc.start()
-                from utils.process_lifetime import adopt_pid
+            if defer_auto_selection:
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
+                config["resolved_gpu_ids"] = resolved_gpu_ids
+                config["gpu_selection"] = gpu_selection
 
-                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
-        except Exception:
-            logger.error("Failed to start training subprocess", exc_info = True)
-            return False
+            from .worker import run_training_process
 
-        logger.info("Training subprocess started (pid=%s)", proc.pid)
+            try:
+                with native_path_secret_removed_for_child_start():
+                    event_queue = _CTX.Queue()
+                    stop_queue = _CTX.Queue()
 
-        # Reset state (old pump thread dead, proc.start() succeeded).
-        self.current_job_id = job_id
-        self._should_stop = False
-        self._cancel_requested = False
-        self._progress = TrainingProgress(
-            is_training = True, status_message = "Initializing training..."
-        )
-        self.loss_history.clear()
-        self.lr_history.clear()
-        self.step_history.clear()
-        self.grad_norm_history.clear()
-        self.grad_norm_step_history.clear()
-        self.eval_loss_history.clear()
-        self.eval_step_history.clear()
-        self.eval_enabled = False
-        self._output_dir = None
-        self._metric_buffer.clear()
-        self._run_finalized = False
-        self._db_run_created = False
-        self._db_total_steps_set = False
-        self._db_config = _sanitize_db_config(config)
-        self._db_started_at = datetime.now(timezone.utc).isoformat()
-        # Start each job Xet-first; keep config so a stall can respawn over HTTP.
-        self._last_full_config = config
-        self._in_model_load = False
-        self._xet_fallback_used = False
-        self._needs_xet_respawn = False
+                    proc = _CTX.Process(
+                        target = run_without_native_path_secret,
+                        args = (run_training_process,),
+                        kwargs = {
+                            "event_queue": event_queue,
+                            "stop_queue": stop_queue,
+                            "config": config,
+                        },
+                        daemon = True,
+                    )
+                    proc.start()
+                    from utils.process_lifetime import adopt_pid
 
-        # Create the DB run row before the pump can consume events, so it appears
-        # in history during model loading and a fast terminal worker can't race the
-        # pump into a duplicate create/finalize. From here the pump only finalizes.
-        self._ensure_db_run_created()
+                    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+            except Exception:
+                logger.error("Failed to start training subprocess", exc_info = True)
+                return False
 
-        # Assign handles and start the pump together under the lock so a concurrent
-        # poll can't see a live _proc with no pump and spawn a duplicate.
-        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
-        with self._lock:
-            self._pump_running = False
-            self._event_queue = event_queue
-            self._stop_queue = stop_queue
-            self._proc = proc
-            self._pump_thread = new_pump
-            new_pump.start()
+            logger.info("Training subprocess started (pid=%s)", proc.pid)
 
-        return True
+            # Reset state (old pump thread dead, proc.start() succeeded).
+            self.current_job_id = job_id
+            self._should_stop = False
+            self._cancel_requested = False
+            self._progress = TrainingProgress(
+                is_training = True, status_message = "Initializing training..."
+            )
+            self.loss_history.clear()
+            self.lr_history.clear()
+            self.step_history.clear()
+            self.grad_norm_history.clear()
+            self.grad_norm_step_history.clear()
+            self.eval_loss_history.clear()
+            self.eval_step_history.clear()
+            self.eval_enabled = False
+            self._output_dir = None
+            self._metric_buffer.clear()
+            self._run_finalized = False
+            self._db_run_created = False
+            self._db_total_steps_set = False
+            self._db_config = _sanitize_db_config(config)
+            self._db_started_at = datetime.now(timezone.utc).isoformat()
+            # Start each job Xet-first; keep config so a stall can respawn over HTTP.
+            self._last_full_config = config
+            self._in_model_load = False
+            self._xet_fallback_used = False
+            self._needs_xet_respawn = False
+
+            # Create the DB run row before the pump can consume events, so it appears
+            # in history during model loading and a fast terminal worker can't race the
+            # pump into a duplicate create/finalize. From here the pump only finalizes.
+            self._ensure_db_run_created()
+
+            # Assign handles and start the pump together under the lock so a concurrent
+            # poll can't see a live _proc with no pump and spawn a duplicate.
+            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            with self._lock:
+                self._pump_running = False
+                self._event_queue = event_queue
+                self._stop_queue = stop_queue
+                self._proc = proc
+                self._pump_thread = new_pump
+                new_pump.start()
+
+            return True
+        finally:
+            self._starting = False
 
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
@@ -1114,6 +1124,10 @@ class TrainingBackend:
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
+        # The startup window frees VRAM before _proc exists; report active so a
+        # concurrent STT load does not grab the GPU that was just cleared.
+        if self._starting:
+            return True
         # Self-heal a crashed pump first: a dead pump must never leave the worker
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()

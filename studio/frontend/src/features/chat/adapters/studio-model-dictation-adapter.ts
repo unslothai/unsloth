@@ -53,18 +53,24 @@ const stopStream = (stream: MediaStream | null) => {
 /** POST audio to the STT sidecar and return the transcript. */
 export async function transcribeAudioBlob(
   blob: Blob,
-  signal?: AbortSignal,
+  options: {
+    model?: string;
+    language?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<string> {
-  const { sttModel, dictationLanguage } = useVoiceSettingsStore.getState();
-  const params = new URLSearchParams({ model: sttModel, fast: "true" });
-  if (dictationLanguage) params.set("language", dictationLanguage);
+  const settings = useVoiceSettingsStore.getState();
+  const model = options.model ?? settings.sttModel;
+  const language = options.language ?? settings.dictationLanguage;
+  const params = new URLSearchParams({ model, fast: "true" });
+  if (language) params.set("language", language);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
       method: "POST",
       headers: { "Content-Type": blob.type || "application/octet-stream" },
       body: blob,
-      signal,
+      signal: options.signal,
     },
   );
   if (!response.ok) {
@@ -162,6 +168,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     if (!StudioModelDictationAdapter.isSupported()) {
       throw new Error("Recording is not supported in this browser.");
     }
+
+    // Pin the model and language chosen when recording began so later segments
+    // are not transcribed with settings the user changed mid-session.
+    const { sttModel: sessionModel, dictationLanguage: sessionLanguage } =
+      useVoiceSettingsStore.getState();
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -279,10 +290,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       worker = true;
       void (async () => {
         try {
-          const text = await transcribeAudioBlob(
-            item.blob,
-            abortController.signal,
-          );
+          const text = await transcribeAudioBlob(item.blob, {
+            model: sessionModel,
+            language: sessionLanguage,
+            signal: abortController.signal,
+          });
           if (!cancelled) results[item.index] = text;
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
@@ -498,9 +510,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         // Wait for microphone access before warming the selected on-device
         // model. The backend uses cache-only loading and never downloads here.
-        void loadSttModel(useVoiceSettingsStore.getState().sttModel).catch(
-          reportTranscriptionError,
-        );
+        void loadSttModel(sessionModel).catch(reportTranscriptionError);
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });
