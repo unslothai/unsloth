@@ -402,13 +402,27 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
+# Trim trailing slashes from the URL PATH only, preserving ?query / #fragment. A whole-URL
+# TrimEnd('/') corrupts a token that ends in "/" (base64 ...abc/); a single strip leaves
+# .../cu128// as an empty leaf. Mirrors _trim_index_path_slashes (py) / _trim_index_path_slashes
+# (install.sh) / Trim-IndexPathSlashes (install.ps1).
+function Trim-IndexPathSlashes {
+    param([string]$Url)
+    $value = $Url.Trim()
+    $idx = $value.IndexOfAny([char[]]@('?', '#'))
+    if ($idx -lt 0) {
+        return $value.TrimEnd('/')
+    }
+    return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
+}
+
 # Explicit torch-index pin (UNSLOTH_TORCH_INDEX_URL / _FAMILY), shared by the stale-venv
 # check and install selection so a pinned index wins over GPU probing (matches install.sh
 # / install.ps1 / install_python_stack.py). URL is verbatim; _FAMILY is the leaf joined
 # to the mirror base so UNSLOTH_PYTORCH_MIRROR is honoured.
 function Get-PinnedTorchIndexUrl {
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
-        return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
+        return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
     }
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
         $base = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
@@ -447,6 +461,18 @@ function Remove-IndexUrlCredentials {
     $host_ = if ($at -ge 0) { $authority.Substring($at + 1) } else { $authority }
     if ($slash -ge 0) { return "${scheme}://${host_}$($rest.Substring($slash))" }
     return "${scheme}://${host_}"
+}
+
+# Redact index-URL credentials (userinfo + ?query= values) from captured installer output
+# before printing on failure. uv/pip failure text embeds the failing --index-url verbatim,
+# which can carry a user:token@ or ?token= secret. Mirrors _redact_install_output (py) /
+# _redact_install_output (install.sh) / Redact-InstallOutput (install.ps1). Verbose mode
+# streams live output uncaptured, so it is intentionally not redacted there (developer opt-in).
+function Redact-InstallOutput {
+    param([string]$Text)
+    if (-not $Text) { return $Text }
+    $Text = $Text -replace '(https?://)[^/@\s`]+@', '$1<redacted>@'
+    return $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
 }
 
 # ── Torch-index marker ───────────────────────────────────────────────────────
@@ -1016,7 +1042,7 @@ function Invoke-SetupCommand {
         } else {
             $output = & $Command 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
-                Write-Host $output -ForegroundColor Red
+                Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
             }
         }
         return [int]$LASTEXITCODE
@@ -2929,12 +2955,15 @@ function Fast-Install {
     # over the CUDA/ROCm build (#6898), so drop them for pinned installs (the scrub covers
     # the whole function since the pip fallback honours PIP_* too). UV_TORCH_BACKEND /
     # UV_FIND_LINKS also reroute a pinned resolve; UV_NO_CONFIG=1 (+ dropping UV_CONFIG_FILE)
-    # stops a uv.toml/pyproject index outranking the pin (uv 0.10).
+    # stops a uv.toml/pyproject index outranking the pin (uv 0.10). PIP_NO_INDEX=1 makes the
+    # pip fallback ignore ALL indexes (including the pinned --index-url), and PIP_INDEX_URL
+    # replaces the primary index the pin sets, so both must go for a pinned install too.
     $saved = @{}
     $pinned = @($Args_) -contains '--index-url'
     if ($pinned) {
         foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL',
                        'UV_TORCH_BACKEND', 'UV_FIND_LINKS', 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS',
+                       'PIP_NO_INDEX', 'PIP_INDEX_URL',
                        'UV_CONFIG_FILE', 'UV_NO_CONFIG', 'PIP_CONFIG_FILE') {
             $saved[$n] = [Environment]::GetEnvironmentVariable($n)
             Remove-Item "Env:$n" -ErrorAction SilentlyContinue

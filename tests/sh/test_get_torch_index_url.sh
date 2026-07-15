@@ -23,6 +23,8 @@ _FAKE_SMI_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
+    sed -n '/^_trim_index_path_slashes()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
   > "$_FUNC_FILE"
@@ -420,6 +422,19 @@ assert_eq "url override double slash stripped" "https://mirror.example.com/whl/c
 # 47) Leading and trailing slashes stripped from a family override.
 _result=$(UNSLOTH_TORCH_INDEX_FAMILY="//cu128//" run_func "none")
 assert_eq "family override slashes stripped" "https://download.pytorch.org/whl/cu128" "$_result"
+
+# 48) A ?query token that ends in "/" is PRESERVED: only PATH slashes are trimmed, so a
+# base64 token ending in "/" is not corrupted (path-only trim, not whole-URL rstrip).
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128?token=ab12cd/" run_func "none")
+assert_eq "url override preserves query token slash" "https://mirror.example.com/whl/cu128?token=ab12cd/" "$_result"
+
+# 49) Double PATH slash before a query is collapsed while the query survives intact.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128//?token=ab12cd/" run_func "none")
+assert_eq "url override path slash trimmed, query kept" "https://mirror.example.com/whl/cu128?token=ab12cd/" "$_result"
+
+# 50) A #fragment ending in "/" is likewise preserved.
+_result=$(UNSLOTH_TORCH_INDEX_URL="https://mirror.example.com/whl/cu128#anchor/" run_func "none")
+assert_eq "url override preserves fragment slash" "https://mirror.example.com/whl/cu128#anchor/" "$_result"
 
 rm -f "$_FUNC_FILE"
 rm -rf "$_FAKE_SMI_DIR"

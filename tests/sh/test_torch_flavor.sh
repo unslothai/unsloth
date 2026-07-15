@@ -110,9 +110,27 @@ assert_family "rocm7-current custom"  "no"  "rocm7-current"
 assert_family "rocm-current custom"   "no"  "rocm-current"
 assert_family "rocm-rel-7.2.1 custom" "no"  "rocm-rel-7.2.1"
 assert_family "rocm7.2.1 custom"      "no"  "rocm7.2.1"
+# A trailing dot (rocm7.) or leading/double dot is NOT a family: both major and minor must
+# be non-empty all-digits, matching Python re.fullmatch(rocm\d+(?:\.\d+)?). Bash previously
+# accepted rocm7. via a bare %/-style trim while Python rejected it (validator asymmetry).
+assert_family "rocm7. trailing-dot custom" "no" "rocm7."
+assert_family "rocm.7 leading-dot custom"  "no" "rocm.7"
+assert_family "rocm7..2 double-dot custom" "no" "rocm7..2"
 assert_family "cpu not rocm"          "no"  "cpu"
 assert_family "cu128 not rocm"        "no"  "cu128"
 assert_family "simple not rocm"       "no"  "simple"
+
+echo "=== _torch_index_url_leaf (ALL trailing slashes stripped -> non-empty leaf) ==="
+# A double (or triple) trailing slash must yield the real leaf, not an empty string that
+# fails every classifier arm. Python .rstrip("/") drops them all; bash must match (a bare
+# %/ left .../cu128// classifying as "").
+assert_eq "double slash cu128 leaf"   "cu128"   "$(_torch_index_url_leaf 'https://m/whl/cu128//')"
+assert_eq "triple slash rocm7.2 leaf" "rocm7.2" "$(_torch_index_url_leaf 'https://m/whl/rocm7.2///')"
+assert_eq "double slash + token leaf" "cu128"   "$(_torch_index_url_leaf 'https://m/whl/cu128//?token=x')"
+assert_eq "single slash cu128 leaf"   "cu128"   "$(_torch_index_url_leaf 'https://m/whl/cu128/')"
+# The classifier that consumes the leaf must therefore still tag a double-slash index.
+assert_eq "double-slash cu128 tag"    "cu128"   "$(_expected_torch_flavor_tag 'https://m/whl/cu128//')"
+assert_eq "double-slash rocm7.2 tag"  "rocm"    "$(_expected_torch_flavor_tag 'https://m/whl/rocm7.2//')"
 
 echo "=== _tauri_torch_index_family (credential redaction) ==="
 # A token/fragment must be stripped BEFORE classification so it never reaches the

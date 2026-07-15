@@ -466,6 +466,18 @@ function Install-UnslothStudio {
         }
     }
 
+    # Redact index-URL credentials (userinfo + ?query= values) from captured installer
+    # output before printing on failure. uv/pip failure text embeds the failing --index-url
+    # verbatim, which can carry a user:token@ or ?token= secret. Mirrors _redact_install_output
+    # (py) / _redact_install_output (install.sh). Verbose mode streams live output uncaptured,
+    # so it is intentionally not redacted there (developer opt-in).
+    function Redact-InstallOutput {
+        param([string]$Text)
+        if (-not $Text) { return $Text }
+        $Text = $Text -replace '(https?://)[^/@\s`]+@', '$1<redacted>@'
+        return $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
+    }
+
     # Run native commands quietly by default to match install.sh behavior.
     # Full command output is shown only when --verbose / UNSLOTH_VERBOSE=1.
     function Invoke-InstallCommand {
@@ -498,7 +510,7 @@ function Install-UnslothStudio {
             } else {
                 $output = & $Command 2>&1 | Out-String
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Host $output -ForegroundColor Red
+                    Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
                 }
             }
             return [int]$LASTEXITCODE
@@ -1964,6 +1976,20 @@ exit 0
     # On an AMD GPU (no NVIDIA), surface the optional WSL-ROCm driver hint.
     if (-not $HasNvidiaSmi -and ($ROCmGfxArch -or $ROCmGpuLabel)) { Show-AmdWslDriverHint }
 
+    # Trim trailing slashes from the URL PATH only, preserving ?query / #fragment. A
+    # whole-URL TrimEnd('/') corrupts a token that ends in "/" (base64 ...abc/); a single
+    # strip leaves .../cu128// as an empty leaf. Mirrors _trim_index_path_slashes (py) /
+    # _trim_index_path_slashes (install.sh).
+    function Trim-IndexPathSlashes {
+        param([string]$Url)
+        $value = $Url.Trim()
+        $idx = $value.IndexOfAny([char[]]@('?', '#'))
+        if ($idx -lt 0) {
+            return $value.TrimEnd('/')
+        }
+        return $value.Substring(0, $idx).TrimEnd('/') + $value.Substring($idx)
+    }
+
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
@@ -1973,7 +1999,7 @@ exit 0
         # verbatim); UNSLOTH_TORCH_INDEX_FAMILY is the convenience leaf appended to the
         # mirror base. Matches install.sh / install_python_stack.py.
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
-            return $env:UNSLOTH_TORCH_INDEX_URL.Trim().TrimEnd('/')
+            return (Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL)
         }
         if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)) {
             return "$baseUrl/$($env:UNSLOTH_TORCH_INDEX_FAMILY.Trim().Trim('/'))"

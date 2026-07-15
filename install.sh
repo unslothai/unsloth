@@ -156,6 +156,40 @@ run_maybe_quiet() {
     fi
 }
 
+# Trim trailing slashes from the URL PATH only, preserving ?query / #fragment. A
+# whole-URL %/ strip corrupts a token that ends in "/" (base64 ...abc/) and a single
+# %/ leaves .../cu128// as an empty leaf. Mirrors _trim_index_path_slashes (py) /
+# Trim-IndexPathSlashes (ps1).
+_trim_index_path_slashes() {
+    _tips_v="$1"
+    case "$_tips_v" in
+        *[?#]*)
+            _tips_head="${_tips_v%%[?#]*}"
+            _tips_tail="${_tips_v#"$_tips_head"}"
+            ;;
+        *)
+            _tips_head="$_tips_v"
+            _tips_tail=""
+            ;;
+    esac
+    while [ -n "$_tips_head" ] && [ "${_tips_head%/}" != "$_tips_head" ]; do
+        _tips_head="${_tips_head%/}"
+    done
+    printf '%s%s' "$_tips_head" "$_tips_tail"
+}
+
+# Redact index-URL credentials (userinfo + ?query= values) from captured installer
+# output before printing on failure. uv/pip failure text embeds the failing --index-url
+# verbatim, which can carry a user:token@ or ?token= secret. Mirrors _redact_install_output
+# (py) / Redact-InstallOutput (ps1). Verbose mode streams live output uncaptured, so it is
+# intentionally not redacted there (developer opt-in).
+_redact_install_output() {
+    sed -E \
+        -e 's#(https?://)[^/@[:space:]`]+@#\1<redacted>@#g' \
+        -e 's#([?&][^=[:space:]&`]+)=[^&#[:space:]`]+#\1=<redacted>#g' \
+        "$@"
+}
+
 run_install_cmd() {
     _label="$1"
     shift
@@ -176,7 +210,7 @@ run_install_cmd() {
     "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
     _rc=$?
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
-    cat "$_log" >&2
+    _redact_install_output "$_log" >&2
     rm -f "$_log"
     return $_rc
 }
@@ -255,7 +289,7 @@ _install_bnb_rocm() {
         fi
         _bnb_rc=$?
         if _is_verbose; then
-            cat "$_bnb_log" >&2
+            _redact_install_output "$_bnb_log" >&2
         fi
         rm -f "$_bnb_log"
         step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
@@ -2078,8 +2112,10 @@ get_torch_index_url() {
     _url="${UNSLOTH_TORCH_INDEX_URL:-}"
     _url="${_url#"${_url%%[![:space:]]*}"}"; _url="${_url%"${_url##*[![:space:]]}"}"
     if [ -n "$_url" ]; then
-        # Strip ALL trailing slashes (a multi-slash URL 404s on strict pip proxies).
-        while [ "${_url%/}" != "$_url" ]; do _url="${_url%/}"; done
+        # Trim trailing slashes from the PATH only (a multi-slash path 404s on strict pip
+        # proxies) while preserving a ?query/#fragment token: a whole-URL strip would eat a
+        # base64 token ending in "/". Mirrors Python _explicit_torch_index_url / setup.ps1.
+        _url=$(_trim_index_path_slashes "$_url")
         echo "$_url"; return
     fi
     _family="${UNSLOTH_TORCH_INDEX_FAMILY:-}"
@@ -2224,7 +2260,11 @@ _torch_flavor_tag() {
 _torch_index_url_leaf() {
     _tl_u="${1%%\?*}"
     _tl_u="${_tl_u%%#*}"
-    _tl_u="${_tl_u%/}"
+    # Strip ALL trailing slashes, not one: .../rocm7.2// must yield rocm7.2, not an empty
+    # leaf (Python rstrip("/") already drops them all, so a single %/ diverged).
+    while [ -n "$_tl_u" ] && [ "${_tl_u%/}" != "$_tl_u" ]; do
+        _tl_u="${_tl_u%/}"
+    done
     printf '%s' "${_tl_u##*/}" | tr '[:upper:]' '[:lower:]'
 }
 
@@ -2235,11 +2275,21 @@ _is_pip_rocm_family_leaf() {
     case "$1" in
         gfx*) return 0 ;;
         rocm[0-9]*)
-            # Exact rocm + digits (+ optional .digits); anything else -> custom pin.
-            case "${1#rocm}" in
-                *[!0-9.]* | *.*.*) return 1 ;;
-                *)                 return 0 ;;
+            # Exact rocm<digits> or rocm<digits>.<digits>: a trailing dot (rocm7.), a
+            # second dot (rocm7.2.1), or any non-digit (rocm7.2-private) is a custom pin.
+            # Both major and minor must be non-empty all-digits, matching Python's
+            # re.fullmatch(rocm\d+(?:\.\d+)?) exactly (rocm7. -> custom, not a family).
+            _rocm_rest="${1#rocm}"
+            case "$_rocm_rest" in
+                *.*.*) return 1 ;;
+                *.*)
+                    _rocm_minor="${_rocm_rest#*.}"
+                    case "${_rocm_rest%%.*}" in "" | *[!0-9]*) return 1 ;; esac
+                    case "$_rocm_minor" in "" | *[!0-9]*) return 1 ;; esac
+                    ;;
+                *[!0-9]*) return 1 ;;
             esac
+            return 0
             ;;
         *) return 1 ;;
     esac
@@ -2656,10 +2706,15 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # AMD RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a
 # full-override mirror leaf (/current) does NOT commit a CUDA backend; an unknown leaf
 # leaves the var unset so the stack probes the GPU. Matches _is_cuda_family_leaf (Python)
-# / Test-CudaFamilyLeaf (PowerShell). Query/fragment dropped first.
+# / Test-CudaFamilyLeaf (PowerShell). Query/fragment dropped first, then ALL trailing
+# slashes (kept in lockstep with the shared _torch_index_url_leaf extractor).
 _torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
 _torch_index_leaf="${_torch_index_leaf%%#*}"
-_torch_index_leaf="${_torch_index_leaf%/}"
+# Strip ALL trailing slashes, not one: .../cu128// must yield cu128, not an empty leaf that
+# fails every arm below (Python .rstrip("/") drops them all; a single %/ diverged, #13/14).
+while [ -n "$_torch_index_leaf" ] && [ "${_torch_index_leaf%/}" != "$_torch_index_leaf" ]; do
+    _torch_index_leaf="${_torch_index_leaf%/}"
+done
 _torch_index_leaf="${_torch_index_leaf##*/}"
 _torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]')
 case "$_torch_index_leaf" in

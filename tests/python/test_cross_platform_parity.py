@@ -1057,3 +1057,72 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             "-match '^rocm\\d'" not in stale
         ), "setup.ps1 stale check must not use an unanchored -match '^rocm\\d'"
+
+
+class TestIndexPathSlashTrimParity:
+    """Every installer must trim trailing PATH slashes only on the verbatim
+    UNSLOTH_TORCH_INDEX_URL override, preserving a ?query/#fragment token: a whole-URL
+    strip corrupts a base64 token ending in "/", a single strip leaves a double-slash leaf
+    empty. The helper must be DEFINED and WIRED into the override return in all four."""
+
+    def test_helper_defined_in_all_installers(self):
+        assert "def _trim_index_path_slashes(" in STACK_PY.read_text(encoding = "utf-8")
+        assert "_trim_index_path_slashes()" in INSTALL_SH.read_text(encoding = "utf-8")
+        assert "function Trim-IndexPathSlashes" in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Trim-IndexPathSlashes" in SETUP_PS1.read_text(encoding = "utf-8")
+
+    def test_helper_wired_into_override_in_all_installers(self):
+        assert "_trim_index_path_slashes(url)" in STACK_PY.read_text(encoding = "utf-8")
+        assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
+            in INSTALL_PS1.read_text(encoding = "utf-8")
+        )
+        assert (
+            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
+            in SETUP_PS1.read_text(encoding = "utf-8")
+        )
+
+
+class TestInstallOutputRedactionParity:
+    """uv/pip failure text embeds the failing --index-url verbatim, so a captured install
+    log dumped on error can leak a user:token@ or ?token= secret. Every installer must
+    DEFINE a redaction helper and WIRE it into the captured-output print path."""
+
+    def test_helper_defined_in_all_installers(self):
+        assert "def _redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
+        assert "_redact_install_output()" in INSTALL_SH.read_text(encoding = "utf-8")
+        assert "function Redact-InstallOutput" in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "function Redact-InstallOutput" in SETUP_PS1.read_text(encoding = "utf-8")
+
+    def test_helper_wired_into_failure_print(self):
+        # install.sh dumps the captured log through the redactor on failure.
+        assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
+        # Both ps1 installers redact the captured $output before Write-Host on non-zero exit.
+        assert (
+            "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"
+            in INSTALL_PS1.read_text(encoding = "utf-8")
+        )
+        assert (
+            "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"
+            in SETUP_PS1.read_text(encoding = "utf-8")
+        )
+        # Python redacts the captured stdout before printing.
+        assert "_redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
+
+
+class TestPipNoIndexScrubParity:
+    """The plain-pip fallback honours PIP_*: PIP_NO_INDEX=1 makes it ignore ALL indexes
+    (defeating the pinned --index-url) and PIP_INDEX_URL replaces the pin. The two installers
+    that HAVE a plain-pip fallback (Python + setup.ps1) must scrub both for a pinned install.
+    install.sh / install.ps1 are uv-only (--default-index), which ignores pip config/env."""
+
+    def test_python_scrubs_pip_no_index_and_pip_index_url(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert '"PIP_NO_INDEX"' in text
+        assert '"PIP_INDEX_URL"' in text
+
+    def test_setup_ps1_scrubs_pip_no_index_and_pip_index_url(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "'PIP_NO_INDEX'" in text
+        assert "'PIP_INDEX_URL'" in text

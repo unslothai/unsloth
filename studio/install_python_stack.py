@@ -158,6 +158,32 @@ def _strip_index_url_credentials(url: str) -> str:
     return f"{scheme}://{host}{slash}{tail}"
 
 
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/@\s`]+@")
+_URL_QUERY_VALUE_RE = re.compile(r"([?&][^=\s&`]+)=[^&#\s`]+")
+
+
+def _redact_install_output(output: "bytes | str") -> str:
+    """Redact index-URL credentials (userinfo + query values) from captured installer
+    output before printing. uv/pip failure text embeds the failing --index-url verbatim,
+    which can carry a user:token@ or ?token= secret. MUST match install.sh / setup.ps1 /
+    install.ps1's output sanitizers."""
+    text = output.decode(errors = "replace") if isinstance(output, bytes) else output
+    text = _URL_USERINFO_RE.sub(r"\1<redacted>@", text)
+    return _URL_QUERY_VALUE_RE.sub(r"\1=<redacted>", text)
+
+
+def _trim_index_path_slashes(url: str) -> str:
+    """Trim trailing slashes from the URL PATH only, preserving ?query / #fragment. A
+    whole-URL rstrip("/") corrupts a token that ends in "/" (e.g. base64 ...abc/) and a
+    single-slash strip leaves .../cu128// classifying as an empty leaf. MUST match
+    install.sh / setup.ps1 / install.ps1."""
+    value = url.strip()
+    match = re.fullmatch(r"([^?#]*)([?#].*)?", value)
+    if match is None:
+        return value.rstrip("/")
+    return match.group(1).rstrip("/") + (match.group(2) or "")
+
+
 def _torch_index_leaf(url: str) -> str:
     """Final URL path segment, lowercased, query/fragment removed first.
 
@@ -1201,7 +1227,7 @@ def _detect_cuda_torch_index_url() -> str:
     """
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
-        return _override_url.rstrip("/")
+        return _trim_index_path_slashes(_override_url)
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
@@ -1247,7 +1273,7 @@ def _explicit_torch_index_url() -> "str | None":
     """
     url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if url:
-        return url.rstrip("/")
+        return _trim_index_path_slashes(url)
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if family:
         return f"{_PYTORCH_WHL_BASE}/{family.strip('/')}"
@@ -2745,6 +2771,11 @@ _UV_INDEX_ENV_VARS = (
     "UV_FIND_LINKS",
     "PIP_EXTRA_INDEX_URL",
     "PIP_FIND_LINKS",
+    # PIP_NO_INDEX=1 makes the pip fallback ignore ALL indexes, including the explicit
+    # --index-url, so an inherited value silently defeats the pin. PIP_INDEX_URL is
+    # dropped too so a stale mirror env cannot outrank the pinned --index-url.
+    "PIP_NO_INDEX",
+    "PIP_INDEX_URL",
 )
 
 
@@ -2857,7 +2888,7 @@ def pip_install(
                 return
             print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
-                print(result.stdout.decode(errors = "replace"))
+                print(_redact_install_output(result.stdout))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
