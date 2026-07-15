@@ -1364,23 +1364,32 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
     return (scheme, host, port)
 
 
-def _is_loopback_client(request: Request) -> bool:
-    """Return whether the client connects directly from a loopback address.
-
-    Cloudflare tunnel requests also have a loopback socket peer, but carry
-    ``CF-Connecting-IP``. Missing or invalid peers and all tunnel requests fail
-    closed.
-    """
-    client = request.client
-    if client is None:
+def _is_loopback_ip(host: Optional[str]) -> bool:
+    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
+    if not host:
         return False
     try:
-        ip = ipaddress.ip_address(client.host)
-    except ValueError:
+        ip = ipaddress.ip_address(host)
+    except (TypeError, ValueError):
         return False
     mapped = getattr(ip, "ipv4_mapped", None)
-    is_loopback = ip.is_loopback or (mapped is not None and mapped.is_loopback)
-    return is_loopback and request.headers.get("cf-connecting-ip") is None
+    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
+def _is_local_bootstrap_request(request: Request) -> bool:
+    """Allow bootstrap injection only through a direct loopback authority."""
+    client = request.client
+    if client is None or not _is_loopback_ip(client.host):
+        return False
+    # cloudflared connects over loopback, but marks requests at the edge.
+    if request.headers.get("cf-connecting-ip") is not None:
+        return False
+    try:
+        request_host = request.url.hostname
+    except ValueError:
+        return False
+    request_host = (request_host or "").lower().rstrip(".")
+    return request_host == "localhost" or _is_loopback_ip(request_host)
 
 
 def _is_same_origin_request(request: Request) -> bool:
@@ -1433,7 +1442,7 @@ def setup_frontend(app: FastAPI, build_path: Path):
         # Bootstrap pw is same-origin only, and (outside Colab's single-user
         # sandbox) only to a client on this machine: a wildcard bind must not
         # serve it in-page to a LAN peer. Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request) and (_IS_COLAB or _is_loopback_client(request)):
+        if _is_same_origin_request(request) and (_IS_COLAB or _is_local_bootstrap_request(request)):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None
