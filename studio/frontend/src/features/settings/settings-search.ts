@@ -58,7 +58,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.uiFontSize.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
-    "settings.appearance.custom.edgeFades.label",
     "settings.appearance.layout.compactSidebar",
     "settings.appearance.sidebarMenu.title",
     "settings.appearance.sidebarMenu.darkModeToggle",

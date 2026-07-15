@@ -93,47 +93,6 @@
 		);
 		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 	}
-
-	/* Edge fades off (Appearance setting): every dissolve above becomes a
-	   thin divider line at the same boundary. */
-	html.no-edge-fades .sidebar-scroll-fade.is-scrolled,
-	html.no-edge-fades .model-list-scroll.is-scrolled,
-	html.no-edge-fades .model-list-scroll.is-bottom-faded,
-	html.no-edge-fades .model-list-scroll.is-scrolled.is-bottom-faded,
-	html.no-edge-fades .rag-docs-bottom-fade {
-		-webkit-mask-image: none;
-		mask-image: none;
-	}
-	html.no-edge-fades .sidebar-scroll-fade.is-scrolled {
-		border-top: 1px solid var(--sidebar-border);
-	}
-	html.no-edge-fades .sidebar-bottom-fade::after {
-		height: 1px;
-		background: var(--sidebar-border);
-	}
-	html.no-edge-fades .model-list-scroll.is-scrolled {
-		border-top: 1px solid var(--border);
-	}
-	html.no-edge-fades .model-list-scroll.is-bottom-faded {
-		border-bottom: 1px solid var(--border);
-	}
-	html.no-edge-fades .rag-docs-bottom-fade {
-		border-bottom: 1px solid var(--border);
-	}
-	/* Chat thread: gradient wash above the composer becomes a hairline at
-	   its top edge; the chat header's under-fade becomes a hairline too.
-	   !important beats the Tailwind gradient/mask utilities on the nodes. */
-	html.no-edge-fades .thread-bottom-fade {
-		background: none !important;
-		backdrop-filter: none !important;
-		-webkit-mask-image: none !important;
-		mask-image: none !important;
-		border-top: 1px solid var(--border);
-	}
-	html.no-edge-fades .chat-header-fade {
-		background: none !important;
-		border-top: 1px solid var(--border);
-	}
 }
 
 @layer base {
@@ -1482,6 +1441,15 @@ html[data-chat-font] .aui-root {
 
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
+	}
+	/* Permission-level pill: higher-contrast grey than the resting pills so
+	   the active level stays legible (darker in light mode, lighter in dark).
+	   Full access keeps the danger yellow below. */
+	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 60%, transparent);
+	}
+	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 72%, transparent);
 	}
 	/* Bypass permissions badge: bright yellow text, no resting fill; the
 	   rounded hover pill picks up the yellow accent like other toggles. */

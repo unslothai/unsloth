@@ -343,10 +343,6 @@ export const zhCN = {
           label: "字体平滑",
           description: "使用平滑的字体抗锯齿。",
         },
-        edgeFades: {
-          label: "边缘淡出",
-          description: "在面板边缘淡出内容。关闭后显示细分隔线。",
-        },
         contrast: {
           label: "对比度",
           description: "边框和次要文本的强度。",

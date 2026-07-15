@@ -181,6 +181,12 @@ export const en = {
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
       },
+      permissions: {
+        sectionTitle: "Permissions",
+        bypassLabel: "Bypass permissions",
+        bypassDescription:
+          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
@@ -339,11 +345,6 @@ export const en = {
         fontSmoothing: {
           label: "Font smoothing",
           description: "Use smoothed font anti-aliasing.",
-        },
-        edgeFades: {
-          label: "Edge fades",
-          description:
-            "Fade content at panel edges. Off shows a thin divider line instead.",
         },
         contrast: {
           label: "Contrast",

@@ -558,8 +558,12 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
 
+    # run_server's pre-bind gate sets suppress_bootstrap_injection when a public
+    # URL is about to serve with the default credential active: never (re)capture
+    # the bootstrap password into app.state, or the HTML would hand it out.
+    _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     if storage.ensure_default_admin():
-        bootstrap_pw = storage.get_bootstrap_password()
+        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
 
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
@@ -570,7 +574,7 @@ async def lifespan(app: FastAPI):
         print("    open that file to read the password, then sign in and change it.")
         print("=" * 60 + "\n")
     else:
-        bootstrap_pw = storage.get_bootstrap_password()
+        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
         # A restart before first login skips the creation banner above; still
         # point the operator to the seed file while the bootstrap pw is unrotated.

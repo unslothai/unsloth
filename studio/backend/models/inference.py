@@ -695,6 +695,23 @@ class ThinkingConfig(BaseModel):
     type: Literal["disabled", "enabled"] = "disabled"
 
 
+# Recognized permission_mode values. The field accepts a plain string rather than
+# a Literal so an unrecognized value from a newer UI/client degrades to the
+# safest gate ("ask") instead of a 422; the tool loops apply the same unknown ->
+# ask fallback, so normalizing here keeps that forward-compat path reachable at
+# the API boundary. None stays unset ("behaves as 'ask'" without self-enabling
+# the confirm gate).
+_KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
+
+
+def _normalize_permission_mode(value: Any) -> Any:
+    if value is None:
+        return None
+    if value not in _KNOWN_PERMISSION_MODES:
+        return "ask"
+    return value
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -839,6 +856,19 @@ class ChatCompletionRequest(BaseModel):
     bypass_permissions: Optional[bool] = Field(
         False,
         description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+    )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Permission level for local tool calls. 'ask' pauses every "
+            "call for approval; 'ask'/'auto' enable the confirmation gate on their "
+            "own (needs a streaming request to deliver prompts). 'auto' ('Approve for "
+            "me') only pauses calls detected as potentially unsafe (state-mutating "
+            "terminal/python/MCP calls); read-only calls run immediately, and the "
+            "sandbox stays on. 'full' is equivalent to bypass_permissions=true (no "
+            "confirmation, no sandbox). Unset behaves as 'ask'. An unrecognized value "
+            "(e.g. from a newer client) is treated as 'ask'."
+        ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -1101,6 +1131,52 @@ class ChatCompletionRequest(BaseModel):
         """
         if self.thinking is not None and self.enable_thinking is None:
             self.enable_thinking = self.thinking.type == "enabled"
+        return self
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        # Accept any string so an unknown mode degrades to 'ask' instead of a
+        # 422; mirrors the tool loops' unknown -> ask fallback.
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
+        """permission_mode='full' is the documented equivalent of
+        bypass_permissions=true, so fold it in before any route guard reads
+        the flag (else a full request would trip the confirm-gate rejections)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
+        elif self.permission_mode == "off":
+            # "Off" never prompts, so route guards must see confirm disabled.
+            self.confirm_tool_calls = False
+        elif (
+            self.permission_mode == "ask"
+            and self.confirm_tool_calls is None
+            and not (self.provider_id or self.provider_type)
+            and (self.enable_tools is True or bool(self.mcp_enabled))
+        ):
+            # "Ask" gates every call, so a direct API caller that omits the legacy
+            # confirm flag must still hit the confirmation gate for Studio's own
+            # tool loop. An explicit confirm_tool_calls=False wins over the mode
+            # (mirrors _permission_mode_confirm and the Anthropic pre-switch guard),
+            # so only self-enable when the flag is unset. Only self-enable when that
+            # loop is actually requested
+            # (enable_tools / mcp_enabled) -- the router enters the loop on those
+            # signals, not on enabled_tools alone (which merely filters which tools
+            # run). A plain client-tool passthrough (client-supplied `tools` that
+            # Studio does not execute) must route verbatim, and external-provider
+            # routing rejects confirm_tool_calls with tools, so skip the fold there.
+            #
+            # "auto" is deliberately NOT folded: it only prompts for a call the
+            # classifier flags, so leaving confirm_tool_calls unset lets the route's
+            # _confirm_gate_needs_stream apply the safe-only exception (a safe-only
+            # auto selection needs no stream) instead of an explicit-confirm forcing
+            # stream=true. The mode still drives the loop's per-call gate.
+            self.confirm_tool_calls = True
         return self
 
 
@@ -1758,6 +1834,10 @@ class AnthropicMessagesRequest(BaseModel):
         False,
         description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
     )
+    permission_mode: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' only pauses calls detected as potentially unsafe, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset behaves as 'ask'; an unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
@@ -1798,6 +1878,27 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        # Accept any string so an unknown mode degrades to 'ask' instead of a
+        # 422; mirrors the tool loops' unknown -> ask fallback.
+        return _normalize_permission_mode(value)
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":
+        """permission_mode='full' equals bypass_permissions=true (mirrors the
+        Chat Completions request)."""
+        if self.permission_mode == "full":
+            self.bypass_permissions = True
+        elif self.bypass_permissions:
+            # Legacy bypass callers map onto Full access (mirrors the tool loop).
+            self.permission_mode = "full"
+        elif self.permission_mode == "off":
+            # "Off" never prompts, so route guards must see confirm disabled.
+            self.confirm_tool_calls = False
+        return self
 
 
 # ── Response models ────────────────────────────────────────────
