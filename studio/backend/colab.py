@@ -323,9 +323,8 @@ def start(port: int = 8888, *, cloudflare: bool = False):
 
     logger.info("   Starting server...")
     try:
-        # cloudflare=False: this helper owns the tunnel, so pin it off explicitly
-        # (Colab's own start(cloudflare=...) opt-in drives it) rather than relying
-        # on run_server's default.
+        # cloudflare=False: this helper owns the tunnel (Colab's own
+        # start(cloudflare=...) drives it), so pin it off explicitly.
         app = run_server(
             host = "0.0.0.0",
             port = port,

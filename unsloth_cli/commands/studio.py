@@ -483,10 +483,9 @@ def _connect_auth_db() -> sqlite3.Connection:
     auth_dir = STUDIO_HOME / "auth"
     auth_dir.mkdir(parents = True, exist_ok = True)
     conn = sqlite3.connect(auth_dir / "auth.db")
-    # Mirror backend storage.get_connection: on a fresh install this path can
-    # create auth/ and auth.db (the pre-exposure gate writes here before the
-    # backend runs), and sqlite3.connect makes the DB 0644 under a 022 umask.
-    # Keep both private.
+    # Mirror backend storage.get_connection: this path can create auth/ and
+    # auth.db (the pre-exposure gate writes here first), and sqlite3.connect
+    # makes the DB 0644 under a 022 umask. Keep both private.
     for _path, _mode in ((auth_dir, 0o700), (auth_dir / "auth.db", 0o600)):
         try:
             os.chmod(_path, _mode)
@@ -682,11 +681,9 @@ def _bootstrap_deadline_active() -> bool:
 def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: str) -> None:
     """CLI mirror of backend update_password + change-password route effects.
 
-    One transaction: rehash, rotate the JWT secret (invalidates access tokens),
-    clear must_change_password, revoke refresh tokens (see the refresh-token
-    review finding on PR #6651), and drop the desktop secret. File cleanup
-    happens after commit: the old credential is already cryptographically
-    invalid, so a failed unlink must not roll the change back.
+    One transaction: rehash, rotate the JWT secret, clear must_change_password,
+    revoke refresh tokens (PR #6651 finding), and drop the desktop secret. File
+    cleanup happens after commit; a failed unlink must not roll the change back.
     """
     password_salt, password_hash = _hash_password(new_password)
     with conn:
@@ -708,12 +705,12 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
         try:
             stale_path.unlink(missing_ok = True)
         except OSError as exc:
-            # The new hash is already committed, so a failed unlink must NOT roll
-            # the change back. But a locked/undeletable file that is still writable
-            # (Windows AV, read-only auth dir) has to be truncated: otherwise its
-            # stale plaintext survives and generate_bootstrap_password() would read
-            # it back and re-validate this revoked credential after a later
-            # reset-password deletes auth.db. Mirrors backend clear_bootstrap_password().
+            # The hash is already committed, so a failed unlink must NOT roll the
+            # change back. But a locked-yet-writable file (Windows AV, read-only
+            # auth dir) must be truncated: otherwise its stale plaintext survives
+            # and generate_bootstrap_password() would re-validate this revoked
+            # credential after a later reset-password deletes auth.db. Mirrors
+            # backend clear_bootstrap_password().
             try:
                 stale_path.write_text("")
                 cleared = True
@@ -735,15 +732,14 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
-    """Non-interactively set the INITIAL admin password (from --password / the
-    UNSLOTH_STUDIO_PASSWORD env var / stdin) before the server binds, when the
-    account still has its auto-generated bootstrap password.
+    """Non-interactively set the INITIAL admin password (from --password /
+    UNSLOTH_STUDIO_PASSWORD / stdin) before the server binds, while the account
+    still has its auto-generated bootstrap password.
 
-    Only ever sets the FIRST password: if one is already set this is a hard error
-    (never an override -- that would be an auth bypass on a public launch). An
-    invalid value fails closed so a public launch never proceeds with the default
-    credential. Runs in the parent before any re-exec, mirroring the interactive
-    gate, so the secret never crosses to the child argv.
+    Only ever sets the FIRST password: an already-set one is a hard error (an
+    override would be an auth bypass on a public launch), and an invalid value
+    fails closed. Runs in the parent before any re-exec so the secret never
+    crosses to the child argv.
     """
     if not supplied_password:
         return
@@ -791,9 +787,8 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, supplied_password)
         typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     except (OSError, sqlite3.Error) as exc:
-        # Any DB failure across ensure/commit/SELECT/update fails closed with a
-        # clean message (typer.Exit is not caught here, so the deliberate Exit(1)
-        # branches above propagate unchanged).
+        # Any DB failure fails closed (typer.Exit is not caught here, so the
+        # deliberate Exit(1) branches above propagate unchanged).
         typer.echo(
             f"Error: --password could not update the Studio auth database ({exc}); not starting.",
             err = True,
@@ -806,13 +801,12 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
 def _strip_seeded_bootstrap_password_or_exit(*, context: str) -> None:
     """Remove the seeded plaintext bootstrap password before a public re-exec.
 
-    Deleting the file is the version-independent protection: a re-exec'd child
-    of ANY version (including an old studio-venv predating the pre-bind gate)
-    then reads None instead of injecting the default credential into the public
-    page. must_change_password stays set in the DB, so the login page still
-    forces a change and the bootstrap shutdown timer still arms; only the
-    plaintext-on-disk copy is removed. Removal IS the protection, so if it fails
-    (locked file, read-only auth dir) fail closed rather than publish it.
+    Version-independent protection: a re-exec'd child of ANY version (including an
+    old studio-venv predating the pre-bind gate) then reads None instead of
+    injecting the default credential into the public page. must_change_password
+    stays set, so the login page still forces a change and the timer still arms.
+    Removal IS the protection, so if it fails (locked file, read-only auth dir)
+    fail closed rather than publish it.
     """
     bootstrap_file = STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE
     try:
@@ -837,16 +831,14 @@ def _require_servable_frontend_or_exit(
     login page to change the seeded password.
 
     The gate strips the seeded .bootstrap_password on a headless public launch,
-    so if the re-exec'd child then cannot serve the login page the admin is
-    locked out (must_change_password=1, no file, no UI) until `unsloth studio
-    reset-password`. The login page is the ONLY in-band way to change the seeded
-    password, so a public non-api-only launch must have a servable frontend dist
-    before the strip can happen.
+    so if the child then cannot serve the login page the admin is locked out
+    (must_change_password=1, no file, no UI) until `unsloth studio reset-password`.
+    The login page is the ONLY in-band way to change the seeded password, so a
+    public non-api-only launch must have a servable dist before the strip.
 
     Returns the dist to serve: a user-supplied --frontend (validated to contain
-    index.html, so a bad path cannot silently bypass this check) or the
-    auto-resolved built dist. Returns `frontend` unchanged for non-public or
-    --api-only launches (no UI login page is needed, so nothing is validated).
+    index.html) or the auto-resolved built dist. Returns `frontend` unchanged for
+    non-public or --api-only launches (no login page needed).
     """
     if api_only or not _should_prompt_password_change(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
@@ -854,8 +846,7 @@ def _require_servable_frontend_or_exit(
         return frontend
     if frontend is not None:
         # A user-supplied dist is not vetted by _find_frontend_dist, so verify it
-        # can actually serve the login page; otherwise `--frontend /bad/path`
-        # would trivially bypass this guard and the strip would still lock out.
+        # can serve the login page; else `--frontend /bad/path` bypasses the guard.
         if (Path(frontend) / "index.html").is_file():
             return frontend
         typer.echo(
@@ -884,14 +875,12 @@ def _validate_inproc_backend_before_strip(
 ) -> None:
     """In-venv (in-process) analogue of the re-exec launcher check.
 
-    When Studio runs inside its own venv there is no re-exec, so the backend is
-    imported in-process by _load_run_module() only AFTER the pre-exposure gate.
-    On the headless public path the gate strips the seeded .bootstrap_password,
-    so a partial/broken venv that fails at import would be left with
-    must_change_password=1 and no password to log in (lockout until
-    reset-password). Import the backend up front on that path and exit cleanly if
-    it is broken, before anything is stripped. Restricted to the headless path so
-    an interactive password prompt is not delayed behind a full backend import.
+    In-venv there is no re-exec, so the backend is imported in-process only AFTER
+    the gate. On the headless public path the gate strips the seeded
+    .bootstrap_password, so a broken venv that fails at import would leave
+    must_change_password=1 with no password to log in. Import the backend up front
+    on that path and exit cleanly if broken, before anything is stripped.
+    Headless-only so an interactive prompt is not delayed behind the import.
     """
     if not _should_prompt_password_change(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
@@ -912,18 +901,17 @@ def _validate_inproc_backend_before_strip(
 
 
 def _tunnel_binary_confirmed_unavailable() -> bool:
-    """True only if cloudflared is provably unavailable: found nowhere on PATH or
-    in the Studio cache AND the download failed, so the tunnel cannot start.
+    """True only if cloudflared is provably unavailable (found nowhere on PATH or
+    in the Studio cache AND the download failed), so the tunnel cannot start.
 
     Used on the --secure path (loopback bind, so the tunnel is the ONLY public
     exposure) to skip stripping the seeded recovery password before a public URL
-    that will never come up. Loads the stdlib-only backend cloudflare_tunnel
-    helper by file path so the check runs in the parent, before the strip.
-    ensure_cloudflared() also caches the binary the re-exec'd child would use.
+    that will never come up. Loads the stdlib-only cloudflare_tunnel helper by
+    file path so the check runs in the parent, before the strip.
 
-    Returns False on ANY uncertainty (helper not loadable, unexpected error): a
-    possible credential leak outweighs a recoverable lockout, so the caller keeps
-    the security-critical strip when it cannot prove the tunnel is dead.
+    Returns False on ANY uncertainty: a possible credential leak outweighs a
+    recoverable lockout, so the caller keeps the strip unless the tunnel is
+    provably dead.
     """
     run_py = _find_run_py()
     if run_py is None:
@@ -932,12 +920,10 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
     tunnel_py = backend_dir / "cloudflare_tunnel.py"
     if not tunnel_py.is_file():
         return False
-    # ensure_cloudflared() -> _cache_path() lazily imports utils.paths.storage_roots
-    # to resolve the Studio bin cache. From the outer CLI, run.py has not yet added
-    # studio/backend to sys.path, so that import would fail and ensure_cloudflared()
-    # would return None (cache unresolvable) even when cloudflared is cached or
-    # downloadable -- a false "unavailable" that wrongly refuses --secure. Add the
-    # backend dir for the probe so the cache path resolves like it will in the child.
+    # ensure_cloudflared() lazily imports utils.paths.storage_roots to resolve the
+    # Studio bin cache. The outer CLI hasn't added studio/backend to sys.path yet,
+    # so that import would fail and return None (a false "unavailable" that wrongly
+    # refuses --secure). Add the backend dir so the cache path resolves as in the child.
     added_backend_path = False
     try:
         if str(backend_dir) not in sys.path:
@@ -960,19 +946,16 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
 
 
 def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
-    """True when the child that will actually serve Studio is provably THIS
-    install's backend, whose pre-bind gate (run.py `_terminal_password_gate`)
-    sets app.state.suppress_bootstrap_injection and so never serves the seeded
-    credential publicly (main.py lifespan honors the flag) -- even with
-    .bootstrap_password still on disk. In that case the parent-side strip is
-    unnecessary, so it can be skipped to avoid a lockout if the tunnel never
-    comes up while keeping the file as a LOCAL recovery credential.
+    """True when the child that will serve Studio is provably THIS install's
+    backend, whose pre-bind gate sets app.state.suppress_bootstrap_injection and
+    so never serves the seeded credential publicly -- even with .bootstrap_password
+    on disk. The parent-side strip is then unnecessary and can be skipped to avoid
+    a lockout if the tunnel never comes up, keeping the file for LOCAL recovery.
 
-    True iff we run in-process here (this same new gate implies a new run_server),
-    or the re-exec target is the outer install's own run.py (identity match, not a
-    content guess). False on ANY doubt -- notably a studio-venv `unsloth` console
-    script or a venv run.py that may predate the gate -- so the mixed-version
-    strip stays fully in force wherever an old child is actually possible.
+    True iff we run in-process here, or the re-exec target is the outer install's
+    own run.py (identity match). False on ANY doubt -- a studio-venv console script
+    or a venv run.py that may predate the gate -- so the strip stays in force
+    wherever an old child is possible.
     """
     if in_studio_venv:
         return True
@@ -995,31 +978,29 @@ def _enforce_password_change_before_exposure(
 ) -> None:
     """Force a terminal password change before the first public (tunnel) exposure.
 
-    When the launch will start the Cloudflare tunnel and the admin account
-    still has its auto-generated bootstrap password, ask for a new password in
-    the terminal (masked with '*', confirmed, re-prompting until valid) before
-    any server or tunnel exists. Committing here, in the parent, means the
-    password never crosses argv or the environment, and an older studio-venv
-    child sees the change immediately. Without a terminal, warn and fall back
-    to the backend's bootstrap shutdown timer (~1h, UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).
+    When the launch will start the tunnel and the admin still has its
+    auto-generated bootstrap password, ask for a new one in the terminal (masked,
+    confirmed) before any server or tunnel exists. Committing here, in the parent,
+    keeps the password off argv/env and an older studio-venv child sees it
+    immediately. Without a terminal, warn and fall back to the bootstrap shutdown
+    timer (~1h, UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).
     """
     if not _should_prompt_password_change(
         cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
     ):
         return
     # Before public exposure we must PROVE the admin password is no longer the
-    # seeded default. If we cannot -- the auth DB will not open, or a fresh admin
-    # cannot be seeded + committed (below) -- an old studio-venv child (no pre-bind
-    # gate) could find no admin, regenerate a fresh bootstrap credential, and serve
-    # it publicly; stripping a file we cannot vouch for cannot stop a regeneration.
-    # So those cases fail closed. A failure AFTER the user typed a new password
-    # also stays fatal, below.
+    # seeded default. If we cannot (auth DB won't open, or a fresh admin cannot be
+    # seeded + committed below), an old studio-venv child could regenerate a fresh
+    # bootstrap credential and serve it; stripping a file we can't vouch for cannot
+    # stop a regeneration. So those cases fail closed, as does a failure after the
+    # user typed a new password.
     try:
         conn = _connect_auth_db()
     except (OSError, sqlite3.Error) as exc:
-        # Cannot open the auth DB, so we cannot confirm a committed admin exists.
-        # Refuse rather than risk a re-exec'd child serving the default login; a
-        # transient lock clears on retry.
+        # Cannot open the auth DB, so cannot confirm a committed admin exists.
+        # Refuse rather than risk a child serving the default login; a transient
+        # lock clears on retry.
         typer.echo(
             "Error: refusing to publish Studio on a public Cloudflare URL: could "
             f"not open the Studio auth database ({exc}) to confirm the admin "
@@ -1032,17 +1013,16 @@ def _enforce_password_change_before_exposure(
     try:
         try:
             _ensure_cli_default_admin(conn)
-            # Persist a freshly seeded admin before we might re-exec: the INSERT in
-            # _ensure_cli_default_admin is otherwise uncommitted and rolls back on
-            # conn.close(). If the seed or this commit fails (e.g. a write lock held
-            # past busy_timeout), no admin is committed, so a re-exec'd OLD child
-            # finds none, regenerates a fresh bootstrap password + file, and serves
-            # THAT publicly -- stripping cannot stop a regeneration. We cannot prove
-            # a committed admin, so fail closed.
+            # Persist a freshly seeded admin before we might re-exec: the INSERT is
+            # otherwise uncommitted and rolls back on conn.close(). If the seed or
+            # commit fails, no admin is committed, so a re-exec'd OLD child finds
+            # none, regenerates a fresh bootstrap password + file, and serves THAT
+            # -- stripping cannot stop a regeneration. Can't prove a committed
+            # admin, so fail closed.
             conn.commit()
         except (OSError, sqlite3.Error) as exc:
-            # Best-effort remove any half-written seed file (its admin row rolled
-            # back); the launch is refused regardless.
+            # Best-effort remove any half-written seed file (its row rolled back);
+            # the launch is refused regardless.
             try:
                 (STUDIO_HOME / "auth" / BOOTSTRAP_PASSWORD_FILE).unlink(missing_ok = True)
             except OSError:
@@ -1066,13 +1046,12 @@ def _enforce_password_change_before_exposure(
         except (OSError, sqlite3.Error) as exc:
             if child_self_suppresses:
                 # Could not read must_change back, but the child is this install's
-                # own backend and suppresses the bootstrap injection, so nothing
-                # serves the seeded credential; proceed without stripping.
+                # own backend and suppresses the injection, so nothing serves the
+                # seeded credential; proceed without stripping.
                 return
-            # The admin is committed above, so an old child finds it and will NOT
-            # regenerate; we just could not read must_change_password back. Strip
-            # the seeded file so nothing serves it (the DB flag and shutdown timer
-            # still force a change), failing closed if the strip itself fails.
+            # The admin is committed above, so an old child finds it and won't
+            # regenerate; we just couldn't read must_change back. Strip the seeded
+            # file so nothing serves it, failing closed if the strip itself fails.
             typer.echo(
                 f"Warning: could not read the Studio admin state back ({exc}); "
                 "removing the seeded bootstrap password before public exposure.",
@@ -1083,9 +1062,8 @@ def _enforce_password_change_before_exposure(
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
-            # Only proceed headless if the bootstrap shutdown deadline will
-            # protect the launch: it never arms for api-only, and
-            # UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables it.
+            # Only proceed headless if the bootstrap shutdown deadline will protect
+            # the launch: it never arms for api-only, and TIMEOUT=0 disables it.
             if api_only or not _bootstrap_deadline_active():
                 typer.echo(
                     "Error: refusing to publish Studio on a public Cloudflare "
@@ -1099,14 +1077,13 @@ def _enforce_password_change_before_exposure(
                 )
                 raise typer.Exit(1)
             if child_self_suppresses:
-                # The child that will serve Studio is this install's own backend,
-                # whose pre-bind gate sets app.state.suppress_bootstrap_injection,
-                # so the seeded credential is never served publicly even with the
-                # file on disk. Skip the strip: it is unnecessary here, and doing
-                # it would lock the user out if the tunnel never comes up (e.g. a
-                # --secure loopback launch whose cloudflared tunnel fails to
-                # connect). Keep the file as a LOCAL recovery credential;
-                # must_change_password stays set and the shutdown deadline arms.
+                # The child is this install's own backend, whose pre-bind gate sets
+                # app.state.suppress_bootstrap_injection, so the seeded credential
+                # is never served publicly even with the file on disk. Skip the
+                # strip: unnecessary here, and it would lock the user out if the
+                # tunnel never comes up (e.g. a --secure loopback whose tunnel
+                # fails). Keep the file for LOCAL recovery; must_change stays set
+                # and the deadline arms.
                 typer.echo(
                     "Warning: Studio is being exposed publicly while the admin "
                     "account still uses its auto-generated bootstrap password. The "
@@ -1118,14 +1095,13 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 return
-            # The strip permanently removes the only plaintext recovery
-            # credential. On --secure the bind is loopback, so the Cloudflare
-            # tunnel is the ONLY public exposure: if cloudflared is provably
-            # unavailable (found nowhere and undownloadable) no public URL can
-            # start, nothing needs stripping, and stripping would just lock the
-            # user out. Refuse the launch with the credential preserved. (Wildcard
-            # --cloudflare binds 0.0.0.0 publicly regardless of the tunnel, so it
-            # still strips below; any uncertainty also still strips.)
+            # The strip permanently removes the only plaintext recovery credential.
+            # On --secure the bind is loopback, so the tunnel is the ONLY public
+            # exposure: if cloudflared is provably unavailable no public URL can
+            # start, so stripping would just lock the user out. Refuse with the
+            # credential preserved. (A wildcard --cloudflare bind is public
+            # regardless of the tunnel, so it still strips below, as does any
+            # uncertainty.)
             if secure and _tunnel_binary_confirmed_unavailable():
                 typer.echo(
                     "Error: refusing to expose Studio: the Cloudflare tunnel binary "
@@ -1137,16 +1113,12 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
-            # Mixed-version safety: this launch re-execs a child Studio process,
-            # and an OLD studio-venv child (predating this gate) has no pre-bind
-            # bootstrap suppression. Its lifespan would read the seeded plaintext
-            # credential back from disk (storage.get_bootstrap_password()) and
-            # inject it into the public HTML for up to the bootstrap deadline.
-            # Delete the seeded password file here, in the parent, so a fresh
-            # child of ANY version reads None and never serves it.
-            # must_change_password stays set in the DB, so the login page still
-            # forces a change and the bootstrap shutdown timer still arms; only
-            # the plaintext-on-disk copy of the credential is removed.
+            # Mixed-version safety: an OLD studio-venv child (predating this gate)
+            # has no pre-bind suppression and would read the seeded credential back
+            # from disk and inject it into the public HTML until the deadline.
+            # Delete the file here, in the parent, so a fresh child of ANY version
+            # reads None. must_change_password stays set, so the login page still
+            # forces a change and the timer still arms; only the on-disk copy goes.
             _strip_seeded_bootstrap_password_or_exit(context = "no terminal to change it")
             typer.echo(
                 "Warning: Studio is being exposed publicly while the admin account "
@@ -1420,11 +1392,10 @@ def studio_default(
     if verbose:
         _enable_verbose_access_logs()
 
-    # Use the studio venv if it exists and we aren't already in it. Resolve the
-    # child launcher BEFORE the gate: a headless gate strips the seeded
-    # .bootstrap_password, so aborting the launch afterward (venv/run.py missing)
-    # would leave the admin at must_change_password=1 with no password to log in
-    # (locked out until `unsloth studio reset-password`).
+    # Use the studio venv if present and not already in it. Resolve the child
+    # launcher BEFORE the gate: a headless gate strips the seeded
+    # .bootstrap_password, so aborting afterward (venv/run.py missing) would leave
+    # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
     studio_python = run_py = None
@@ -1436,10 +1407,9 @@ def studio_default(
             typer.echo("Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
         # A public UI launch must have a servable login page BEFORE the gate can
-        # strip the seeded .bootstrap_password, or the child is left with no way
-        # to change it (lockout until `unsloth studio reset-password`). This also
-        # returns the resolved dist so the child serves a real build regardless
-        # of where its __file__ lands (fixes the shadowed-unsloth silent 404).
+        # strip the seeded .bootstrap_password, or the child has no way to change
+        # it. Also returns the resolved dist so the child serves a real build
+        # regardless of where its __file__ lands (fixes the shadowed silent 404).
         resolved_frontend = _require_servable_frontend_or_exit(
             frontend = resolved_frontend,
             api_only = api_only,
@@ -1447,19 +1417,17 @@ def studio_default(
             host = host,
             secure = secure,
         )
-        # Non-public (or api-only) launches skip the validation above but still
-        # forward an explicitly resolved dist for the same silent-404 reason.
+        # Non-public / api-only launches skip that validation but still forward an
+        # explicitly resolved dist for the same silent-404 reason.
         if resolved_frontend is None and not api_only:
             resolved_frontend = _find_frontend_dist()
     else:
-        # Already inside the studio venv: no re-exec, the frontend + backend are
-        # served in-process below. On the headless public path the gate strips
-        # the seeded .bootstrap_password, so validate BOTH FIRST -- otherwise a
-        # missing/bad dist or a broken/partial venv would only fail after the
-        # strip, leaving must_change_password=1 with no password to log in
-        # (lockout until reset-password). The frontend check is cheap, so run it
-        # before the backend import; the backend import is restricted to the
-        # headless path so an interactive prompt is not delayed behind it.
+        # Already in the studio venv: no re-exec, served in-process below. On the
+        # headless public path the gate strips the seeded .bootstrap_password, so
+        # validate BOTH FIRST -- else a bad dist or broken venv fails only after
+        # the strip (must_change_password=1, no password to log in). Frontend check
+        # first (cheap); the backend import is headless-only so an interactive
+        # prompt is not delayed behind it.
         resolved_frontend = _require_servable_frontend_or_exit(
             frontend = resolved_frontend,
             api_only = api_only,
@@ -1471,18 +1439,18 @@ def studio_default(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
         )
 
-    # Public (tunnel) exposure with the seeded default password: force a
     # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial
-    # admin password here, in the parent, before the gate and any re-exec, so the
+    # admin password here in the parent, before the gate and any re-exec, so the
     # secret never reaches the child argv; strip the env var so a re-exec'd child
-    # cannot re-read it. After this the interactive gate below no-ops.
+    # can't re-read it. The interactive gate below then no-ops.
     _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
     os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
 
-    # terminal password change first, before any re-exec or server exists. The
-    # child is self-suppressing when we serve in-process or re-exec this install's
-    # own run.py (its pre-bind gate suppresses the injection), letting the gate
-    # skip the destructive strip.
+    # Public (tunnel) exposure with the seeded default password: force a terminal
+    # password change first, before any re-exec or server exists. The child is
+    # self-suppressing when we serve in-process or re-exec this install's own
+    # run.py (its pre-bind gate suppresses the injection), so the gate can skip
+    # the destructive strip.
     _enforce_password_change_before_exposure(
         cloudflare = cloudflare,
         host = host,
@@ -1516,10 +1484,9 @@ def studio_default(
             if api_only:
                 args.append("--api-only")
             # Forward polarity explicitly: _find_run_py can fall back to an older
-            # run.py (whose --cloudflare defaulted on), so an unset default must
-            # not let a mixed install silently re-enable the tunnel. --secure
-            # implies the tunnel, so forward nothing then (--no-cloudflare would
-            # contradict it).
+            # run.py (--cloudflare defaulted on), so an unset default must not let a
+            # mixed install silently re-enable the tunnel. --secure implies it, so
+            # forward nothing then.
             if cloudflare is True:
                 args.append("--cloudflare")
             elif not secure:
@@ -1902,9 +1869,8 @@ def run(
 
     # 1. Re-exec into the studio venv (same pattern as studio_default). Resolve
     # the child launcher BEFORE the gate: a headless gate strips the seeded
-    # .bootstrap_password, so aborting the launch afterward (venv/entry point
-    # missing) would leave the admin at must_change_password=1 with no password
-    # to log in (locked out until `unsloth studio reset-password`).
+    # .bootstrap_password, so aborting afterward (venv/entry point missing) would
+    # leave must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
     studio_bin = None
@@ -1919,12 +1885,10 @@ def run(
         if not studio_bin.is_file():
             typer.echo("Studio venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
-        # `run` serves the same Studio UI (unless --api-only); a public launch
-        # must have a servable login page BEFORE the gate strips the seeded
-        # password, or the re-exec'd child is left with no way to change it
-        # (same lockout as `unsloth studio`). Validate here, before the strip, and
-        # forward the resolved dist so a shadowed child that cannot self-resolve
-        # one still serves what the parent vouched for.
+        # `run` serves the same Studio UI (unless --api-only); a public launch must
+        # have a servable login page BEFORE the gate strips the seeded password, or
+        # the child has no way to change it. Validate here and forward the resolved
+        # dist so a shadowed child that can't self-resolve one still serves it.
         resolved_frontend = _require_servable_frontend_or_exit(
             frontend = frontend,
             api_only = api_only,
@@ -1933,10 +1897,10 @@ def run(
             secure = secure,
         )
     else:
-        # In-venv (in-process) run: validate the servable frontend and the
-        # importable backend before the headless gate strips the seeded password
-        # (same lockout guard as `unsloth studio`). Frontend check first (cheap);
-        # backend import is headless-only so an interactive prompt is not delayed.
+        # In-venv (in-process) run: validate the servable frontend and importable
+        # backend before the headless gate strips the seeded password. Frontend
+        # check first (cheap); backend import is headless-only so a prompt isn't
+        # delayed.
         resolved_frontend = _require_servable_frontend_or_exit(
             frontend = frontend,
             api_only = api_only,
@@ -1948,18 +1912,18 @@ def run(
             cloudflare = cloudflare, host = host, secure = secure, api_only = api_only
         )
 
-    # Public (tunnel) exposure with the seeded default password: force a
     # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial
-    # admin password here, in the parent, before the gate and any re-exec, so the
+    # admin password here in the parent, before the gate and any re-exec, so the
     # secret never reaches the child argv; strip the env var so a re-exec'd child
-    # cannot re-read it. After this the interactive gate below no-ops.
+    # can't re-read it. The interactive gate below then no-ops.
     _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
     os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
 
-    # terminal password change first, before any re-exec or server exists. The
-    # re-exec here runs the studio venv's `unsloth` console script (a
-    # possibly-OLD child), so it is NOT provably self-suppressing -- only the
-    # in-process (in-venv) case is, and the strip stays in force otherwise.
+    # Public (tunnel) exposure with the seeded default password: force a terminal
+    # password change first, before any re-exec or server exists. The re-exec here
+    # runs the studio venv's `unsloth` console script (a possibly-OLD child), so it
+    # is NOT provably self-suppressing -- only the in-process case is, and the
+    # strip stays in force otherwise.
     _enforce_password_change_before_exposure(
         cloudflare = cloudflare,
         host = host,
@@ -1991,10 +1955,10 @@ def run(
         # Forward the explicit polarity; a future default flip on one
         # layer must not silently invert behaviour for the other.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
-        # Forward the frontend resolved/validated before the gate, not just a
-        # user-supplied one: on a public launch the parent may have found a built
-        # dist the shadowed child cannot, and stripping without forwarding it
-        # would abort the child during frontend setup (lockout).
+        # Forward the frontend resolved before the gate, not just a user-supplied
+        # one: the parent may have found a built dist the shadowed child cannot,
+        # and stripping without forwarding it would abort the child at frontend
+        # setup (lockout).
         if resolved_frontend is not None:
             args.extend(["--frontend", str(resolved_frontend)])
         if api_only:
@@ -2014,8 +1978,7 @@ def run(
         args.extend(["--parallel", str(parallel)])
         # Always forward explicit polarity: a mixed-version studio venv whose old
         # default was --cloudflare-on must not silently re-enable the tunnel.
-        # --secure implies the tunnel, so forward nothing then (--no-cloudflare
-        # would contradict it).
+        # --secure implies it, so forward nothing then.
         if cloudflare is True:
             args.append("--cloudflare")
         elif not secure:

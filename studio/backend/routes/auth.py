@@ -500,9 +500,8 @@ async def change_password(
             detail = "New password must be different from the current password",
         )
 
-    # Single transaction: the refresh-token purge must not be separable from
-    # the password commit (a failed follow-up delete would leave pre-change
-    # refresh tokens able to mint access tokens under the rotated secret).
+    # Single transaction: a separate refresh-token purge could fail after the
+    # password commit, leaving pre-change tokens able to mint access tokens.
     storage.update_password(current_subject, payload.new_password, revoke_refresh_tokens = True)
     try:
         request.app.state.bootstrap_password = None

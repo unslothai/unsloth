@@ -4,13 +4,11 @@
 """Masked terminal password prompt for the first-exposure password change.
 
 Mirror of ``studio/backend/auth/terminal_prompt.py`` -- keep the two in sync.
-The CLI parent cannot import the backend package outside the studio venv, so
-the reader is duplicated here, matching the existing CLI/backend auth
-mirroring in ``commands/studio.py`` (``_connect_auth_db`` and friends).
+The CLI parent cannot import the backend package outside the studio venv, so the
+reader is duplicated here (like the auth mirroring in ``commands/studio.py``).
 
-Unlike ``getpass``, input echoes one ``*`` per typed character so the user can
-see how many characters were registered. All prompt text and echo go to stderr
-so redirected stdout (machine consumers, ``--silent`` banners) stays clean.
+Input echoes one ``*`` per character (unlike ``getpass``). All output goes to
+stderr so redirected stdout stays clean.
 """
 
 from __future__ import annotations
@@ -34,10 +32,9 @@ _SUBMIT_CHARS = ("\r", "\n")
 class _RestoreTtyOnSignals:
     """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read.
 
-    A finally block cannot run when a default-disposition signal terminates
-    the process, which would leave the shared terminal in cbreak/no-echo mode.
-    Best-effort: silently a no-op off the main thread or on platforms without
-    the signals.
+    A finally block can't run when a signal terminates the process, leaving the
+    shared terminal in cbreak/no-echo. Best-effort: no-op off the main thread or
+    where the signals are absent.
     """
 
     def __init__(self, fd: int, old_attrs) -> None:
@@ -86,27 +83,24 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
             # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on,
-            # Ctrl-Z would suspend mid-read and leave the shell a no-echo
-            # terminal before the finally could restore it. Ctrl-C/Ctrl-Z
-            # arrive as \x03/\x1a and are handled here, post-restore.
+            # Ctrl-Z would suspend mid-read and leave the shell no-echo before
+            # the finally restores it. Ctrl-C/Ctrl-Z arrive as \x03/\x1a here.
             tty.setcbreak(fd)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
             # Decode byte-at-a-time with errors="replace" (mirrors
-            # terminal_prompt.py): text-mode sys.stdin.read(1) raises
-            # UnicodeDecodeError on a pasted non-UTF-8 password (e.g. Latin-1),
-            # or yields a lone surrogate under PYTHONUTF8 that later crashes the
-            # pbkdf2 encode -- either aborts the launch. os.read + an incremental
-            # decoder maps invalid bytes to U+FFFD and keeps going.
+            # terminal_prompt.py): text-mode read(1) can raise UnicodeDecodeError
+            # on a pasted non-UTF-8 password or yield a lone surrogate that later
+            # crashes pbkdf2. os.read + incremental decoder maps bad bytes to
+            # U+FFFD and continues.
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:
                 raw = os.read(fd, 1)
                 if not raw:  # stream ended mid-line: abort, don't submit
                     raise EOFError
-                # One byte can complete >1 char (a replacement U+FFFD plus the
-                # next valid char), so iterate over everything the decoder emits.
+                # One byte can complete >1 char, so iterate over the decoder's output.
                 for ch in decoder.decode(raw):
                     if ch in _SUBMIT_CHARS:
                         submitted = True
@@ -185,10 +179,9 @@ def read_masked(prompt: str, out: TextIO | None = None) -> str:
 def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | None = None) -> str:
     """Prompt for a new admin password until a valid, confirmed one is given.
 
-    ``verify_current(candidate)`` must return True when the candidate equals
-    the CURRENT stored password (hash compare); such candidates are rejected.
-    The only exits without a password are KeyboardInterrupt/EOFError, which
-    propagate so the caller can abort the launch.
+    ``verify_current`` returns True when the candidate equals the current stored
+    password; such candidates are rejected. KeyboardInterrupt/EOFError propagate
+    so the caller can abort the launch.
     """
     if out is None:
         out = sys.stderr
@@ -213,12 +206,10 @@ def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | Non
 def resolve_supplied_password(cli_value: "str | None", out: TextIO | None = None) -> "str | None":
     """Resolve a non-interactive initial admin password, or None if unset.
 
-    Precedence: an explicit ``--password`` value (the literal ``-`` reads one
-    line from stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var. An empty or
-    omitted ``--password`` means the feature is off (fall back to the
-    interactive prompt / browser setup). A literal value on argv is visible in
-    the process list and shell history, so a one-line note points at the env var
-    or stdin instead. Mirror of the backend helper -- keep the two in sync.
+    Precedence: an explicit ``--password`` (literal ``-`` reads a line from
+    stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var; empty/omitted means off.
+    A literal argv value is visible in the process list, so a note points at the
+    env var or stdin instead. Mirror of the backend helper -- keep the two in sync.
     """
     if out is None:
         out = sys.stderr
@@ -238,9 +229,8 @@ def resolve_supplied_password(cli_value: "str | None", out: TextIO | None = None
 
 
 def validate_new_password(candidate: str, verify_current: Callable[[str], bool]) -> "str | None":
-    """Return an error message if ``candidate`` is not an acceptable new password
-    (too short, or equal to the current one), else None. Same policy as the
-    interactive loop, for the non-interactive supplied-password path."""
+    """Error message if ``candidate`` is unacceptable (too short or equal to the
+    current password), else None. Same policy as the interactive loop."""
     if len(candidate) < MIN_PASSWORD_LENGTH:
         return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
     if verify_current(candidate):

@@ -83,12 +83,10 @@ def _load_bootstrap_password() -> Optional[str]:
 
 
 def clear_bootstrap_password() -> None:
-    """Delete the persisted bootstrap password file (called after password change).
+    """Delete the persisted bootstrap password file (after a password change).
 
-    Best-effort: by the time this runs the new password hash is already
-    committed, so a locked/undeletable file (Windows AV, read-only auth dir)
-    must not surface as a failed password change. The stale file's plaintext no
-    longer matches any credential.
+    Best-effort: the new hash is already committed, so a locked/undeletable file
+    (Windows AV, read-only auth dir) must not fail the change.
     """
     global _bootstrap_password
     _bootstrap_password = None
@@ -96,11 +94,10 @@ def clear_bootstrap_password() -> None:
         try:
             _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
         except OSError as e:
-            # Removal failed (Windows AV, read-only auth dir). The new hash is
-            # already committed, so don't fail the change -- but truncate the file
-            # so its stale plaintext cannot be re-seeded by
-            # generate_bootstrap_password() after a later reset-password deletes
-            # auth.db, which would re-validate this revoked credential.
+            # Removal failed (Windows AV, read-only auth dir). The hash is already
+            # committed, so don't fail the change -- but truncate the file so its
+            # stale plaintext can't be re-seeded by generate_bootstrap_password()
+            # if a later reset-password deletes auth.db and re-validates it.
             try:
                 _BOOTSTRAP_PW_PATH.write_text("")
                 cleared = True
@@ -114,9 +111,8 @@ def clear_bootstrap_password() -> None:
                     "cleared its contents so the old bootstrap password cannot be reused."
                 )
             else:
-                # Neither removed nor truncated: the stale plaintext is still on
-                # disk and would be reused if auth.db is later reset. Do not claim
-                # it was made unreusable.
+                # Neither removed nor truncated: stale plaintext is still on disk
+                # and would be reused if auth.db is reset. Don't claim otherwise.
                 message = (
                     f"Warning: could not delete or clear {_BOOTSTRAP_PW_PATH.name} ({e}); "
                     "its old bootstrap password is still on disk. Remove it manually to "
@@ -594,10 +590,9 @@ def update_password(
 ) -> bool:
     """Update password, clear first-login requirement, rotate JWT secret.
 
-    With ``revoke_refresh_tokens`` the user's refresh tokens are deleted in the
-    SAME transaction: a pre-change refresh token must never outlive the
-    credential it was minted under (a separate follow-up delete can fail after
-    the password commit and leave a stale token that still mints access tokens).
+    ``revoke_refresh_tokens`` deletes the user's refresh tokens in the SAME
+    transaction: a separate delete could fail after the password commit and
+    leave a pre-change token still able to mint access tokens.
     """
     from .hashing import hash_password
 

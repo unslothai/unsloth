@@ -4,14 +4,12 @@
 """Interactive terminal prompt that forces a bootstrap password change before
 Studio is exposed on a public Cloudflare URL (``--secure`` / ``--cloudflare``).
 
-Masked input echoes one ``*`` per keystroke (unlike ``getpass``, which hides
-input entirely and routinely reads as "the prompt is frozen"). Works on
-Windows (``msvcrt``) and Linux/macOS (``termios``). All prompt output goes to
-stderr so redirected stdout (``--silent`` consumers, log pipes) never swallows
-a security prompt.
+Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
+Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so
+redirected stdout never swallows the prompt.
 
-Mirrored for the CLI parent process at ``unsloth_cli/commands/_password_prompt.py``
-(the CLI cannot import the Studio backend package); keep the two in sync.
+Mirrored for the CLI at ``unsloth_cli/commands/_password_prompt.py`` (the CLI
+cannot import the Studio backend package); keep the two in sync.
 """
 
 from __future__ import annotations
@@ -35,8 +33,8 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
     import msvcrt
 
     ch = msvcrt.getwch()
-    # Function/arrow keys arrive as a two-wchar sequence starting with \x00 or
-    # \xe0; consume the second half and report a no-op control char.
+    # Function/arrow keys arrive as a two-wchar \x00/\xe0 sequence; consume the
+    # second half and report a no-op control char.
     if ch in ("\x00", "\xe0"):
         msvcrt.getwch()
         return "\x00"
@@ -46,10 +44,9 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
 class _RestoreTtyOnSignals:
     """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read.
 
-    A finally block cannot run when a default-disposition signal terminates
-    the process, which would leave the shared terminal in cbreak/no-echo mode.
-    Best-effort: silently a no-op off the main thread or on platforms without
-    the signals.
+    A finally block can't run when a signal terminates the process, leaving the
+    shared terminal in cbreak/no-echo. Best-effort: no-op off the main thread or
+    where the signals are absent.
     """
 
     def __init__(self, fd: int, old_attrs) -> None:
@@ -87,13 +84,12 @@ class _RestoreTtyOnSignals:
 
 class _prompt_raw_mode:
     """Hold cbreak + cleared ISIG (no echo) on stdin for the WHOLE prompt line,
-    restoring once when the line finishes (and on SIGTERM/SIGHUP).
+    restoring when the line finishes (and on SIGTERM/SIGHUP).
 
-    Echo must never be re-enabled mid-line: cbreak echoes input on receipt, so
-    a keystroke that arrives while echo is on -- e.g. between two reads -- would
-    appear in cleartext. Holding one cbreak block for the entire line (mirroring
-    unsloth_cli/commands/_password_prompt.py) closes that window. No-op when
-    stdin is not a real terminal, so the _getch seam can be faked in tests.
+    Echo must never re-enable mid-line: cbreak echoes on receipt, so a keystroke
+    arriving while echo is on would appear in cleartext. One cbreak block for the
+    whole line closes that window. No-op when stdin is not a real terminal, so
+    the _getch seam can be faked in tests.
     """
 
     def __enter__(self) -> "_prompt_raw_mode":
@@ -114,9 +110,9 @@ class _prompt_raw_mode:
         self._old_attrs = old_attrs
         self._signals = _RestoreTtyOnSignals(fd, old_attrs)
         self._signals.__enter__()
-        # cbreak (not raw) keeps output post-processing while disabling echo and
-        # line buffering. cbreak leaves ISIG on, so clear it and surface Ctrl-C
-        # as \x03 to the caller loop, which exits (restoring the tty) itself.
+        # cbreak (not raw) keeps output post-processing while disabling echo/line
+        # buffering. It leaves ISIG on, so clear it and surface Ctrl-C as \x03 to
+        # the caller loop, which restores the tty itself.
         tty.setcbreak(fd, termios.TCSADRAIN)
         new_attrs = termios.tcgetattr(fd)
         new_attrs[3] &= ~termios.ISIG
@@ -135,10 +131,9 @@ class _prompt_raw_mode:
 
 
 def _getch_posix() -> str:  # pragma: no cover - needs a real tty
-    # The terminal is already in cbreak+no-echo for the whole line (held by
-    # _prompt_raw_mode), so just read. Byte-at-a-time incremental decode so a
-    # multi-byte UTF-8 char whose bytes straddle a read boundary isn't dropped
-    # (a fixed os.read(fd, 4) with errors="ignore" silently ate characters).
+    # Terminal already in cbreak+no-echo for the whole line (_prompt_raw_mode),
+    # so just read. Byte-at-a-time incremental decode so a multi-byte UTF-8 char
+    # straddling a read boundary isn't dropped.
     import codecs
 
     fd = sys.stdin.fileno()
@@ -158,10 +153,8 @@ _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
     """Read one masked line: echo ``*`` per char, support backspace editing.
 
-    Holds cbreak/no-echo for the whole line (see _prompt_raw_mode) so a
-    keystroke is never echoed in cleartext between reads. Raises
-    KeyboardInterrupt on Ctrl-C and EOFError on Ctrl-D/Ctrl-Z with an empty
-    buffer; the terminal is restored on every exit path.
+    Raises KeyboardInterrupt on Ctrl-C and EOFError on Ctrl-D/Ctrl-Z with an
+    empty buffer; the terminal is restored on every exit path.
     """
     if out is None:
         out = sys.stderr
@@ -208,11 +201,9 @@ def should_prompt_password_change(
 ) -> bool:
     """Whether to block startup on an interactive terminal password change.
 
-    Only when the public Cloudflare tunnel is actually about to start (a
-    loopback ``--cloudflare`` no-op or a raw wildcard bind never prompts), the
-    admin account still has the seeded bootstrap password, and both stdin and
-    stderr are real terminals (headless launches keep the bootstrap-timeout
-    protection instead of hanging on a prompt nobody can answer).
+    True only when the tunnel is actually about to start, the admin still has
+    the seeded password, and both stdin and stderr are real terminals (headless
+    launches keep the bootstrap-timeout protection instead of hanging).
     """
     return tunnel_will_start and requires_change and stdin_isatty and stderr_isatty
 
@@ -228,8 +219,7 @@ def prompt_for_password_change(
     """Force a new admin password before public exposure; True on success.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
-    Ctrl-C / EOF aborts and returns False; the caller must then abort the
-    launch (interactive refusal is not the headless fallback case).
+    Ctrl-C / EOF returns False; the caller must then abort the launch.
     """
     if out is None:
         out = sys.stderr
@@ -270,12 +260,10 @@ def prompt_for_password_change(
 def resolve_supplied_password(cli_value: "str | None", out: "TextIO | None" = None) -> "str | None":
     """Resolve a non-interactive initial admin password, or None if unset.
 
-    Precedence: an explicit ``--password`` value (the literal ``-`` reads one
-    line from stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var. An empty or
-    omitted ``--password`` means the feature is off (fall back to the
-    interactive prompt / browser setup). A literal value on argv is visible in
-    the process list and shell history, so a one-line note points at the env var
-    or stdin instead. Mirror of the CLI helper -- keep the two in sync.
+    Precedence: an explicit ``--password`` (literal ``-`` reads a line from
+    stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var; empty/omitted means off.
+    A literal argv value is visible in the process list, so a note points at the
+    env var or stdin instead. Mirror of the CLI helper -- keep the two in sync.
     """
     if out is None:
         out = sys.stderr
