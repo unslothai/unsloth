@@ -256,10 +256,10 @@ def can_load_chat_during_training(
         # Explicit GPUs, or GGUF: size directly and check live free VRAM.
         if single_device_gpu is not None:
             mode = "single_device"
-        elif requested_gpu_ids:
-            mode = "explicit"
-        else:
+        elif is_gguf:
             mode = "gguf"
+        else:
+            mode = "explicit"
         required_gb = required_override_gb
         if required_gb is None:
             required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
@@ -283,7 +283,7 @@ def can_load_chat_during_training(
             try:
                 resolved = resolve_requested_gpu_ids(requested_gpu_ids)
             except ValueError:
-                return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
+                return True, {"mode": mode, "reason": "invalid_gpu_ids"}
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
         else:
             # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.

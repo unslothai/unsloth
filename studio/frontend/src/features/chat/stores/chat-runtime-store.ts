@@ -563,6 +563,8 @@ export function loadedGpuMemoryFields(resp: {
       loadedNCpuMoe: null,
       splitRatio: null,
       loadedSplitRatio: null,
+      ggufLayerCount: null,
+      moeLayerCount: null,
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
@@ -631,6 +633,11 @@ export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
       loadedNCpuMoe: fields.loadedNCpuMoe,
       loadedSplitRatio: fields.loadedSplitRatio,
       loadedGpuIds: fields.loadedGpuIds,
+      // These are metadata ceilings for the model that actually loaded, not
+      // editable values from the open stage. Advance them with the baselines
+      // so abandoning the stage cannot expose the previous model's limits.
+      ggufLayerCount: fields.ggufLayerCount,
+      moeLayerCount: fields.moeLayerCount,
     };
   }
   return { ...fields, ...seedExtras };

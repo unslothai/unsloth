@@ -593,9 +593,12 @@ export function useChatModelRuntime() {
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
           const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
+          const previousActiveNativePathToken =
+            stateBeforeUnload.activeNativePathToken;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
+            || previousActiveNativePathToken != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
           // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
           // with an unpinned (auto) context must reload with 0 (so --fit
@@ -611,8 +614,6 @@ export function useChatModelRuntime() {
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
-          const previousActiveNativePathToken =
-            stateBeforeUnload.activeNativePathToken;
           // Snapshot the load settings at click time, before the awaits below
           // (validation, the trust dialog, unload). For a staged Load these knobs
           // stay editable and a sheet-close revert (abandonStagedModel) can fire
