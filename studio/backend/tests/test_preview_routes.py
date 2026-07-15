@@ -849,6 +849,5 @@ def test_native_generate_paths_claim_preview_owned_model():
     # preview) paths must claim it by clearing the preview marker, so a later
     # preview cannot swap it out from under Studio between chat turns.
     import inspect
-
     for fn in (inference.generate_stream, inference.generate_audio):
         assert "_set_preview_resident(None)" in inspect.getsource(fn)
