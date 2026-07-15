@@ -505,11 +505,12 @@ jobs:
               A shared CI runner can stall the stream transport (the
               connection opening, or a mid-stream read) even when Studio
               is healthy, so retry a stall once with a fresh request
-              capped at 300s, and return whatever events already streamed
-              before a stall rather than discarding them. HTTP status
-              errors surface immediately; a stall that yields nothing
-              across all attempts re-raises so the caller can rotate to
-              the next seed.
+              capped at 300s. A stall means the stream did NOT complete,
+              so partial events are never returned as a result (an early
+              tool_start with no tool_end is not proof the tool loop
+              finished). HTTP status errors surface immediately; a stall
+              that yields nothing across all attempts re-raises so the
+              caller can rotate to the next seed.
               """
               body = {**body, "stream": True}
               data = json.dumps(body).encode()
@@ -548,11 +549,11 @@ jobs:
                   except urllib.error.HTTPError:
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
-                      # Events already streamed are valid signal -- keep
-                      # them rather than re-running a heavy generation.
-                      if events:
-                          print(f"[retry-sse] {path}: {exc!r}; keeping {len(events)} partial events", flush = True)
-                          return "".join(parts), events
+                      # A stalled stream is incomplete: returning its partial
+                      # events would let a hung tool loop (an early tool_start
+                      # with no tool_end) pass _tool_invoked and WARN-pass the
+                      # job. Retry once, then raise so _run_tool_probe rotates
+                      # to the next seed instead of accepting a broken stream.
                       if attempt == retries:
                           raise
                       print(f"[retry-sse] {path}: {exc!r}", flush = True)
@@ -693,9 +694,21 @@ jobs:
               """
               attempts_log = []
               best = None
+              # Cap the wall-clock spent rotating through stalled seeds so a
+              # persistent no-data wedge fails fast (clean assertion) instead
+              # of being killed by the job's timeout-minutes. A healthy or
+              # merely degenerate round answers in seconds, so all seeds still
+              # run in the normal case; only stalls consume the budget.
+              probe_deadline = time.monotonic() + 300
               for attempt_i in range(max_attempts):
+                  if attempt_i and time.monotonic() > probe_deadline:
+                      print(f"[tools] {label}: seed-rotation budget spent after {attempt_i} attempts", flush = True)
+                      break
                   attempt_seed = SEED + attempt_i
                   try:
+                      # Bounded per-attempt timeout, no inner retry -- the seed
+                      # loop IS the retry, so a stall raises at 180s and rotates
+                      # rather than spending post_sse's full 600+300s.
                       content, events = post_sse("/v1/chat/completions", {
                           "messages":      [{"role": "user", "content": prompt}],
                           "enable_tools":  True,
@@ -704,7 +717,7 @@ jobs:
                           "temperature":   TOOL_PROBE_TEMP,
                           "seed":          attempt_seed,
                           "max_tokens":    600,
-                      })
+                      }, timeout = 180, retries = 0)
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # A transport stall that outlived post_sse's own retry:
                       # log it as a failed attempt and rotate to the next seed
@@ -775,6 +788,9 @@ jobs:
           # enough that requiring a tool_call marker would create
           # red-herring failures from infra rather than from Studio.
           try:
+              # Best-effort and bounded: a single 180s attempt keeps a stall
+              # from eating the job's timeout-minutes (it already WARNs, so a
+              # retry buys nothing).
               content, events = post_sse("/v1/chat/completions", {
                   "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
                   "enable_tools":  True,
@@ -783,7 +799,7 @@ jobs:
                   "temperature":   0.0,
                   "seed":          SEED,
                   "max_tokens":    400,
-              })
+              }, timeout = 180, retries = 0)
               print(
                   f"[tools] PASS web_search stream ({len(content)} chars in content, "
                   f"{len(events)} raw events)"

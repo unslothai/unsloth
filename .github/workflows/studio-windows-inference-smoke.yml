@@ -783,6 +783,11 @@ jobs:
               )
 
           # ── 2. Server-side python tool ───────────────────────────────
+          # Bound each soft probe to a single 180s attempt (timeout=180,
+          # retries=0): this job runs two of them back-to-back under a
+          # 30-minute cap, so the default 600+15+300s per stall could hit
+          # the workflow timeout before the thinking checks run. A soft
+          # probe only WARNs anyway, so a retry buys nothing.
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
@@ -791,7 +796,7 @@ jobs:
               "temperature":   TEMP,
               "seed":          SEED,
               "max_tokens":    600,
-          }, soft = True)
+          }, timeout = 180, retries = 0, soft = True)
           if content is None:
               print("[tools] WARN python tool: SSE transport stalled after retries -- non-blocking")
           elif "56088" in content or "56,088" in content:
@@ -816,7 +821,7 @@ jobs:
               "temperature":   TEMP,
               "seed":          SEED,
               "max_tokens":    600,
-          }, soft = True)
+          }, timeout = 180, retries = 0, soft = True)
           if content is None:
               print("[tools] WARN terminal tool: SSE transport stalled after retries -- non-blocking")
           elif "hello-bash-tool" in content:
@@ -840,7 +845,7 @@ jobs:
                   "temperature":   TEMP,
                   "seed":          SEED,
                   "max_tokens":    400,
-              })
+              }, timeout = 180, retries = 0)
               print(f"[tools] PASS web_search stream ({len(content)} chars)")
           except Exception as exc:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
