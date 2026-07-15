@@ -5,6 +5,7 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import codecs
 import fnmatch
 import http.client
 import os
@@ -3599,6 +3600,64 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
+# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
+# Binary when they exceed 12.5%, after allowing 16 minor encoding glitches.
+_BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
+_MIN_BINARY_CHARS = 16
+_BINARY_CHAR_DIVISOR = 8
+# Common binary signatures that can otherwise look text-heavy when mislabeled.
+_BINARY_MAGIC = (
+    b"%PDF-",  # PDF
+    b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
+    b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",  # OLE / legacy Office
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"\x28\xb5\x2f\xfd",  # zstd
+)
+
+# Check UTF-32 first because its little-endian BOM starts with the UTF-16 BOM.
+_UNICODE_BOM_CODECS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+)
+
+# A cp1252 retry needs 75% ASCII structure so it cannot rescue high-byte binary.
+_MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
+_ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
+
+
+def _looks_binary(text: str) -> bool:
+    """Whether control or undecodable characters exceed the binary threshold."""
+    return len(_BINARY_CHAR_RE.findall(text)) > max(
+        _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
+    )
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Whether a common binary signature follows optional BOM or whitespace."""
+    head = data[:1024].lstrip()
+    for bom, _codec in _UNICODE_BOM_CODECS:
+        if head.startswith(bom):
+            head = head.removeprefix(bom).lstrip()
+            break
+    return head.startswith(_BINARY_MAGIC)
+
+
+def _has_single_byte_text_evidence(data: bytes) -> bool:
+    """True when *data* has enough ASCII structure for a cp1252 text retry."""
+    if not data:
+        return True
+    ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
+    return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -3696,6 +3755,42 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     # Return the first resolved address for pinning.
     first_ip = infos[0][4][0]
     return True, "", first_ip
+
+
+# Binary application subtypes rejected by MIME; other application types are
+# sniffed so textual artifacts such as SQL stay usable.
+_BINARY_APPLICATION_SUBTYPES = frozenset(
+    {
+        "epub+zip",
+        "gzip",
+        "java-archive",
+        "pdf",
+        "vnd.apple.installer+xml",
+        "wasm",
+        "x-7z-compressed",
+        "x-bzip2",
+        "x-gzip",
+        "x-rar-compressed",
+        "x-tar",
+        "x-xz",
+        "zip",
+        "zstd",
+    }
+)
+
+
+def _is_text_candidate_content_type(content_type: str | None) -> bool:
+    """Whether a MIME type is textual or ambiguous enough for byte sniffing."""
+    match = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+    if not match:
+        return True
+    ct = match.group(0).lower()
+    if ct.startswith("text/"):
+        return True
+    if ct.startswith("application/"):
+        subtype = ct[len("application/") :]
+        return subtype not in _BINARY_APPLICATION_SUBTYPES
+    return False
 
 
 # First path segments on github.com that are site pages, not repo owners.
@@ -3975,7 +4070,6 @@ def _fetch_url_raw(
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
-        charset = resp.headers.get_content_charset() or "utf-8"
         # get_content_type() defaults to "text/plain" when the header is
         # absent (RFC 2045); report "" instead so callers can tell a missing
         # header apart from a server that really declared text/plain.
@@ -3983,7 +4077,54 @@ def _fetch_url_raw(
             content_type = ""
         else:
             content_type = (resp.headers.get_content_type() or "").lower()
-        return None, raw_bytes.decode(charset, errors = "replace"), content_type
+
+        # Reject known-binary MIME types before decoding. Binary is returned as the
+        # error string so the caller surfaces the placeholder, not replacement chars.
+        if not _is_text_candidate_content_type(content_type):
+            # Only echo a clean MIME token back to the model.
+            m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+            safe_type = m.group(0) if m else "unknown type"
+            return (
+                f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)",
+                "",
+                content_type,
+            )
+
+        # Catch text-labeled binary via its magic signature.
+        if _has_binary_magic(raw_bytes):
+            return (
+                f"(binary content, {len(raw_bytes)} bytes; not readable as text)",
+                "",
+                content_type,
+            )
+
+        declared = resp.headers.get_content_charset()
+        declared_codec = codecs.lookup(declared).name if declared else None
+        bom_codec = next(
+            (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
+            None,
+        )
+        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+
+        # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
+        if _looks_binary(raw_html):
+            # Rescue undeclared cp1252 only when the bytes have text structure.
+            alt = (
+                raw_bytes.decode("cp1252", "replace")
+                if declared_codec in (None, "iso8859-1")
+                and _has_single_byte_text_evidence(raw_bytes)
+                else None
+            )
+            if alt is not None and not _looks_binary(alt):
+                raw_html = alt
+            else:
+                return (
+                    f"(binary content, {len(raw_bytes)} bytes; not readable as text)",
+                    "",
+                    content_type,
+                )
+
+        return None, raw_html, content_type
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
     except Exception as e:
