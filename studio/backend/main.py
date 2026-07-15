@@ -1365,15 +1365,11 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
 
 
 def _is_loopback_client(request: Request) -> bool:
-    """True only when the HTTP client is on this machine (a loopback peer).
+    """Return whether the client connects directly from a loopback address.
 
-    Gates the bootstrap-credential auto-fill so a wildcard bind (``-H 0.0.0.0``)
-    never serves the seeded admin password in-page to a LAN peer; a remote peer
-    must read it from the terminal instead. Fails safe: an absent, unparseable,
-    or non-loopback peer is treated as remote. Reads the real socket peer, which
-    is trustworthy in the default deployment: uvicorn only trusts forwarded
-    headers under Colab, and the caller exempts Colab. A user-run reverse proxy
-    that rewrites the peer to loopback is out of scope.
+    Cloudflare tunnel requests also have a loopback socket peer, but carry
+    ``CF-Connecting-IP``. Missing or invalid peers and all tunnel requests fail
+    closed.
     """
     client = request.client
     if client is None:
@@ -1383,7 +1379,8 @@ def _is_loopback_client(request: Request) -> bool:
     except ValueError:
         return False
     mapped = getattr(ip, "ipv4_mapped", None)
-    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+    is_loopback = ip.is_loopback or (mapped is not None and mapped.is_loopback)
+    return is_loopback and request.headers.get("cf-connecting-ip") is None
 
 
 def _is_same_origin_request(request: Request) -> bool:
