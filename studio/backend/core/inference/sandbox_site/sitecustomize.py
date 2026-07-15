@@ -10,13 +10,18 @@ interpreter startup in every sandboxed ``python`` run and any Python the
 ``terminal`` tool launches.
 
 It remaps those prefixes onto the working directory in ``open`` / ``io.open``,
-``os.open``, ``os.makedirs`` / ``os.mkdir`` and ``pathlib.Path.mkdir``. Because
-prefix lists cannot enumerate every path a model invents, ``open`` / ``io.open``
-also get a write-mode fallback: a create-mode open of an absolute path outside
-the CWD whose parent is missing is redirected to the basename in the CWD. Reads
-never hit the fallback, and mkdir never does either (an arbitrary absolute
-directory can legitimately succeed). The fallback is collision-safe: it refuses
-to redirect onto an existing CWD file (letting the original open raise). The
+``os.open``, ``os.makedirs`` / ``os.mkdir`` and ``pathlib.Path.mkdir``. A write
+(or create) to a convention prefix always heals onto the CWD; a READ of one
+heals only when the mapped CWD target already exists (re-reading an artifact an
+earlier write produced), so a genuine missing input stays truthful on the path
+the model used rather than being silently redirected onto a same-basename
+workdir file. Because prefix lists cannot enumerate every path a model invents,
+``open`` / ``io.open`` also get a write-mode fallback: a create-mode open of an
+absolute path outside the CWD whose parent is missing is redirected to the
+basename in the CWD. Reads never hit the fallback, and mkdir never does either
+(an arbitrary absolute directory can legitimately succeed). The fallback is
+collision-safe: it refuses to redirect onto an existing CWD file (letting the
+original open raise). The
 patch set (io.open, os.open, os.mkdir, Path.mkdir, and the <3.11
 ``_NormalAccessor.open``) covers the low-level entry points pathlib routes
 through. A one-line stderr notice fires on the first remap. Everything is
@@ -146,18 +151,29 @@ def _is_creating_mode(mode):
 def _remap_open(file, mode):
     """Remap for ``open()`` / ``io.open()``.
 
-    Prefix remaps run first (covering reads and writes). Only if none matched and
-    the call is a create does the fallback kick in: an absolute target outside
-    the CWD whose parent is missing is redirected to the basename in the CWD.
+    A prefix remap runs first. A write/create heals onto the CWD unconditionally;
+    a READ heals only when the mapped CWD target already exists (re-reading an
+    artifact an earlier write produced). Otherwise the original absolute path is
+    kept, so a genuine missing input fails truthfully on the path the caller used
+    instead of being silently redirected onto a same-basename workdir file or
+    masking the error. Only if no prefix matched and the call is a create does
+    the fallback kick in: an absolute target outside the CWD whose parent is
+    missing is redirected to the basename in the CWD.
 
     Collision safety: if ``CWD/<basename>`` already exists (an unrelated
     conversation file), refuse the redirect and return the original path so the
     real ``open()`` raises ``FileNotFoundError`` and the existing file is kept.
     """
+    creating = _is_creating_mode(mode)
     mapped = _remap(file)
     if mapped is not file:
-        return mapped
-    if not _is_creating_mode(mode):
+        # A write always heals onto the CWD. A read heals only when the mapped
+        # target exists; otherwise keep the original absolute path so a missing
+        # input stays truthful instead of silently reading a workdir file.
+        if creating or os.path.exists(mapped):
+            return mapped
+        return file
+    if not creating:
         return file
     try:
         text = os.fspath(file)

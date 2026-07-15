@@ -388,13 +388,61 @@ def test_write_fallback_leaves_relative_and_bytes_paths(monkeypatch, tmp_path):
 
 
 def test_remap_open_still_applies_prefix_remaps(monkeypatch, tmp_path):
-    # The prefix remaps run first in open(), for reads and writes alike, and
-    # preserve subpaths -- the write-mode fallback is only the last resort.
+    # The prefix remap runs first in open() and preserves subpaths. A write heals
+    # onto the CWD unconditionally; the write-mode fallback is only the last resort.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
     assert mod._remap_open("/mnt/data/sub/out.txt", "w") == os.path.join(cwd, "sub", "out.txt")
-    assert mod._remap_open("/mnt/data/sub/out.txt", "r") == os.path.join(cwd, "sub", "out.txt")
+    # A read whose mapped target does NOT exist keeps the original absolute path:
+    # a missing input must stay truthful, not silently redirect into the CWD.
+    assert mod._remap_open("/mnt/data/sub/out.txt", "r") == "/mnt/data/sub/out.txt"
+
+
+def test_prefix_read_heals_only_when_mapped_target_exists(monkeypatch, tmp_path):
+    # A convention-prefix READ must not silently redirect onto the working
+    # directory when the mapped target is absent -- that masks a genuine
+    # missing-input error (the model read a path that truly does not exist) and
+    # could serve an unrelated same-basename workdir file. It heals only when the
+    # mapped CWD target already exists, so re-reading an artifact an earlier write
+    # produced still works.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    cwd = os.getcwd()
+
+    # Mapped target absent: read keeps the original absolute path (truthful miss).
+    assert mod._remap_open("/mnt/data/input.csv", "r") == "/mnt/data/input.csv"
+    with pytest.raises(FileNotFoundError):
+        open(mod._remap_open("/mnt/data/input.csv", "r"))
+
+    # r+ (read-update, never creates) behaves the same: no redirect while absent.
+    assert mod._remap_open("/mnt/data/input.csv", "r+") == "/mnt/data/input.csv"
+
+    # A write heals onto the CWD and creates the artifact...
+    mapped = mod._remap_open("/mnt/data/input.csv", "w")
+    assert mapped == os.path.join(cwd, "input.csv")
+    with open(mapped, "w") as fh:
+        fh.write("col\n1\n")
+
+    # ...and now a READ of the same convention path heals onto that existing
+    # workdir artifact and sees what the write produced.
+    read_target = mod._remap_open("/mnt/data/input.csv", "r")
+    assert read_target == os.path.join(cwd, "input.csv")
+    with open(read_target) as fh:
+        assert fh.read() == "col\n1\n"
+
+
+def test_prefix_boundary_not_matched_by_similar_paths(monkeypatch, tmp_path):
+    # The prefix match is anchored on a segment boundary (the prefix itself or
+    # prefix + '/'), so a sibling path that merely shares the textual prefix must
+    # NOT be remapped: /workspace2 is not /workspace, /mnt/database is not
+    # /mnt/data. Guards against a collision that would hijack unrelated paths.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    for unrelated in ("/workspace2/file.txt", "/mnt/database/x", "/home/sandboxed/y"):
+        assert mod._remap(unrelated) == unrelated
+        # And through open() for a read too (no silent redirect).
+        assert mod._remap_open(unrelated, "r") == unrelated
 
 
 def test_tmp_outputs_is_a_conditional_prefix():
