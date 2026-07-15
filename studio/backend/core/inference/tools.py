@@ -1066,6 +1066,7 @@ def execute_tool(
             arguments.get("query", ""),
             url = arguments.get("url"),
             timeout = effective_timeout,
+            cancel_event = cancel_event,
         )
     if name == "python":
         return _python_exec(
@@ -1563,16 +1564,50 @@ def _github_repo_readme_api_url(url: str) -> str | None:
     return f"https://api.github.com/repos/{owner}/{repo}/readme"
 
 
+# A single fetch can chain several network steps: the GitHub README API attempt,
+# its HTML fallback, and up to five redirect hops, each reading a body. A
+# per-operation socket timeout bounds one stalled step but not their sum, so a
+# redirect-happy or slow server can run well past the tool timeout, and nothing
+# aborts when the client has already disconnected. One overall wall-clock
+# deadline (plus a cooperative cancel_event) bounds the whole fetch instead.
+def _fetch_budget_exceeded(deadline, cancel_event):
+    """User-facing error string when the fetch must stop early, else None."""
+    if cancel_event is not None and cancel_event.is_set():
+        return "Failed to fetch URL: cancelled."
+    if deadline is not None and time.monotonic() >= deadline:
+        return "Failed to fetch URL: timed out."
+    return None
+
+
+def _fetch_hop_timeout(timeout, deadline):
+    """Per-operation socket timeout: the lesser of the caller's per-op timeout
+    and the time left on the overall deadline, so one slow hop cannot overrun
+    the whole budget. Callers check ``_fetch_budget_exceeded`` first, so the
+    remaining time is positive here; the tiny floor only guards a race."""
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        remaining = 0.001
+    return remaining if timeout is None else min(timeout, remaining)
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
     extra_headers: dict | None = None,
+    deadline: float | None = None,
+    cancel_event = None,
 ) -> tuple[str | None, str, str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
 
     ``error`` is a user-facing message string when the fetch failed (the
     existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
     Blocks private/loopback/link-local targets and caps the download size.
+
+    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch
+    (redirect hops and body read included) and ``cancel_event`` aborts it when
+    the caller goes away; both default off so callers keep the old behavior.
     """
     from urllib.parse import urlparse
 
@@ -1597,6 +1632,9 @@ def _fetch_url_raw(
         ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", ""
             # Pin to the validated IP (prevents DNS rebinding): rewrite URL to
             # the IP, set the Host header.
             cp = urlparse(current_url)
@@ -1618,7 +1656,9 @@ def _fetch_url_raw(
                 headers.update(extra_headers)
             req = urllib.request.Request(pinned_url, headers = headers)
             try:
-                resp = opener.open(req, timeout = timeout)
+                # Cap the socket timeout at the time left on the overall deadline
+                # so a single slow hop cannot outlast the whole fetch budget.
+                resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
@@ -1638,7 +1678,11 @@ def _fetch_url_raw(
                     return reason2, "", ""
                 current_host = rp.hostname
                 continue
-            # Success: read capped body.
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", ""
+            # Success: read capped body. The socket timeout above (bounded by the
+            # remaining budget) also bounds a stalled body read.
             raw_bytes = resp.read(max_bytes)
             break
         else:
@@ -1714,6 +1758,7 @@ def _fetch_page_text(
     url: str,
     max_chars: int = _MAX_PAGE_CHARS,
     timeout: int = 30,
+    cancel_event = None,
 ) -> str:
     """Fetch a URL and return readable text content.
 
@@ -1724,6 +1769,10 @@ def _fetch_page_text(
     instead of the repo page's UI chrome. Blocks private/loopback/link-local
     targets (SSRF protection) and caps the download size.
     """
+    # One wall-clock budget for the whole fetch. The README API attempt and its
+    # HTML fallback both draw from it, so a slow/failed API call cannot hand the
+    # fallback a fresh full timeout and double the worst case.
+    deadline = None if timeout is None else time.monotonic() + timeout
     readme_api_url = _github_repo_readme_api_url(url)
     if readme_api_url:
         err, body, _ctype = _fetch_url_raw(
@@ -1733,6 +1782,8 @@ def _fetch_page_text(
                 "Accept": "application/vnd.github.raw+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
+            deadline = deadline,
+            cancel_event = cancel_event,
         )
         # The README API is unauthenticated and rate-limited; on any failure
         # fall back to the HTML page fetch. A 200 body is authoritative even when
@@ -1751,7 +1802,12 @@ def _fetch_page_text(
                     max_chars,
                 )
 
-    err, body, content_type = _fetch_url_raw(url, timeout = timeout)
+    err, body, content_type = _fetch_url_raw(
+        url,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+    )
     if err is not None:
         return err
 
@@ -1775,6 +1831,7 @@ def _web_search(
     max_results: int = 5,
     timeout: int = _EXEC_TIMEOUT,
     url: str | None = None,
+    cancel_event = None,
 ) -> str:
     """Search the web using DuckDuckGo and return formatted results.
 
@@ -1783,7 +1840,11 @@ def _web_search(
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
-        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
+        return _fetch_page_text(
+            url.strip(),
+            timeout = fetch_timeout,
+            cancel_event = cancel_event,
+        )
 
     if not query or not query.strip():
         return "No query provided."

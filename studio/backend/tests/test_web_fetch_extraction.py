@@ -459,6 +459,8 @@ def test_fetch_page_text_prefers_github_readme(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         calls.append((url, extra_headers))
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
@@ -489,6 +491,8 @@ def test_fetch_page_text_keeps_html_readme_from_api(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         calls.append(url)
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
@@ -509,6 +513,8 @@ def test_fetch_page_text_falls_back_to_html_when_readme_api_fails(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         if url.startswith("https://api.github.com/"):
             return "Failed to fetch URL: HTTP 403 rate limited", "", ""
@@ -529,6 +535,8 @@ def test_fetch_page_text_non_html_returned_raw(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return None, raw, "text/plain"
 
@@ -543,6 +551,8 @@ def test_fetch_page_text_html_conversion(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return None, _GITHUB_PAGE, "text/html"
 
@@ -557,6 +567,8 @@ def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return "Failed to fetch URL: HTTP 404 Not Found", "", ""
 
@@ -628,6 +640,8 @@ def test_fetch_page_text_keeps_markdown_readme_with_html_example(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
         return None, md_readme, "text/plain"
@@ -660,6 +674,8 @@ def test_fetch_page_text_keeps_markdown_readme_with_leading_table(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
         return None, md_readme, "text/plain"
@@ -712,6 +728,8 @@ def test_fetch_page_text_missing_content_type_html_sniffed(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return None, _GITHUB_PAGE, ""
 
@@ -731,6 +749,8 @@ def test_fetch_page_text_missing_content_type_fragment_converted(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return None, fragment, ""
 
@@ -749,6 +769,8 @@ def test_fetch_page_text_missing_content_type_plain_text_raw(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return None, raw, ""
 
@@ -764,6 +786,8 @@ def test_fetch_page_text_mislabeled_text_plain_html_converted(monkeypatch):
         url,
         timeout = 30,
         extra_headers = None,
+        deadline = None,
+        cancel_event = None,
     ):
         return None, _GITHUB_PAGE, "text/plain"
 
@@ -899,3 +923,108 @@ def test_truncated_open_main_scope_is_scored_and_preferred():
     out = html_to_markdown(html, main_content = True)
     assert "Authoritative main documentation content." in out
     assert "Repository file tree and page chrome." not in out
+
+
+# ── overall fetch deadline + cancellation (no per-hop timeout blowup) ──
+
+
+def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
+    # Each hop advances a fake clock by 5s; an 8s overall budget is exhausted on
+    # the third hop even though every single hop stays within its own socket
+    # timeout. Without the deadline this opener would redirect until the 5-hop
+    # cap ("too many redirects"), so the distinct "timed out" error proves the
+    # overall budget aborted it, not the hop cap.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    import core.inference.tools as tools_mod
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(tools_mod.time, "monotonic", lambda: clock["t"])
+
+    hops = {"n": 0}
+
+    class _RedirectingOpener:
+        def open(self, req, timeout = None):
+            clock["t"] += 5.0
+            hops["n"] += 1
+            raise HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                {"Location": "https://example.com/next"},
+                None,
+            )
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _RedirectingOpener())
+
+    err, body, content_type = tools_mod._fetch_url_raw(
+        "https://example.com/start",
+        timeout = 30,
+        deadline = clock["t"] + 8.0,
+    )
+    assert err == "Failed to fetch URL: timed out."
+    assert body == ""
+    assert hops["n"] < 5
+
+
+def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
+    # A set cancel_event (client disconnected) stops the fetch before it opens
+    # any socket, so a dropped stream cannot leave a tool blocking on the wire.
+    import threading
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    ev = threading.Event()
+    ev.set()
+    opened = {"n": 0}
+
+    class _Opener:
+        def open(self, req, timeout = None):
+            opened["n"] += 1
+            raise AssertionError("network must not be touched after cancel")
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    err, body, content_type = tools_mod._fetch_url_raw(
+        "https://example.com/",
+        cancel_event = ev,
+    )
+    assert err == "Failed to fetch URL: cancelled."
+    assert opened["n"] == 0
+
+
+def test_fetch_page_text_shares_one_deadline_across_readme_and_fallback(monkeypatch):
+    # The GitHub README API attempt and its HTML fallback must draw from ONE
+    # budget: a failed API call cannot hand the fallback a fresh full timeout.
+    seen_deadlines = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        seen_deadlines.append(deadline)
+        # Fail the README API so the HTML fallback also runs.
+        return "Failed to fetch URL: HTTP 429 rate limited", "", ""
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth", timeout = 30)
+    assert out == "Failed to fetch URL: HTTP 429 rate limited"
+    # Both attempts ran and shared the same, single deadline value.
+    assert len(seen_deadlines) == 2
+    assert seen_deadlines[0] is not None
+    assert seen_deadlines[0] == seen_deadlines[1]
