@@ -59,7 +59,7 @@ def test_mcp_stdio_env_credentials_are_rejected_and_redacted(credential_key):
     clean, paths = validate_recipe_payload(payload, legacy = True)
     env = clean["recipe"]["mcp_providers"][0]["env"]
     assert env == {"NODE_ENV": "production"}
-    assert paths == [f'$.recipe.mcp_providers[0].env.{credential_key}']
+    assert paths == [f"$.recipe.mcp_providers[0].env.{credential_key}"]
 
 
 def test_mcp_stdio_operational_env_values_round_trip():
