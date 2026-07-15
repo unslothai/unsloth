@@ -168,7 +168,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         devices,
         required_override = None,
         estimate = None,
-        single_device = False,
+        single_device_gpu = None,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -184,7 +184,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 requested_gpu_ids = None,
                 is_gguf = True,
                 required_override_gb = required_override,
-                single_device = single_device,
+                single_device_gpu = single_device_gpu,
             )
         return ok, info, auto_mock
 
@@ -200,16 +200,33 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
         self.assertTrue(ok)
 
-    def test_single_device_uses_tightest_allowed_gpu(self):
-        # A single-device runner cannot pool 45 + 10 GB. The 20 GB model needs
-        # 27 GB with headroom, so the constrained device makes the load unsafe.
+    def test_single_device_uses_selected_gpu(self):
+        # The model needs 27 GB with headroom. GPU 0 has 45 GB free, while an
+        # unrelated training-heavy GPU 1 has only 10 GB free.
         ok, info, _ = self._run(
             devices = _devices((0, 80, 35), (1, 80, 70)),
             required_override = 20.0,
-            single_device = True,
+            single_device_gpu = "0",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(info["usable_gb"], 45.0)
+
+        blocked, blocked_info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            single_device_gpu = "1",
+        )
+        self.assertFalse(blocked)
+        self.assertEqual(blocked_info["usable_gb"], 10.0)
+
+    def test_single_device_refuses_unresolved_token(self):
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 0)),
+            required_override = 20.0,
+            single_device_gpu = "GPU-uuid",
         )
         self.assertFalse(ok)
-        self.assertEqual(info["usable_gb"], 10.0)
+        self.assertEqual(info["reason"], "unresolved_gpu_id")
 
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.
@@ -404,8 +421,35 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 requested_gpu_ids = [3, 1],
             )
         self.assertEqual(len(captured), 1)
-        self.assertTrue(captured[0]["single_device"])
-        self.assertEqual(captured[0]["requested_gpu_ids"], [1])
+        self.assertEqual(captured[0]["single_device_gpu"], "1")
+        self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def test_unpinned_diffusion_uses_runner_default_gpu(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_is_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_effective_gpu_count",
+                return_value = 2,
+            ),
+            patch.object(
+                self.route.LlamaCppBackend,
+                "_diffusion_gpu_arg",
+                return_value = "3",
+            ) as gpu_arg,
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "single_device"}),
+                gpu_memory_mode = "manual",
+            )
+        gpu_arg.assert_called_once_with(None, cpu_only = False)
+        self.assertEqual(captured[0]["single_device_gpu"], "3")
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}

@@ -3832,11 +3832,14 @@ def _guard_chat_load_against_training(
     if is_gguf and gpu_memory_mode == "manual" and not is_diffusion:
         return
 
-    guard_gpu_ids = requested_gpu_ids
-    if is_diffusion and requested_gpu_ids:
-        # The runner uses the lowest selected physical id. Check that exact GPU
-        # instead of pooling or pessimistically charging every selected device.
-        guard_gpu_ids = [min(requested_gpu_ids)]
+    diffusion_gpu = None
+    if is_diffusion:
+        # Use the same token selection as the runner: an explicit pick wins,
+        # followed by DG_GPU, the first parent-visible token, then GPU 0.
+        diffusion_gpu = LlamaCppBackend._diffusion_gpu_arg(
+            requested_gpu_ids,
+            cpu_only = LlamaCppBackend._effective_gpu_count() == 0,
+        )
 
     required_override_gb = (
         _estimate_gguf_required_gb(
@@ -3855,10 +3858,10 @@ def _guard_chat_load_against_training(
         hf_token = hf_token,
         load_in_4bit = load_in_4bit,
         max_seq_length = max_seq_length,
-        requested_gpu_ids = guard_gpu_ids,
+        requested_gpu_ids = requested_gpu_ids,
         is_gguf = is_gguf,
         required_override_gb = required_override_gb,
-        single_device = is_diffusion,
+        single_device_gpu = diffusion_gpu,
     )
     if ok:
         return
