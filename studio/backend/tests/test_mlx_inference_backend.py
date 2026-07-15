@@ -429,6 +429,21 @@ def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
     assert captured[0][0]["content"] == [{"type": "image_url"}]
 
 
+def test_mlx_vlm_model_config_prefers_config_with_model_type():
+    from core.inference.mlx_inference import _mlx_vlm_model_config
+
+    # config present but missing model_type must fall back to _config
+    m = SimpleNamespace(config = {}, _config = {"model_type": "deepseek_vl_v2"})
+    assert _mlx_vlm_model_config(m) == ({"model_type": "deepseek_vl_v2"}, "deepseek_vl_v2")
+    # an object config whose model_type is None also falls back
+    m = SimpleNamespace(config = SimpleNamespace(model_type = None), _config = {"model_type": "qwen2_vl"})
+    assert _mlx_vlm_model_config(m)[1] == "qwen2_vl"
+    # a config that already carries a model_type is preferred and returned unchanged
+    assert _mlx_vlm_model_config(SimpleNamespace(config = {"model_type": "gemma3"})) == (
+        {"model_type": "gemma3"}, "gemma3"
+    )
+
+
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""

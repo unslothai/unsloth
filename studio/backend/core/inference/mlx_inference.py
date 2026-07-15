@@ -17,18 +17,20 @@ logger = get_logger(__name__)
 
 
 def _mlx_vlm_model_config(model):
-    """Return the loaded MLX model config and its model type."""
-    config = getattr(model, "config", None)
-    if config is None:
-        config = getattr(model, "_config", None)
-    model_type = None
-    if config is not None:
-        model_type = (
-            config.get("model_type")
-            if isinstance(config, dict)
-            else getattr(config, "model_type", None)
-        )
-    return config, model_type
+    """Return the loaded MLX model config and its type, preferring whichever of
+    config / _config actually carries a model_type."""
+    def _model_type(cfg):
+        return cfg.get("model_type") if isinstance(cfg, dict) else getattr(cfg, "model_type", None)
+
+    configs = [
+        cfg for cfg in (getattr(model, "config", None), getattr(model, "_config", None))
+        if cfg is not None
+    ]
+    for cfg in configs:
+        model_type = _model_type(cfg)
+        if model_type is not None:
+            return cfg, model_type
+    return (configs[0] if configs else None), None
 
 
 def _render_registered_vlm_prompt(processor, model, messages, num_images):
