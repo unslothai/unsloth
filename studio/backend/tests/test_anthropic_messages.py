@@ -1634,9 +1634,7 @@ class TestAnthropicMessagesToolRouting:
     @staticmethod
     def _sse_blob(chunks):
         # StreamingResponse may hand back str or already-encoded bytes.
-        return "".join(
-            c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks
-        )
+        return "".join(c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks)
 
     def test_plain_streaming_unclassified_error_emits_error_event(self, monkeypatch):
         # Regression: an unclassified mid-stream failure (llama-server crash,
