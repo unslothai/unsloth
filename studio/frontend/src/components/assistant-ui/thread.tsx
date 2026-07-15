@@ -2315,7 +2315,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               )}
               {effectiveReasoningEffortLevels
-                .filter((level) => level !== "none")
+                // 'none' is a real template level for models like Inkling
+                // (effort 0 = thinking off); show it as a pick unless the
+                // dedicated off item above already covers it.
+                .filter(
+                  (level) =>
+                    level !== "none" || !effectiveSupportsReasoningOff,
+                )
                 .map((level) => (
                   <DropdownMenuItem
                     key={level}
