@@ -3864,6 +3864,10 @@ async def load_model(
 async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
+    # A new load starts here; arm the progress throttle so this load's first
+    # sampled step logs even if it reports 100% immediately (cached/small load).
+    _reset_load_progress_step()
+
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -5448,7 +5452,7 @@ _last_load_progress_step = -1
 
 def _log_load_progress_step(fraction, phase):
     """One inference_load_progress line per 10% step, so a model load shows
-    progress without a line per poll. Resyncs when a new load starts."""
+    progress without a line per poll. Reset per load by _reset_load_progress_step."""
     global _last_load_progress_step
     step = int(max(0.0, min(float(fraction), 1.0)) * 10)
     with _load_progress_lock:
@@ -5457,8 +5461,16 @@ def _log_load_progress_step(fraction, phase):
             return
         _last_load_progress_step = step
         if step < prev:
-            return  # new load; resync without logging
+            return  # load regressed/restarted mid-poll; resync without logging
     logger.info("inference_load_progress", phase = phase or "", percent = step * 10)
+
+
+def _reset_load_progress_step():
+    """Arm the throttle for a new load so its first sampled step always logs,
+    even a cached load that already reports fraction=1.0 on the first poll."""
+    global _last_load_progress_step
+    with _load_progress_lock:
+        _last_load_progress_step = -1
 
 
 @router.get("/load-progress", response_model = LoadProgressResponse)
