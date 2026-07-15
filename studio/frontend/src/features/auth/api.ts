@@ -4,6 +4,7 @@
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
+  getAuthSubjectKey,
   getAuthToken,
   getRefreshToken,
   mustChangePassword,
@@ -21,6 +22,21 @@ let isRedirecting = false;
 let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
+
+export type AuthFetchGuard = {
+  /**
+   * Reject the request if it would be sent or retried as another account.
+   * Token rotation is allowed as long as the authenticated subject is stable.
+   */
+  expectedSubjectKey: string;
+};
+
+export class AuthSubjectChangedError extends Error {
+  constructor() {
+    super("The signed-in account changed before the request completed.");
+    this.name = "AuthSubjectChangedError";
+  }
+}
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
 const RETRYABLE_NETWORK_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
@@ -56,7 +72,9 @@ async function fetchWithTauriNetworkRetry(
   }
 }
 
-async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
+async function isPasswordChangeRequiredResponse(
+  response: Response,
+): Promise<boolean> {
   if (response.status !== 403) return false;
 
   try {
@@ -96,20 +114,47 @@ async function redirectToAuth(): Promise<void> {
 async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
+  guard?: AuthFetchGuard,
 ): Promise<Response> {
+  assertExpectedSubject(guard);
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  return fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+  const response = await fetchWithTauriNetworkRetry(input, {
+    ...init,
+    headers: retryHeaders,
+  });
+  assertExpectedSubject(guard);
+  return response;
+}
+
+function assertExpectedSubject(guard?: AuthFetchGuard): void {
+  if (guard && getAuthSubjectKey() !== guard.expectedSubjectKey) {
+    throw new AuthSubjectChangedError();
+  }
 }
 
 async function retryWithTauriAutoAuth(
   input: RequestInfo | URL,
   init?: RequestInit,
+  guard?: AuthFetchGuard,
 ): Promise<Response | null> {
+  const subjectBeforeAutoAuth = getAuthSubjectKey();
+  if (subjectBeforeAutoAuth !== "anonymous") {
+    assertExpectedSubject(guard);
+  }
+  const allowAnonymousBootstrap = guard?.expectedSubjectKey === "anonymous";
   clearAuthTokens();
   const { tauriAutoAuth } = await import("./tauri-auto-auth");
-  if (await tauriAutoAuth()) return retryWithCurrentToken(input, init);
+  if (await tauriAutoAuth()) {
+    // A tokenless Tauri launch is expected to establish its account here. Once
+    // established, bind the replay to that subject. Existing authenticated
+    // requests may only auto-auth back into the same account.
+    const retryGuard = allowAnonymousBootstrap
+      ? { expectedSubjectKey: getAuthSubjectKey() }
+      : guard;
+    return retryWithCurrentToken(input, init, retryGuard);
+  }
   return null;
 }
 
@@ -160,8 +205,10 @@ export async function refreshSession(): Promise<boolean> {
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
+  guard?: AuthFetchGuard,
 ): Promise<Response> {
-  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
+  assertExpectedSubject(guard);
+  const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();
   if (accessToken) {
@@ -178,7 +225,11 @@ export async function authFetch(
     if (err instanceof TypeError) {
       // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always
       // backend-down; the web build distinguishes offline for the right message.
-      if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+      if (
+        !isTauri &&
+        typeof navigator !== "undefined" &&
+        navigator.onLine === false
+      ) {
         throw new Error(
           "You appear to be offline. Check your network connection and try again.",
         );
@@ -188,9 +239,16 @@ export async function authFetch(
     throw err;
   }
 
+  // A response from the captured account must not drive refresh, redirects, or
+  // application state after another account has become current.
+  assertExpectedSubject(guard);
+
   if (await isPasswordChangeRequiredResponse(response)) {
+    assertExpectedSubject(guard);
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(resolvedInput, init, guard)) ?? response
+      );
     }
     void redirectToAuth();
     return response;
@@ -198,29 +256,53 @@ export async function authFetch(
   if (response.status !== 401) return response;
 
   const refreshToken = getRefreshToken();
+  assertExpectedSubject(guard);
   const refreshed = await refreshSession();
   if (!refreshed) {
+    // refreshSession may legitimately clear an expired session. A non-empty
+    // different session, however, belongs to a login that raced this request;
+    // never clear or redirect that newer account.
+    if (
+      guard &&
+      getAuthSubjectKey() !== guard.expectedSubjectKey &&
+      getAuthSubjectKey() !== "anonymous"
+    ) {
+      throw new AuthSubjectChangedError();
+    }
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(resolvedInput, init, guard)) ?? response
+      );
     }
     clearAuthTokensIfCurrent(refreshToken);
     void redirectToAuth();
     return response;
   }
 
+  const retryGuard =
+    isTauri && guard?.expectedSubjectKey === "anonymous"
+      ? { expectedSubjectKey: getAuthSubjectKey() }
+      : guard;
+  assertExpectedSubject(retryGuard);
+
   if (mustChangePassword()) {
     if (isTauri) {
-      return (await retryWithTauriAutoAuth(resolvedInput, init)) ?? response;
+      return (
+        (await retryWithTauriAutoAuth(resolvedInput, init, retryGuard)) ??
+        response
+      );
     }
     void redirectToAuth();
     return response;
   }
 
   if (!getAuthToken()) clearAuthTokens();
-  return retryWithCurrentToken(resolvedInput, init);
+  return retryWithCurrentToken(resolvedInput, init, retryGuard);
 }
 
-async function postLogout(accessToken: string | null): Promise<Response | null> {
+async function postLogout(
+  accessToken: string | null,
+): Promise<Response | null> {
   try {
     return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
       method: "POST",

@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
 import { getInferenceStatus, loadModel } from "@/features/chat";
-import {
-  getAuthSubjectKey,
-  subscribeAuthSubject,
-} from "@/features/auth";
 import { toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -609,18 +607,6 @@ export function useRecipeExecutions({
   );
   const payloadErrorMessage = payloadResult.errors[0] ?? "Invalid payload.";
 
-  const upsertAndPersist = useCallback(
-    (record: RecipeExecutionRecord): void => {
-      const normalizedRecord = withExecutionDefaults(record);
-      upsertExecution(normalizedRecord);
-      saveRecipeExecution(normalizedRecord).catch((error) => {
-        // biome-ignore lint/suspicious/noConsole: background persistence failures should not interrupt the UI
-        console.error("Save recipe execution failed:", error);
-      });
-    },
-    [upsertExecution],
-  );
-
   const historyLifecycle = useMemo(
     () => ({
       subjectKey: authSubjectKey,
@@ -632,7 +618,6 @@ export function useRecipeExecutions({
       setPreviewRows,
       setRunErrors,
       upsertExecution,
-      upsertAndPersist,
     }),
     [
       authSubjectKey,
@@ -644,20 +629,53 @@ export function useRecipeExecutions({
       setPreviewRows,
       setRunErrors,
       upsertExecution,
-      upsertAndPersist,
     ],
   );
+  const historyLifecycleRef = useRef(historyLifecycle);
+  useLayoutEffect(() => {
+    historyLifecycleRef.current = historyLifecycle;
+  }, [historyLifecycle]);
   const activeExecutionHistory =
     executionHistory.owner?.lifecycle === historyLifecycle
       ? executionHistory
       : null;
   const executionHistoryCursor = activeExecutionHistory?.cursor ?? null;
-  const olderExecutionsLoading =
-    activeExecutionHistory?.loadingOlder ?? false;
+  const olderExecutionsLoading = activeExecutionHistory?.loadingOlder ?? false;
   const visibleExecutions = activeExecutionHistory ? executions : [];
   const visibleSelectedExecutionId = activeExecutionHistory
     ? selectedExecutionId
     : null;
+
+  const isExecutionOwnerActive = useCallback(
+    (owner: ExecutionHistoryOwner): boolean =>
+      historyGenerationRef.current === owner.generation &&
+      getAuthSubjectKey() === owner.subjectKey &&
+      historyLifecycleRef.current === owner.lifecycle,
+    [],
+  );
+
+  const upsertAndPersistForOwner = useCallback(
+    (owner: ExecutionHistoryOwner, record: RecipeExecutionRecord): void => {
+      if (
+        !isExecutionOwnerActive(owner) ||
+        record.recipeId !== owner.recipeId
+      ) {
+        return;
+      }
+      const normalizedRecord = withExecutionDefaults(record);
+      upsertExecution(normalizedRecord);
+      saveRecipeExecution(normalizedRecord, {
+        subjectKey: owner.subjectKey,
+        recipeId: owner.recipeId,
+        generation: owner.generation,
+        isCurrent: () => isExecutionOwnerActive(owner),
+      }).catch((error) => {
+        // biome-ignore lint/suspicious/noConsole: background persistence failures should not interrupt the UI
+        console.error("Save recipe execution failed:", error);
+      });
+    },
+    [isExecutionOwnerActive, upsertExecution],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -675,7 +693,8 @@ export function useRecipeExecutions({
     const isActive = (): boolean =>
       !cancelled &&
       historyGenerationRef.current === owner.generation &&
-      getAuthSubjectKey() === owner.subjectKey;
+      getAuthSubjectKey() === owner.subjectKey &&
+      historyLifecycleRef.current === owner.lifecycle;
 
     historyLifecycle.resetForRecipe();
 
@@ -749,7 +768,7 @@ export function useRecipeExecutions({
           initialExecution: resumable,
           notify: false,
           onUpsert: (record) => {
-            if (isActive()) historyLifecycle.upsertAndPersist(record);
+            if (isActive()) upsertAndPersistForOwner(owner, record);
           },
           onSetPreviewErrors: (errors) => {
             if (isActive()) historyLifecycle.setRunErrors(errors);
@@ -760,6 +779,11 @@ export function useRecipeExecutions({
         });
       } catch (error) {
         if (!isActive()) return;
+        // The reset above already removed records from the previous owner. Mark
+        // that empty store as active so a transient history outage cannot hide
+        // runs created during this session or expose stale account data.
+        historyLifecycle.setExecutions([]);
+        setExecutionHistory({ owner, cursor: null, loadingOlder: false });
         // biome-ignore lint/suspicious/noConsole: hydration failures are non-blocking diagnostics
         console.error("Load recipe executions failed:", error);
       }
@@ -775,7 +799,7 @@ export function useRecipeExecutions({
       olderHistoryRequestRef.current = null;
       datasetHydrationRequests.clear();
     };
-  }, [historyLifecycle]);
+  }, [historyLifecycle, upsertAndPersistForOwner]);
 
   const loadOlderExecutions = useCallback(async (): Promise<void> => {
     const owner = activeExecutionHistory?.owner;
@@ -792,7 +816,8 @@ export function useRecipeExecutions({
     olderHistoryRequestRef.current = request;
     const isActive = (): boolean =>
       historyGenerationRef.current === owner.generation &&
-      getAuthSubjectKey() === owner.subjectKey;
+      getAuthSubjectKey() === owner.subjectKey &&
+      historyLifecycleRef.current === owner.lifecycle;
     setExecutionHistory((current) =>
       sameExecutionHistoryOwner(current.owner, owner)
         ? { ...current, loadingOlder: true }
@@ -862,6 +887,20 @@ export function useRecipeExecutions({
       restorePrevious?: (() => Promise<void>) | null;
     }): Promise<boolean> => {
       const { kind, payload, rows, settings, runName, restorePrevious } = input;
+      const owner = activeExecutionHistory?.owner;
+      if (!owner || !isExecutionOwnerActive(owner)) {
+        toastError(
+          "Runs are still loading",
+          "Wait for this recipe's run history to finish loading and try again.",
+        );
+        return false;
+      }
+      const ownedUpsert = (record: RecipeExecutionRecord): void => {
+        upsertAndPersistForOwner(owner, record);
+      };
+      const setOwnedRunErrors = (errors: string[]): void => {
+        if (isExecutionOwnerActive(owner)) setRunErrors(errors);
+      };
       const setLoading =
         kind === "preview" ? setPreviewLoading : setFullLoading;
       const label = executionLabel(kind);
@@ -875,7 +914,7 @@ export function useRecipeExecutions({
         runName,
       });
 
-      upsertAndPersist(baseExecution);
+      ownedUpsert(baseExecution);
       onExecutionStart?.();
       setRunDialogOpen(false);
 
@@ -895,7 +934,7 @@ export function useRecipeExecutions({
           ...baseExecution,
           jobId: createdJob.job_id,
         };
-        upsertAndPersist(executionWithJob);
+        ownedUpsert(executionWithJob);
 
         const tracked = await trackRecipeExecution({
           label,
@@ -904,22 +943,26 @@ export function useRecipeExecutions({
           jobId: createdJob.job_id,
           initialExecution: executionWithJob,
           notify: true,
-          onUpsert: upsertAndPersist,
-          onSetPreviewErrors: setRunErrors,
-          onPreviewSuccess,
+          onUpsert: ownedUpsert,
+          onSetPreviewErrors: setOwnedRunErrors,
+          onPreviewSuccess: () => {
+            if (isExecutionOwnerActive(owner)) onPreviewSuccess?.();
+          },
         });
         shouldRestorePrevious = tracked.terminal;
         return tracked.success;
       } catch (error) {
         const message = toErrorMessage(error, `${label} request failed.`);
-        upsertAndPersist({
-          ...baseExecution,
-          status: "error",
-          error: message,
-          finishedAt: Date.now(),
-        });
-        setRunErrors([message]);
-        toastError(`${label} failed`, message);
+        if (isExecutionOwnerActive(owner)) {
+          ownedUpsert({
+            ...baseExecution,
+            status: "error",
+            error: message,
+            finishedAt: Date.now(),
+          });
+          setRunErrors([message]);
+          toastError(`${label} failed`, message);
+        }
         if (!jobCreated) {
           shouldRestorePrevious = true;
         }
@@ -928,11 +971,13 @@ export function useRecipeExecutions({
         if (shouldRestorePrevious && restorePrevious) {
           await restorePrevious();
         }
-        setLoading(false);
+        if (isExecutionOwnerActive(owner)) setLoading(false);
       }
     },
     [
+      activeExecutionHistory,
       currentSignature,
+      isExecutionOwnerActive,
       onExecutionStart,
       onPreviewSuccess,
       recipeId,
@@ -940,7 +985,7 @@ export function useRecipeExecutions({
       setPreviewLoading,
       setRunDialogOpen,
       setRunErrors,
-      upsertAndPersist,
+      upsertAndPersistForOwner,
     ],
   );
 
@@ -1175,29 +1220,50 @@ export function useRecipeExecutions({
 
   const cancelExecution = useCallback(
     async (id: string): Promise<void> => {
-      const execution = executions.find((entry) => entry.id === id);
-      if (!execution?.jobId) {
+      const owner = activeExecutionHistory?.owner;
+      const execution = owner
+        ? executions.find((entry) => entry.id === id)
+        : undefined;
+      if (
+        !owner ||
+        !isExecutionOwnerActive(owner) ||
+        execution?.recipeId !== owner.recipeId ||
+        !execution.jobId
+      ) {
         return;
       }
       try {
         await cancelRecipeJob(execution.jobId);
-        upsertAndPersist({
+        upsertAndPersistForOwner(owner, {
           ...execution,
           status: "cancelling",
         });
       } catch (error) {
-        const message = toErrorMessage(error, "Could not cancel execution.");
-        toastError("Cancel failed", message);
+        if (isExecutionOwnerActive(owner)) {
+          const message = toErrorMessage(error, "Could not cancel execution.");
+          toastError("Cancel failed", message);
+        }
       }
     },
-    [executions, upsertAndPersist],
+    [
+      activeExecutionHistory,
+      executions,
+      isExecutionOwnerActive,
+      upsertAndPersistForOwner,
+    ],
   );
 
   const loadExecutionDatasetPage = useCallback(
     async (id: string, page: number): Promise<void> => {
-      const execution = executions.find((entry) => entry.id === id);
+      const owner = activeExecutionHistory?.owner;
+      const execution = owner
+        ? executions.find((entry) => entry.id === id)
+        : undefined;
       if (
+        !owner ||
+        !isExecutionOwnerActive(owner) ||
         !execution ||
+        execution.recipeId !== owner.recipeId ||
         execution.kind !== "full" ||
         !execution.jobId ||
         page < 1
@@ -1217,18 +1283,25 @@ export function useRecipeExecutions({
           typeof response.total === "number"
             ? response.total
             : execution.datasetTotal;
-        upsertAndPersist({
+        upsertAndPersistForOwner(owner, {
           ...execution,
           dataset,
           datasetTotal: total,
           datasetPage: page,
         });
       } catch (error) {
-        const message = toErrorMessage(error, "Could not load dataset page.");
-        toastError("Dataset page failed", message);
+        if (isExecutionOwnerActive(owner)) {
+          const message = toErrorMessage(error, "Could not load dataset page.");
+          toastError("Dataset page failed", message);
+        }
       }
     },
-    [executions, upsertAndPersist],
+    [
+      activeExecutionHistory,
+      executions,
+      isExecutionOwnerActive,
+      upsertAndPersistForOwner,
+    ],
   );
 
   const setSelectedExecutionId = useCallback(
@@ -1279,12 +1352,7 @@ export function useRecipeExecutions({
           datasetHydrationRequestsRef.current.delete(requestKey);
         });
     },
-    [
-      activeExecutionHistory,
-      executions,
-      selectExecution,
-      upsertExecution,
-    ],
+    [activeExecutionHistory, executions, selectExecution, upsertExecution],
   );
 
   return {

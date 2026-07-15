@@ -21,7 +21,7 @@ import type {
 const revisions = new Map<string, number>();
 const persistedExecutions = new Map<string, PersistedRecipeExecution>();
 type WriteState = {
-  subject: string;
+  owner: RecipeExecutionPersistenceOwner;
   latest: RecipeExecutionRecord | null;
   running: boolean;
   timer: ReturnType<typeof setTimeout> | null;
@@ -35,8 +35,18 @@ const TERMINAL = new Set<RecipeExecutionStatus>([
   "error",
 ]);
 
-function syncSubject(): string {
+export type RecipeExecutionPersistenceOwner = {
+  subjectKey: string;
+  recipeId: string;
+  generation: number;
+  isCurrent: () => boolean;
+};
+
+function syncSubject(expectedSubject?: string): string {
   const subject = getAuthSubjectKey();
+  if (expectedSubject && subject !== expectedSubject) {
+    throw new Error("Execution persistence account changed.");
+  }
   if (activeSubjectKey !== subject) {
     for (const state of writeStates.values()) {
       if (state.timer) clearTimeout(state.timer);
@@ -59,8 +69,28 @@ function assertSubjectUnchanged(subject: string): void {
   }
 }
 
-function executionKey(subject: string, id: string): string {
-  return `${subject}\u0000${id}`;
+function assertOwnerCurrent(
+  owner: RecipeExecutionPersistenceOwner,
+  record?: RecipeExecutionRecord,
+): void {
+  assertSubjectUnchanged(owner.subjectKey);
+  if (!owner.isCurrent()) {
+    throw new Error("Execution persistence owner changed.");
+  }
+  if (record && record.recipeId !== owner.recipeId) {
+    throw new Error("Execution persistence recipe changed.");
+  }
+}
+
+function executionKey(subject: string, recipeId: string, id: string): string {
+  return `${subject}\u0000${recipeId}\u0000${id}`;
+}
+
+function executionWriteKey(
+  owner: RecipeExecutionPersistenceOwner,
+  id: string,
+): string {
+  return `${executionKey(owner.subjectKey, owner.recipeId, id)}\u0000${owner.generation}`;
 }
 
 function truncateUtf8(value: unknown, maxBytes: number): string | null {
@@ -217,8 +247,9 @@ function incomingWins(
 async function persistOnce(
   record: RecipeExecutionRecord,
   key: string,
-  subject: string,
+  owner: RecipeExecutionPersistenceOwner,
 ): Promise<void> {
+  assertOwnerCurrent(owner, record);
   const metadata = serializeExecutionMetadata(record);
   const knownCurrent = persistedExecutions.get(key);
   if (knownCurrent && TERMINAL.has(knownCurrent.status)) {
@@ -241,7 +272,7 @@ async function persistOnce(
       // A debounced write may wake after logout/account switch. Check the
       // captured owner at the last possible point before authFetch reads the
       // current token, and again before accepting the response.
-      assertSubjectUnchanged(subject);
+      assertOwnerCurrent(owner, record);
       const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>(
         {
           recipeId: record.recipeId,
@@ -249,13 +280,14 @@ async function persistOnce(
           metadata,
           revision: expectedRevision,
         },
+        { expectedSubjectKey: owner.subjectKey },
       );
-      assertSubjectUnchanged(subject);
+      assertOwnerCurrent(owner, record);
       revisions.set(key, saved.revision);
       persistedExecutions.set(key, saved);
       return;
     } catch (error) {
-      assertSubjectUnchanged(subject);
+      assertOwnerCurrent(owner, record);
       if (!(error instanceof UserAssetApiError) || error.status !== 409)
         throw error;
       const current = error.detail.current as
@@ -283,16 +315,22 @@ export async function listRecipeExecutionPage(
   );
   assertSubjectUnchanged(subject);
   for (const execution of page.executions) {
-    revisions.set(executionKey(subject, execution.id), execution.revision);
-    persistedExecutions.set(executionKey(subject, execution.id), execution);
+    revisions.set(
+      executionKey(subject, recipeId, execution.id),
+      execution.revision,
+    );
+    persistedExecutions.set(
+      executionKey(subject, recipeId, execution.id),
+      execution,
+    );
   }
   if (page.resumable) {
     revisions.set(
-      executionKey(subject, page.resumable.id),
+      executionKey(subject, recipeId, page.resumable.id),
       page.resumable.revision,
     );
     persistedExecutions.set(
-      executionKey(subject, page.resumable.id),
+      executionKey(subject, recipeId, page.resumable.id),
       page.resumable,
     );
   }
@@ -340,8 +378,13 @@ async function drainWrites(key: string, state: WriteState): Promise<void> {
     while (state.latest) {
       const next = state.latest;
       state.latest = null;
-      assertSubjectUnchanged(state.subject);
-      await persistOnce(next, key, state.subject);
+      assertOwnerCurrent(state.owner, next);
+      const revisionKey = executionKey(
+        state.owner.subjectKey,
+        state.owner.recipeId,
+        next.id,
+      );
+      await persistOnce(next, revisionKey, state.owner);
     }
     for (const waiter of state.waiters.splice(0)) waiter.resolve();
   } catch (error) {
@@ -358,11 +401,13 @@ async function drainWrites(key: string, state: WriteState): Promise<void> {
 
 export function saveRecipeExecution(
   execution: RecipeExecutionRecord,
+  owner: RecipeExecutionPersistenceOwner,
 ): Promise<void> {
-  const subject = syncSubject();
-  const key = executionKey(subject, execution.id);
+  syncSubject(owner.subjectKey);
+  assertOwnerCurrent(owner, execution);
+  const key = executionWriteKey(owner, execution.id);
   const state = writeStates.get(key) ?? {
-    subject,
+    owner,
     latest: null,
     running: false,
     timer: null,

@@ -26,7 +26,10 @@ import {
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
 import { readLegacyRecipeExecutions } from "@/features/recipe-studio";
-import { LegacyImportCoordinator } from "@/features/user-assets";
+import {
+  LegacyImportCoordinator,
+  UserAssetApiError,
+} from "@/features/user-assets";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toastError } from "@/shared/toast";
 import {
@@ -45,6 +48,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
+import { readLegacyRecipes } from "../data/legacy-recipes-db";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -52,7 +56,6 @@ import {
   primeRecipeCache,
   useRecipes,
 } from "../data/recipes-db";
-import { readLegacyRecipes } from "../data/legacy-recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
 
 const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
@@ -320,8 +323,7 @@ export function DataRecipesPage(): ReactElement {
   const { recipes, ready, error, refresh } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
   const [learningDialogOpen, setLearningDialogOpen] = useState(
-    () =>
-      sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) === "1",
+    () => sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) === "1",
   );
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
@@ -402,7 +404,24 @@ export function DataRecipesPage(): ReactElement {
   async function handleDeleteRecipe(
     recipe: (typeof recipes)[number],
   ): Promise<void> {
-    await deleteRecipe(recipe.id, recipe.revision);
+    try {
+      await deleteRecipe(recipe.id, recipe.revision);
+    } catch (caught) {
+      refresh();
+      if (caught instanceof UserAssetApiError && caught.status === 409) {
+        toastError(
+          "Recipe changed before it could be deleted",
+          "The recipe list was refreshed. Review the latest version, then delete it again if you still want to remove it.",
+        );
+        return;
+      }
+      toastError(
+        "Failed to delete recipe",
+        caught instanceof Error
+          ? caught.message
+          : "The recipe list was refreshed. Please try again.",
+      );
+    }
   }
 
   const isBusy =

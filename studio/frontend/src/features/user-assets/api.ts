@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthSubjectKey } from "@/features/auth";
 
 const USER_ASSETS_BASE = "/api/user-assets";
 const USER_ASSET_REQUEST_TIMEOUT_MS = 15_000;
@@ -45,7 +45,15 @@ async function readError(response: Response): Promise<UserAssetApiError> {
   return new UserAssetApiError(response.status, detail);
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+type UserAssetRequestOptions = {
+  expectedSubjectKey?: string;
+};
+
+async function request(
+  path: string,
+  init?: RequestInit,
+  options: UserAssetRequestOptions = {},
+): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
   const abortFromCaller = () => controller.abort(init?.signal?.reason);
@@ -56,10 +64,22 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     controller.abort(new DOMException("Request timed out", "TimeoutError"));
   }, USER_ASSET_REQUEST_TIMEOUT_MS);
   try {
-    return await authFetch(`${USER_ASSETS_BASE}${path}`, {
-      ...init,
-      signal: controller.signal,
-    });
+    const method = (init?.method ?? "GET").toUpperCase();
+    const mutatesUserAssets =
+      method === "POST" || method === "PUT" || method === "DELETE";
+    const guard = mutatesUserAssets
+      ? {
+          expectedSubjectKey: options.expectedSubjectKey ?? getAuthSubjectKey(),
+        }
+      : undefined;
+    return await authFetch(
+      `${USER_ASSETS_BASE}${path}`,
+      {
+        ...init,
+        signal: controller.signal,
+      },
+      guard,
+    );
   } catch (error) {
     if (timedOut) {
       throw new Error("The persistence request timed out. Please try again.");
@@ -71,8 +91,12 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await request(path, init);
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit,
+  options: UserAssetRequestOptions = {},
+): Promise<T> {
+  const response = await request(path, init, options);
   if (!response.ok) throw await readError(response);
   return response.json() as Promise<T>;
 }
@@ -155,12 +179,16 @@ export function createServerRecipe<TPayload>(
     RecipeAssetRecord<TPayload>,
     "revision" | "createdAt" | "updatedAt"
   >,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; expectedSubjectKey?: string } = {},
 ) {
-  return requestJson<RecipeAssetRecord<TPayload>>("/recipes", {
-    ...jsonInit("POST", recipe),
-    signal: options.signal,
-  });
+  return requestJson<RecipeAssetRecord<TPayload>>(
+    "/recipes",
+    {
+      ...jsonInit("POST", recipe),
+      signal: options.signal,
+    },
+    options,
+  );
 }
 
 export function updateServerRecipe<TPayload>(
@@ -172,18 +200,24 @@ export function updateServerRecipe<TPayload>(
     learningRecipeTitle?: string | null;
     revision: number;
   },
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; expectedSubjectKey?: string } = {},
 ) {
   return requestJson<RecipeAssetRecord<TPayload>>(
     `/recipes/${assetPathSegment(input.id)}`,
     { ...jsonInit("PUT", input), signal: options.signal },
+    options,
   );
 }
 
-export async function deleteServerRecipe(id: string, revision: number) {
+export async function deleteServerRecipe(
+  id: string,
+  revision: number,
+  options: UserAssetRequestOptions = {},
+) {
   const response = await request(
     `/recipes/${assetPathSegment(id)}?revision=${revision}`,
     { method: "DELETE" },
+    options,
   );
   if (!response.ok) throw await readError(response);
 }
@@ -206,15 +240,19 @@ export function listServerRecipeExecutions<TExecution>(
   );
 }
 
-export function upsertServerRecipeExecution<TExecution>(input: {
-  recipeId: string;
-  executionId: string;
-  metadata: object;
-  revision?: number;
-}) {
+export function upsertServerRecipeExecution<TExecution>(
+  input: {
+    recipeId: string;
+    executionId: string;
+    metadata: object;
+    revision?: number;
+  },
+  options: UserAssetRequestOptions = {},
+) {
   return requestJson<TExecution>(
     `/recipes/${assetPathSegment(input.recipeId)}/executions/${assetPathSegment(input.executionId)}`,
     jsonInit("PUT", { ...input.metadata, revision: input.revision }),
+    options,
   );
 }
 
@@ -228,10 +266,14 @@ export function importLegacyUserAssets<
     recipes: TRecipe[];
     executions: TExecution[];
   },
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; expectedSubjectKey?: string } = {},
 ) {
-  return requestJson<LegacyImportResult>("/legacy-import", {
-    ...jsonInit("POST", input),
-    signal: options.signal,
-  });
+  return requestJson<LegacyImportResult>(
+    "/legacy-import",
+    {
+      ...jsonInit("POST", input),
+      signal: options.signal,
+    },
+    options,
+  );
 }
