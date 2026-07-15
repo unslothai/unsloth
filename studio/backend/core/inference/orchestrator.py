@@ -174,6 +174,21 @@ class InferenceOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new inference subprocess."""
+        # Same recheck as the training/export spawns, REPAIR reservations only: a
+        # repair swaps without holding the lifecycle gate this load's caller owns,
+        # while an install cannot swap until this gate is released (and then its
+        # queued-load snapshot aborts it), so tolerating installs here lets the
+        # load win instead of failing both sides. Also covers the OpenAI
+        # auto-switch path, which enters _load_model_impl without route guards.
+        from utils.transformers_version import (
+            SidecarSwapInProgress,
+            sidecar_swap_kind,
+        )
+
+        if sidecar_swap_kind() == "repair":
+            raise SidecarSwapInProgress(
+                "A transformers repair is replacing the latest sidecar; retry when it completes."
+            )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
@@ -210,12 +225,24 @@ class InferenceOrchestrator:
         if self._cancel_event is not None:
             self._cancel_event.set()
 
-    def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
-        """Gracefully shut down the inference subprocess."""
+    def is_worker_alive(self) -> bool:
+        """True while the inference subprocess is running, even with no model
+        active (a failed load can leave a live worker holding sidecar modules)."""
+        proc = self._proc
+        return proc is not None and proc.is_alive()
+
+    def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        """Gracefully shut down the inference subprocess.
+
+        Returns True only once the worker is confirmed dead. If it survives
+        terminate/kill (e.g. wedged in an uninterruptible CUDA syscall that outlives
+        SIGKILL) the live handle is KEPT, not nulled, so is_worker_alive() and the
+        pre-swap liveness guard can still observe the survivor instead of a cleared
+        handle and refuse the destructive sidecar swap."""
         self._stop_dispatcher()  # before killing subprocess
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
-            return
+            return True
 
         # 1. Cancel any ongoing generation first (instant via mp.Event)
         self._cancel_generation()
@@ -252,12 +279,22 @@ class InferenceOrchestrator:
                 except Exception:
                     pass
 
+        if self._proc is not None and self._proc.is_alive():
+            # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
+            # and the pre-swap guard see a live worker rather than a nulled one.
+            logger.error(
+                "Inference subprocess still alive after terminate/kill; "
+                "preserving its handle for the pre-swap liveness check"
+            )
+            return False
+
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
         self._drain_event = None
         logger.info("Inference subprocess shut down")
+        return True
 
     def _cleanup(self):
         """atexit handler."""
@@ -882,6 +919,13 @@ class InferenceOrchestrator:
     # Public API — same interface as InferenceBackend
     # ------------------------------------------------------------------
 
+    # Monotonic count of PUBLISHED loads; lets the install route detect a load
+    # (including a same-model reload) that completed while it waited on the gate.
+    # Bumped when the load result is published, not at load start: a start-time
+    # bump is already visible when the installer snapshots mid-load, so the
+    # completed reload would look unchanged and get unloaded by the swap.
+    load_generation: int = 0
+
     def load_model(
         self,
         config,  # ModelConfig
@@ -935,13 +979,36 @@ class InferenceOrchestrator:
             sub_config["resolved_gpu_ids"] = resolved_gpu_ids
             sub_config["gpu_selection"] = gpu_selection
 
+            # Recheck the sidecar reservation BEFORE tearing the old worker down,
+            # for REPAIRS only: an install holds this same lifecycle gate, so it
+            # cannot swap while this load runs, and its queued-load snapshot
+            # aborts it after this load publishes -- the load wins cleanly.
+            # Raising here (repair) keeps the current model loaded.
+            from utils.transformers_version import (
+                SidecarSwapInProgress,
+                sidecar_swap_kind,
+            )
+
+            if sidecar_swap_kind() == "repair":
+                raise SidecarSwapInProgress(
+                    "A transformers repair is replacing the latest sidecar; "
+                    "retry when it completes."
+                )
+
             # Always kill the existing subprocess and spawn fresh: reusing one
             # after unsloth patches torch internals breaks getsource on reload.
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
                 time.sleep(0.3)
-                self._shutdown_subprocess()
-
+                if self._shutdown_subprocess() is False:
+                    # The worker survived terminate/kill (e.g. a wedged CUDA syscall that
+                    # outlives SIGKILL). Its handle is kept, so is_worker_alive() and the
+                    # pre-swap guard still see it; do not spawn a second worker over one
+                    # still holding GPU memory. Fail so the load can retry once it exits.
+                    raise RuntimeError(
+                        "The current inference worker did not exit and still holds GPU "
+                        "memory; not starting a new model over it. Retry shortly."
+                    )
             elif self._proc is not None:
                 self._shutdown_subprocess(timeout = 2)
 
@@ -1030,6 +1097,7 @@ class InferenceOrchestrator:
                         return False
                     model_info = resp.get("model_info", {})
                     self.active_model_name = model_info.get("identifier", model_name)
+                    self.load_generation += 1
                     # A load always spawns a fresh subprocess holding only this model, so
                     # mirror that. A lingering stale name would pass unload_model's "not in
                     # self.models" guard, and the worker's absent-name fallback would unload
@@ -1061,8 +1129,15 @@ class InferenceOrchestrator:
                     self.models.clear()
                     raise Exception(error)
 
-        except Exception:
+        except Exception as exc:
             self.loading_models.discard(model_name)
+            from utils.transformers_version import SidecarSwapInProgress
+
+            if isinstance(exc, SidecarSwapInProgress) and self._ensure_subprocess_alive():
+                # Raised before the old worker was torn down: the previous model
+                # is still live, so keep the mirrors (clearing them would let the
+                # installer treat the worker as inactive and kill it unreported).
+                raise
             self.active_model_name = None
             self.models.clear()
             raise
@@ -1297,6 +1372,7 @@ class InferenceOrchestrator:
         rag_scope: Optional[dict] = None,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         presence_penalty: float = 0.0,
@@ -1364,6 +1440,7 @@ class InferenceOrchestrator:
             rag_scope = rag_scope,
             confirm_tool_calls = confirm_tool_calls,
             bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
         )
 
     def generate_with_adapter_control(

@@ -5,6 +5,7 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import fnmatch
 import http.client
 import os
 import signal
@@ -151,6 +152,42 @@ _COMMAND_PREFIXES = frozenset(
     }
 )
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# Env-assignment prefixes that change command lookup or code loading, so
+# `LD_PRELOAD=x ls` / `PATH=. ls` run attacker code before the read-only
+# utility. LD_*/DYLD_* and any *PATH are covered by the prefix/suffix check.
+_AUTO_UNSAFE_ENV_ASSIGN = frozenset(
+    {
+        "IFS",
+        "BASH_ENV",
+        "ENV",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "GLOBIGNORE",
+        "PROMPT_COMMAND",
+        "PS4",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "NODE_OPTIONS",
+        "PERL5OPT",
+        "PERL5LIB",
+        "RUBYOPT",
+        "RUBYLIB",
+        # LESSOPEN/LESSCLOSE run an input preprocessor command for less.
+        "LESSOPEN",
+        "LESSCLOSE",
+    }
+)
+
+
+def _env_assignment_is_unsafe(name: str) -> bool:
+    """True if a NAME=value prefix affects command lookup/loading."""
+    return (
+        name in _AUTO_UNSAFE_ENV_ASSIGN
+        or name.startswith(("LD_", "DYLD_"))
+        or name.endswith("PATH")
+    )
+
+
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 
 
@@ -270,6 +307,2169 @@ def _find_blocked_commands(command: str) -> set[str]:
             break  # stop at first non-flag token
 
     return blocked
+
+
+# ── "Approve for me" (permission_mode="auto") safety detection ──────────────
+# Auto mode pauses only calls classified here as potentially unsafe. The sandbox
+# and hard blocks (blocklist, rlimits) still apply at run time; this gate only
+# decides prompting, and fails closed: anything not provably read-only asks.
+
+# Read-only commands allowed to run without confirmation in auto mode.
+_AUTO_SAFE_TERMINAL_COMMANDS = frozenset(
+    {
+        "ls",
+        "dir",
+        "pwd",
+        # cd absent: `cd /; cat etc/passwd` escapes the workdir for a later
+        # relative read the path scan cannot see, so cd always asks.
+        "cat",
+        "head",
+        "tail",
+        # less/more absent: their pager escapes (+cmd, !shell, -o, LESSOPEN) can
+        # run a command or write a file, so they always ask.
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "find",
+        "fd",
+        "wc",
+        "sort",
+        "uniq",
+        "cut",
+        "tr",
+        "diff",
+        "cmp",
+        "file",
+        "stat",
+        "du",
+        "df",
+        # ps absent: BSD env flags (ps auxe, ps eww) dump a parent's unscrubbed
+        # env and can't be flag-parsed reliably, so ps always asks.
+        "date",
+        "cal",
+        "whoami",
+        "id",
+        "uname",
+        "hostname",
+        "uptime",
+        "which",
+        "whereis",
+        "type",
+        "basename",
+        "dirname",
+        "realpath",
+        "readlink",
+        "md5",
+        "md5sum",
+        "shasum",
+        "sha1sum",
+        "sha256sum",
+        "cksum",
+        "tree",
+        "printenv",
+        "echo",
+        "printf",
+        "true",
+        "false",
+        "test",
+        "[",
+        "seq",
+        "nl",
+        "od",
+        "xxd",
+        "hexdump",
+        "strings",
+        "column",
+        "paste",
+        "join",
+        "comm",
+        "expand",
+        "unexpand",
+        "fold",
+        "fmt",
+        "rev",
+        "tac",
+        "locale",
+        "arch",
+        "nproc",
+        "sw_vers",
+        "jq",
+    }
+)
+# Flags that turn an otherwise read-only command into a writer or executor
+# (sort -o FILE, tree -o FILE, xxd -r IN OUT, find -exec/-delete/...).
+_AUTO_UNSAFE_COMMAND_FLAGS = {
+    # --files0-from=F makes sort read the NUL-separated list of input files
+    # named in F, so a crafted list reads arbitrary host files indirectly.
+    "sort": frozenset(
+        {"-o", "--output", "--compress-program", "-T", "--temporary-directory", "--files0-from"}
+    ),
+    "tree": frozenset({"-o"}),
+    "xxd": frozenset({"-r"}),
+    # -c/--check makes a checksum tool read a manifest file and then read every
+    # path it names, so a manifest listing /etc/passwd turns `sha256sum -c list`
+    # into an indirect host-file read; the digest form (sha256sum file) only reads
+    # the named files.
+    "md5sum": frozenset({"-c", "--check"}),
+    "sha1sum": frozenset({"-c", "--check"}),
+    "sha256sum": frozenset({"-c", "--check"}),
+    "shasum": frozenset({"-c", "--check"}),
+    "cksum": frozenset({"-c", "--check"}),
+    # GNU time -o/--output/-a/--append FILE writes timing output; time is a
+    # wrapper, so the flag is checked before the wrapped command like env -C.
+    "time": frozenset({"-o", "--output", "-a", "--append"}),
+    # rg runs an arbitrary program per file with --pre/--hostname-bin.
+    "rg": frozenset({"--pre", "--hostname-bin"}),
+    # env -C/--chdir escapes the workdir; -S/--split-string builds a command.
+    "env": frozenset({"-C", "--chdir", "-S", "--split-string"}),
+    # ionice -p/-P/-u change the I/O priority of an already running process /
+    # group / user instead of forwarding to a wrapped read-only command, so a
+    # bare `ionice -c 3 -p <pid>` mutates another process. ionice stays a safe
+    # wrapper for `ionice -c 3 <cmd>`; only the process-target flags ask.
+    "ionice": frozenset({"-p", "-P", "-u"}),
+    # printf -v NAME assigns to a shell var, so `printf -v PATH %s .; ls` runs
+    # ./ls from the workdir.
+    "printf": frozenset({"-v"}),
+    # wc/du/find --files0-from=F read the NUL-separated list of input paths named
+    # in F, so a crafted list reads arbitrary host files past the literal path /
+    # root checks, like sort --files0-from. find spells it -files0-from (a primary).
+    "wc": frozenset({"--files0-from"}),
+    "du": frozenset({"--files0-from"}),
+    "find": frozenset(
+        {
+            "-exec",
+            "-execdir",
+            "-ok",
+            "-okdir",
+            "-delete",
+            "-fprint",
+            "-fprint0",
+            "-fprintf",
+            "-fls",
+            "-files0-from",
+        }
+    ),
+    # fd -x/--exec/-X/--exec-batch run a command per result;
+    # --base-directory/--search-path move the search root outside the workdir.
+    "fd": frozenset({"-x", "--exec", "-X", "--exec-batch", "--base-directory", "--search-path"}),
+    # date -s/--set writes the clock; display forms (+FORMAT, -d/-u/-R/-r) read.
+    "date": frozenset({"-s", "--set"}),
+    # file -C/--compile writes a compiled .mgc magic database; ident forms read.
+    "file": frozenset({"-C", "--compile"}),
+    # hostname -F/--file, -b/--boot set the hostname; display flags only read.
+    "hostname": frozenset({"-F", "--file", "-b", "--boot"}),
+}
+# Commands safe only without a mutating positional: `hostname NAME` sets the
+# hostname, `date MMDDhhmm...` sets the clock (a +FORMAT token or a display
+# flag's value stays read-only), so any other positional asks.
+_AUTO_ARG_SENSITIVE_COMMANDS = frozenset({"hostname", "date"})
+# date display flags taking a value token (-d STRING, -r FILE, -f FILE); the
+# value is not a clock-setting positional, so it is skipped.
+_DATE_DISPLAY_VALUE_FLAGS = frozenset({"-d", "--date", "-r", "--reference", "-f", "--file"})
+# Commands that write their 2nd positional (uniq [INPUT [OUTPUT]], xxd [infile
+# [outfile]]): the 1st file reads to stdout, but a second file positional
+# overwrites it, like `sort -o`.
+_AUTO_SECOND_POSITIONAL_WRITES = frozenset({"uniq", "xxd"})
+# Value-taking option flags for those commands whose argument is a separate token
+# (uniq -f 2, xxd -c 16). The value must be consumed so a numeric option value is
+# not miscounted as the output-file positional, and, conversely, a file that is
+# literally named with digits (uniq 123 out) is still counted.
+_SECOND_POSITIONAL_VALUE_FLAGS = {
+    "uniq": frozenset({"-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"}),
+    "xxd": frozenset(
+        {"-c", "--cols", "-s", "--seek", "-l", "--len", "-g", "--groupsize", "-o", "--offset"}
+    ),
+}
+# find/fd group with (...) which resets command context, so scan every token for
+# these once find/fd appears anywhere.
+_AUTO_UNSAFE_FIND_LIKE_FLAGS = _AUTO_UNSAFE_COMMAND_FLAGS["find"] | _AUTO_UNSAFE_COMMAND_FLAGS["fd"]
+# Recursive readers with an absolute-path target escape the workdir onto host
+# files (grep -R TOKEN /home, rg TOKEN /), so they ask.
+_AUTO_RECURSIVE_SEARCH = frozenset({"grep", "egrep", "fgrep", "rg", "ug", "find", "fd"})
+# Directory walkers that always recurse (tree /home, du /) read the whole host
+# subtree under an absolute/tilde root, like a recursive search. ls only recurses
+# with -R/--recursive, so it is gated separately when that flag is present.
+_AUTO_RECURSIVE_LISTERS = frozenset({"tree", "du"})
+# Benign wrappers: safe AND forward command position to their target (checked in
+# turn). sudo/su/chroot/etc. are absent, so they classify as unsafe. xargs is
+# absent too: it appends arguments read from stdin that this scan never sees, so
+# `echo -o out /etc/passwd | xargs sort` forwards to `sort -o out /etc/passwd`
+# (a write + sensitive read) while only the allow-listed literals are visible.
+_AUTO_SAFE_WRAPPERS = frozenset(
+    {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup"}
+)
+
+# MCP tools whose names look read-only auto-run; anything else asks.
+_AUTO_SAFE_MCP_TOOL_RE = re.compile(
+    r"^(get|list|search|read|fetch|query|find|describe|show|view|lookup|"
+    r"retrieve|count|status|info|help|check)(?:[_\-].*)?$",
+    re.IGNORECASE,
+)
+# A mutating verb anywhere in the name overrides a read-only prefix, so a
+# compound name like get_or_create_issue or read_and_delete_file still asks.
+_AUTO_UNSAFE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:create|update|delete|remove|write|set|add|send|post|put|"
+    r"patch|insert|drop|kill|exec|execute|run|deploy|publish|move|rename|edit|"
+    r"modify|upload|replace|revoke|grant|approve|merge|close|cancel|pay|"
+    r"transfer|buy|sell|reset|clear|purge|destroy|terminate|revert|rollback|"
+    r"trigger|enable|disable|install|uninstall|restart|stop|start|"
+    r"save|archive|submit|commit|push|sync|register|"
+    r"clone|checkout|comment|fork|tag|invite|share|append|prepend|"
+    r"copy|duplicate|import|export|download|backup|restore|snapshot|mirror|"
+    r"upsert|assign|mark|subscribe|unsubscribe|reply|notify)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# A read-named MCP tool that returns a secret is still a sensitive read, so a
+# credential noun anywhere in the name (read_secret, list_tokens,
+# get_credentials, fetch_api_key) asks even without a mutating verb or a path/SQL
+# argument. Scoped nouns (api/access/private/... _key) avoid flagging benign
+# keys like a primary_key or keyboard lookup.
+_AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"secret|token|credential|password|passwd|passphrase|apikey|"
+    r"(?:api|access|private|secret|signing|encryption|auth|session)[_\-]?keys?"
+    r")s?(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+
+# Python: modules whose import alone signals side effects auto mode should ask
+# about (process spawning, network, bulk file ops, low-level memory).
+_AUTO_UNSAFE_PY_MODULES = frozenset(
+    {
+        "subprocess",
+        "shutil",
+        "socket",
+        "ctypes",
+        "multiprocessing",
+        "pty",
+        "fcntl",
+        "requests",
+        "urllib",
+        "urllib3",
+        "http",
+        "httpx",
+        "aiohttp",
+        # huggingface_hub.hf_hub_download / snapshot_download fetch remote repo
+        # files over the network and write them to an on-disk cache.
+        "huggingface_hub",
+        # websockets opens a network connection; socketserver binds a listener.
+        "websockets",
+        "socketserver",
+        "ftplib",
+        "smtplib",
+        "telnetlib",
+        "paramiko",
+        # mail/news/rpc/browser stdlib clients open outbound connections
+        # (imaplib, poplib, xmlrpc.client, webbrowser.open).
+        "imaplib",
+        "poplib",
+        "nntplib",
+        "xmlrpc",
+        "webbrowser",
+        "tempfile",
+        # deserialization that can execute arbitrary code on load.
+        "pickle",
+        "marshal",
+        "shelve",
+        "dill",
+        # dbm.open(file, "c"/"n") creates files; treat the family as writers.
+        "dbm",
+        # sqlite3.connect(path) creates/mutates a database file (and runs DDL/DML
+        # without an open()/writer attribute), like dbm.
+        "sqlite3",
+        # runpy runs a script/module as code.
+        "runpy",
+        # ensurepip.bootstrap installs pip and venv.create builds an environment;
+        # both write to disk and can fetch/install packages.
+        "ensurepip",
+        "venv",
+    }
+)
+# Attribute calls that mutate the filesystem / spawn processes (os.remove,
+# Path.write_text, sock.connect, ...) regardless of how the module was bound.
+_AUTO_UNSAFE_PY_ATTRS = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rmdir",
+        "removedirs",
+        "rename",
+        "renames",
+        "replace",
+        "rmtree",
+        "move",
+        "copy",
+        "copy2",
+        "copyfile",
+        "copytree",
+        "chmod",
+        "chown",
+        "system",
+        "popen",
+        "execv",
+        "execve",
+        "execl",
+        "execlp",
+        "execvp",
+        "spawnl",
+        "spawnv",
+        # os.startfile launches a program via its Windows association.
+        "startfile",
+        "fork",
+        "kill",
+        "killpg",
+        "symlink",
+        "link",
+        "mkdir",
+        "makedirs",
+        "truncate",
+        "touch",
+        "write_text",
+        "write_bytes",
+        "urlopen",
+        "urlretrieve",
+        "connect",
+        "bind",
+        "sendall",
+        # pathlib link creators, os node/metadata mutators, dynamic import.
+        "symlink_to",
+        "hardlink_to",
+        "link_to",
+        "mkfifo",
+        "mknod",
+        "utime",
+        # os.setxattr / os.removexattr mutate extended attributes, like chmod.
+        "setxattr",
+        "removexattr",
+        "import_module",
+        # loader.exec_module runs a module's code like import_module; archive
+        # extractall/extract write arbitrary files (zip-slip): extract takes a
+        # single member but an attacker-controlled member path still escapes.
+        "exec_module",
+        "extractall",
+        "extract",
+        "FileIO",
+        # asyncio subprocess spawners run a program past the terminal blocklist.
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+        "subprocess_exec",
+        "subprocess_shell",
+        # asyncio outbound connections / listeners (open_connection,
+        # create_connection/server and unix variants), like socket.connect.
+        "open_connection",
+        "create_connection",
+        "create_server",
+        "create_unix_connection",
+        "create_unix_server",
+        # more asyncio listen/connect + UDP/raw socket helpers.
+        "start_server",
+        "start_unix_server",
+        "open_unix_connection",
+        "create_datagram_endpoint",
+        "sock_connect",
+        # os.chdir escapes the workdir; runpy helpers run arbitrary code.
+        "chdir",
+        "fchdir",
+        "run_path",
+        "run_module",
+        # types.FunctionType wraps a compiled code object into a callable, a
+        # dynamic-execution vector; pandas read_pickle deserializes (runs code).
+        "FunctionType",
+        "read_pickle",
+    }
+)
+# Pickle-backed loaders that can execute code embedded in the file; gated by
+# receiver module (torch.load, joblib.load) since bare `load` is too common.
+_AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# Writer methods that persist to disk without going through open() (numpy.save,
+# Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
+# only, so a bare attribute reference is not mistaken for a write.
+_AUTO_UNSAFE_PY_WRITE_METHODS = frozenset(
+    {
+        "save",
+        "savefig",
+        "savez",
+        "savez_compressed",
+        "savetxt",
+        "tofile",
+        "dump",
+        "to_csv",
+        "to_parquet",
+        "to_pickle",
+        "to_json",
+        "to_feather",
+        "to_hdf",
+        "to_excel",
+        "to_stata",
+        "to_sql",
+        "to_xml",
+        # pandas text exporters that write when given a path/buffer (to_html /
+        # to_markdown / to_latex mirror to_csv); to_clipboard / to_gbq persist
+        # off-process. to_string is omitted: it is overwhelmingly display-only.
+        "to_html",
+        "to_markdown",
+        "to_latex",
+        "to_clipboard",
+        "to_gbq",
+        "imwrite",
+        "imsave",
+        "write_image",
+        "write_html",
+        # ML persistence helpers (transformers/peft/safetensors/keras) that
+        # export adapters or weights to disk without an open()/writer attribute.
+        "save_pretrained",
+        "save_file",
+        "save_model",
+        "save_weights",
+        "save_lora",
+        "save_checkpoint",
+        # logging file handlers open a log file for write on construction (even
+        # default mode "a" creates); matched as attribute call and bare import.
+        "FileHandler",
+        "WatchedFileHandler",
+        "RotatingFileHandler",
+        "TimedRotatingFileHandler",
+        # numpy.memmap(..., mode="w+") and pandas writers create/truncate a file
+        # on construction, like open(..., "w").
+        "memmap",
+        "open_memmap",
+        "ExcelWriter",
+        "HDFStore",
+        # pydoc.writedoc(name) writes name.html to the workdir.
+        "writedoc",
+    }
+)
+# Archive / compressed-file constructors taking the mode as their 2nd arg like
+# open: ZipFile(name, "w") / gzip.GzipFile(name, "w") write, so gated only in
+# write mode (reading a .gz is fine, so the modules are not blanket-unsafe).
+_ARCHIVE_CTOR_NAMES = frozenset({"ZipFile", "TarFile", "GzipFile", "BZ2File", "LZMAFile"})
+# The stdlib module each archive constructor is imported from.
+_ARCHIVE_CTOR_MODULES = {
+    "zipfile": "ZipFile",
+    "tarfile": "TarFile",
+    "gzip": "GzipFile",
+    "bz2": "BZ2File",
+    "lzma": "LZMAFile",
+}
+# Modules whose top-level open() takes the mode as its 2nd arg like builtin open,
+# so `from gzip import open as gopen` binds an open alias gated on write mode.
+_OPEN_ALIAS_MODULES = frozenset({"gzip", "bz2", "lzma"})
+# Builtins/itertools helpers that call their first argument once per item, so a
+# writer/open alias handed to one runs without a direct call(...) site
+# (list(map(open, names, modes)), starmap(np.save, ...)). filter's predicate is
+# also invoked, so a writer smuggled there runs too.
+_HIGHER_ORDER_INVOKERS = frozenset({"map", "filter", "starmap", "reduce"})
+_PY_WRITE_MODE_RE = re.compile(r"[wax+]")
+# A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
+# Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
+_PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
+
+# Reading these off the host escapes the intent of "read-only is safe": they
+# hold credentials. Path traversal (../) escapes the per-session workdir.
+_SENSITIVE_PATH_RE = re.compile(
+    r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
+    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    # Hugging Face stores the login token at ~/.cache/huggingface/token and the
+    # legacy ~/.huggingface/token (plus the multi-token store stored_tokens); the
+    # rest of that cache is model data, so only the credential files match. The
+    # optional leading dot covers the .huggingface dotdir form.
+    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    # /etc/ssh holds the host private keys (ssh_host_*_key); the whole dir is
+    # sensitive, not just passwd/shadow/sudoers.
+    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$))"
+    # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets,
+    # so a redirection to one reaches the network without the confirm prompt.
+    r"|/dev/(?:tcp|udp)/"
+    # Docker/Kubernetes secret mounts hold injected credentials.
+    r"|/(?:var/)?run/secrets(?:[/\\]|$)"
+    # procfs leaks a (possibly parent) process env/args/memory to a read,
+    # including the per-thread aliases under /proc/<pid>/task/<tid>/. The fd/
+    # dir holds symlinks to a process's open files (a held credential/db file).
+    r"|/proc/[^/\s'\"]+/(?:task/[^/\s'\"]+/)?(?:environ|cmdline|mem|maps|fd)\b"
+    # A .pem/.key file (basename before the extension), not a bare ".key"
+    # (e.g. a jq '.key' filter).
+    r"|\w[\w.-]*\.(?:pem|key)(?:$|[\s'\"])",
+    re.IGNORECASE,
+)
+# A shell redirection with no following space (cat <../../notes) keeps `..`
+# adjacent to `<`/`>`, so those count as leading delimiters here too.
+_PARENT_TRAVERSAL_RE = re.compile(r"(?:^|[\s/\\'\"=:<>])\.\.(?:[/\\]|$|[\s'\"])")
+# A sensitive directory: a dynamic segment under it (open(f"/etc/{name}")) is
+# not provably safe, so fail closed when a folded path has a dynamic piece here.
+_SENSITIVE_DIR_RE = re.compile(
+    r"/etc/|/(?:var/)?run/secrets[/\\]|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)[/\\]"
+    r"|(?:^|[/\\])\.config/(?:gcloud|gh)[/\\]",
+    re.IGNORECASE,
+)
+# Collapse /./ and repeated slashes so /etc/./passwd and /etc//passwd, which
+# the OS resolves to /etc/passwd, still match the sensitive-path regex.
+_REDUNDANT_SLASH_RE = re.compile(r"/\.?(?=/)")
+# $name, ${name}, and operator/substring forms (${name:-x}, ${name:0:6}) all
+# reference `name`; substituting the assigned value catches paths hidden behind
+# a substring expansion (p=passwd; cat /etc/${p:0:6}).
+_SHELL_VAR_RE = re.compile(r"\$\{(\w+)(?::[^{}]*)?\}|\$(\w+)")
+# Pattern replacement (${p/X/w}, global ${p//X/w}) transforms the value before
+# the path is used; apply it so p=passXd; cat /etc/${p/X/w} is scanned.
+_SHELL_PARAM_REPL_RE = re.compile(r"\$\{(\w+)/(/)?([^/{}]*)/([^{}]*)\}")
+# Case modification (${p^^} upper, ${p,,} lower, ${p^}/${p,} first char) also
+# transforms the value, so p=PASSWD; cat /etc/${p,,} builds /etc/passwd.
+_SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
+# Indirect expansion ${!p} yields the value of the variable *named* by $p, so
+# x=passwd; p=x; cat /etc/${!p} builds /etc/passwd.
+_SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+# Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so
+# decode $'...' bodies before the sensitive-path scan.
+_ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+# Shell quotes only delimit; bash concatenates the pieces (cat /proc/x/enviro''n
+# reads .../environ), so strip them before the sensitive-path scan.
+_SHELL_QUOTE_RE = re.compile(r"['\"]")
+# A glob bracket class [s] -> s, so .s[s]h de-obfuscates to .ssh for the scan.
+_GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
+# Bash POSIX character classes ([[:lower:]]) each match one char; Python fnmatch
+# does not understand them, so normalize to `?` before the glob check.
+_POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
+# Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests
+# whether the pattern reaches one (cat /e??/passwd -> /etc/passwd).
+_SENSITIVE_GLOB_TARGETS = (
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/root/.ssh/id_rsa",
+    "/root/.aws/credentials",
+    "/home/u/.ssh/id_rsa",
+    "/home/u/.ssh/id_ed25519",
+    "/home/u/.aws/credentials",
+    "/home/u/.netrc",
+    "/home/u/.git-credentials",
+)
+# Directories whose every file is a credential/secret; a glob resolving into one
+# (cat /r?n/secrets/hf_token, cat /root/.s??/id_rsa) reads a secret even though
+# the exact filename is never enumerated, so a globbed token here asks.
+_SENSITIVE_GLOB_DIRS = (
+    "/run/secrets",
+    "/var/run/secrets",
+    "/root/.ssh",
+    "/root/.aws",
+    "/root/.azure",
+    "/root/.gnupg",
+    "/root/.docker",
+    "/root/.kube",
+    "/root/.config/gcloud",
+    "/root/.config/gh",
+    "/home/u/.ssh",
+    "/home/u/.aws",
+    "/home/u/.azure",
+    "/home/u/.gnupg",
+    "/home/u/.docker",
+    "/home/u/.kube",
+    "/home/u/.config/gcloud",
+    "/home/u/.config/gh",
+)
+# Credential basenames a glob can reach even when the directory is not wholly
+# sensitive (cat ~/.huggingface/tok?n -> token, cat ~/.netr? -> .netrc); the
+# canonical-target list only covers a few fixed home paths, so match the globbed
+# basename against these directly.
+_SENSITIVE_GLOB_BASENAMES = frozenset(
+    {
+        "token",
+        "stored_tokens",
+        "credentials",
+        ".netrc",
+        "netrc",
+        ".pypirc",
+        ".npmrc",
+        ".git-credentials",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "passwd",
+        "shadow",
+        # A project .env holds secrets; the literal path is gated elsewhere, so a
+        # glob that expands to it (cat .e?v) must be too.
+        ".env",
+    }
+)
+# A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
+# scan (cat </e??/passwd); strip it before matching.
+_REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
+# Bash brace expansion (cat /etc/pass{w,}d -> /etc/passwd /etc/passd, and the
+# sequence form cat /etc/pass{w..w}d -> /etc/passwd) runs after this classifier;
+# expand comma groups and .. sequences to scan each result.
+_BRACE_COMMA_RE = re.compile(r"^\{([^{}]*,[^{}]*)\}$")
+_BRACE_SEQ_RE = re.compile(r"^\{([^{}]+)\.\.([^{}]+)(?:\.\.(-?\d+))?\}$")
+_BRACE_ANY_RE = re.compile(r"\{[^{}]*,[^{}]*\}|\{[^{}]+\.\.[^{}]+(?:\.\.-?\d+)?\}")
+# Parameter expansion with a default/alternate operator (${x:-passwd},
+# ${x:+passwd}, ${x=passwd}) can synthesize a path after approval; the operand
+# is substituted so the resulting path is scanned.
+_SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
+
+
+def _references_sensitive_path(text: str) -> bool:
+    """True if a command or string literal reads a credential path or escapes
+    the sandbox workdir via parent traversal."""
+    norm = _REDUNDANT_SLASH_RE.sub("", text)
+    debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
+    return bool(
+        _PARENT_TRAVERSAL_RE.search(text)
+        or _SENSITIVE_PATH_RE.search(text)
+        or _SENSITIVE_PATH_RE.search(norm)
+        or _SENSITIVE_PATH_RE.search(debracket)
+    )
+
+
+def _pattern_matches_dir(pattern: str, target: str) -> bool:
+    """Segment-wise fnmatch so a glob segment does not cross a '/' boundary
+    (`/home/*` must not match `/home/u/.ssh`)."""
+    p = pattern.split("/")
+    t = target.split("/")
+    if len(p) != len(t):
+        return False
+    return all(fnmatch.fnmatch(tseg, pseg) for pseg, tseg in zip(p, t))
+
+
+def _glob_token_sensitive(token: str) -> bool:
+    """True if a single ? / * / [..] glob token could expand to a sensitive file
+    or a file under a secret/credential directory. Shared by the terminal scan
+    and the Python glob check (glob.glob('/e??/passwd'))."""
+    token = _REDIR_PREFIX_RE.sub("", _SHELL_QUOTE_RE.sub("", token))
+    # A POSIX class ([[:lower:]]) matches one char, like `?`, but fnmatch treats
+    # it as a literal set; normalize so cat /etc/pass[[:lower:]]d resolves.
+    token = _POSIX_CLASS_RE.sub("?", token)
+    if not any(c in token for c in "?*["):
+        return False
+    if any(fnmatch.fnmatch(target, token) for target in _SENSITIVE_GLOB_TARGETS):
+        return True
+    # A glob that resolves to a credential basename is sensitive wherever it
+    # lives (cat ~/.huggingface/tok?n -> token, cat proj/.netr? -> .netrc); the
+    # fixed-target list only covers a handful of home paths.
+    base = token.rsplit("/", 1)[-1]
+    if any(c in base for c in "?*[") and any(
+        fnmatch.fnmatch(name, base) for name in _SENSITIVE_GLOB_BASENAMES
+    ):
+        return True
+    # A globbed directory that resolves into a secret/credential dir makes every
+    # file below it sensitive (cat /r?n/secrets/hf_token).
+    head = token.rsplit("/", 1)[0] if "/" in token else token
+    return any(
+        _pattern_matches_dir(token, d) or _pattern_matches_dir(head, d)
+        for d in _SENSITIVE_GLOB_DIRS
+    )
+
+
+def _glob_hits_sensitive(command: str) -> bool:
+    """True if any glob token in a command could expand to a sensitive file, so
+    `cat /e??/passwd` and `cat /r?n/secrets/hf_token` ask even without a literal
+    sensitive path."""
+    return any(
+        _glob_token_sensitive(token)
+        for token in command.replace(";", " ").replace("|", " ").split()
+    )
+
+
+def _expand_shell_assignments(command: str) -> str:
+    """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path
+    split across an assignment and an argument (p=/etc; cat $p/passwd) is still
+    visible to the sensitive-path scan. Also applies pattern replacement
+    (p=passXd; cat /etc/${p/X/w}). Fail-open: only adds detections."""
+    env = dict(_SHELL_ASSIGN_RE.findall(command))
+    if not env:
+        return command
+
+    def repl_pattern(m):
+        var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
+        if var not in env or not pat:
+            return m.group(0)
+        return env[var].replace(pat, rep) if is_global else env[var].replace(pat, rep, 1)
+
+    def repl_case(m):
+        var, op = m.group(1), m.group(2)
+        if var not in env:
+            return m.group(0)
+        v = env[var]
+        if op == ",,":
+            return v.lower()
+        if op == "^^":
+            return v.upper()
+        if op == ",":
+            return v[:1].lower() + v[1:]
+        return v[:1].upper() + v[1:]
+
+    def repl_indirect(m):
+        # ${!p} -> value of the variable named by $p (env[env[p]]).
+        pointed = env.get(m.group(1))
+        return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
+
+    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
+    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
+    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
+    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+
+
+def _expand_param_defaults(command: str) -> str:
+    """Substitute the operand of a default/alternate parameter expansion
+    (cat /etc/pass${x:-wd} -> cat /etc/passwd), which bash applies after this
+    classifier. Fail-open: only adds detections."""
+    return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
+
+
+def _decode_ansi_c(command: str) -> str:
+    """Decode bash ANSI-C quoted words (cat $'/etc/pass\\x77d' -> cat /etc/passwd)
+    so an escape-obfuscated path is visible to the scan. Fail-open: only adds
+    detections."""
+
+    def dec(m):
+        try:
+            return bytes(m.group(1), "utf-8").decode("unicode_escape")
+        except (UnicodeDecodeError, ValueError):
+            return m.group(0)
+
+    return _ANSI_C_RE.sub(dec, command)
+
+
+def _brace_range(lo: str, hi: str, step: "str | None") -> "list[str]":
+    """Expand a bash sequence brace endpoint pair ({1..3}, {a..c}, {w..w})."""
+    try:
+        istep = abs(int(step)) if step else 1
+        istep = istep or 1
+        if re.fullmatch(r"-?\d+", lo) and re.fullmatch(r"-?\d+", hi):
+            a, b = int(lo), int(hi)
+            rng = range(a, b + 1, istep) if a <= b else range(a, b - 1, -istep)
+            return [str(x) for x in rng][:64]
+        if len(lo) == 1 and len(hi) == 1 and lo.isalpha() and hi.isalpha():
+            a, b = ord(lo), ord(hi)
+            rng = range(a, b + 1, istep) if a <= b else range(a, b - 1, -istep)
+            return [chr(x) for x in rng][:64]
+    except (ValueError, TypeError):
+        pass
+    return []
+
+
+def _brace_options(text: str) -> "list[str]":
+    """Options a single brace group expands to (comma list or .. sequence)."""
+    m = _BRACE_COMMA_RE.match(text)
+    if m:
+        return m.group(1).split(",")
+    m = _BRACE_SEQ_RE.match(text)
+    if m:
+        return _brace_range(m.group(1), m.group(2), m.group(3)) or [text]
+    return [text]
+
+
+def _expand_braces(command: str) -> str:
+    """Best-effort bash brace expansion (cat /etc/pass{w,}d -> cat /etc/passwd
+    /etc/passd, cat /etc/pass{w..w}d -> cat /etc/passwd) so a sensitive path
+    split across a brace group is scanned. Bounded. Fail-open: only detects."""
+    results = [command]
+    for _ in range(6):
+        if not any(_BRACE_ANY_RE.search(s) for s in results):
+            break
+        expanded = []
+        for s in results:
+            m = _BRACE_ANY_RE.search(s)
+            if not m:
+                expanded.append(s)
+                continue
+            for opt in _brace_options(m.group(0)):
+                expanded.append(s[: m.start()] + opt + s[m.end() :])
+        results = expanded[:64]
+    return " ".join(results)
+
+
+def _mode_arg_writes(mode_node) -> bool:
+    """True if an AST node used as a file mode requests write/append."""
+    if mode_node is None:
+        return False  # default "r"
+    if isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
+        return bool(_PY_WRITE_MODE_RE.search(mode_node.value))
+    return True  # dynamic mode: cannot prove read-only
+
+
+def _has_kwarg_splat(node) -> bool:
+    """True if the call has a ``**kwargs`` splat, which can hide a write mode."""
+    return any(kw.arg is None for kw in node.keywords or [])
+
+
+def _builtin_open_writes(node) -> bool:
+    """Write check for builtin ``open(file, mode)`` (mode is the 2nd arg)."""
+    if _has_kwarg_splat(node):
+        return True  # **{"mode": "w"} could request a write
+    if any(isinstance(a, ast.Starred) for a in node.args):
+        return True  # *("f", "w") could splat a write mode into the positionals
+    mode = node.args[1] if len(node.args) >= 2 else None
+    for kw in node.keywords or []:
+        if kw.arg == "mode":
+            mode = kw.value
+    return _mode_arg_writes(mode)
+
+
+def _attr_open_writes(node) -> bool:
+    """Write check for ``x.open(...)`` (e.g. ``Path.open(mode)`` where mode is
+    the 1st arg). Only a mode-looking string is read as the mode, so a
+    ``ZipFile.open("name.txt")`` read is not mistaken for a write."""
+    if _has_kwarg_splat(node):
+        return True  # **{"mode": "w"} could request a write
+    for kw in node.keywords or []:
+        if kw.arg == "mode":
+            return _mode_arg_writes(kw.value)
+    if node.args:
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            if _PY_MODE_LITERAL_RE.match(first.value):
+                return bool(_PY_WRITE_MODE_RE.search(first.value))
+            # A 2nd positional arg is either a mode (x.open(name, "w")) or
+            # os.open(path, O_CREAT) flags via an alias: honor a string mode,
+            # otherwise cannot prove read-only, so ask.
+            if len(node.args) >= 2:
+                second = node.args[1]
+                if isinstance(second, ast.Constant) and isinstance(second.value, str):
+                    return _mode_arg_writes(second)
+                return True
+            return False
+        return True  # dynamic first arg: cannot prove read-only
+    return False  # no args: read
+
+
+_PATH_CTORS = (
+    "Path",
+    "PurePath",
+    "PurePosixPath",
+    "PureWindowsPath",
+    "PosixPath",
+    "WindowsPath",
+)
+# Deterministic path pass-through/normalizer calls that return the same location
+# (os.path.abspath('/etc') -> /etc, Path('/etc').resolve() -> /etc), so folding
+# through them keeps a sensitive root visible to the scan.
+_PATH_PASSTHROUGH_ATTRS = frozenset(
+    {"abspath", "normpath", "realpath", "expanduser", "expandvars", "resolve", "absolute"}
+)
+# pathlib methods that rewrite only the final path component, so the sensitive
+# target is never spelled out as a literal (Path('/etc/x').with_name('passwd')
+# -> /etc/passwd). Folded below so the rewritten path is still scanned.
+_PATH_NAME_REWRITES = frozenset({"with_name", "with_stem", "with_suffix"})
+# Mapping-style %-format conversion specifier: %(name)s / %(n)5.2f. Used to fold
+# '/etc/%(f)s' % {'f': 'passwd'} to /etc/passwd (a dynamic value becomes NUL).
+_PERCENT_NAMED_RE = re.compile(r"%\((\w+)\)[-#0 +]*\d*(?:\.\d+)?[a-zA-Z]")
+
+
+def _folded_path(
+    node,
+    literals = None,
+    ctors = None,
+    join_names = None,
+) -> "str | None":
+    """Best-effort value of a path built from string literals, so a sensitive
+    path assembled from pieces (os.path.join('/etc', 'passwd'), '/etc'+'/passwd',
+    Path('/etc') / 'passwd', f'/proc/{pid}/environ', f'/etc/{name}') is still
+    visible to the scan. A dynamic piece becomes NUL, a non-slash placeholder,
+    so a dynamic segment under a sensitive dir (/etc/NUL) is still detectable.
+    ``literals`` maps names bound to string literals (base = '/etc'); ``ctors``
+    is the set of pathlib constructor names (incl. import aliases); ``join_names``
+    are bare names bound to os.path.join (from os.path import join)."""
+    literals = literals or {}
+    ctors = ctors or _PATH_CTORS
+    join_names = join_names or frozenset()
+
+    def fold(node) -> "str | None":
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes)):
+            # bytes paths are valid too (open(b'/etc/passwd')); decode for scan.
+            return (
+                node.value.decode("latin-1", "ignore")
+                if isinstance(node.value, bytes)
+                else node.value
+            )
+        if isinstance(node, ast.Name):
+            return literals.get(node.id)
+        if isinstance(node, ast.Attribute) and node.attr in ("parent", "parents"):
+            # A pathlib .parent/.parents walks above the current dir, escaping
+            # the per-session workdir without a literal '..'; mark it so a read
+            # folds to unsafe (\x02 is a non-slash escape sentinel).
+            return "\x02"
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and (node.value.attr == "parents")
+        ):
+            return "\x02"  # Path(...).parents[1]
+        if isinstance(node, ast.JoinedStr):
+            return "".join(
+                v.value
+                if isinstance(v, ast.Constant) and isinstance(v.value, str)
+                else (fold(v.value) or "\x00")
+                if isinstance(v, ast.FormattedValue)
+                else "\x00"
+                for v in node.values
+            )
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Div)):
+            left = fold(node.left)
+            right = fold(node.right)
+            left = "\x00" if left is None else left
+            right = "\x00" if right is None else right
+            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
+            return left + "/" + right if isinstance(node.op, ast.Div) else left + right
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
+            template = fold(node.left)
+            if template is not None and "%" in template:
+                rhs = node.right
+                if "%(" in template:
+                    # Mapping-style: '/etc/%(f)s' % {'f': 'passwd'} -> /etc/passwd.
+                    # A literal dict resolves each name; an unresolved value or a
+                    # non-literal mapping leaves the NUL marker so /etc/<dynamic>
+                    # still fails closed under a sensitive dir.
+                    mapping: "dict[str, str]" = {}
+                    if isinstance(rhs, ast.Dict):
+                        for k, v in zip(rhs.keys, rhs.values):
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                                fv = fold(v)
+                                mapping[k.value] = fv if fv is not None else "\x00"
+                    return _PERCENT_NAMED_RE.sub(
+                        lambda m: mapping.get(m.group(1), "\x00"), template
+                    )
+                if isinstance(rhs, ast.Tuple):
+                    args = tuple((fold(e) or "\x00") for e in rhs.elts)
+                else:
+                    single = fold(rhs)
+                    args = (single if single is not None else "\x00",)
+                try:
+                    return template % args
+                except (TypeError, ValueError, KeyError):
+                    return None
+            return None
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "joinpath":
+                # Path('/etc').joinpath('passwd') -> receiver and args are pieces.
+                base = fold(func.value)
+                parts = [base if base is not None else "\x00"]
+                parts += [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            if isinstance(func, ast.Attribute) and func.attr in ("glob", "rglob", "iglob"):
+                # Path('/etc').glob('passw?') -> the receiver dir joined with the
+                # glob pattern; _glob_token_sensitive then tests /etc/passw?.
+                base = fold(func.value)
+                pattern = fold(node.args[0]) if node.args else "\x00"
+                return (base if base is not None else "\x00") + "/" + (pattern or "\x00")
+            if isinstance(func, ast.Attribute) and func.attr in _PATH_NAME_REWRITES:
+                # Path('/etc/x').with_name('passwd') -> /etc/passwd; with_stem /
+                # with_suffix rewrite only the final component. Fold to the
+                # rewritten path so a sensitive target that no literal spells out
+                # is still caught. An unresolved receiver stays None (untracked,
+                # like a bare variable), and a dynamic arg becomes the NUL marker.
+                base = fold(func.value)
+                if base is None:
+                    return None
+                arg = fold(node.args[0]) if node.args else None
+                arg = "\x00" if arg is None else arg
+                idx = base.rfind("/")
+                head = base[: idx + 1] if idx >= 0 else ""
+                name = base[idx + 1 :] if idx >= 0 else base
+                dot = name.rfind(".")
+                stem = name[:dot] if dot > 0 else name
+                suffix = name[dot:] if dot > 0 else ""
+                if func.attr == "with_name":
+                    name = arg
+                elif func.attr == "with_stem":
+                    name = arg + suffix
+                else:  # with_suffix
+                    name = stem + arg
+                return head + name
+            if isinstance(func, ast.Attribute) and func.attr in _PATH_PASSTHROUGH_ATTRS:
+                # Deterministic normalizers keep the same path: os.path.abspath(
+                # '/etc') -> /etc, Path('/etc').resolve() -> /etc. When called with
+                # a path arg fold it, else fold the receiver (Path method form).
+                return fold(node.args[0]) if node.args else fold(func.value)
+            if isinstance(func, ast.Attribute) and func.attr == "join":
+                # str.join has the separator as the receiver and the pieces in
+                # one iterable arg ("".join(['/etc', '/passwd']) -> /etc/passwd);
+                # tell it apart from os.path.join(*pieces).
+                sep = fold(func.value)
+                if (
+                    sep is not None
+                    and len(node.args) == 1
+                    and isinstance(node.args[0], (ast.List, ast.Tuple))
+                ):
+                    pieces = [(fold(e) or "\x00") for e in node.args[0].elts]
+                    return sep.join(pieces)
+                parts = [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            # A bare os.path.join alias (from os.path import join): join(*pieces).
+            if isinstance(func, ast.Name) and func.id in join_names:
+                parts = [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            # A bare/qualified/aliased pathlib constructor (Path(...), P(...)).
+            if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
+                isinstance(func, ast.Name) and func.id in ctors
+            ):
+                parts = [(fold(a) or "\x00") for a in node.args]
+                return "/".join(parts)
+            # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args).
+            if isinstance(func, ast.Attribute) and func.attr == "format":
+                template = fold(func.value)
+                if template is not None and "{" in template:
+                    parts = []
+                    for a in node.args:
+                        if isinstance(a, ast.Constant):
+                            parts.append(str(a.value))
+                        else:
+                            folded = fold(a)
+                            parts.append("\x00" if folded is None else folded)
+                    try:
+                        return template.format(*parts)
+                    except (IndexError, KeyError, ValueError):
+                        return None
+        return None
+
+    return fold(node)
+
+
+def _dynamic_name_hits_sensitive(folded) -> bool:
+    """True if a folded path with a dynamic piece (NUL) inside a path segment
+    could spell a credential target, e.g. open('/et' + chr(99) + '/passwd')
+    folds to '/et\\x00/passwd'. NUL matches any run of non-separator chars so the
+    dynamic split of a sensitive name resolves, while an all-dynamic ('\\x00\\x00')
+    or segment-spanning ('\\x00/\\x00') path cannot form a single credential name
+    and stays safe."""
+    if not folded or "\x00" not in folded:
+        return False
+    pattern = "".join(r"[^/\\]*" if ch == "\x00" else re.escape(ch) for ch in folded)
+    try:
+        rx = re.compile(pattern + r"\Z")
+    except re.error:
+        return True  # pathological pattern: fail closed
+    return any(rx.match(t) for t in _SENSITIVE_GLOB_TARGETS)
+
+
+def _folded_is_sensitive(folded) -> bool:
+    """A folded path is sensitive if it names a credential file, has a dynamic
+    segment (NUL) directly under a sensitive directory (/etc/NUL), walks out of
+    the sandbox via a pathlib .parent/.parents escape (\\x02), or is a glob that
+    could resolve to a credential path (glob.glob('/e??/passwd'))."""
+    if not folded:
+        return False
+    return (
+        "\x02" in folded
+        or _references_sensitive_path(folded)
+        or ("\x00" in folded and bool(_SENSITIVE_DIR_RE.search(folded)))
+        # A dynamic segment (NUL) can be the "/" forming a sensitive root:
+        # open(os.sep + "etc/passwd") folds to "\x00etc/passwd", so re-scan with
+        # NUL as "/" (a benign "\x00data/file" -> "/data/file" stays safe).
+        or ("\x00" in folded and _references_sensitive_path(folded.replace("\x00", "/")))
+        # A dynamic piece can also sit INSIDE a sensitive name: open('/et' +
+        # chr(99) + '/passwd') folds to "/et\x00/passwd", which none of the above
+        # catch. Match the literals around each NUL against a credential target,
+        # treating NUL as "any run of non-separator chars" so /et<dyn>/passwd
+        # resolves while an all-dynamic ("\x00\x00" from 1 + 1) or segment-spanning
+        # ("\x00/\x00" from a + '/' + b) path stays safe.
+        or _dynamic_name_hits_sensitive(folded)
+        or _glob_token_sensitive(folded)
+    )
+
+
+def _terminal_is_potentially_unsafe(command: str) -> bool:
+    """Classify a terminal command for auto mode (fail closed)."""
+    if not command or not command.strip():
+        return False
+    # Redirections and substitutions can hide writes or nested commands; a
+    # quoted ">" false-positives into a prompt, which is the safe direction.
+    if ">" in command or "`" in command or "$(" in command or "<(" in command:
+        return True
+    # Reads that escape the sandbox workdir (../) or hit credential paths are
+    # not "safe" reads; ask before running them. Strip shell quotes/backslash
+    # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
+    # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
+    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
+    # Bash applies brace/parameter/ANSI-C expansion after this classifier, so a
+    # path split across a brace group (/etc/pass{w,}d), a default/substring param
+    # (${x:-wd}, ${p:0:6}), or an escape ($'...') is invisible to the raw scan;
+    # expand first (ANSI-C decoded from the raw command, before backslash strip).
+    candidates = []
+    for c in (command, stripped, _decode_ansi_c(command)):
+        c_param = _expand_param_defaults(c)
+        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+    # Run both the literal and glob-sensitive scans over every candidate, so a
+    # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
+    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
+        return True
+    # Newlines (and CR) separate commands in a shell but read as plain
+    # whitespace to shlex, which would demote "ls\nrm x" to argument position.
+    command = command.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+    try:
+        lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return True
+    # A root can also hide behind an assignment (p=/; grep -R TOKEN $p) or a
+    # default parameter (grep -R TOKEN ${root:-/home}); re-lex the fully expanded
+    # command so the find/fd and recursive-search scans see the resolved token.
+    expanded_command = _expand_shell_assignments(_expand_param_defaults(command))
+    if expanded_command != command:
+        try:
+            elexer = shlex.shlex(expanded_command, posix = True, punctuation_chars = ";&|()")
+            elexer.whitespace_split = True
+            scan_tokens = list(elexer)
+        except ValueError:
+            return True
+    else:
+        scan_tokens = tokens
+    # find/fd group with (...) which resets command context, so a trailing
+    # -delete/-exec could slip past; scan every token when find/fd appears.
+    if any(os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in scan_tokens):
+        if any(t.split("=", 1)[0] in _AUTO_UNSAFE_FIND_LIKE_FLAGS for t in scan_tokens):
+            return True
+    # A recursive reader rooted outside the sandbox reads host files (grep -R
+    # TOKEN /home, rg TOKEN /, grep -R TOKEN ~root, p=/; grep -R TOKEN $p, and
+    # the always-recursive walkers tree /home / du /); ask. Bash expands
+    # ~/~user to a home dir after this decision, so a tilde root is a sandbox
+    # escape too. A path-qualified command token starts with "/" as well, but
+    # that already asks below.
+    if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
+        token_bases = [os.path.basename(t.strip(";&|()`{}")).lower() for t in tokens]
+        if any(b in _AUTO_RECURSIVE_SEARCH or b in _AUTO_RECURSIVE_LISTERS for b in token_bases):
+            return True
+        # ls only walks the whole subtree with -R/--recursive (ls -R /home,
+        # ls -laR /); a non-recursive ls /home lists one level and stays here.
+        if "ls" in token_bases and any(
+            t.split("=", 1)[0] in ("-R", "--recursive")
+            or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
+            for t in tokens
+        ):
+            return True
+    expect_command = True
+    prefix_pending = False
+    current_command = ""
+    positional_args = 0
+    pending_flag_value = False
+    for token in tokens:
+        # Runs of punctuation (";;", ";&") lex as one token; any token made
+        # purely of separator characters still separates commands.
+        if (
+            token in _SHELL_SEPARATORS
+            or token in _SHELL_KEYWORDS_AS_SEP
+            or not set(token) - set(";&|()")
+        ):
+            expect_command = True
+            prefix_pending = False
+            current_command = ""
+            positional_args = 0
+            pending_flag_value = False
+            continue
+        if token.startswith("-"):
+            # A write/exec flag on an otherwise read-only command asks
+            # (sort -o, tree -o, xxd -r, find -exec/-delete/...). Match
+            # "--output=x", an attached short option "-o/tmp/out", and a short
+            # option bundled in a cluster (sort -uo out => -u -o).
+            flag_head = token.split("=", 1)[0]
+            cluster = token[1:] if token[:2] != "--" and "=" not in token else ""
+            # GNU tools accept unambiguous abbreviations of a long option, so
+            # `sort --out=` reaches --output and `env --ch=/` reaches --chdir;
+            # a "--x" prefix of an unsafe long flag fails closed.
+            is_long_abbrev = flag_head.startswith("--") and len(flag_head) > 2
+            for uf in _AUTO_UNSAFE_COMMAND_FLAGS.get(current_command, ()):
+                if flag_head == uf or (len(uf) == 2 and (token.startswith(uf) or uf[1] in cluster)):
+                    return True
+                if is_long_abbrev and uf.startswith("--") and uf.startswith(flag_head):
+                    return True
+            # A flag that takes a following value (date -d STRING / -r FILE;
+            # uniq -f N; xxd -c N) so the value token is not mistaken for a
+            # clock-setting positional or an output-file positional.
+            pending_flag_value = "=" not in token and (
+                (current_command == "date" and flag_head in _DATE_DISPLAY_VALUE_FLAGS)
+                or flag_head in _SECOND_POSITIONAL_VALUE_FLAGS.get(current_command, ())
+            )
+            if not prefix_pending:
+                expect_command = False
+            continue
+        if not expect_command:
+            raw_pos = token.strip(";&|()`{}")
+            # uniq [INPUT [OUTPUT]] writes its second file positional; count file
+            # positionals and ask on the second one. A preceding option's value
+            # (uniq -f 2) is consumed via pending_flag_value, so a file literally
+            # named with digits (uniq 123 out) is still counted.
+            if current_command in _AUTO_SECOND_POSITIONAL_WRITES:
+                if pending_flag_value:
+                    pending_flag_value = False
+                elif raw_pos:
+                    positional_args += 1
+                    if positional_args >= 2:
+                        return True
+            # hostname NAME sets the hostname; date <timestamp> sets the clock. A
+            # positional past a display flag's value therefore mutates state and
+            # asks (date's +FORMAT display token stays read-only).
+            elif current_command in _AUTO_ARG_SENSITIVE_COMMANDS:
+                if pending_flag_value:
+                    pending_flag_value = False
+                elif raw_pos and not (current_command == "date" and raw_pos.startswith("+")):
+                    return True
+            continue
+        if _ASSIGNMENT_RE.match(token):
+            # Benign NAME=value prefixes are skipped, but ones that change
+            # command lookup/loading (PATH, LD_PRELOAD, ...) fail closed.
+            if _env_assignment_is_unsafe(token.split("=", 1)[0]):
+                return True
+            continue
+        if prefix_pending and token.lstrip("-").isdigit():
+            continue
+        raw = token.strip(";&|()`{}")
+        # A path-qualified command (./ls, /tmp/cat) is an arbitrary executable,
+        # not the trusted system utility its basename matches; ask first.
+        if "/" in raw or "\\" in raw:
+            return True
+        base = os.path.basename(raw).lower()
+        stem, ext = os.path.splitext(base)
+        if ext in {".exe", ".com", ".bat", ".cmd"}:
+            base = stem
+        if base in _AUTO_SAFE_WRAPPERS:
+            prefix_pending = True
+            # Track the wrapper so its own flags (env --chdir) are checked;
+            # the real command overwrites this when it is reached.
+            current_command = base
+            pending_flag_value = False
+            continue
+        if base not in _AUTO_SAFE_TERMINAL_COMMANDS:
+            return True
+        current_command = base
+        expect_command = False
+        prefix_pending = False
+        positional_args = 0
+        pending_flag_value = False
+    return False
+
+
+def _python_is_potentially_unsafe(code: str) -> bool:
+    """Classify python-tool code for auto mode (fail closed)."""
+    if not code or not code.strip():
+        return False
+    # Anything the sandbox's static analysis already objects to would be
+    # refused at execution time; surface it as a confirmation first.
+    if _check_code_safety(code) is not None:
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False  # runs into a normal traceback; nothing to guard
+    # Names bound to the builtin open (f = open; from builtins import open as f;
+    # f, _ = (open, print)) so an aliased writer call is still checked below.
+    # builtins_aliases tracks `import builtins [as b]` for builtins.exec/eval.
+    open_aliases = {"open"}
+    # Attribute names bound to open (box.f = open), so a later box.f('out', 'w')
+    # write is still gated even though the callable is an attribute, not a name.
+    attr_open_aliases: "set[str]" = set()
+    builtins_aliases = {"builtins", "__builtins__"}
+    # Names bound to a dynamic lookup (rm = getattr(os, "remove");
+    # f = globals()["open"]) whose calls cannot be proven read-only, so they
+    # fail closed.
+    dynamic_aliases = set()
+    # Names bound to a dynamic-code builtin, including aliased ones
+    # (from builtins import eval as e; e = builtins.exec), so a call or
+    # reference through the alias fails closed too. compile() builds a code
+    # object that FunctionType/exec can then run.
+    code_exec_aliases = {"exec", "eval", "__import__", "breakpoint", "compile"}
+    # Names bound to a string literal (base = '/etc'), so a sensitive path
+    # split through a variable (base + '/passwd') folds and is caught.
+    literal_str_vars: "dict[str, str]" = {}
+    # Pathlib constructor names incl. import aliases (from pathlib import Path as
+    # P), os.path.join names bound directly (from os.path import join as j), and
+    # writer functions imported as bare names (from numpy import save).
+    path_ctor_aliases = set(_PATH_CTORS)
+    pathjoin_aliases: "set[str]" = set()
+    writer_aliases: "set[str]" = set()
+    # Module names bound to os/posix (import os as o), so o.open(...) is still
+    # recognized as the low-level create/write that os.open is.
+    os_aliases = {"os", "posix"}
+    # Module names bound to a pickle-backed loader (import torch as t), so
+    # t.load(...) is still gated as a code-executing deserialize.
+    load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # Names bound to the builtin getattr (g = getattr), so a dynamic lookup
+    # aliased through it (rm = g(os, "remove"); rm("f")) still fails closed.
+    getattr_aliases = {"getattr"}
+    # Names bound to functools.partial, so a partial that wraps open/a writer
+    # (w = partial(open, mode="w"); w("out.txt")) fails closed when w is called.
+    partial_aliases: "set[str]" = set()
+    # Archive constructors imported bare (from zipfile import ZipFile), so
+    # ZipFile(name, "w") is gated like the zipfile.ZipFile attribute call.
+    archive_ctor_aliases: "set[str]" = set()
+    # operator.methodcaller("write_text") is dynamic dispatch, like getattr.
+    operator_aliases = {"operator"}
+    methodcaller_aliases: "set[str]" = set()
+    # logging.basicConfig(filename=...) opens a log file for write.
+    basicconfig_aliases: "set[str]" = set()
+    # fileinput.input(..., inplace=True) rewrites a file in place.
+    fileinput_aliases = {"fileinput"}
+    # Higher-order invokers (map/filter/starmap/reduce) call their first arg, so
+    # one handed a writer (map(open, ...)) writes without a direct open() site.
+    # Track aliases (m = map; from itertools import starmap as sm) so an aliased
+    # invoker is still checked; the write-callable gate keeps map(len, ...) safe.
+    invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
+
+    def _is_dynamic_namespace(node) -> bool:
+        # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return
+        # open/eval/a mutator: globals()/locals()/vars(...), any X.__dict__,
+        # __builtins__, sys.modules. Looking a name up through one is as dynamic as
+        # getattr, so a value fetched from it fails closed.
+        if isinstance(node, ast.Attribute):
+            if node.attr == "__dict__":
+                return True
+            return (
+                node.attr == "modules"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "sys"
+            )
+        if isinstance(node, ast.Name):
+            return node.id in builtins_aliases
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id in ("globals", "locals", "vars")
+        return False
+
+    def _methodcaller_writes(call) -> bool:
+        # operator.methodcaller("write_text", ...) / methodcaller(name): unsafe
+        # when the method name is a known writer/mutator, or non-constant (cannot
+        # be proven read-only).
+        if not call.args:
+            return False
+        first = call.args[0]
+        if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+            return True
+        return first.value in _AUTO_UNSAFE_PY_ATTRS or first.value in _AUTO_UNSAFE_PY_WRITE_METHODS
+
+    def _fileinput_inplace(call) -> bool:
+        # fileinput.input(..., inplace=True) opens each file for in-place rewrite.
+        if _has_kwarg_splat(call):
+            return True
+        for kw in call.keywords or []:
+            if kw.arg == "inplace":
+                v = kw.value
+                if isinstance(v, ast.Constant):
+                    return bool(v.value)
+                return True  # dynamic inplace flag: cannot prove read-only
+        return False
+
+    def _basicconfig_writes(call) -> bool:
+        # logging.basicConfig(filename=...) creates/opens a log file for writing.
+        if _has_kwarg_splat(call):
+            return True
+        return any(kw.arg == "filename" for kw in call.keywords or [])
+
+    def _wraps_write_callable(arg) -> bool:
+        # The callable a partial wraps (partial(open, ...)); True when calling it
+        # could create/overwrite a file or resolve a dynamic/mutating function.
+        if isinstance(arg, ast.Name):
+            return (
+                arg.id in open_aliases
+                or arg.id in dynamic_aliases
+                or arg.id in code_exec_aliases
+                or arg.id in getattr_aliases
+                or arg.id in writer_aliases
+                or arg.id in archive_ctor_aliases
+            )
+        if isinstance(arg, ast.Attribute):
+            return (
+                arg.attr == "open"
+                or arg.attr in _AUTO_UNSAFE_PY_ATTRS
+                or arg.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
+                or arg.attr in _ARCHIVE_CTOR_NAMES
+            )
+        return False
+
+    def _passed_write_callable(arg) -> bool:
+        # A concrete write callable handed as an argument to another call: a
+        # name bound to open / a writer / an archive constructor, or an
+        # attribute reference to a writer method / mutating os attr / archive
+        # ctor / .open. Unlike _wraps_write_callable this omits the fail-closed
+        # dynamic / getattr / code-exec poison aliases, which are already gated
+        # where they are *called* and would over-trigger when a benign alias is
+        # merely passed or printed (print(getattr(o, 'name'))).
+        if isinstance(arg, ast.Name):
+            return (
+                arg.id in open_aliases or arg.id in writer_aliases or arg.id in archive_ctor_aliases
+            )
+        if isinstance(arg, ast.Attribute):
+            return (
+                arg.attr == "open"
+                or arg.attr in _AUTO_UNSAFE_PY_ATTRS
+                or arg.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
+                or arg.attr in _ARCHIVE_CTOR_NAMES
+            )
+        return False
+
+    # Names bound more than once cannot be folded to a single literal: this scan
+    # visits every assignment before any call is checked, so a later benign
+    # reassignment (base = '/etc'; open(base + '/passwd'); base = 'data') would
+    # otherwise mask the earlier sensitive value and auto-approve. Count every
+    # binding target up front and poison multiply-bound names to the escape
+    # sentinel so any path folded from them fails closed (asks) instead.
+    assign_counts: "dict[str, int]" = {}
+    for node in ast.walk(tree):
+        binding_targets = []
+        if isinstance(node, ast.Assign):
+            binding_targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            binding_targets = [node.target]
+        for target in binding_targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name):
+                    assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
+    multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    builtins_aliases.add(alias.asname or "builtins")
+                elif alias.name in ("os", "posix"):
+                    os_aliases.add(alias.asname or alias.name)
+                elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name == "operator":
+                    operator_aliases.add(alias.asname or "operator")
+                elif alias.name == "fileinput":
+                    fileinput_aliases.add(alias.asname or "fileinput")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "operator":
+                for alias in node.names:
+                    if alias.name == "methodcaller":
+                        methodcaller_aliases.add(alias.asname or "methodcaller")
+            if node.module == "logging":
+                for alias in node.names:
+                    if alias.name == "basicConfig":
+                        basicconfig_aliases.add(alias.asname or "basicConfig")
+            if node.module == "builtins":
+                for alias in node.names:
+                    if alias.name == "open":
+                        open_aliases.add(alias.asname or "open")
+                    elif alias.name in code_exec_aliases:
+                        code_exec_aliases.add(alias.asname or alias.name)
+            if node.module in _OPEN_ALIAS_MODULES:
+                for alias in node.names:
+                    if alias.name == "open":
+                        # gzip/bz2/lzma open(file, mode) writes on "w"/"a"/"x",
+                        # mode in the 2nd arg like builtin open.
+                        open_aliases.add(alias.asname or "open")
+            if node.module == "pathlib":
+                for alias in node.names:
+                    if alias.name in _PATH_CTORS:
+                        path_ctor_aliases.add(alias.asname or alias.name)
+            if node.module in ("os.path", "posixpath", "ntpath"):
+                for alias in node.names:
+                    if alias.name == "join":
+                        pathjoin_aliases.add(alias.asname or "join")
+            if node.module == "functools":
+                for alias in node.names:
+                    if alias.name == "partial":
+                        partial_aliases.add(alias.asname or "partial")
+            if node.module in _ARCHIVE_CTOR_MODULES:
+                _ctor = _ARCHIVE_CTOR_MODULES[node.module]
+                for alias in node.names:
+                    if alias.name == _ctor:
+                        archive_ctor_aliases.add(alias.asname or _ctor)
+            for alias in node.names:
+                if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                    writer_aliases.add(alias.asname or alias.name)
+                # from itertools import starmap as sm / from functools import
+                # reduce as r: an aliased higher-order invoker.
+                if alias.name in _HIGHER_ORDER_INVOKERS:
+                    invoker_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            value = node.value
+            # AnnAssign (f: object = open) has a single target, no destructuring.
+            if isinstance(node, ast.AnnAssign):
+                assign_targets = [node.target]
+            else:
+                assign_targets = node.targets
+            targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
+            attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if isinstance(value, ast.Name) and value.id in open_aliases:
+                open_aliases.update(targets)
+                attr_open_aliases.update(attr_targets)  # box.f = open
+            elif isinstance(value, ast.Name) and value.id in getattr_aliases:
+                getattr_aliases.update(targets)  # g = getattr
+            elif isinstance(value, ast.Name) and value.id in partial_aliases:
+                partial_aliases.update(targets)  # p = partial
+            elif isinstance(value, ast.Name) and value.id in writer_aliases:
+                writer_aliases.update(targets)  # s = save (numpy save alias)
+            elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
+                archive_ctor_aliases.update(targets)  # z = ZipFile
+            elif isinstance(value, ast.Name) and value.id in invoker_aliases:
+                invoker_aliases.update(targets)  # m = map
+            elif isinstance(value, ast.Name) and value.id in path_ctor_aliases:
+                path_ctor_aliases.update(targets)  # P = Path
+            elif isinstance(value, ast.Name) and value.id in pathjoin_aliases:
+                pathjoin_aliases.update(targets)  # j = join
+            elif isinstance(value, ast.Attribute) and value.attr == "join":
+                pathjoin_aliases.update(targets)  # j = os.path.join
+            elif isinstance(value, ast.Attribute) and value.attr in _PATH_CTORS:
+                path_ctor_aliases.update(targets)  # P = pathlib.Path
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr == "open"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in builtins_aliases
+            ):
+                open_aliases.update(targets)  # f = builtins.open
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr in code_exec_aliases
+                and isinstance(value.value, ast.Name)
+                and value.value.id in builtins_aliases
+            ):
+                code_exec_aliases.update(targets)  # e = builtins.eval
+            elif isinstance(value, ast.Attribute) and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                writer_aliases.update(targets)  # s = np.save
+            elif isinstance(value, ast.Attribute) and value.attr == "open":
+                # A captured .open bound method (p = Path('out').open) opens a file
+                # on any call; its mode position varies (Path.open mode is 1st arg,
+                # builtin open's is 2nd), so fail closed on the call rather than
+                # guess the write mode.
+                dynamic_aliases.update(targets)  # p = Path('out').open; p('w')
+            elif isinstance(value, ast.Attribute) and value.attr in _ARCHIVE_CTOR_NAMES:
+                archive_ctor_aliases.update(targets)  # z = zipfile.ZipFile
+            elif isinstance(value, ast.Subscript):
+                dynamic_aliases.update(targets)  # f = globals()["open"]
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in getattr_aliases
+            ):
+                dynamic_aliases.update(targets)  # rm = getattr(os, "remove") / g(...)
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr in ("get", "pop", "setdefault")
+                and _is_dynamic_namespace(value.func.value)
+            ):
+                # f = __builtins__.__dict__.get("open") / globals().get("open"):
+                # a namespace lookup can return open/eval, so poison like getattr.
+                dynamic_aliases.update(targets)
+            elif (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Name) and value.func.id in partial_aliases)
+                    or (isinstance(value.func, ast.Attribute) and value.func.attr == "partial")
+                )
+                and value.args
+                and _wraps_write_callable(value.args[0])
+            ):
+                dynamic_aliases.update(targets)  # w = partial(open, mode="w")
+            elif (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Name) and value.func.id in methodcaller_aliases)
+                    or (
+                        isinstance(value.func, ast.Attribute)
+                        and value.func.attr == "methodcaller"
+                        and isinstance(value.func.value, ast.Name)
+                        and value.func.value.id in operator_aliases
+                    )
+                )
+                and _methodcaller_writes(value)
+            ):
+                dynamic_aliases.update(targets)  # w = methodcaller("write_text", ...)
+            elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+                # base = '/etc' -> resolve base in a later folded path. A name
+                # bound more than once is poisoned (\x02) so it fails closed.
+                for t in targets:
+                    literal_str_vars[t] = "\x02" if t in multi_assigned_names else value.value
+            elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
+                # fully-literal folded path so a later reuse (p / 'passwd') folds.
+                folded = _folded_path(value, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                if folded is not None and "\x00" not in folded and "\x02" not in folded:
+                    for t in targets:
+                        literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
+            elif isinstance(value, (ast.Tuple, ast.List)):
+                # Destructuring binds each element like a single assignment, so an
+                # aliased callable (f, _ = (open, print)) AND a string / path
+                # literal (base, leaf = ('/etc', 'passwd')) both propagate; without
+                # the latter a path folded from base/leaf would miss the sensitive
+                # target and auto-approve.
+                for target in assign_targets:
+                    if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
+                        value.elts
+                    ):
+                        for tgt_el, val_el in zip(target.elts, value.elts):
+                            if not isinstance(tgt_el, ast.Name):
+                                continue
+                            tid = tgt_el.id
+                            if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
+                                open_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
+                                getattr_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
+                                partial_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in writer_aliases:
+                                writer_aliases.add(tid)  # s, _ = (save, 1)
+                            elif isinstance(val_el, ast.Name) and val_el.id in archive_ctor_aliases:
+                                archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
+                            elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
+                                literal_str_vars[tid] = (
+                                    "\x02" if tid in multi_assigned_names else val_el.value
+                                )
+                            elif isinstance(val_el, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                                folded = _folded_path(
+                                    val_el, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                                )
+                                if (
+                                    folded is not None
+                                    and "\x00" not in folded
+                                    and "\x02" not in folded
+                                ):
+                                    literal_str_vars[tid] = (
+                                        "\x02" if tid in multi_assigned_names else folded
+                                    )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # A callable captured as a parameter default (def f(o=open): o('x','w'))
+            # binds that parameter to the same alias set, so a later call through
+            # the parameter is still gated. defaults align to the tail of
+            # posonlyargs+args; kw_defaults align 1:1 with kwonlyargs (None = none).
+            _a = node.args
+            _defaulted = list(
+                zip(
+                    (_a.posonlyargs + _a.args)[
+                        len(_a.posonlyargs) + len(_a.args) - len(_a.defaults) :
+                    ],
+                    _a.defaults,
+                )
+            ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
+            for _param, _default in _defaulted:
+                if isinstance(_default, ast.Name):
+                    _did = _default.id
+                    if _did in open_aliases:
+                        open_aliases.add(_param.arg)
+                    elif _did in writer_aliases:
+                        writer_aliases.add(_param.arg)
+                    elif _did in archive_ctor_aliases:
+                        archive_ctor_aliases.add(_param.arg)
+                    elif _did in getattr_aliases:
+                        getattr_aliases.add(_param.arg)
+                    elif _did in partial_aliases:
+                        partial_aliases.add(_param.arg)
+                    elif _did in code_exec_aliases:
+                        code_exec_aliases.add(_param.arg)
+                    elif _did in dynamic_aliases:
+                        dynamic_aliases.add(_param.arg)
+                elif isinstance(_default, ast.Attribute):
+                    # An attribute writer / archive ctor / captured .open used as
+                    # a default (def f(s=np.save), def f(z=zipfile.ZipFile),
+                    # def f(o=Path('x').open)) binds the parameter like the
+                    # equivalent assignment; a benign attribute (np.mean) does not.
+                    if _default.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                        writer_aliases.add(_param.arg)
+                    elif _default.attr in _ARCHIVE_CTOR_NAMES:
+                        archive_ctor_aliases.add(_param.arg)
+                    elif _default.attr == "open":
+                        dynamic_aliases.add(_param.arg)
+                elif (
+                    isinstance(_default, ast.Call)
+                    and (
+                        (
+                            isinstance(_default.func, ast.Name)
+                            and _default.func.id in partial_aliases
+                        )
+                        or (
+                            isinstance(_default.func, ast.Attribute)
+                            and _default.func.attr == "partial"
+                        )
+                    )
+                    and _default.args
+                    and _wraps_write_callable(_default.args[0])
+                ):
+                    dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
+    try:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                        return True
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                    return True
+                # from-imports can bind mutating callables to bare names
+                # (from os import remove [as rm]); star imports hide anything.
+                for alias in node.names:
+                    if alias.name == "*" or alias.name in _AUTO_UNSAFE_PY_ATTRS:
+                        return True
+                    # os.open imported as a bare callable is a low-level
+                    # create/write, like the os.open attribute call below.
+                    if alias.name == "open" and node.module in ("os", "posix"):
+                        return True
+            elif isinstance(node, ast.Attribute):
+                # Any reference to a mutating attribute fails closed, even
+                # without an immediate call (rm = os.remove; rm("x")).
+                if node.attr in _AUTO_UNSAFE_PY_ATTRS:
+                    return True
+                # builtins.exec / builtins.eval / builtins.__import__ (and
+                # compile/breakpoint) are dynamic code execution, matching the
+                # bare-name code_exec_aliases path; __builtins__.__import__(...)
+                # is a dynamic import that dodges the static import check.
+                if (
+                    node.attr in ("exec", "eval", "__import__", "breakpoint", "compile")
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in builtins_aliases
+                ):
+                    return True
+            elif isinstance(node, ast.Name):
+                if node.id in code_exec_aliases:
+                    return True
+            elif isinstance(node, ast.Constant):
+                # Credential paths / parent traversal in a string or bytes
+                # literal (open('/etc/passwd') and open(b'/etc/passwd')), or a
+                # glob that resolves to one (glob.glob('/e??/passwd')).
+                val = node.value
+                if isinstance(val, bytes):
+                    val = val.decode("latin-1", "ignore")
+                if isinstance(val, str) and (
+                    _references_sensitive_path(val) or _glob_token_sensitive(val)
+                ):
+                    return True
+            elif isinstance(node, (ast.BinOp, ast.JoinedStr)):
+                # A sensitive path concatenated from literals ('/etc'+'/passwd'),
+                # a pathlib / chain, an f-string (f'/proc/{pid}/environ'), a
+                # dynamic segment under a sensitive dir (f'/etc/{name}'), or one
+                # split through a literal variable (base = '/etc'; base+'/passwd').
+                if _folded_is_sensitive(
+                    _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                ):
+                    return True
+            elif isinstance(node, ast.Call):
+                # A sensitive path composed via os.path.join('/etc', name).
+                if _folded_is_sensitive(
+                    _folded_path(node, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                ):
+                    return True
+                func = node.func
+                # x.__call__(args) is just x(args): unwrap so open.__call__('o',
+                # 'w') / save.__call__(...) reach the open/writer checks below
+                # instead of looking like a harmless ".__call__" attribute call.
+                if isinstance(func, ast.Attribute) and func.attr == "__call__":
+                    func = func.value
+                if isinstance(func, (ast.Call, ast.Subscript)):
+                    return True  # calling a call/subscript result is dynamic
+                # A concrete write callable (open/writer/archive-ctor alias, or a
+                # writer/mutating attribute) handed as an argument to any call
+                # escapes into a helper that can invoke it without a direct
+                # open()/writer site -- the same bypass the map/starmap/reduce
+                # branches below gate, but through a user-defined helper
+                # (def run(fn): fn('o','w').write('x'); run(open)). A benign
+                # callable argument (run(len)) is unaffected.
+                if any(_passed_write_callable(a) for a in node.args) or any(
+                    _passed_write_callable(kw.value) for kw in node.keywords
+                ):
+                    return True
+                if isinstance(func, ast.Name):
+                    if func.id in dynamic_aliases:
+                        return True  # call through a getattr alias is dynamic
+                    if func.id in open_aliases and _builtin_open_writes(node):
+                        return True
+                    # A writer imported as a bare name (from numpy import save).
+                    if func.id in writer_aliases:
+                        return True
+                    # A bare archive constructor (from zipfile import ZipFile)
+                    # takes the mode as its 2nd arg like open, so ZipFile(x, "w")
+                    # writes but ZipFile(x) reads.
+                    if func.id in archive_ctor_aliases and _builtin_open_writes(node):
+                        return True
+                    # A bare-imported logging.basicConfig(filename=...) opens a
+                    # log file for writing (from logging import basicConfig).
+                    if func.id in basicconfig_aliases and _basicconfig_writes(node):
+                        return True
+                    # A writer/open alias handed to a higher-order invoker
+                    # (map(open, names, modes), starmap(np.save, ...), or an
+                    # aliased m = map / sm = starmap) is called without a direct
+                    # open(...)/save(...) site; the callable is the first
+                    # positional arg. A benign map(len, ...) is unaffected.
+                    if (
+                        func.id in invoker_aliases
+                        and node.args
+                        and _wraps_write_callable(node.args[0])
+                    ):
+                        return True
+                elif isinstance(func, ast.Attribute):
+                    # Writer methods persist to disk without open() (np.save,
+                    # img.save, plt.savefig, df.to_csv, json.dump); ask before
+                    # they mutate the workdir in auto mode.
+                    if func.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                        return True
+                    # logging.basicConfig(filename=...) opens a log file for write.
+                    if func.attr == "basicConfig" and _basicconfig_writes(node):
+                        return True
+                    # A qualified higher-order invoker (itertools.starmap(open, ...),
+                    # functools.reduce(open, ...)) calls its first arg like the bare
+                    # map/filter form; the writer-check on that arg keeps a benign
+                    # itertools.starmap(len, ...) / df.map(transform) safe.
+                    if (
+                        func.attr in _HIGHER_ORDER_INVOKERS
+                        and node.args
+                        and _wraps_write_callable(node.args[0])
+                    ):
+                        return True
+                    # fileinput.input(..., inplace=True) rewrites a file in place;
+                    # the default fileinput.input(...) only reads, so gate inplace.
+                    if (
+                        func.attr == "input"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in fileinput_aliases
+                        and _fileinput_inplace(node)
+                    ):
+                        return True
+                    # os.open() always creates/writes a file descriptor
+                    # (tracked through import aliases: import os as o; o.open()).
+                    if (
+                        func.attr == "open"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in os_aliases
+                    ):
+                        return True
+                    # A pickle-backed loader (torch.load, joblib.load) can execute
+                    # code embedded in the file it deserializes.
+                    if (
+                        func.attr == "load"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in load_module_aliases
+                    ):
+                        return True
+                    if func.attr == "open" and _attr_open_writes(node):
+                        return True
+                    # An open bound onto an attribute (box.f = open; box.f('o','w'))
+                    # writes on 'w'/'a'/'x' like the builtin, so gate the attr name.
+                    if func.attr in attr_open_aliases and _builtin_open_writes(node):
+                        return True
+                    # ZipFile/TarFile/GzipFile/BZ2File/LZMAFile take the mode as
+                    # the 2nd arg (like builtin open), so ZipFile(name, "w") writes
+                    # but ZipFile(name) reads.
+                    if func.attr in _ARCHIVE_CTOR_NAMES and _builtin_open_writes(node):
+                        return True
+                    # Enumerating a directory outside the sandbox reads host
+                    # filenames (and enables reading their contents) the direct
+                    # /etc/passwd checks would prompt for: Path('/etc').iterdir(),
+                    # os.scandir('/etc'), os.listdir('/home'), os.walk('/'),
+                    # Path('/home').glob('*'), glob.glob('/home/*'). Gate when the
+                    # target dir folds to an absolute/tilde/sensitive path; a
+                    # relative dir (Path('.').iterdir(), glob.glob('src/*')) stays
+                    # safe, and an unresolved dynamic dir is left to other checks.
+                    _enum_dir = None
+                    if func.attr == "iterdir":
+                        _enum_dir = func.value
+                    elif func.attr in ("glob", "rglob", "iglob"):
+                        # Path('/home').glob('*') enumerates the receiver dir;
+                        # glob.glob('/home/*') enumerates the pattern's root dir.
+                        _recv = _folded_path(
+                            func.value, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                        )
+                        if isinstance(_recv, str) and _recv not in ("", "\x00"):
+                            _enum_dir = func.value
+                        elif node.args:
+                            _enum_dir = node.args[0]
+                    elif (
+                        func.attr in ("scandir", "listdir", "walk")
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in os_aliases
+                        and node.args
+                    ):
+                        _enum_dir = node.args[0]
+                    if _enum_dir is not None:
+                        _folded_dir = _folded_path(
+                            _enum_dir, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                        )
+                        if isinstance(_folded_dir, str) and (
+                            _folded_dir.startswith("/")
+                            or _folded_dir.startswith("~")
+                            or _folded_is_sensitive(_folded_dir)
+                        ):
+                            return True
+    except Exception:
+        return True  # unexpected AST shape: fail closed
+    return False
+
+
+# Cloud-metadata / link-local hosts (mirrors the sandbox SSRF blocklist): a
+# read-named HTTP MCP tool pointed at one (fetch_url
+# {"url": "http://169.254.169.254/..."}) reads instance credentials, so it asks.
+_MCP_METADATA_HOST_RE = re.compile(
+    r"169\.254\.\d{1,3}\.\d{1,3}|"
+    r"100\.100\.100\.\d{1,3}|"
+    r"fd00:ec2::254|"
+    r"metadata\.google\.internal|"
+    r"metadata\.tencentyun\.com|"
+    r"://metadata(?=[:/])",
+    re.IGNORECASE,
+)
+
+
+def _mcp_arguments_reference_sensitive(arguments) -> bool:
+    """True if any string in an MCP call's arguments names a credential path, a
+    credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"}),
+    or a cloud-metadata host (fetch_url {"url": "http://169.254.169.254/..."})."""
+
+    def walk(value) -> bool:
+        if isinstance(value, str):
+            return (
+                _references_sensitive_path(value)
+                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
+                or bool(_MCP_METADATA_HOST_RE.search(value))
+            )
+        if isinstance(value, dict):
+            return any(walk(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(walk(v) for v in value)
+        return False
+
+    return walk(arguments)
+
+
+# DDL object types CREATE / DROP / ALTER share (DROP FUNCTION and ALTER INDEX
+# mutate just like CREATE INDEX).
+_SQL_DDL_OBJECTS = (
+    r"table|database|schema|index|view|function|procedure|trigger|"
+    r"sequence|role|user|extension|type|domain|aggregate|policy"
+)
+# Modifiers between the DDL verb and object (CREATE OR REPLACE VIEW, DROP
+# MATERIALIZED VIEW, CREATE UNIQUE INDEX).
+_SQL_DDL_MODIFIERS = (
+    r"(?:(?:or\s+replace|unique|temp|temporary|global|local|materialized|recursive)\s+)*"
+)
+# A SQL identifier (bare, "quoted", `quoted`, [bracketed]), optionally
+# schema-qualified, so UPDATE "users"/public.users/ONLY .../[users] SET all hit.
+_SQL_IDENT = r'(?:\w+|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]+\])'
+_SQL_UPDATE_TARGET = r"(?:only\s+)?" + _SQL_IDENT + r"(?:\s*\.\s*" + _SQL_IDENT + r")*"
+# A read-named MCP tool (query_database, run_query) can still carry a mutating
+# SQL statement; match DML/DDL as whole statements (DELETE FROM, DROP TABLE) so
+# a natural-language query that merely contains the word "delete" stays safe.
+_MCP_ARG_MUTATION_RE = re.compile(
+    r"\b(?:delete\s+from|"
+    r"drop\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
+    # Match the whole identifier (the outer trailing \b needs the alternative to
+    # end on a word boundary, so a bare \w stops mid-name and TRUNCATE users slips
+    # through); the optional opening quote/bracket/backtick covers "users"/[users].
+    r"truncate\s+(?:table\s+)?[\"\[`]?\w+|"
+    # UPDATE <target> [AS alias] SET: allow an explicit AS alias before SET so
+    # UPDATE users AS u SET is caught, not just the bare form. The implicit-alias
+    # form (UPDATE users u SET) is left out because it is indistinguishable from
+    # the prose "update <noun> <noun> set" and would flag natural language.
+    r"update\s+" + _SQL_UPDATE_TARGET + r"(?:\s+as\s+" + _SQL_IDENT + r")?\s+set\b|"
+    r"insert\s+into|replace\s+into|"
+    # SELECT ... INTO OUTFILE/DUMPFILE writes a file (MySQL); bare SELECT INTO
+    # <table> is left out (PL/pgSQL uses it to read into a variable).
+    r"select\s+[^;]*?\binto\s+(?:outfile|dumpfile)\b|"
+    # ALTER SYSTEM persists PostgreSQL server configuration; SYSTEM is not one of
+    # the DDL objects above, so match it explicitly.
+    r"alter\s+system\b|"
+    r"alter\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
+    r"create\s+" + _SQL_DDL_MODIFIERS + r"(?:" + _SQL_DDL_OBJECTS + r")|"
+    r"grant\s+\w+|revoke\s+\w+|merge\s+into|"
+    # Catalog mutations: COMMENT ON <obj>, SECURITY LABEL, and LOCK TABLE change
+    # metadata or take a lock. Each needs a following keyword, so a "comment"
+    # column (SELECT comment FROM t) or "locks" table stays safe.
+    r"comment\s+on\b|security\s+label\b|lock\s+table\b|"
+    # PostgreSQL maintenance writes: REFRESH MATERIALIZED VIEW rewrites the view,
+    # REINDEX rebuilds an index. Both need a following object keyword/name, so a
+    # column or word "refresh"/"reindex" in prose stays safe.
+    r"refresh\s+materialized\s+view|reindex\s+\w+|"
+    # CALL proc(...) / EXEC[UTE] name / VACUUM mutate; CALL needs a following
+    # "(", ";", or end so natural-language "call me back" stays safe.
+    r"call\s+\w+(?=\s*[(;]|\s*$)|exec(?:ute)?\s+\w+|vacuum|"
+    # COPY ... FROM bulk-loads and COPY ... TO writes a file ([^;] stays in one
+    # statement).
+    r"copy\s+[^;]*?\b(?:from|to)\b)\b",
+    re.IGNORECASE,
+)
+# SQLite statements the base regex misses: ATTACH/DETACH a database (DATABASE
+# optional via the quoted-path form), a write-form PRAGMA (name=value / name(...),
+# unlike the read-form PRAGMA name), and load_extension() which runs a shared
+# library. These tokens are not natural language, so benign text does not trip.
+_MCP_ARG_SQLITE_MUTATION_RE = re.compile(
+    r"\b(?:attach|detach)\s+database\b"
+    r"|\battach\s+(?:database\s+)?['\"]"
+    r"|\bpragma\s+\w+(?:\.\w+)?\s*(?:=|\()"
+    r"|\bload_extension\s*\(",
+    re.IGNORECASE,
+)
+# State-changing SQL functions that mutate or write files inside a read-shaped
+# SELECT (pg_terminate_backend, setval, pg_write_file, lo_export, ...). The
+# trailing "(" is required, so a column named setval_count stays safe.
+_MCP_ARG_SQL_FUNCTION_RE = re.compile(
+    r"\b(?:pg_terminate_backend|pg_cancel_backend|pg_write_file|lo_export|"
+    r"lo_import|setval|nextval|set_config|pg_notify|dblink_exec|pg_reload_conf|"
+    r"pg_rotate_logfile|"
+    # advisory locks change session/transaction lock state (read-shaped SELECT).
+    r"pg_advisory_(?:lock|lock_shared|unlock|unlock_shared|unlock_all|"
+    r"xact_lock|xact_lock_shared)|"
+    r"pg_try_advisory_(?:lock|lock_shared|xact_lock|xact_lock_shared))\s*\(",
+    re.IGNORECASE,
+)
+# SQL engines treat /* */ and -- comments as whitespace, so DELETE/**/FROM and
+# UPDATE/**/users evade the \s+ in the mutation regex; collapse comments to a
+# space before matching.
+_SQL_COMMENT_RE = re.compile(r"/\*.*?\*/|--[^\n]*", re.DOTALL)
+# A GraphQL mutation on a read-named tool. Directives are valid between the name
+# and body (mutation M @audit { ... }), so allow @directive[(args)] before ( or {.
+_GRAPHQL_MUTATION_RE = re.compile(
+    r"\bmutation\b\s*\w*\s*(?:@\w+(?:\s*\([^)]*\))?\s*)*[({]", re.IGNORECASE
+)
+# GraphQL # comments run to end-of-line and count as whitespace, so a comment
+# between `mutation` and the body (mutation # note\n { ... }) would otherwise
+# hide it; collapse them to a space before matching.
+_GRAPHQL_COMMENT_RE = re.compile(r"#[^\n]*")
+
+
+# HTTP verbs that mutate the target resource; a generic HTTP MCP tool
+# (mcp__http__get_url {"method": "DELETE"}) mutates an external service even
+# though its name looks read-only. GET/HEAD/OPTIONS/TRACE only read.
+_MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_HTTP_METHOD_KEYS = frozenset({"method", "http_method", "httpmethod", "verb", "http_verb"})
+
+
+def _mcp_arguments_mutate(arguments) -> bool:
+    """True if an MCP call's arguments carry a mutating command, so a read-named
+    but write-capable tool (query_database {"query": "DELETE FROM runs"},
+    query_graphql {"query": "mutation { deleteIssue(id: 1) }"}, or an HTTP tool
+    {"method": "DELETE"}) asks."""
+
+    def walk(value) -> bool:
+        if isinstance(value, str):
+            _sql = _SQL_COMMENT_RE.sub(" ", value)
+            return (
+                bool(_MCP_ARG_MUTATION_RE.search(_sql))
+                or bool(_MCP_ARG_SQLITE_MUTATION_RE.search(_sql))
+                or bool(_MCP_ARG_SQL_FUNCTION_RE.search(_sql))
+                or bool(_GRAPHQL_MUTATION_RE.search(_GRAPHQL_COMMENT_RE.sub(" ", value)))
+            )
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if (
+                    isinstance(k, str)
+                    and k.lower() in _HTTP_METHOD_KEYS
+                    and isinstance(v, str)
+                    and v.strip().upper() in _MUTATING_HTTP_METHODS
+                ):
+                    return True
+            return any(walk(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(walk(v) for v in value)
+        return False
+
+    return walk(arguments)
+
+
+# Tools that are read-only / non state-mutating regardless of their arguments,
+# so auto mode never has to pause them (their safety needs no argument scan).
+# render_html is NOT unconditionally safe: it runs arbitrary HTML/JS in the
+# canvas preview frame. A static canvas (charts, layout, inline SVG) never
+# reaches the network, but code that calls out can exfiltrate or fetch under the
+# preview's CSP when artifact network access is enabled, so those ask; a canvas
+# with no network construct still auto-runs. Matches JS egress APIs, a remote or
+# root-relative <script src>/src=/href=/srcset, a CSS url()/@import that loads a
+# resource, and ws(s) URLs. A leading "/" covers both //host (protocol-relative)
+# and /path (root-relative, which the CSP resolves against the frame origin); a
+# "./x" or bare relative ref and a url(#id)/data: ref are not matched, so an
+# inline-SVG canvas (whose w3.org namespace lives in xmlns=) stays safe.
+_RENDER_HTML_NETWORK_RE = re.compile(
+    r"\bfetch\s*\(|"
+    r"XMLHttpRequest|"
+    r"\bWebSocket\b|"
+    r"\bEventSource\b|"
+    r"\bsendBeacon\b|"
+    r"\bimportScripts\b|"
+    r"navigator\s*\.\s*serviceWorker|"
+    # new Worker(...) / new SharedWorker(...) run a script off the main thread
+    # that this static scan cannot see: a module worker from a CORS-enabled CDN
+    # executes remote code, and a blob/same-origin worker can fetch/importScripts
+    # to egress, all reachable under worker-src http: https: blob:. Gate the
+    # constructor like importScripts/serviceWorker; a var merely named myWorker
+    # (no "new") stays static.
+    r"\bnew\s+(?:Shared)?Worker\s*\(|"
+    r"@import|"
+    r"url\(\s*[\"']?\s*(?:https?:|/)|"
+    r"<script[^>]*\bsrc\s*=|"
+    r"\b(?:src|href|srcset)\s*=\s*[\"']?\s*(?:https?:|/)|"
+    # Self-navigation sinks: location.assign/replace(...), window.open(...), and
+    # assigning a URL to (window.)location(.href). location.reload()/history.back
+    # do not navigate to a new URL, so they stay static.
+    r"\blocation\s*\.\s*(?:assign|replace)\s*\(|"
+    r"\bwindow\s*\.\s*open\s*\(|"
+    r"\b(?:window\s*\.\s*)?location(?:\s*\.\s*href)?\s*=\s*[\"'`]?\s*(?:https?:|/)|"
+    # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
+    r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
+    r"sendBeacon|serviceWorker)[\"']\s*\]|"
+    # Computed bracket key spliced at runtime on a global host object
+    # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
+    # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.
+    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
+    r"(?:[\"']\s*\+|\+\s*[\"'])[^\]]*\]|"
+    # Declarative meta-refresh navigation to a URL (order-tolerant); a bare
+    # content="30" self-reload has no url= and stays static.
+    r"<meta\b(?=[^>]*http-equiv\s*=\s*[\"']?\s*refresh)(?=[^>]*\burl\s*=)|"
+    r"\bwss?://",
+    re.IGNORECASE,
+)
+# Block comments can split an egress token (fetch/*x*/(...)); strip them before
+# matching. Line // comments are left alone -- stripping them would eat the // in
+# an https:// URL and hide a real load.
+_JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _render_html_reaches_network(arguments: dict) -> bool:
+    code = arguments.get("code")
+    if not isinstance(code, str):
+        return False
+    return bool(_RENDER_HTML_NETWORK_RE.search(_JS_BLOCK_COMMENT_RE.sub("", code)))
+
+
+# Tools that are read-only regardless of their arguments, so auto mode never has
+# to pause them and their safety needs no argument scan. render_html is handled
+# separately above because a networked canvas does need approval.
+_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+
+
+def is_always_safe_tool(name: str) -> bool:
+    """True for tools that never need an auto-mode prompt on any arguments, so a
+    caller (e.g. the streaming provisional card) can allow them before the full
+    arguments are known. render_html is intentionally excluded: a networked
+    canvas needs approval, which cannot be judged before its arguments stream."""
+    return name in _ALWAYS_SAFE_TOOLS
+
+
+def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
+    """Whether a tool call must still pause for approval in auto mode.
+
+    Used by permission_mode="auto" ("Approve for me"): read-only calls
+    auto-run, anything that can mutate state, execute arbitrary code, or is
+    simply unrecognized asks first. Unknown tools fail closed.
+    """
+    if name in _ALWAYS_SAFE_TOOLS:
+        return False
+    # render_html auto-runs a static canvas but asks once its HTML/JS reaches the
+    # network (fetch/WebSocket/remote script), which can egress under the canvas
+    # CSP when artifact network access is enabled.
+    if name == "render_html":
+        return _render_html_reaches_network(arguments)
+    if name.startswith(MCP_TOOL_PREFIX):
+        tool_name = name.split("__", 2)[-1]
+        # A mutating verb anywhere (get_or_create_issue, read_and_delete)
+        # overrides a read-only prefix.
+        if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name):
+            return True
+        # A credential noun (read_secret, list_tokens, get_credentials) makes a
+        # read-named tool a sensitive disclosure, so it asks too.
+        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        # A read-named fs tool pointed at a credential path is still a
+        # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
+        if _mcp_arguments_reference_sensitive(arguments):
+            return True
+        # A read-named tool carrying a mutating query (query_database
+        # {"query": "DELETE FROM runs"}) still mutates external state.
+        if _mcp_arguments_mutate(arguments):
+            return True
+        return not _AUTO_SAFE_MCP_TOOL_RE.match(tool_name)
+    if name == "terminal":
+        return _terminal_is_potentially_unsafe(str(arguments.get("command", "")))
+    if name == "python":
+        return _python_is_potentially_unsafe(str(arguments.get("code", "")))
+    return True
 
 
 def _build_safe_env(workdir: str) -> dict[str, str]:

@@ -33,6 +33,7 @@ export {
   normalizeSpeculativeType,
   readPersistedSpeculativeType,
 } from "./stores/chat-runtime-store";
+export { PermissionModeDropdown } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";

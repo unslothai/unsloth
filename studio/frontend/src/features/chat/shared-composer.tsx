@@ -48,7 +48,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -62,6 +61,7 @@ import {
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
@@ -72,6 +72,10 @@ import {
   resolveInitialConfig,
   type PerModelConfig,
 } from "@/features/model-picker";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -527,6 +531,7 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -545,10 +550,6 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
-  );
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
   );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
@@ -702,9 +703,12 @@ export function SharedComposer({
   const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
   const showRagPill = !isExternalModel;
   // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
-  // Code always show; the rest are conditional.
+  // Code always show; the permission pill shows in every mode except "off"
+  // (it renders null there); the rest are conditional.
+  const permissionPillVisible = permissionMode !== "off";
   const pillsCompact =
     3 +
+      (permissionPillVisible ? 1 : 0) +
       (showImagePill ? 1 : 0) +
       (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
@@ -948,6 +952,10 @@ export function SharedComposer({
         return parts[parts.length - 1] || id;
       }
 
+      // Set when an accepted transformers install unloaded the active model
+      // server-side; a later failure must then clear the stale checkpoint.
+      let upgradeUnloadedActive = false;
+
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -1006,6 +1014,31 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
         });
+        // Upgrade dialog first (mirrors the primary load path).
+        if (validation.requires_transformers_upgrade) {
+          const upgraded = await confirmTransformersUpgradeIfNeeded({
+            modelName: sel.id,
+            upgrade: validation.transformers_upgrade,
+            // No installable release: custom-code models may fall back to the trust_remote_code gate below.
+            trustRemoteCodeFallback: validation.requires_trust_remote_code,
+          });
+          // The install unloads the active model before the swap (even when the
+          // swap then fails); if a later gate cancels or the load fails, the UI
+          // must stop pointing at that unloaded model.
+          if (
+            useTransformersUpgradeDialogStore
+              .getState()
+              .consumeServerUnloadedChat()
+            && currentStore.params.checkpoint
+          ) {
+            upgradeUnloadedActive = true;
+          }
+          if (!upgraded) {
+            throw new Error(
+              `${modelDisplayName(sel.id)} needs a newer transformers release to load.`,
+            );
+          }
+        }
         if (
           validation.requires_trust_remote_code ||
           validation.requires_security_review
@@ -1046,6 +1079,7 @@ export function SharedComposer({
         if (ownConfig.speculativeType == null) {
           saveSpeculativeType(effectiveSpeculativeType);
         }
+        upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -1180,6 +1214,11 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
+        // The install already unloaded the previously active model; drop the
+        // checkpoint so the UI does not keep pointing at an unloaded model.
+        if (upgradeUnloadedActive) {
+          useChatRuntimeStore.getState().clearCheckpoint();
+        }
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
@@ -1700,29 +1739,10 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
-          {/* Bypass sits immediately after Compare and ahead of every other
-              tool pill (Search, Code, ...) so the active danger state reads
-              first; only Compare outranks it. */}
-          {bypassPermissions && (
-            <button
-              type="button"
-              onClick={() => setBypassPermissions(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              data-variant="danger"
-              aria-label="Disable Bypass permissions"
-              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={ShieldBanIcon}
-                  strokeWidth={2}
-                  className="size-[15px]"
-                />
-              </PillGlyph>
-              <span>Bypass permissions</span>
-            </button>
-          )}
+          {/* Permission-level pill sits immediately after Compare and ahead
+              of every other tool pill (Search, Code, ...) so the Full access
+              danger state reads first; only Compare outranks it. */}
+          <PermissionModeComposerPill side="top" />
           <button
             type="button"
             disabled={searchDisabled}

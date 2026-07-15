@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat";
+import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import { openModelsDir } from "@/features/native-intents";
 import { emitTrainingRunsChanged } from "@/features/training";
 import {
@@ -80,6 +80,10 @@ const PREFS_KEYS: string[] = [
   "unsloth_settings_active_tab",
   // Chat runtime prefs
   "unsloth_chat_auto_title",
+  "unsloth_chat_permission_mode",
+  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or
+  // a reset would restore the old level instead of the fresh default.
+  "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
   "unsloth_nudge_tool_calls",
@@ -581,6 +585,15 @@ export function GeneralTab() {
           description={t("settings.appearance.language.description")}
         >
           <LanguageSelect />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.permissions.bypassLabel")}
+          description={t("settings.general.permissions.bypassDescription")}
+        >
+          <PermissionModeDropdown />
         </SettingsRow>
       </SettingsSection>
 
