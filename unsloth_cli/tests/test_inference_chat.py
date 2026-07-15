@@ -917,9 +917,8 @@ def test_inference_local_handles_stream(monkeypatch, chunk_kind, expected_exit):
     assert result.exit_code == expected_exit, result.output
     assert closed == [True]
     if chunk_kind == "real_error":
-        assert isinstance(result.exception, RuntimeError)
-        assert str(result.exception) == "generation failed"
-        assert "Error: generation failed" not in result.output
+        assert result.stdout == "Assistant:\n"
+        assert result.stderr == "Error: generation failed\n"
     else:
         assert chunks[0] in result.output
 
