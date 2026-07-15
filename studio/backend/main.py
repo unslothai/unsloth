@@ -570,7 +570,13 @@ async def lifespan(app: FastAPI):
         print("    open that file to read the password, then sign in and change it.")
         print("=" * 60 + "\n")
     else:
-        app.state.bootstrap_password = storage.get_bootstrap_password()
+        bootstrap_pw = storage.get_bootstrap_password()
+        app.state.bootstrap_password = bootstrap_pw
+        # A restart before first login skips the creation banner above; still
+        # point the operator to the seed file while the bootstrap pw is unrotated.
+        if bootstrap_pw:
+            bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
+            print(f"\nAdmin password change still required. Read it from: {bootstrap_path}\n")
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
