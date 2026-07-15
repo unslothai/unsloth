@@ -309,6 +309,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         captured = None,
         training_active,
         decision,
+        gpu_memory_mode = "auto",
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -321,6 +322,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 load_in_4bit = True,
                 max_seq_length = 0,
                 requested_gpu_ids = None,
+                gpu_memory_mode = gpu_memory_mode,
             )
 
     def test_noop_when_training_inactive(self):
@@ -331,6 +333,18 @@ class TestChatLoadGuardRoute(unittest.TestCase):
 
     def test_allows_when_fits(self):
         self._guard(training_active = True, decision = (True, {"mode": "auto"}))
+
+    def test_manual_gguf_bypasses_training_estimate(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        self._guard(
+            config = config,
+            captured = captured,
+            training_active = True,
+            decision = (False, {"reason": "must not run"}),
+            gpu_memory_mode = "manual",
+        )
+        self.assertEqual(captured, [])
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}
@@ -466,6 +480,41 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         )
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
+
+    def test_validate_forwards_manual_gpu_memory_mode_to_guard(self):
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "unsloth/model-GGUF",
+            gguf_variant = "Q4_K_M",
+            gpu_memory_mode = "manual",
+        )
+        cfg = SimpleNamespace(
+            identifier = "unsloth/model-GGUF",
+            display_name = "model-GGUF",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = False,
+            path = None,
+            base_model = None,
+        )
+        captured = {}
+        with (
+            patch.object(
+                self.route,
+                "_resolve_model_identifier_for_request",
+                return_value = ("unsloth/model-GGUF", "unsloth/model-GGUF", False),
+            ),
+            patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+            patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                lambda config, **kw: captured.update(kw),
+            ),
+        ):
+            asyncio.run(self.route.validate_model(request, current_subject = "u"))
+        self.assertEqual(captured.get("gpu_memory_mode"), "manual")
 
     def test_validate_forwards_inherited_extras_and_parallel_to_guard(self):
         # Regression: /load resolves inherited same-model extras and passes the

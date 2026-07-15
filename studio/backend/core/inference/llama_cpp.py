@@ -7225,30 +7225,11 @@ class LlamaCppBackend:
                 # LLAMA_ARG_DEVICE) keeps control of its own devices -- the child
                 # aborts on a pin it can't see. The draft-device forms count too:
                 # llama-server parses them even with no drafter loaded.
-                _device_pin_flags = (
-                    "--device",
-                    "-dev",
-                    "--spec-draft-device",
-                    "-devd",
-                    "--device-draft",
-                )
                 _cpu_only_zero_offload = (
                     gpu_memory_mode == "manual"
                     and gpu_layers == 0
                     and not is_vulkan_backend
-                    and not any(
-                        str(a) in _device_pin_flags
-                        or str(a).startswith(tuple(f + "=" for f in _device_pin_flags))
-                        for a in cmd
-                    )
-                    and not (env.get("LLAMA_ARG_DEVICE") or "").strip()
-                    # A --split-mode tensor surviving in the argv keeps the GPUs
-                    # visible (tensor aborts under zero devices); the normal manual
-                    # path strips it, so this fires only when a GPU-probe failure
-                    # skipped that strip. Row/layer modes are inert with nothing
-                    # offloaded, so they don't defeat the zero-VRAM mask.
-                    and not resolve_tensor_parallel(cmd, False)
-                    and not self._cmd_has_gpu_companion(cmd, env)
+                    and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
                 if _cpu_only_zero_offload:
                     self._emit_child_gpu_visibility(env, "-1")
@@ -8213,23 +8194,63 @@ class LlamaCppBackend:
         return not _extra_args_draft_offloaded_to_cpu(cmd, env)
 
     @staticmethod
+    def _zero_offload_keeps_gpu_visible(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
+        """Whether a zero-layer launch still has a reason to use visible GPUs.
+
+        Keep this shared by child masking and post-launch residency bookkeeping:
+        a device pin, surviving tensor mode, mmproj, or GPU drafter prevents the
+        launch from being a confirmed zero-VRAM server.
+        """
+        return (
+            LlamaCppBackend._cmd_has_gpu_device_pin(cmd, env)
+            or _effective_tensor_parallel(cmd, False, env)
+            or LlamaCppBackend._cmd_has_gpu_companion(cmd, env)
+        )
+
+    @staticmethod
+    def _cmd_has_gpu_device_pin(cmd: list, env: Optional[Mapping[str, str]] = None) -> bool:
+        """True when the effective main or draft ``--device`` pin names a GPU."""
+        main_flags = {"--device", "-dev"}
+        draft_flags = {"--spec-draft-device", "-devd", "--device-draft"}
+        last_main: Optional[str] = None
+        last_draft: Optional[str] = None
+        args = [str(arg) for arg in cmd]
+        for index, raw in enumerate(args):
+            flag, equals, inline = raw.partition("=")
+            if flag not in main_flags and flag not in draft_flags:
+                continue
+            value = inline if equals else (args[index + 1] if index + 1 < len(args) else "")
+            if flag in main_flags:
+                last_main = value
+            else:
+                last_draft = value
+        if last_main is None:
+            last_main = (env or {}).get("LLAMA_ARG_DEVICE")
+
+        def _names_gpu(value: Optional[str]) -> bool:
+            if value is None:
+                return False
+            devices = [item.strip().lower() for item in value.split(",") if item.strip()]
+            return not devices or any(item not in ("cpu", "none") for item in devices)
+
+        return _names_gpu(last_main) or _names_gpu(last_draft)
+
+    @staticmethod
     def _zero_offload_gpu_flag(
         spawn_cmd: list,
         detected_gpus: list,
         env: Optional[Mapping[str, str]] = None,
     ) -> Optional[bool]:
         """GPU-residency flag for a deliberate manual zero-offload load. The
-        main model is CPU-only by construction, but launched companions (mmproj
-        / a drafter) offload to the GPU regardless of ``--gpu-layers`` and the
-        counted-offload classifier can't see them. True when a companion is in
-        the argv or env (server holds VRAM, training must unload it), False when
-        none is, None without a detected GPU (no-signal convention). The drafter
-        check reuses the extras parser, so pass-through aliases (-md,
-        --spec-draft-model, HF forms) and the LLAMA_ARG_SPEC_DRAFT_* env count
-        too, not just the Studio-emitted --model-draft."""
+        main model is CPU-only by construction, but device pins, tensor mode,
+        mmproj, and GPU drafters can still make the server hold VRAM. The counted
+        offload classifier cannot see those allocations. This uses the same
+        predicate as the launch-time zero-VRAM mask; None means no GPU signal."""
         if not detected_gpus:
             return None
-        return LlamaCppBackend._cmd_has_gpu_companion(spawn_cmd, env)
+        if LlamaCppBackend._is_vulkan_backend():
+            return True
+        return LlamaCppBackend._zero_offload_keeps_gpu_visible(spawn_cmd, env)
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not

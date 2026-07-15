@@ -113,11 +113,14 @@ export async function validateModel(
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
       // Intended load settings so validate's preflight matches the follow-up
-      // /load; the training-coexistence guard (unchanged from main) sizes with
-      // max_seq_length / load_in_4bit, and gpu_ids scopes it to the picked GPUs.
+      // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
       gpu_ids: payload.gpu_ids,
+      // Manual placement is an explicit override: Auto layers use llama.cpp
+      // --fit, while a pinned layer count is owned by the user. Tell validate
+      // so it applies the same training-guard policy as /load.
+      gpu_memory_mode: payload.gpu_memory_mode,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

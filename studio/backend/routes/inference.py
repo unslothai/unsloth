@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, Callable, List, Literal, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -3778,13 +3778,22 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    gpu_memory_mode: Literal["auto", "manual"] = "auto",
 ) -> None:
-    """Refuse loading a local chat model that would OOM an active training run.
+    """Protect active training from automatically placed chat-model loads.
+
     No-op when training is inactive or unknown. `load_in_4bit` must be the
-    effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
-    model would not fit alongside training."""
+    effective quantization (see _effective_load_in_4bit). Manual GGUF placement
+    is an explicit override: Auto layers delegate fitting to llama.cpp's
+    ``--fit`` and pinned layers are owned by the user, so neither is estimated
+    here. Other loads raise HTTP 409 when they would not fit beside training.
+    """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
+
+    is_gguf = bool(getattr(config, "is_gguf", False))
+    if is_gguf and gpu_memory_mode == "manual":
+        return
 
     try:
         if not get_training_backend().is_training_active():
@@ -3793,7 +3802,6 @@ def _guard_chat_load_against_training(
         logger.warning("Could not check training state for chat-load guard: %s", e)
         return
 
-    is_gguf = bool(getattr(config, "is_gguf", False))
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
@@ -4255,8 +4263,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             effective_chat_template_override,
         )
 
-        # Refuse a load that would OOM active training, before the unload step below
-        # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
+        # Apply the training coexistence policy before the unload step below
+        # frees the resident model. Off-loop: the default-mode guard does sync work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,
             config,
@@ -4267,6 +4275,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            gpu_memory_mode = request.gpu_memory_mode,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4741,8 +4750,8 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # Refuse early (before the frontend unloads to load this) if it can't fit
-        # alongside training, using the same settings /load uses so they agree.
+        # Apply the same training coexistence policy as /load before the frontend
+        # unloads the current model.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
         # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
         # a clean 400) before the guard sizes the model against training VRAM.
@@ -4805,6 +4814,7 @@ async def validate_model(
                     if fastapi_request is not None
                     else 1
                 ),
+                gpu_memory_mode = request.gpu_memory_mode,
             )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):

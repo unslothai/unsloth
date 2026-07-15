@@ -176,6 +176,14 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    gpu_memory_mode: Literal["auto", "manual"] = Field(
+        "auto",
+        description = (
+            "GGUF GPU-memory strategy intended for the follow-up load. Manual "
+            "placement bypasses the training coexistence estimate: Auto layers "
+            "delegate fitting to llama.cpp, while explicit layers are user-owned."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

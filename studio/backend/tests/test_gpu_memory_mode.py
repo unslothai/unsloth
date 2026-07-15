@@ -491,10 +491,9 @@ def test_zero_offload_mask_honors_device_pin_spellings():
     # pin it can't see ('error: invalid device'). The pin can arrive as
     # --device or its -dev alias, as the draft forms (parsed even with no
     # drafter loaded), or as an inherited LLAMA_ARG_DEVICE env var.
-    src = _load_model_source()
-    gate = src.find("_device_pin_flags = (")
-    assert gate != -1, "load_model must gate the zero-offload visibility mask"
-    block = src[gate : gate + 1200]
+    load_src = _load_model_source()
+    assert "self._zero_offload_keeps_gpu_visible(cmd, env)" in load_src
+    block = inspect.getsource(LlamaCppBackend._cmd_has_gpu_device_pin)
     for flag in (
         '"--device"',
         '"-dev"',
@@ -503,7 +502,7 @@ def test_zero_offload_mask_honors_device_pin_spellings():
         '"--device-draft"',
     ):
         assert flag in block
-    assert 'env.get("LLAMA_ARG_DEVICE")' in block
+    assert '"LLAMA_ARG_DEVICE"' in block
 
 
 def test_resolve_cpu_moe_flag():
@@ -719,6 +718,53 @@ def test_zero_offload_flag_true_with_env_drafter():
     cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
     env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "x.gguf"}
     assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], env) is True
+
+
+@pytest.mark.parametrize(
+    "device_args",
+    [
+        ["--device", "CUDA0"],
+        ["--device=CUDA0"],
+        ["-dev", "CUDA0"],
+        ["--spec-draft-device", "CUDA0"],
+        ["--device-draft=CUDA0"],
+    ],
+)
+def test_zero_offload_flag_true_with_device_pin(device_args):
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", *device_args]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
+
+
+def test_zero_offload_flag_true_with_env_device_pin():
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
+    env = {"LLAMA_ARG_DEVICE": "CUDA0"}
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], env) is True
+
+
+@pytest.mark.parametrize(
+    ("device_args", "env"),
+    [
+        (["--device", "cpu"], {}),
+        (["--device=none"], {}),
+        (["--spec-draft-device", "cpu"], {}),
+        ([], {"LLAMA_ARG_DEVICE": "none"}),
+        (["--device", "CUDA0", "--device", "cpu"], {}),
+    ],
+)
+def test_zero_offload_flag_false_with_cpu_device_pin(device_args, env):
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", *device_args]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], env) is False
+
+
+def test_zero_offload_flag_true_with_surviving_tensor_mode():
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0", "--split-mode", "tensor"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
+
+
+def test_zero_offload_flag_true_for_unmasked_vulkan(monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    cmd = ["llama-server", "-m", "model.gguf", "--gpu-layers", "0"]
+    assert LlamaCppBackend._zero_offload_gpu_flag(cmd, [(0, 8000, 24000)], {}) is True
 
 
 def test_zero_offload_flag_none_without_gpus():
