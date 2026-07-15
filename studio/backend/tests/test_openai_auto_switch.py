@@ -1475,6 +1475,27 @@ def test_untrack_preview_request_balances_both_counters():
     assert kw._inflight == 0 and kw._preview_inflight == 0
 
 
+def test_preview_pending_counter_balances_and_flags_studio_waiters():
+    # A queued preview is not foreign traffic to a preview swap, but a queued Studio
+    # (non-preview) request is; the subset must track _pending at the same sites.
+    from core.inference import llama_keepwarm as kw
+
+    kw._pending = 0
+    kw._preview_pending = 0
+    kw._note_pending(is_preview = True)
+    assert kw._pending == 1 and kw._preview_pending == 1
+    assert kw.other_non_preview_pending_count() == 0  # queued preview is not foreign
+    kw._note_pending(is_preview = False)
+    assert kw._pending == 2 and kw._preview_pending == 1
+    assert kw.other_non_preview_pending_count() == 1  # queued Studio request is foreign
+    kw._note_start(is_preview = True)  # preview moves pending -> inflight
+    assert kw._pending == 1 and kw._preview_pending == 0
+    kw._note_unpending(is_preview = False)  # Studio request leaves the queue
+    assert kw._pending == 0 and kw._preview_pending == 0
+    kw._inflight = 0
+    kw._preview_inflight = 0
+
+
 def test_already_serving_clears_preview_marker(monkeypatch):
     # A non-preview auto-switch that adopts a preview-owned model (already serving,
     # no reload) must claim it for Studio, else a later preview could swap it out

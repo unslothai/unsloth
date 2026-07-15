@@ -28,6 +28,9 @@ _preview_inflight = 0
 # Requests blocked on the unload gate but not yet counted in _inflight: the idle
 # loop must not unload while one is waiting (it would unload out from under it).
 _pending = 0
+# Subset of _pending that is /p/ preview traffic (same update sites as _pending), so
+# the preview busy guard can tell a queued Studio request from a queued preview.
+_preview_pending = 0
 _last_active = time.monotonic()
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
@@ -79,27 +82,32 @@ def _is_inference_path(path: str) -> bool:
     return _is_preview_path(path)
 
 
-def _note_pending() -> None:
-    global _pending
+def _note_pending(is_preview: bool = False) -> None:
+    global _pending, _preview_pending
     with _lock:
         _pending += 1
+        if is_preview:
+            _preview_pending += 1
 
 
-def _note_unpending() -> None:
-    global _pending
+def _note_unpending(is_preview: bool = False) -> None:
+    global _pending, _preview_pending
     with _lock:
         _pending = max(0, _pending - 1)
+        if is_preview:
+            _preview_pending = max(0, _preview_pending - 1)
 
 
 def _note_start(is_preview: bool = False) -> None:
     # Do not stamp _last_active here: while _inflight > 0 the model is already
     # protected (see _is_idle), and stamping on start lets an external-provider
     # request that is later untracked still reset the local idle timer.
-    global _inflight, _pending, _preview_inflight
+    global _inflight, _pending, _preview_inflight, _preview_pending
     with _lock:
         _pending = max(0, _pending - 1)
         _inflight += 1
         if is_preview:
+            _preview_pending = max(0, _preview_pending - 1)
             _preview_inflight += 1
 
 
@@ -159,6 +167,15 @@ def other_preview_inflight_count(current_request_counted: bool = True) -> int:
         if current_request_counted and active > 0:
             active -= 1
         return max(0, active)
+
+
+def other_non_preview_pending_count() -> int:
+    """Non-preview requests queued on the lifecycle gate (in _pending, not yet in
+    flight). The preview swap guard must count these: a queued Studio request would
+    otherwise start against the model a preview swapped in while it waited. The
+    current request is a preview already in flight, so it is not in _pending."""
+    with _lock:
+        return max(0, _pending - _preview_pending)
 
 
 # Set on the ASGI scope by a route that proved this request won't touch
@@ -234,7 +251,7 @@ class LlamaKeepWarmMiddleware:
         # Mark pending before the gate so the idle loop (which holds the gate while
         # unloading) can't free the model while this request is waiting to start.
         is_preview = _is_preview_path(scope.get("path") or "")
-        _note_pending()
+        _note_pending(is_preview)
         started = False
         try:
             async with _unload_gate():
@@ -242,7 +259,7 @@ class LlamaKeepWarmMiddleware:
                 started = True
         finally:
             if not started:
-                _note_unpending()
+                _note_unpending(is_preview)
         ended = {"done": False}
         status = {"code": None}
 

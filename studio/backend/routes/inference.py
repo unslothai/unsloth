@@ -3445,6 +3445,9 @@ async def _maybe_auto_switch_model(
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
     if not isinstance(requested_model, str) or not requested_model:
+        # Omitted/default model on a non-preview call runs against the resident
+        # model, so claim it for Studio (a preview keeps its own ownership).
+        _claim_slot_for_non_preview(fastapi_request)
         return
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
@@ -3457,6 +3460,8 @@ async def _maybe_auto_switch_model(
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+        # Auto-switch off: this non-preview turn uses the resident model, claim it.
+        _claim_slot_for_non_preview(fastapi_request)
         return
 
     # Register by the raw requested model before resolving (which can be slow):
@@ -3487,6 +3492,9 @@ async def _maybe_auto_switch_model(
                 or get_llama_cpp_backend().is_loaded
                 or getattr(get_inference_backend(), "active_model_name", None)
             ):
+                # Unknown name with a model already resident: the non-preview call
+                # falls through to use it, so claim it for Studio.
+                _claim_slot_for_non_preview(fastapi_request)
                 return
             if len(last) == 3:
                 target_id, variant, override_id = last
@@ -3702,6 +3710,7 @@ async def load_model_for_preview(
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
         other_inference_request_count,
+        other_non_preview_pending_count,
         other_preview_inflight_count,
         untrack_current_request,
     )
@@ -3737,12 +3746,15 @@ async def load_model_for_preview(
                     )
                 # A same-checkpoint request would still restart a Studio-owned GGUF
                 # whose live settings differ from these bare defaults (#5401), so
-                # busy Studio traffic blocks before any borrow/reload decision.
+                # busy Studio traffic blocks before any borrow/reload decision. Count
+                # queued (pending) non-preview requests too: one waiting on the gate
+                # would otherwise start against the model this swap just loaded.
                 if (
                     other_inference_request_count(
                         current_request_counted = True, include_pending = False
                     )
                     > other_preview_inflight_count()
+                    or other_non_preview_pending_count() > 0
                 ):
                     untrack_current_request(scope)
                     raise HTTPException(
@@ -6957,12 +6969,6 @@ async def openai_chat_completions(
         _needs_vision = (
             bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
         )
-
-    # Past the external-provider return above, this is local generation: a
-    # non-preview turn adopts the resident model for Studio so a later preview can't
-    # swap it out (covers auto-switch-off / model-omitted, which _maybe_auto_switch
-    # returns early on without claiming).
-    _claim_slot_for_non_preview(request)
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),

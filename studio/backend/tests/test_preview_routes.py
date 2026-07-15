@@ -853,9 +853,45 @@ def test_generation_paths_claim_via_gated_helper():
     for fn in (
         inference.generate_stream,
         inference.generate_audio,
-        inference.openai_chat_completions,
+        inference._maybe_auto_switch_model,
     ):
         assert "_claim_slot_for_non_preview(" in inspect.getsource(fn)
+
+
+def test_preview_swap_refused_when_studio_request_queued(fake_slot):
+    # A Studio request queued on the lifecycle gate (in _pending) must block a
+    # preview swap: otherwise the queued request would start against the model the
+    # preview swapped in, not the one resident when Studio queued.
+    from core.inference import llama_keepwarm as kw
+
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt-a"),
+            SimpleNamespace(app = None, scope = {"path": "/p/a/v1/chat/completions"}),
+            "admin",
+        )
+    )
+    assert inference._is_preview_resident("/outputs/run/ckpt-a")
+    kw._pending = 1  # a queued Studio (non-preview) request
+    kw._preview_pending = 0
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-b"),
+                SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert fake_slot["loads"] == ["/outputs/run/ckpt-a"]  # B never loaded
+    assert inference._is_preview_resident("/outputs/run/ckpt-a")  # not swapped out
+    kw._pending = 0
+    kw._preview_pending = 0
+    kw._inflight = 0
+    kw._preview_inflight = 0
 
 
 def test_claim_slot_for_non_preview_gates_on_preview_path(slot_state):
