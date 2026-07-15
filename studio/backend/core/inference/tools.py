@@ -1420,6 +1420,7 @@ def _looks_binary(text: str) -> bool:
         _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
     )
 
+
 def _has_single_byte_text_evidence(data: bytes) -> bool:
     """True when *data* has enough ASCII structure for a cp1252 text retry."""
     if not data:
