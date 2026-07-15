@@ -718,6 +718,12 @@ jobs:
                           "seed":          attempt_seed,
                           "max_tokens":    600,
                       }, timeout = 180, retries = 0)
+                  except urllib.error.HTTPError:
+                      # HTTPError subclasses URLError, so re-raise a real 4xx/5xx
+                      # here instead of letting the transport-stall handler below
+                      # swallow it and rotate seeds -- an endpoint status failure
+                      # must surface, not be masked as missing tool evidence.
+                      raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # A transport stall that outlived post_sse's own retry:
                       # log it as a failed attempt and rotate to the next seed

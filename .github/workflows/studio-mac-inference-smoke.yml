@@ -605,6 +605,10 @@ jobs:
           # macos-14 free runner is ~10 tok/s on Qwen3.5-2B Q4_K_XL;
           # cap max_tokens tightly so each SSE round stays under ~30s
           # even when the model stalls in a degenerate output state.
+          # retries=0 on the best-effort probes: this job's 25-minute cap
+          # allows a 10-minute model load, so a no-data stall must be a
+          # single 180s attempt (not 180+15+180s) to leave room for the
+          # thinking checks. A soft/best-effort probe only WARNs anyway.
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
@@ -613,7 +617,7 @@ jobs:
               "temperature":   TEMP,
               "seed":          SEED,
               "max_tokens":    128,
-          }, timeout = 180, soft = True)
+          }, timeout = 180, retries = 0, soft = True)
           if content is None:
               print("[tools] WARN python tool: SSE transport stalled after retries -- non-blocking")
           elif "56088" in content or "56,088" in content:
@@ -648,7 +652,7 @@ jobs:
                   "temperature":   TEMP,
                   "seed":          SEED,
                   "max_tokens":    96,
-              }, timeout = 180)
+              }, timeout = 180, retries = 0)
               print(f"[tools] PASS web_search stream ({len(content)} chars)")
           except Exception as exc:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")
