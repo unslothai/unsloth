@@ -200,6 +200,8 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
         prefix = ["chat", "-Q"]
         if "--yolo" not in rewritten:
             prefix.append("--yolo")
+        if "--accept-hooks" not in rewritten:
+            prefix.append("--accept-hooks")
         rewritten = prefix + rewritten
         return rewritten
     return args
