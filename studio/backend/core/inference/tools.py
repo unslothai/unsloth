@@ -3600,8 +3600,8 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
-# Undecodable bytes and controls, excluding text whitespace and ESC for ANSI logs.
-# More than 12.5% is binary after allowing 16 minor encoding glitches.
+# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
+# Binary when they exceed 12.5%, after allowing 16 minor encoding glitches.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
@@ -3757,8 +3757,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
-# Known binary application subtypes are rejected by MIME type. Unknown
-# application types are sniffed so textual artifacts such as SQL remain usable.
+# Binary application subtypes rejected by MIME; other application types are
+# sniffed so textual artifacts such as SQL stay usable.
 _BINARY_APPLICATION_SUBTYPES = frozenset(
     {
         "epub+zip",
@@ -4078,9 +4078,8 @@ def _fetch_url_raw(
         else:
             content_type = (resp.headers.get_content_type() or "").lower()
 
-        # Reject MIME types known to be binary before decoding. Binary bodies are
-        # returned as the error string so the caller surfaces the placeholder
-        # instead of feeding replacement characters into the model context.
+        # Reject known-binary MIME types before decoding. Binary is returned as the
+        # error string so the caller surfaces the placeholder, not replacement chars.
         if not _is_text_candidate_content_type(content_type):
             # Only echo a clean MIME token back to the model.
             m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
@@ -4091,7 +4090,7 @@ def _fetch_url_raw(
                 content_type,
             )
 
-        # Catch text-labeled binary whose header and first chunk look textual.
+        # Catch text-labeled binary via its magic signature.
         if _has_binary_magic(raw_bytes):
             return (
                 f"(binary content, {len(raw_bytes)} bytes; not readable as text)",

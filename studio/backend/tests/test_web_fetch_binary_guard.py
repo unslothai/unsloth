@@ -28,8 +28,7 @@ class _FakeResp:
             self.headers["Content-Type"] = content_type
 
     def read(self, n: int | None = None) -> bytes:
-        # Advance a cursor like a real stream so the chunked reader in
-        # _read_capped_body reaches EOF instead of re-reading the head.
+        # Advance a cursor like a real stream so the chunked reader reaches EOF.
         chunk = self._body[self._pos :] if n is None else self._body[self._pos : self._pos + n]
         self._pos += len(chunk)
         return chunk
