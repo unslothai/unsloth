@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { toolOutputKey, useToolPaneScope } from "@/features/chat";
 import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -235,13 +236,29 @@ const ToolGroupImpl: FC<
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // Keep the group open once a confirmation forced it open, so answering an
-  // allow/deny doesn't snap it shut between sequential tool calls. It reverts
-  // to the default collapsed state once the turn finishes.
+  // Force the group open when any call is receiving tool_output events.
+  const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
+  const paneScope = useToolPaneScope();
+  const hasLiveOutput = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .some(
+        (part) =>
+          part.type === "tool-call" &&
+          Object.prototype.hasOwnProperty.call(
+            toolLiveOutput,
+            toolOutputKey(paneScope, part.toolCallId),
+          ),
+      ),
+  );
+  // Keep the group open once a confirmation or live output forced it (so an
+  // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
   const forcedOpenRef = useRef(false);
-  if (hasPendingConfirmation) forcedOpenRef.current = true;
+  if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
   const forceOpen =
-    hasPendingConfirmation || (forcedOpenRef.current && messageRunning);
+    hasPendingConfirmation ||
+    (hasLiveOutput && messageRunning) ||
+    (forcedOpenRef.current && messageRunning);
 
   // Render single tool calls and canvases directly so cards never hide in a
   // collapsed group.

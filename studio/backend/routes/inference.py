@@ -1083,6 +1083,10 @@ _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+# Idle window before a local tool-loop stream emits an SSE keepalive comment
+# (e.g. prompt prefill between tool iterations). A second layer atop the
+# tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
+_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -2296,6 +2300,36 @@ async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
         await watcher
     except (asyncio.CancelledError, Exception):
         pass
+
+
+async def _drain_pending_next_task(task, cancel_event) -> None:
+    """Wait for a pending ``asyncio.to_thread(next, gen, ...)`` task to finish
+    before its generator is closed.
+
+    On disconnect a ``next(gen)`` call may still run in a worker thread;
+    cancelling the awaiting task does NOT stop it, and ``gen.close()`` mid-
+    ``next(gen)`` raises ``ValueError: generator already executing``, leaking the
+    generator's cleanup. So re-set the cancel flag (the generator polls it) and
+    shield the task until the worker returns. No-op when there is no pending task.
+    """
+    if task is None:
+        return
+    if cancel_event is not None:
+        cancel_event.set()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            continue
+        except Exception:
+            break
+    if task.done():
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
@@ -7462,12 +7496,34 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _tool_sentinel)
                         )
                         try:
-                            event = await asyncio.shield(next_task)
+                            # Stall-timeout wait: keepalive while the generator stays
+                            # silent (e.g. prefill between tool iterations). asyncio.wait
+                            # never cancels next_task, matching the finally-drain shield.
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            event = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
                             break
+
+                        if event["type"] == "heartbeat":
+                            # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
+                        if event["type"] in ("tool_output", "tool_args"):
+                            # Live stdout/stderr or tool-call arguments, forwarded
+                            # verbatim for the UI. Final result still arrives in tool_end.
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
 
                         if event["type"] == "status":
                             # Empty status marks an iteration boundary in the
@@ -8018,7 +8074,18 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _gguf_sentinel)
                         )
                         try:
-                            cumulative = await asyncio.shield(next_task)
+                            # Stall-timeout wait: keepalive while the generator stays
+                            # silent (e.g. no-tool prefill). asyncio.wait never cancels
+                            # next_task, matching the finally-drain shield (see GGUF stream).
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            cumulative = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
@@ -8709,6 +8776,7 @@ async def openai_chat_completions(
 
         async def sf_tool_stream():
             gen = None
+            _sf_next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -8740,9 +8808,34 @@ async def openai_chat_completions(
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
-                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    # Stall keepalive (see GGUF tool stream): silent backend segments
+                    # must not leave the SSE stream idle past proxy timeouts.
+                    _sf_next_task = asyncio.create_task(
+                        asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    )
+                    while True:
+                        _sf_done, _ = await asyncio.wait(
+                            {_sf_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _sf_done:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    event = _sf_next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _sf_next_task = None
                     if event is _sf_tool_sentinel:
                         break
+
+                    if event["type"] == "heartbeat":
+                        # Tool-execution wrapper heartbeat -> SSE keepalive.
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+
+                    if event["type"] in ("tool_output", "tool_args"):
+                        # Live stdout/stderr, or tool-call arguments as the model writes them.
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
 
                     if event["type"] == "status":
                         if not event["text"]:
@@ -8835,9 +8928,15 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing: closing
+                # mid-next(gen) raises ValueError('generator already executing') and
+                # skips the generator's cleanup finally. Matches the GGUF tool stream.
+                await _drain_pending_next_task(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
-                        gen.close()
+                        # Offload the close so the generator's cleanup runs off the event
+                        # loop (matches the GGUF SSE path); a disconnect can't stall the loop.
+                        await asyncio.to_thread(gen.close)
                     except (RuntimeError, ValueError):
                         pass
                 _sf_tracker.__exit__(None, None, None)
@@ -9027,6 +9126,8 @@ async def openai_chat_completions(
         _tracker.__enter__()
 
         async def stream_chunks():
+            gen = None
+            _next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -9041,23 +9142,30 @@ async def openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
-                # Run the sync generator in a thread pool to avoid blocking the
-                # event loop. Critical for compare mode: two SSE requests arrive
-                # concurrently but the orchestrator serializes them via
-                # _gen_lock; without run_in_executor the second request's
-                # blocking lock acquisition would freeze the entire event loop,
-                # stalling both streams.
+                # Run the sync generator in a worker thread so it can't block the event
+                # loop. Critical for compare mode: a second request's blocking _gen_lock
+                # acquisition would otherwise freeze the loop and stall both streams.
                 _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
                         break
-                    # next(gen, _DONE) returns _DONE instead of raising
-                    # StopIteration -- StopIteration can't propagate through
-                    # asyncio futures (Python limitation).
-                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+                    # Stall keepalive (see safetensors tool stream) each window while
+                    # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
+                    # than raising StopIteration (which can't cross asyncio futures).
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
                     if cumulative is _DONE:
                         break
                     if await request.is_disconnected():
@@ -9180,6 +9288,17 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing: closing
+                # mid-next(gen) raises ValueError('generator already executing') and
+                # skips the generator's cleanup finally. Matches the safetensors stream.
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        # Offload the close so the generator's cleanup runs off the event
+                        # loop (matches the GGUF SSE path); a disconnect can't stall the loop.
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
                 _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(
@@ -12389,8 +12508,12 @@ async def _anthropic_tool_stream(
         ends_on_tool_use = False
         tool_blocks_emitted = 0
         drop_until_tool_end = False
+        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy
+        # past the stall window still gets a keepalive though its events are dropped.
+        _last_drop_keepalive = time.monotonic()
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # events, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -12401,13 +12524,42 @@ async def _anthropic_tool_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                event = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see GGUF tool stream): silent backend segments
+                # must not leave the SSE stream idle past proxy timeouts.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                event = _next_task.result()
+                # Done; drop the reference so the finally-block drain no-ops.
+                _next_task = None
                 if event is _sentinel:
                     break
                 etype = event.get("type")
+                if etype == "heartbeat":
+                    # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
+                    # skip: a dropped tool still runs server-side and its events keep the
+                    # stall keepalive from firing, so dropping heartbeats would go silent.
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if etype in ("tool_output", "tool_args"):
+                    # Live stdout / arg streaming have no Anthropic Messages equivalent
+                    # (the full call/result follow in tool_use / tool_result), so drop them.
+                    # They keep the stall keepalive from firing, so a chatty tool would go
+                    # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
+                    _now = time.monotonic()
+                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                        _last_drop_keepalive = _now
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if drop_until_tool_end:
-                    # disable_parallel_tool_use: a later tool call is being
-                    # dropped — skip every event until (and including) its tool_end.
+                    # disable_parallel_tool_use: skip every event until (and
+                    # including) this dropped tool call's tool_end.
                     if etype == "tool_end":
                         drop_until_tool_end = False
                     continue
@@ -12448,12 +12600,24 @@ async def _anthropic_tool_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server crash,
+            # decode OOM, dropped socket) still emits an SSE error and returns, instead
+            # of a normal message_stop that masks a truncated turn as a clean finish.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker before closing, so a mid-prefill
+            # disconnect releases the thread/generator/tool resources. Closing first
+            # would race into ValueError('generator already executing').
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use
@@ -12490,6 +12654,7 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -12500,7 +12665,20 @@ async def _anthropic_plain_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see Anthropic tool stream) each window while
+                # next(gen) runs in a worker.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                cumulative = _next_task.result()
+                # Done; drop the reference so the finally-block drain no-ops.
+                _next_task = None
                 if cumulative is _sentinel:
                     break
                 if isinstance(cumulative, dict):
@@ -12516,12 +12694,24 @@ async def _anthropic_plain_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server crash,
+            # decode OOM, dropped socket) still emits an SSE error and returns, instead
+            # of a normal message_stop that masks a truncated turn as a clean finish.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker before closing, so a mid-prefill
+            # disconnect releases the thread/generator/model resources. Closing first
+            # would race into ValueError('generator already executing').
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
