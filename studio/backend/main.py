@@ -1301,8 +1301,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         # The seeded bootstrap password is never embedded in the served page: a
         # loopback reverse proxy is indistinguishable from a genuine local client,
-        # so it cannot be scoped safely. It is printed at startup and saved to
-        # .bootstrap_password; the operator copies it from there on first login.
+        # so it cannot be scoped safely. It is saved to .bootstrap_password (0600);
+        # the operator reads it from there on first login.
         content = _strip_crossorigin((build_path / "index.html").read_bytes())
         return Response(
             content = content,
