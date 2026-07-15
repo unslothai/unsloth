@@ -850,7 +850,6 @@ def test_generation_paths_claim_via_gated_helper():
     # swap it out between turns -- while an audio preview routed through
     # openai_chat_completions -> generate_audio still keeps its ownership.
     import inspect
-
     for fn in (
         inference.generate_stream,
         inference.generate_audio,
