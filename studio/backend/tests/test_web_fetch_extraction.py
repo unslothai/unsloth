@@ -1203,5 +1203,10 @@ def test_looks_like_html_document_only_matches_real_documents():
     assert _looks_like_html_document("\n  <HTML lang='en'>")
     assert _looks_like_html_document("<body><h1>x</h1></body>")
     # Block tags a Markdown README can open with are NOT full documents.
-    for frag in ("<blockquote>q</blockquote>", "<ul><li>x</li></ul>", "<pre>x</pre>", "<dl><dt>x</dt></dl>"):
+    for frag in (
+        "<blockquote>q</blockquote>",
+        "<ul><li>x</li></ul>",
+        "<pre>x</pre>",
+        "<dl><dt>x</dt></dl>",
+    ):
         assert not _looks_like_html_document(frag), frag
