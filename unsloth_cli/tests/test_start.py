@@ -328,7 +328,6 @@ def test_write_codex_config_catalog_without_context_length(tmp_path, monkeypatch
     assert "max_context_window" not in entry
 
 
-
 @pytest.mark.parametrize(
     ("version", "expected"),
     [("codex-cli 0.109.0", False), ("codex-cli 0.110.0", True), ("codex-cli 0.144.4", True)],
