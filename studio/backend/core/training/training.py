@@ -903,6 +903,10 @@ class TrainingBackend:
         self._progress = TrainingProgress(
             is_training = True, status_message = "Initializing training..."
         )
+        # Reset the progress-log throttle so the new run always logs its first step,
+        # even if it starts within 30s of a prior run whose last logged step matches.
+        self._last_progress_log_ts = 0.0
+        self._last_progress_log_step = -1
         self.loss_history.clear()
         self.lr_history.clear()
         self.step_history.clear()
