@@ -1398,8 +1398,11 @@ def _host_header_is_loopback(host_header: Optional[str]) -> bool:
     if not host_header:
         return False
     host = host_header.strip()
-    if host.startswith("["):  # [IPv6](:port)
-        host = host[1:].split("]", 1)[0]
+    if host.startswith("["):  # [IPv6] or [IPv6]:port
+        end = host.find("]")
+        if end == -1 or (host[end + 1:] and not host[end + 1:].startswith(":")):
+            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
+        host = host[1:end]
     elif host.count(":") == 1:  # host:port
         host = host.split(":", 1)[0]
     host = host.lower().rstrip(".")
