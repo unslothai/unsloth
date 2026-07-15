@@ -63,5 +63,7 @@ def test_unparseable_request_host_fails_safe():
         def hostname(self):
             raise ValueError("malformed host")
 
-    request = SimpleNamespace(client = SimpleNamespace(host = "127.0.0.1", port = 0), headers = {}, url = _RaisingURL())
+    request = SimpleNamespace(
+        client = SimpleNamespace(host = "127.0.0.1", port = 0), headers = {}, url = _RaisingURL()
+    )
     assert _is_local_bootstrap_request(request) is False
