@@ -18,8 +18,9 @@ import {
   type BrowseFoldersResponse,
   browseFolders,
 } from "@/features/chat/api/chat-api";
+import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { ArrowUp02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
+import { Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -230,7 +231,7 @@ export function FolderBrowser({
                   className="flex w-full items-center gap-2 px-6 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <HugeiconsIcon
-                    icon={ArrowUp02Icon}
+                    icon={ChevronUpStandardIcon}
                     className="size-3 shrink-0"
                   />
                   <span className="font-mono">..</span>
