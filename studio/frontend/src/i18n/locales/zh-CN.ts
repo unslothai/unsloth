@@ -103,6 +103,7 @@ export const zhCN = {
       connections: "连接",
       apiKeys: "API",
       about: "关于",
+      voice: "语音",
     },
     general: {
       title: "通用",

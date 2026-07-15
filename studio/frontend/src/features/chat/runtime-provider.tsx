@@ -33,6 +33,7 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
   ThreadAutosaveHandle,
@@ -1033,6 +1034,13 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
+  const speech = useMemo(
+    () =>
+      StudioSpeechSynthesisAdapter.isSupported()
+        ? new StudioSpeechSynthesisAdapter()
+        : undefined,
+    [],
+  );
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([
@@ -1047,8 +1055,8 @@ function useStudioRuntimeAdapters(
     [],
   );
   const adapters = useMemo(
-    () => ({ history, dictation, attachments }),
-    [history, dictation, attachments],
+    () => ({ history, dictation, speech, attachments }),
+    [history, dictation, speech, attachments],
   );
 
   return adapters;
