@@ -916,6 +916,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "upgrade": None,
         "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8"),
         "supports_reasoning_summaries": False,
+        "supports_reasoning_summary_parameter": False,
         "support_verbosity": False,
         "default_verbosity": None,
         "apply_patch_tool_type": None,
