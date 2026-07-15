@@ -844,10 +844,34 @@ def test_preview_reuses_own_checkpoint_without_reload(fake_slot):
     assert inference._is_preview_resident("/outputs/run/ckpt-a")
 
 
-def test_native_generate_paths_claim_preview_owned_model():
-    # Studio generating directly against the resident model via the native (non
-    # preview) paths must claim it by clearing the preview marker, so a later
-    # preview cannot swap it out from under Studio between chat turns.
+def test_generation_paths_claim_via_gated_helper():
+    # Every local generation entry (native stream/audio + OpenAI chat) must adopt
+    # the resident model for Studio through the gated helper, so a preview cannot
+    # swap it out between turns -- while an audio preview routed through
+    # openai_chat_completions -> generate_audio still keeps its ownership.
     import inspect
-    for fn in (inference.generate_stream, inference.generate_audio):
-        assert "_set_preview_resident(None)" in inspect.getsource(fn)
+
+    for fn in (
+        inference.generate_stream,
+        inference.generate_audio,
+        inference.openai_chat_completions,
+    ):
+        assert "_claim_slot_for_non_preview(" in inspect.getsource(fn)
+
+
+def test_claim_slot_for_non_preview_gates_on_preview_path(slot_state):
+    # A non-preview local request claims the resident model (clears the marker); a
+    # /p preview (including an audio preview that reaches generate_audio via
+    # openai_chat_completions) keeps its ownership.
+    inference._set_preview_resident("/outputs/run/ckpt")
+    inference._claim_slot_for_non_preview(
+        SimpleNamespace(scope = {"path": "/api/inference/generate/stream"})
+    )
+    assert not inference._is_preview_resident("/outputs/run/ckpt")
+
+    inference._set_preview_resident("/outputs/run/ckpt")
+    inference._claim_slot_for_non_preview(
+        SimpleNamespace(scope = {"path": "/p/run/v1/chat/completions"})
+    )
+    assert inference._is_preview_resident("/outputs/run/ckpt")
+    inference._set_preview_resident(None)

@@ -3677,6 +3677,25 @@ def _loaded_slot_ident() -> Optional[str]:
     return None
 
 
+def _claim_slot_for_non_preview(fastapi_request) -> None:
+    """Non-preview local generation adopts the resident model for Studio.
+
+    Clearing the preview marker means a later preview for another checkpoint gets a
+    503 instead of swapping the model out from under an active Studio/OpenAI turn. A
+    ``/p`` preview request keeps its own ownership (it may still be swapped by the
+    next preview), so skip when the request is a preview -- audio previews reach
+    generate_audio through openai_chat_completions, so the path check, not the
+    handler, decides ownership.
+    """
+    from core.inference.llama_keepwarm import _is_preview_path
+
+    scope = getattr(fastapi_request, "scope", None)
+    path = scope.get("path") if isinstance(scope, dict) else None
+    if _is_preview_path(path or ""):
+        return
+    _set_preview_resident(None)
+
+
 async def load_model_for_preview(
     request: LoadRequest, fastapi_request: Request, current_subject: str
 ) -> None:
@@ -5393,7 +5412,7 @@ async def generate_stream(
     # Studio generating directly against the resident model claims it: a model first
     # loaded by a shared /p preview must not stay preview-owned, or a later preview
     # could swap it out from under Studio between chat turns.
-    _set_preview_resident(None)
+    _claim_slot_for_non_preview(fastapi_request)
 
     # Decode image if provided (vision models)
     image = None
@@ -5723,8 +5742,9 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
     # Studio generating directly against the resident model claims it (see
-    # generate_stream): a preview-loaded model must not stay preview-owned.
-    _set_preview_resident(None)
+    # generate_stream). Gated on the request path: an audio preview reaches here via
+    # openai_chat_completions and must stay preview-owned.
+    _claim_slot_for_non_preview(request)
 
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
@@ -6937,6 +6957,12 @@ async def openai_chat_completions(
         _needs_vision = (
             bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
         )
+
+    # Past the external-provider return above, this is local generation: a
+    # non-preview turn adopts the resident model for Studio so a later preview can't
+    # swap it out (covers auto-switch-off / model-omitted, which _maybe_auto_switch
+    # returns early on without claiming).
+    _claim_slot_for_non_preview(request)
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
