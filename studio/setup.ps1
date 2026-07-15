@@ -3246,7 +3246,7 @@ if ($ROCmIndexUrl) {
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
-        Write-Host $output -ForegroundColor Yellow
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Yellow
         $ROCmIndexUrl = $null
         $ROCmCpuFallback = $true
     } else {
@@ -3279,7 +3279,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch install failed (exit code $torchInstallExit)" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         exit 1
     }
 } elseif (-not $ROCmIndexUrl) {
@@ -3311,7 +3311,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     }
     if ($torchInstallExit -ne 0) {
         Write-Host "[FAILED] PyTorch CUDA install failed (exit code $torchInstallExit)" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         exit 1
     }
 
@@ -3327,7 +3327,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     }
     if ($tritonInstallExit -ne 0) {
         substep "Triton install failed -- torch.compile may not work" "Yellow"
-        Write-Host $output -ForegroundColor Yellow
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Yellow
     } else {
         substep "Triton for Windows installed (enables torch.compile)"
     }
@@ -3430,7 +3430,7 @@ foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
     if ($t5PkgExit -ne 0) {
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
         exit 1
     }
@@ -3465,7 +3465,7 @@ foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4
     }
     if ($t5PkgExit -ne 0) {
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
         exit 1
     }
@@ -3500,7 +3500,7 @@ foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.
     }
     if ($t5PkgExit -ne 0) {
         Write-Host "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
-        Write-Host $output -ForegroundColor Red
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         $ErrorActionPreference = $prevEAP_t5
         exit 1
     }

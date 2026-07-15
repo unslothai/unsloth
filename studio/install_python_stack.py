@@ -1681,6 +1681,15 @@ def _ensure_pinned_known_family_torch() -> None:
             constrain = False,
         ):
             _write_torch_index_marker(pin)
+        else:
+            # Warn like the auto-ROCm Windows path: the log already said "reinstalling from
+            # it", so a silent failure would leave the user believing the pin was applied
+            # while the old CPU/wrong torch survives.
+            print(
+                f"   Warning: torch install from the pinned {leaf} index failed; "
+                "keeping the existing torch build. Re-run 'unsloth studio update' "
+                "later to retry."
+            )
     else:
         # cu*/cpu pins are authoritative, so a failure to reach them is fatal.
         pip_install(
