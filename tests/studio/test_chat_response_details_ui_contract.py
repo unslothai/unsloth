@@ -57,13 +57,16 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert "setShowResponseModel" in chat_tab_src
     details_src = DETAILS_TSX.read_text()
     assert (
-        "aui-response-model-badge pointer-events-auto relative inline-flex min-h-5" in details_src
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
     )
     assert "cursor-text select-text" in details_src
     assert "leading-5" in details_src
     assert "after:top-full after:h-1" in details_src
     assert "hover:opacity-100" in details_src
     assert "group-hover/assistant-message:opacity-100" in details_src
+    # Pointer events gated behind hover/focus so the hidden badge stays inert when idle.
+    assert "group-hover/assistant-message:pointer-events-auto" in details_src
+    assert "group-focus-within/assistant-message:pointer-events-auto" in details_src
     assert thread_src.count("<MessageResponseModelBadge") == 1
     assert "hasReasoningParts" not in thread_src
     assert "group/assistant-message aui-assistant-message-root" in thread_src
