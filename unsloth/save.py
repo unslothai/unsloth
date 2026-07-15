@@ -2041,15 +2041,16 @@ def save_to_gguf(
                         f"Error: {e}"
                     )
 
-        # Independent llama-quantize runs read the same base GGUF and write separate
-        # outputs, so a couple can overlap (one's disk I/O hides under another's
-        # compute). Kept at 2 workers to bound disk and RAM pressure; sequential when
-        # streaming subprocess output (UNSLOTH_ENABLE_LOGGING) so logs stay readable,
-        # or when UNSLOTH_PARALLEL_GGUF_QUANTS=0.
+        # Independent llama-quantize runs on the same base GGUF can overlap. Kept at 2
+        # workers; run sequentially when streaming logs (UNSLOTH_ENABLE_LOGGING), on
+        # Kaggle (each pass loads the whole model into RAM, so two can OOM), or when the
+        # kill switch (0/false/no/off/empty) is set.
+        _parallel_flag = os.environ.get("UNSLOTH_PARALLEL_GGUF_QUANTS", "1").strip().lower()
         parallel_quants = (
             len(methods_to_quantize) > 1
             and not print_output
-            and os.environ.get("UNSLOTH_PARALLEL_GGUF_QUANTS", "1") != "0"
+            and not IS_KAGGLE_ENVIRONMENT
+            and _parallel_flag not in ("0", "false", "no", "off", "")
         )
         if parallel_quants:
             max_workers = min(2, len(methods_to_quantize))
@@ -2059,15 +2060,30 @@ def save_to_gguf(
                 f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into "
                 f"{methods_to_quantize}, {max_workers} at a time. This might take 10 minutes each..."
             )
-            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import ThreadPoolExecutor, wait, FIRST_EXCEPTION
 
+            quantized_files = [None] * len(methods_to_quantize)
             with ThreadPoolExecutor(max_workers = max_workers) as pool:
-                quantized_files = list(
-                    pool.map(
-                        lambda method: _quantize_one(method, n_threads = per_worker_threads),
-                        methods_to_quantize,
-                    )
-                )
+                future_to_idx = {
+                    pool.submit(_quantize_one, method, per_worker_threads): i
+                    for i, method in enumerate(methods_to_quantize)
+                }
+                done, pending = wait(future_to_idx, return_when = FIRST_EXCEPTION)
+                # Do not start queued passes after a failure (avoid filling the disk).
+                for fut in pending:
+                    fut.cancel()
+                first_exc = next((f.exception() for f in done if f.exception() is not None), None)
+                if first_exc is not None:
+                    # Drop partial/finished siblings so a failed export leaves no orphans;
+                    # keep the 16-bit base for retry.
+                    wait(future_to_idx)
+                    for method in methods_to_quantize:
+                        Path(
+                            os.path.join(gguf_directory, f"{model_name}.{method.upper()}.gguf")
+                        ).unlink(missing_ok = True)
+                    raise first_exc
+                for fut, i in future_to_idx.items():
+                    quantized_files[i] = fut.result()
         else:
             quantized_files = []
             for quant_method in methods_to_quantize:
