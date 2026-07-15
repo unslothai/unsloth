@@ -1074,13 +1074,11 @@ class TestIndexPathSlashTrimParity:
     def test_helper_wired_into_override_in_all_installers(self):
         assert "_trim_index_path_slashes(url)" in STACK_PY.read_text(encoding = "utf-8")
         assert '_url=$(_trim_index_path_slashes "$_url")' in INSTALL_SH.read_text(encoding = "utf-8")
-        assert (
-            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
-            in INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in INSTALL_PS1.read_text(
+            encoding = "utf-8"
         )
-        assert (
-            "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL"
-            in SETUP_PS1.read_text(encoding = "utf-8")
+        assert "Trim-IndexPathSlashes $env:UNSLOTH_TORCH_INDEX_URL" in SETUP_PS1.read_text(
+            encoding = "utf-8"
         )
 
 

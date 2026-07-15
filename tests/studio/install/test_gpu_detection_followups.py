@@ -474,9 +474,7 @@ class TestRedactInstallOutput:
         assert out == "ERROR: failed https://<redacted>@download.pytorch.org/whl/cu128"
 
     def test_bytes_input_decoded_and_redacted(self):
-        out = stack_mod._redact_install_output(
-            b"fetch https://ghp_deadbeef@host/whl/cu128 failed"
-        )
+        out = stack_mod._redact_install_output(b"fetch https://ghp_deadbeef@host/whl/cu128 failed")
         assert out == "fetch https://<redacted>@host/whl/cu128 failed"
 
     def test_query_values_redacted(self):
@@ -503,10 +501,7 @@ class TestTrimIndexPathSlashes:
     ending in "/" must survive (a whole-URL rstrip would corrupt a base64 token)."""
 
     def test_double_path_slash_collapsed(self):
-        assert (
-            stack_mod._trim_index_path_slashes("https://h/whl/cu128//")
-            == "https://h/whl/cu128"
-        )
+        assert stack_mod._trim_index_path_slashes("https://h/whl/cu128//") == "https://h/whl/cu128"
 
     def test_query_token_slash_preserved(self):
         assert (
