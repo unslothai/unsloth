@@ -704,14 +704,34 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
         )
     for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
+        stale_path = STUDIO_HOME / "auth" / stale
         try:
-            (STUDIO_HOME / "auth" / stale).unlink(missing_ok = True)
-        except OSError:
-            typer.echo(
-                f"Warning: could not remove stale {stale} file; the credential "
-                "in it is no longer valid, but consider deleting it manually.",
-                err = True,
-            )
+            stale_path.unlink(missing_ok = True)
+        except OSError as exc:
+            # The new hash is already committed, so a failed unlink must NOT roll
+            # the change back. But a locked/undeletable file that is still writable
+            # (Windows AV, read-only auth dir) has to be truncated: otherwise its
+            # stale plaintext survives and generate_bootstrap_password() would read
+            # it back and re-validate this revoked credential after a later
+            # reset-password deletes auth.db. Mirrors backend clear_bootstrap_password().
+            try:
+                stale_path.write_text("")
+                cleared = True
+            except OSError:
+                cleared = False
+            if cleared:
+                typer.echo(
+                    f"Warning: could not remove stale {stale} file ({exc}); cleared its "
+                    "contents so the old credential cannot be reused.",
+                    err = True,
+                )
+            else:
+                typer.echo(
+                    f"Warning: could not remove or clear stale {stale} file ({exc}); the "
+                    "old credential is still on disk. Remove it manually to prevent reuse "
+                    "after a reset.",
+                    err = True,
+                )
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:

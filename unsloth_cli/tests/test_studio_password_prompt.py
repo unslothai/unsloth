@@ -1070,6 +1070,39 @@ def test_reset_password_truncates_locked_bootstrap_after_db_delete(monkeypatch, 
     assert bootstrap_file.read_text() == ""
 
 
+def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch, tmp_path):
+    # After a CLI/interactive password change the seeded .bootstrap_password is
+    # deleted. If it cannot be unlinked but is still writable (locked file /
+    # read-only dir), it must be TRUNCATED so its stale plaintext cannot be
+    # re-seeded by generate_bootstrap_password() after a later reset-password
+    # deletes auth.db. The change is already committed, so it must NOT roll back.
+    import pathlib
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    bootstrap_file = tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE
+    assert bootstrap_file.read_text().strip()
+
+    _real_unlink = pathlib.Path.unlink
+
+    def _boom_unlink(self, *a, **k):
+        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
+            raise OSError("locked")
+        return _real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
+
+    conn = studio_mod._connect_auth_db()
+    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123")
+    conn.close()
+
+    # The change committed (must_change cleared) AND the locked file is truncated.
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+    assert bootstrap_file.exists()
+    assert bootstrap_file.read_text() == ""
+
+
 def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):
     # If auth.db cannot be removed (running Studio / Windows lock, read-only dir),
     # reset must abort BEFORE touching the credential files -- deleting them while
