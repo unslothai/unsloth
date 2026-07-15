@@ -733,7 +733,9 @@ async def stream_training_progress(
     if last_event_id is not None:
         try:
             resume_from_step = int(last_event_id)
-            logger.info(f"SSE reconnect: resuming from step {resume_from_step}")
+            # Fires on every reconnect (each tab switch); the meaningful signal is
+            # the "replayed N missed steps" line below, logged only when N > 0.
+            logger.debug(f"SSE reconnect: resuming from step {resume_from_step}")
         except ValueError:
             logger.warning(f"Invalid Last-Event-ID: {last_event_id}")
 

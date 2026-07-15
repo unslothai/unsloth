@@ -15,19 +15,18 @@ import { de } from "./locales/de";
 import { ko } from "./locales/ko";
 import type { InterpolationValues, MessageKey } from "./types";
 
-// dir sets documentElement.dir; Arabic stays ltr (CSS still physical-direction) but renders rtl via bidi.
 export const LOCALES = {
-  en: { label: "English", nativeLabel: "English", dir: "ltr" },
-  "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文", dir: "ltr" },
-  ja: { label: "Japanese", nativeLabel: "日本語", dir: "ltr" },
-  ko: { label: "Korean", nativeLabel: "한국어", dir: "ltr" },
-  es: { label: "Spanish", nativeLabel: "Español", dir: "ltr" },
-  "pt-BR": { label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)", dir: "ltr" },
-  fr: { label: "French", nativeLabel: "Français", dir: "ltr" },
-  de: { label: "German", nativeLabel: "Deutsch", dir: "ltr" },
-  ru: { label: "Russian", nativeLabel: "Русский", dir: "ltr" },
-  hi: { label: "Hindi", nativeLabel: "हिन्दी", dir: "ltr" },
-  ar: { label: "Arabic", nativeLabel: "العربية", dir: "ltr" },
+  en: { label: "English", nativeLabel: "English" },
+  "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文" },
+  ja: { label: "Japanese", nativeLabel: "日本語" },
+  ko: { label: "Korean", nativeLabel: "한국어" },
+  es: { label: "Spanish", nativeLabel: "Español" },
+  "pt-BR": { label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)" },
+  fr: { label: "French", nativeLabel: "Français" },
+  de: { label: "German", nativeLabel: "Deutsch" },
+  ru: { label: "Russian", nativeLabel: "Русский" },
+  hi: { label: "Hindi", nativeLabel: "हिन्दी" },
+  ar: { label: "Arabic", nativeLabel: "العربية" },
 } as const;
 
 export type Locale = keyof typeof LOCALES;

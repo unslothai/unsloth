@@ -398,6 +398,19 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
     # orchestrator spawns a fresh subprocess per checkpoint load, resetting it.
     _log_forward_gate.set()
 
+    # Phase milestone so the heavy export step shows in the server log; the
+    # merge/save/convert itself only forwards stdout to the live panel.
+    _phase = {
+        "merged": f"Exporting merged model ({cmd.get('format_type', '16-bit (FP16)')})...",
+        "gguf": f"Exporting GGUF ({cmd.get('quantization_method', 'Q4_K_M')})...",
+        "lora": "Exporting LoRA adapter...",
+        "base": "Exporting base model...",
+    }.get(export_type, f"Exporting ({export_type})...")
+    _send_response(
+        resp_queue,
+        {"type": "status", "message": _phase, "ts": time.time()},
+    )
+
     output_path: Any = None
     try:
         if export_type == "merged":

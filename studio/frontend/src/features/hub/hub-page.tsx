@@ -73,6 +73,7 @@ import {
 } from "./lib/channels";
 import { isHiddenModelId } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import {
   buildDiscoverRows,
   detectResultFormat,
@@ -697,10 +698,10 @@ export function ModelsPage() {
     return discoverRows.filter(
       (row) =>
         !isHiddenModelId(row.id) &&
-        matchesFormat(
-          detectResultFormat(row.result),
-          effectiveDiscoverFormat,
-        ) &&
+        // The default feed only shows models with a provider logo.
+        (!isFeedMode ||
+          resolveOwnerProviderLogo(row.owner, row.repo) !== null) &&
+        matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit,
@@ -712,6 +713,7 @@ export function ModelsPage() {
   }, [
     discoverRows,
     isDatasetMode,
+    isFeedMode,
     effectiveDiscoverFormat,
     deferredCapabilityFilter,
     activeChannel,

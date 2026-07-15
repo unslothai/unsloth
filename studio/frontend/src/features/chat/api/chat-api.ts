@@ -29,6 +29,21 @@ import type {
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
+/**
+ * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
+ * finish_reason chunk): the connection dropped mid-generation. The adapter
+ * surfaces it as an explicit interrupted state instead of ending the turn.
+ */
+export class StreamInterruptedError extends Error {
+  constructor() {
+    super(
+      "Response interrupted: the connection dropped before the model finished. " +
+        "Use Retry to regenerate.",
+    );
+    this.name = "StreamInterruptedError";
+  }
+}
+
 export function notifyChatHistoryUpdated(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
@@ -851,12 +866,18 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
+  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
+  // mid-generation: surface as interrupted, not silent success.
+  let sawTerminalSignal = false;
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
         completed = true;
+        if (!sawTerminalSignal) {
+          throw new StreamInterruptedError();
+        }
         break;
       }
 
@@ -877,6 +898,7 @@ export async function* streamChatCompletions(
         const dataText = dataLines.join("\n");
         if (dataText === "[DONE]") {
           completed = true;
+          sawTerminalSignal = true;
           return;
         }
 
@@ -903,10 +925,14 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // Tool start/end events carry full input/output for the tool outputs panel
+        // tool_start/end carry full input/output; tool_output streams
+        // incremental stdout and tool_args streams the call arguments live.
         if (
           "type" in parsed &&
-          (parsed.type === "tool_start" || parsed.type === "tool_end")
+          (parsed.type === "tool_start" ||
+            parsed.type === "tool_end" ||
+            parsed.type === "tool_output" ||
+            parsed.type === "tool_args")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
@@ -924,6 +950,16 @@ export async function* streamChatCompletions(
           } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
+        }
+        // finish_reason is a valid terminal signal for providers that close
+        // the stream without an explicit [DONE] sentinel.
+        const finishReason = (
+          parsed as {
+            choices?: Array<{ finish_reason?: string | null }>;
+          }
+        ).choices?.[0]?.finish_reason;
+        if (finishReason) {
+          sawTerminalSignal = true;
         }
         yield parsed as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);

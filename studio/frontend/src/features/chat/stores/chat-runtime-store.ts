@@ -647,6 +647,13 @@ type ChatRuntimeStore = {
    */
   webFetchToolsEnabled: boolean;
   toolStatus: string | null;
+  /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
+   *  appended by tool_output, cleared on tool_end or run end. */
+  toolLiveOutput: Record<string, string>;
+  /** Full live output of finished tools whose result was truncated for the
+   *  model, keyed by toolCallId. Set from tool_end; finished cards prefer it
+   *  over the truncated result. Session-transient. */
+  toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
@@ -775,6 +782,13 @@ type ChatRuntimeStore = {
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
+  appendToolLiveOutput: (toolCallId: string, text: string) => void;
+  /** Clear one tool's live output, or all when no id is given. */
+  clearToolLiveOutput: (toolCallId?: string) => void;
+  /** Preserve a finished tool's full live-streamed output for display. */
+  setToolFullOutput: (toolCallId: string, text: string) => void;
+  /** Drop a stale preserved full output (a new run is reusing the id). */
+  clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -1064,6 +1078,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
   ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
+  toolLiveOutput: {},
+  toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
@@ -1294,6 +1310,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      toolLiveOutput: {},
+      toolFullOutput: {},
       activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -1517,6 +1535,43 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { ragCaptionFigures };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  appendToolLiveOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolLiveOutput: {
+        ...state.toolLiveOutput,
+        [toolCallId]: (state.toolLiveOutput[toolCallId] ?? "") + text,
+      },
+    })),
+  setToolFullOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolFullOutput: {
+        ...state.toolFullOutput,
+        [toolCallId]: text,
+      },
+    })),
+  clearToolFullOutput: (toolCallId) =>
+    set((state) => {
+      if (!(toolCallId in state.toolFullOutput)) {
+        return {};
+      }
+      const next = { ...state.toolFullOutput };
+      delete next[toolCallId];
+      return { toolFullOutput: next };
+    }),
+  clearToolLiveOutput: (toolCallId) =>
+    set((state) => {
+      if (toolCallId === undefined) {
+        return Object.keys(state.toolLiveOutput).length
+          ? { toolLiveOutput: {} }
+          : {};
+      }
+      if (!(toolCallId in state.toolLiveOutput)) {
+        return {};
+      }
+      const next = { ...state.toolLiveOutput };
+      delete next[toolCallId];
+      return { toolLiveOutput: next };
+    }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
