@@ -578,6 +578,10 @@ def test_preview_load_refused_when_studio_model_is_loaded(fake_slot):
 
 
 def test_preview_load_allowed_when_checkpoint_already_loaded_and_idle(fake_slot):
+    # A resident model that already serves this exact checkpoint is borrowed as-is:
+    # no _load_model_impl call (which could reload/reconfigure a Studio-owned GGUF
+    # whose live settings differ from the bare preview request, #5401), and a
+    # Studio-owned model is not silently claimed for preview.
     fake_slot["ident"] = "/outputs/run/ckpt"
 
     asyncio.run(
@@ -587,7 +591,8 @@ def test_preview_load_allowed_when_checkpoint_already_loaded_and_idle(fake_slot)
             "admin",
         )
     )
-    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
+    assert fake_slot["loads"] == []  # borrowed, not reloaded
+    assert not inference._is_preview_resident("/outputs/run/ckpt")  # stays Studio-owned
 
 
 def test_preview_load_refused_on_same_checkpoint_when_studio_busy(fake_slot):
@@ -611,7 +616,8 @@ def test_preview_load_refused_on_same_checkpoint_when_studio_busy(fake_slot):
 
 
 def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
-    # Busy traffic fully accounted for by other previews isn't foreign traffic.
+    # Busy traffic fully accounted for by other previews isn't foreign traffic, so
+    # the request proceeds; the same-checkpoint model is then borrowed (no reload).
     fake_slot["ident"] = "/outputs/run/ckpt"
     fake_slot["busy"] = 1
     fake_slot["other_previews"] = 1
@@ -622,7 +628,7 @@ def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
             "admin",
         )
     )
-    assert fake_slot["loads"] == ["/outputs/run/ckpt"]
+    assert fake_slot["loads"] == []  # borrowed same-checkpoint, not reloaded
 
 
 def test_preview_can_swap_out_prior_preview_model(fake_slot):
@@ -817,3 +823,32 @@ def test_preview_refusal_untracks_and_balances_counters(fake_slot):
     assert fake_slot["loads"] == []
     llama_keepwarm._inflight = 0
     llama_keepwarm._preview_inflight = 0
+
+
+def test_preview_reuses_own_checkpoint_without_reload(fake_slot):
+    # A preview re-requesting the checkpoint it already loaded borrows it (no second
+    # _load_model_impl call, which could reconfigure it) and keeps preview ownership.
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt-a"), SimpleNamespace(app = None), "admin"
+        )
+    )
+    assert fake_slot["loads"] == ["/outputs/run/ckpt-a"]
+    assert inference._is_preview_resident("/outputs/run/ckpt-a")
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt-a"), SimpleNamespace(app = None), "admin"
+        )
+    )
+    assert fake_slot["loads"] == ["/outputs/run/ckpt-a"]  # borrowed, no second load
+    assert inference._is_preview_resident("/outputs/run/ckpt-a")
+
+
+def test_native_generate_paths_claim_preview_owned_model():
+    # Studio generating directly against the resident model via the native (non
+    # preview) paths must claim it by clearing the preview marker, so a later
+    # preview cannot swap it out from under Studio between chat turns.
+    import inspect
+
+    for fn in (inference.generate_stream, inference.generate_audio):
+        assert "_set_preview_resident(None)" in inspect.getsource(fn)

@@ -3716,8 +3716,9 @@ async def load_model_for_preview(
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
-                # same_target doesn't guarantee a no-op reload (GGUF settings can
-                # still force a restart), so busy Studio traffic always blocks.
+                # A same-checkpoint request would still restart a Studio-owned GGUF
+                # whose live settings differ from these bare defaults (#5401), so
+                # busy Studio traffic blocks before any borrow/reload decision.
                 if (
                     other_inference_request_count(
                         current_request_counted = True, include_pending = False
@@ -3730,9 +3731,15 @@ async def load_model_for_preview(
                         detail = "The preview model is busy. Please try again shortly.",
                         headers = {"Retry-After": "10"},
                     )
+                if same_target:
+                    # The resident model already serves this exact checkpoint, so
+                    # borrow it as-is instead of reloading with bare preview settings
+                    # (which would reconfigure/restart an idle Studio-owned GGUF,
+                    # #5401). Ownership is unchanged: Studio's model stays Studio's, a
+                    # preview-owned one stays preview-owned.
+                    return
                 await _load_model_impl(request, fastapi_request, current_subject)
-                if not same_target or preview_resident:
-                    _set_preview_resident(request.model_path)
+                _set_preview_resident(request.model_path)
         finally:
             _auto_switch_process_lock.release()
 
@@ -5383,6 +5390,10 @@ async def generate_stream(
         raise HTTPException(
             status_code = 400, detail = "No model loaded. Call POST /inference/load first."
         )
+    # Studio generating directly against the resident model claims it: a model first
+    # loaded by a shared /p preview must not stay preview-owned, or a later preview
+    # could swap it out from under Studio between chat turns.
+    _set_preview_resident(None)
 
     # Decode image if provided (vision models)
     image = None
@@ -5711,6 +5722,9 @@ async def generate_audio(
     if not last_user_msg:
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
+    # Studio generating directly against the resident model claims it (see
+    # generate_stream): a preview-loaded model must not stay preview-owned.
+    _set_preview_resident(None)
 
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
