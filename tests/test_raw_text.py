@@ -264,13 +264,22 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
             self.eos_token = None
             self.eos_token_id = None
 
-        def __call__(self, text, return_tensors = None, add_special_tokens = False,):
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
             token_ids = list(range(len(text.split())))
             if return_tensors == "pt":
                 return {"input_ids": [MockTensor(token_ids)]}
             return {"input_ids": token_ids}
 
-        def decode(self, token_ids, skip_special_tokens = False,):
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
             return " ".join(f"word_{i}" for i in token_ids)
 
     loader = RawTextDataLoader(MockTokenizerNoEos(), chunk_size = 2048, stride = 512)
@@ -278,9 +287,9 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
         "hello world short text", chunk_size = 2048, stride = 512, return_tokenized = True
     )
     input_ids = result[0]["input_ids"]
-    assert isinstance(input_ids, list), (
-        f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
-    )
+    assert isinstance(
+        input_ids, list
+    ), f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
     assert input_ids == [0, 1, 2, 3], f"unexpected input_ids: {input_ids}"
     print("✅ test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed!")
     return True
