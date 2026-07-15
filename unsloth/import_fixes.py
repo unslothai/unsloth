@@ -3134,29 +3134,20 @@ def patch_accelerate_recursively_apply():
 # ---------------------------------------------------------------------------
 # torchao Windows-ROCm import shim
 # ---------------------------------------------------------------------------
-# Legacy Windows ROCm PyTorch wheels ship without the torch.distributed
-# C-extension (torch._C._distributed_c10d absent, the torch.ops._c10d_functional.*
-# collective ops unregistered). torchao imports the distributed chain
-# unconditionally at module load -- torchao/float8/distributed_utils.py does
-# `import torch.distributed._functional_collectives` + `from torch.distributed._tensor
-# import DTensor`, reached from ~6 float8/dtypes/optim files -- so `import torchao`
-# (pulled in by transformers.quantizers) raises `No module named
-# 'torch._C._distributed_c10d'` even for paths that never touch distributed.
-# unsloth_zoo/Studio work around this by import-stubbing torchao off, which disables
-# portable FP8/INT8 export. This shim instead makes REAL torchao importable by faking
-# the absent C-extension module and FRAGMENT-registering the missing `_c10d_functional`
-# op schemas (schema-only, no kernels -- torch attaches its own Meta kernels; an actual
-# collective would still fail loudly). Weight-only quant export invokes no collective,
-# so world_size==1 semantics are correct.
-#
-# Strictly transactional: any failure rolls back so torchao stays unimportable and
-# unsloth_zoo's stub still catches it (no regression). Capability-gated, so it is a
-# strict no-op on every non-Windows / non-ROCm host and once real torch.distributed is
-# present (AMD's libuv/GLOO wheels, ROCm/TheRock#5694, torch >= 2.9). Uses FRAGMENT (not
-# DEF), which is documented to bypass the one-library-per-namespace rule, so it can never
-# hard-collide with a native TORCH_LIBRARY. Opt out: UNSLOTH_DISABLE_TORCHAO_ROCM_SHIM=1.
-# The clean upstream fix is a torch.distributed.is_available() guard in torchao's float8
-# imports (pytorch/ao#1066); retire this shim once that lands.
+# Legacy Windows ROCm wheels ship without the torch.distributed C-extension
+# (torch._C._distributed_c10d absent, torch.ops._c10d_functional.* unregistered), yet torchao
+# imports the distributed chain unconditionally at module load (float8/distributed_utils.py:
+# `import torch.distributed._functional_collectives` + `from torch.distributed._tensor import
+# DTensor`), so `import torchao` raises `No module named 'torch._C._distributed_c10d'` even on
+# paths that never use distributed. unsloth_zoo/Studio work around that by stubbing torchao off,
+# disabling FP8/INT8 export; this shim instead makes REAL torchao importable by faking the absent
+# C-ext module and FRAGMENT-registering the missing _c10d_functional/_dtensor schemas (schema-only
+# -- torch attaches its own Meta kernels, an actual collective still fails loudly, and weight-only
+# export invokes none). Fully transactional (any failure rolls back to torchao-unimportable, so
+# unsloth_zoo's stub still catches it: no regression) and capability-gated -- a strict no-op off
+# Windows-ROCm and once real torch.distributed is present (ROCm/TheRock#5694, torch >= 2.9).
+# FRAGMENT (not DEF) never collides with a native TORCH_LIBRARY. Opt out
+# UNSLOTH_DISABLE_TORCHAO_ROCM_SHIM=1; retire once torchao guards its float8 imports (pytorch/ao#1066).
 # ---------------------------------------------------------------------------
 
 _TORCHAO_ROCM_SHIM_SENTINEL = "__unsloth_torchao_rocm_shim__"
@@ -3165,14 +3156,11 @@ _C10D_EXT_MODULE = "torch._C._distributed_c10d"
 # GC does not drop the FRAGMENT-defined schemas.
 _TORCHAO_ROCM_SHIM_STATE = None
 
-# Per torch (major, minor): the exact `_c10d_functional` op schemas WITHOUT the namespace
-# prefix (the Library adds it). torch DEFs these only in C++ (TORCH_LIBRARY), so they are
-# absent on a distributed-less ROCm wheel and torch's own
-# `torch.distributed._functional_collectives` Library("_c10d_functional","IMPL").impl(...)
-# fails at import. Verified: 2.9 against the installed dispatcher; 2.10/2.11 against the
-# v2.10.0/v2.11.0 torch/csrc/distributed/c10d/Functional.cpp source. Fail closed on any
-# other minor (the shim then no-ops -> torchao stays stubbed, no regression); newer wheels
-# almost always carry AMD's distributed fix, where the shim no-ops anyway.
+# Per torch (major, minor): the exact `_c10d_functional` op schemas (namespace prefix added by
+# the Library). torch DEFs these only in C++, so they are absent on a distributed-less ROCm wheel
+# and torch's own _functional_collectives IMPL registrations fail at import. Verified: 2.9 vs the
+# installed dispatcher, 2.10/2.11 vs the v2.10.0/v2.11.0 Functional.cpp source. Fail closed on any
+# other minor (shim no-ops -> torchao stays stubbed, no regression).
 _C10D_FUNCTIONAL_SCHEMAS = {
     (2, 9): (
         "all_reduce(Tensor input, str reduce_op, str group_name) -> Tensor",
@@ -3197,14 +3185,11 @@ _C10D_FUNCTIONAL_SCHEMAS[(2, 10)] = _C10D_FUNCTIONAL_SCHEMAS[(2, 9)] + (
 )
 _C10D_FUNCTIONAL_SCHEMAS[(2, 11)] = _C10D_FUNCTIONAL_SCHEMAS[(2, 10)]
 
-# The `_dtensor` namespace is likewise DEF'd only in C++ (the same Functional.cpp), so it too
-# is absent on a distributed-less ROCm wheel. torchao's `from torch.distributed._tensor import
-# DTensor` loads torch.distributed.tensor._collective_utils, which at import does
-# `@torch.library.register_fake("_dtensor::shard_dim_alltoall")`; register_fake raises
-# "operator _dtensor::shard_dim_alltoall does not exist" unless the op is already defined, so
-# the shim must define it in the same transaction or `import torchao` still fails and rolls
-# back. Schema verified against the live 2.9 dispatcher and the v2.11.0 Functional.cpp source
-# (stable across 2.9-2.11). Fail closed on any other minor.
+# `_dtensor` is likewise C++-only, so absent on a distributed-less wheel. torchao's
+# `from torch.distributed._tensor import DTensor` loads tensor._collective_utils, whose
+# module-level `register_fake("_dtensor::shard_dim_alltoall")` raises unless the op is defined --
+# so the shim must define it in the same transaction or `import torchao` still rolls back. Schema
+# verified vs the live 2.9 dispatcher and v2.11.0 Functional.cpp (stable 2.9-2.11); else fail closed.
 _DTENSOR_SCHEMAS = {
     (2, 9): (
         "shard_dim_alltoall(Tensor input, int gather_dim, int shard_dim, str group_name) -> Tensor",
@@ -3305,8 +3290,8 @@ def _make_torchao_rocm_fake_c10d():
     mod.__package__ = "torch._C"
     setattr(mod, _TORCHAO_ROCM_SHIM_SENTINEL, True)
 
-    # Data-holder option types: constructible no-ops (safe to build at import; never used
-    # to do work). Kept distinct from loud sentinels so import-time construction cannot raise.
+    # Option data-holders: constructible no-ops (torch builds them at import), kept distinct
+    # from the loud sentinels so import-time construction can't raise.
     for name in (
         "_DistributedBackendOptions",
         "AllgatherOptions",
@@ -3409,11 +3394,9 @@ def fix_torchao_windows_rocm_import():
         try:
             import torch
 
-            # ROCm build: mirror the Studio is_win32_rocm() detector -- HIP field OR a "rocm"
-            # __version__ tag (AMD SDK wheels lack torch.version.hip but tag "rocm"). Matching
-            # it keeps the shim and the export gate from drifting so the same wheels the gate
-            # disables torchao on are the ones the shim re-enables. The capability guards below
-            # (distributed absent, no _c10d_functional/_dtensor ops) rule out any false positive.
+            # ROCm build: mirror the Studio is_win32_rocm() detector (HIP field OR a "rocm"
+            # __version__ tag -- AMD SDK wheels lack torch.version.hip) so the shim re-enables
+            # exactly the wheels the export gate disables. Capability guards below rule out false positives.
             if not (
                 getattr(getattr(torch, "version", None), "hip", None)
                 or "rocm" in getattr(torch, "__version__", "").lower()

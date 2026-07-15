@@ -258,11 +258,9 @@ export function ExportPage() {
         : [...prev, value],
     );
   }, []);
-  // Drop any already-selected format that the gate just removed (e.g. torchao once win32Rocm
-  // resolves after /api/system/hardware lands), so a stale pick isn't summarized or exported.
-  // Gate on hardware.loaded: before the authoritative response hasNvidia is false, so the
-  // NVIDIA-only compressed formats are transiently absent and pruning here would permanently
-  // drop a running FP8/NVFP4 selection that the later response cannot restore.
+  // Drop a selected format the gate removed (e.g. torchao once win32Rocm resolves). Gate on
+  // hardware.loaded: before the authoritative response hasNvidia is false, so pruning would
+  // permanently drop a running NVIDIA FP8/NVFP4 pick that the later response can't restore.
   useEffect(() => {
     if (!hardware.loaded) return;
     const allowed = new Set(availableFormats.map((f) => f.value));
