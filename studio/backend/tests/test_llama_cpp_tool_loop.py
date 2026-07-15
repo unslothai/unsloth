@@ -1826,6 +1826,39 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
 
 
+def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
+    """render_html is no longer unconditionally safe (a networked canvas asks), so
+    with confirm_tool_calls set under permission_mode="auto" its early provisional
+    card is suppressed; the real full-argument tool_start still fires and a static
+    canvas runs without a prompt."""
+    args = {"code": "<html>" + "x" * 80 + "</html>"}
+    first_stream = _streamed_structured_tool_call("render_html", args, "call_rh")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "make a card"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    # The confirm gate now suppresses the early provisional card for render_html.
+    assert provisional == [], tool_starts
+    real = [e for e in tool_starts if e.get("arguments")]
+    assert real and real[0]["tool_name"] == "render_html"
+    # A static canvas is classified safe, so it still runs without an approval gate.
+    assert real[0].get("awaiting_confirmation") in (False, None)
+
+
 def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
     """A small tool-call argument finishes streaming instantly, so it keeps the
     existing behavior of a single (real) tool_start with no provisional card."""

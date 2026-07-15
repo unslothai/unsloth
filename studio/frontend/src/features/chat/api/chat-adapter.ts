@@ -173,6 +173,7 @@ interface ResponseDetailsMetadata {
     artifacts: boolean;
     confirmToolCalls: boolean;
     bypassPermissions: boolean;
+    permissionMode?: string;
   };
 }
 
@@ -1951,6 +1952,7 @@ export function createOpenAIStreamAdapter(
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
+        permissionMode,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2642,6 +2644,7 @@ export function createOpenAIStreamAdapter(
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
+            permissionMode,
           },
         });
         const externalCapabilities = getProviderCapabilities(
@@ -2953,6 +2956,16 @@ export function createOpenAIStreamAdapter(
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
+            // Permission level for local tool calls is sent for every local
+            // chat, not only when a tool pill is on: a process policy
+            // (unsloth run --enable-tools) can open the tool loop with no pill,
+            // and the backend must still see the selected gate. ask/auto request
+            // the confirm gate ("auto" only pauses calls flagged unsafe); off
+            // and full never prompt, full also drops the sandbox.
+            permission_mode: permissionMode,
+            confirm_tool_calls:
+              permissionMode === "ask" || permissionMode === "auto",
+            bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
@@ -2974,10 +2987,6 @@ export function createOpenAIStreamAdapter(
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Bypass Permissions wins: never request the confirm gate
-                  // while bypassing, and tell the backend to drop the sandbox.
-                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
-                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
