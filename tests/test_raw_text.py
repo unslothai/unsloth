@@ -141,6 +141,26 @@ def test_raw_text_loader():
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
+        # smart_chunk_text validation: called directly, chunk_size/stride are its own
+        # arguments and bypass the constructor guard, so it must guard itself or an
+        # invalid stride makes `start_idx += chunk_size - stride` non-positive and the
+        # chunking loop never terminates (hangs).
+        long_text = "This is a test file for raw text training. " * 10
+        valid_chunks = loader.smart_chunk_text(long_text, chunk_size = 5, stride = 2)
+        assert len(valid_chunks) > 0, "Valid stride should produce chunks"
+
+        try:
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 5)
+            assert False, "Should raise ValueError for stride == chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
+        try:
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 10)
+            assert False, "Should raise ValueError for stride > chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
         # Preprocessor.
         preprocessor = TextPreprocessor()
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
