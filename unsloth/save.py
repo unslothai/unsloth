@@ -2074,12 +2074,18 @@ def save_to_gguf(
                     fut.cancel()
                 first_exc = next((f.exception() for f in done if f.exception() is not None), None)
                 if first_exc is not None:
-                    # Drop partial/finished siblings so a failed export leaves no orphans;
-                    # keep the 16-bit base for retry.
+                    # Drop only outputs from passes that ran this session, so a failure
+                    # leaves no orphans; a canceled pass never wrote its file, so its
+                    # (possibly pre-existing) output is left untouched. Base kept for retry.
                     wait(future_to_idx)
-                    for method in methods_to_quantize:
+                    for fut, i in future_to_idx.items():
+                        if fut.cancelled():
+                            continue
                         Path(
-                            os.path.join(gguf_directory, f"{model_name}.{method.upper()}.gguf")
+                            os.path.join(
+                                gguf_directory,
+                                f"{model_name}.{methods_to_quantize[i].upper()}.gguf",
+                            )
                         ).unlink(missing_ok = True)
                     raise first_exc
                 for fut, i in future_to_idx.items():
