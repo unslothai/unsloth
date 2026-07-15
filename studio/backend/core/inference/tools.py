@@ -1391,6 +1391,7 @@ _BINARY_CHAR_DIVISOR = 8
 _BINARY_MAGIC = (
     b"%PDF-",  # PDF
     b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
+    b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",  # OLE / legacy Office
     b"\x89PNG\r\n\x1a\n",  # PNG
     b"\xff\xd8\xff",  # JPEG
     b"GIF87a",
@@ -1411,6 +1412,12 @@ def _looks_binary(text: str) -> bool:
     return len(_BINARY_CHAR_RE.findall(text)) > max(
         _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
     )
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Whether a common binary signature follows optional BOM or whitespace."""
+    head = data[:1024].lstrip().removeprefix(b"\xef\xbb\xbf").lstrip()
+    return head.startswith(_BINARY_MAGIC)
 
 
 def _has_single_byte_text_evidence(data: bytes) -> bool:
@@ -1528,11 +1535,8 @@ _BINARY_APPLICATION_SUBTYPES = frozenset(
         "epub+zip",
         "gzip",
         "java-archive",
-        "msword",
         "pdf",
         "vnd.apple.installer+xml",
-        "vnd.ms-excel",
-        "vnd.ms-powerpoint",
         "wasm",
         "x-7z-compressed",
         "x-bzip2",
@@ -1543,10 +1547,6 @@ _BINARY_APPLICATION_SUBTYPES = frozenset(
         "zip",
         "zstd",
     }
-)
-_BINARY_APPLICATION_PREFIXES = (
-    "vnd.oasis.opendocument.",
-    "vnd.openxmlformats-officedocument.",
 )
 
 
@@ -1560,9 +1560,7 @@ def _is_text_candidate_content_type(content_type: str | None) -> bool:
         return True
     if ct.startswith("application/"):
         subtype = ct[len("application/") :]
-        return subtype not in _BINARY_APPLICATION_SUBTYPES and not subtype.startswith(
-            _BINARY_APPLICATION_PREFIXES
-        )
+        return subtype not in _BINARY_APPLICATION_SUBTYPES
     return False
 
 
@@ -1655,7 +1653,7 @@ def _fetch_page_text(
             return f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)"
 
         # Catch text-labeled binary whose header and first chunk look textual.
-        if raw_bytes.startswith(_BINARY_MAGIC):
+        if _has_binary_magic(raw_bytes):
             return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
 
         declared = resp.headers.get_content_charset()

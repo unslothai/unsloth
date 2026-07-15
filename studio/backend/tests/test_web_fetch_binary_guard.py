@@ -75,7 +75,8 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         ("image/svg+xml", False),
         ("application/octet-stream", True),
         ("application/zip", False),
-        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", False),
+        ("application/vnd.ms-excel", True),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", True),
         ("", True),
         (None, True),
     ],
@@ -114,6 +115,13 @@ def test_unknown_application_text_kept_after_sniffing(monkeypatch, content_type)
     assert "non-text content" not in out and "binary content" not in out
 
 
+def test_excel_labeled_csv_kept_after_sniffing(monkeypatch):
+    body = b"name,value\nreadable,42\n" * 100
+    out = _fetch_with(monkeypatch, body, "application/vnd.ms-excel")
+    assert "readable" in out
+    assert "binary content" not in out
+
+
 def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
     # These controls are valid UTF-8 and therefore produce no replacement chars.
     body = bytes([0, 1, 2, 3, 4, 5, 6, 7]) * 400
@@ -123,10 +131,40 @@ def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
 
 @pytest.mark.parametrize(
     "magic",
-    [b"%PDF-", b"PK\x03\x04", b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"\x28\xb5\x2f\xfd"],
+    [
+        b"%PDF-",
+        b"PK\x03\x04",
+        b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+        b"\x1f\x8b",
+        b"BZh",
+        b"\xfd7zXZ\x00",
+        b"\x28\xb5\x2f\xfd",
+    ],
 )
 def test_text_labeled_binary_caught_by_magic(monkeypatch, magic):
     out = _fetch_with(monkeypatch, magic + b" printable text-heavy body" * 100, "text/plain")
+    assert "binary content" in out
+
+
+@pytest.mark.parametrize("prefix", [b"\xef\xbb\xbf", b" \r\n", b"\t\xef\xbb\xbf "])
+def test_pdf_magic_after_harmless_prefix(monkeypatch, prefix):
+    body = prefix + b"%PDF-1.7\n" + b"1 0 obj<</Type/Catalog>>endobj\n" * 100
+    out = _fetch_with(monkeypatch, body, "text/plain")
+    assert "binary content" in out
+
+
+@pytest.mark.parametrize(
+    "content_type,magic",
+    [
+        ("application/vnd.ms-excel", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"),
+        (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            b"PK\x03\x04",
+        ),
+    ],
+)
+def test_office_labeled_binary_caught_by_magic(monkeypatch, content_type, magic):
+    out = _fetch_with(monkeypatch, magic + b" printable text-heavy body" * 100, content_type)
     assert "binary content" in out
 
 
