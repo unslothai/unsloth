@@ -1541,6 +1541,25 @@ def _is_external_link(path: Path) -> bool:
     return False
 
 
+# Inkling's template takes a numeric thinking-effort dial (0..0.99) and its
+# float() coercion turns unrecognized named levels into 0, i.e. no thinking.
+# Map OpenAI-style names to the values the model was trained on. Module-level
+# so duck-typed engine stand-ins in tests do not need the attribute.
+_INKLING_REASONING_EFFORT = {
+    "none": 0.0, "minimal": 0.2, "low": 0.2, "medium": 0.7,
+    "high": 0.9, "xhigh": 0.99, "max": 0.99,
+}
+
+def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
+    if architecture == "inkling":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _INKLING_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    return kwargs
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -1941,30 +1960,14 @@ class LlamaCppBackend:
     def reasoning_default(self) -> bool:
         return self._reasoning_default
 
-    # Inkling's template takes a numeric thinking-effort dial (0..0.99) and its
-    # float() coercion turns unrecognized named levels into 0, i.e. no thinking.
-    # Map OpenAI-style names to the values the model was trained on.
-    _INKLING_REASONING_EFFORT = {
-        "none": 0.0, "minimal": 0.2, "low": 0.2, "medium": 0.7,
-        "high": 0.9, "xhigh": 0.99, "max": 0.99,
-    }
-
-    def _coerce_reasoning_effort(self, kwargs: dict) -> dict:
-        if getattr(self, "_architecture", None) == "inkling":
-            effort = kwargs.get("reasoning_effort")
-            if isinstance(effort, str):
-                mapped = self._INKLING_REASONING_EFFORT.get(effort.strip().lower())
-                if mapped is not None:
-                    kwargs["reasoning_effort"] = mapped
-        return kwargs
-
     def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
         if self._reasoning_style == "enable_thinking_effort":
             # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
             # the template's default effort (max) in place.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
-            return self._coerce_reasoning_effort(
+            return _coerce_reasoning_effort(
+                getattr(self, "_architecture", None),
                 {"reasoning_effort": "high" if enable_thinking else "low"})
         return {"enable_thinking": enable_thinking}
 
@@ -2013,7 +2016,7 @@ class LlamaCppBackend:
                     kwargs["enable_thinking"] = enable_thinking
         if self._supports_preserve_thinking and preserve_thinking is not None:
             kwargs["preserve_thinking"] = preserve_thinking
-        self._coerce_reasoning_effort(kwargs)
+        _coerce_reasoning_effort(getattr(self, "_architecture", None), kwargs)
         return kwargs or None
 
     @property
