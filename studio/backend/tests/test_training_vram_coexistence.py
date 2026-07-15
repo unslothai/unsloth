@@ -94,6 +94,7 @@ def _fake_stt_sidecar(
         is_loading = lambda: loading,
     )
     sidecar.cancel_pending_load = MagicMock(return_value = loading)
+    sidecar.wait_for_load_to_settle = MagicMock()
     sidecar.unload = MagicMock()
     return sidecar
 
@@ -491,12 +492,26 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         sidecar.unload.assert_called_once()
         self.assertEqual(freed, ["stt:small"])
 
-    def test_cancels_inflight_load_without_waiting(self):
+    def test_cancels_inflight_load_and_waits_to_settle(self):
         sidecar = _fake_stt_sidecar(loading = True)
         with _patch_stt(sidecar):
             freed = tv.free_stt_model_for_training(reason = "test")
         sidecar.cancel_pending_load.assert_called_once()
+        # The cancelled loader may still hold VRAM; we wait for it to release.
+        sidecar.wait_for_load_to_settle.assert_called_once()
+        # No model surfaced after the wait, so nothing to unload.
         sidecar.unload.assert_not_called()
+        self.assertEqual(freed, ["stt:loading"])
+
+    def test_cancels_inflight_load_then_unloads_settled_model(self):
+        # A load that finished before observing the cancel leaves a resident
+        # model behind; it must be unloaded so training reclaims the memory.
+        sidecar = _fake_stt_sidecar(model = "small", loading = True)
+        with _patch_stt(sidecar):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.cancel_pending_load.assert_called_once()
+        sidecar.wait_for_load_to_settle.assert_called_once()
+        sidecar.unload.assert_called_once()
         self.assertEqual(freed, ["stt:loading"])
 
     def test_leaves_empty_sidecar_alone(self):

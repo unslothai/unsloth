@@ -367,6 +367,14 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         sidecar = get_stt_sidecar()
         if sidecar.is_loading() and sidecar.cancel_pending_load():
             logger.info("Cancelling STT model load for training (%s)", reason)
+            # The loader may still be inside from_pretrained()/.to(device) and
+            # holding VRAM; wait for it to observe the cancel and release before
+            # training claims the memory.
+            sidecar.wait_for_load_to_settle()
+            # A load that finished before observing the cancel leaves a resident
+            # model; unload it so training actually gets the memory back.
+            if sidecar.loaded_model:
+                sidecar.unload()
             return ["stt:loading"]
         model = sidecar.loaded_model
         if not model:

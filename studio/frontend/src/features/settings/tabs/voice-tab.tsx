@@ -535,6 +535,7 @@ export function VoiceTab() {
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
   const sttRepoId = getSttModelRepo(sttModel);
+  const hfToken = useHfTokenStore((state) => state.token);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;
     state: SttDownloadAvailability;
@@ -567,7 +568,10 @@ export function VoiceTab() {
   const checkSttDownloadAvailability = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const progress = await getDownloadProgress(sttRepoId, { signal });
+        const progress = await getDownloadProgress(sttRepoId, {
+          hfToken: hfApiToken(hfToken),
+          signal,
+        });
         if (signal?.aborted) {
           return;
         }
@@ -581,7 +585,7 @@ export function VoiceTab() {
         }
       }
     },
-    [sttRepoId],
+    [sttRepoId, hfToken],
   );
 
   useEffect(() => {

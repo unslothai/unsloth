@@ -3414,6 +3414,7 @@ const ComposerRightControls: FC<{
         <TooltipIconButton
           tooltip="Dictate"
           aria-label="Dictate"
+          type="button"
           variant="ghost"
           className="size-8 rounded-full text-foreground"
           onClick={startDictation}

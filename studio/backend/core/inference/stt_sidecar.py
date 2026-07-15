@@ -329,6 +329,16 @@ class WhisperSttSidecar:
             event.set()
             return True
 
+    def wait_for_load_to_settle(self) -> None:
+        """Block until any in-flight load() has exited and released its memory.
+
+        load() holds self._lock for its whole duration, including the blocking
+        from_pretrained()/.to(device) allocation and the cancel cleanup, so
+        acquiring the lock here waits for that memory to be freed.
+        """
+        with self._lock:
+            pass
+
     def _begin_load(self) -> threading.Event:
         event = threading.Event()
         with self._load_state_lock:
@@ -478,6 +488,9 @@ class WhisperSttSidecar:
                     # Retry on CPU when the accelerator cannot load the model.
                     if device != "cpu":
                         logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
+                        # Free whatever the failed accelerator load reserved so it
+                        # is not stranded once the model is marked CPU-resident.
+                        _clear_device_cache(device)
                         try:
                             candidate = self._build_model(
                                 repo,
