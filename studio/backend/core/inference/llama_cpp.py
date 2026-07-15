@@ -8627,7 +8627,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
-        """Best-effort interrupt for a sync httpx request blocked before headers."""
+        """Best-effort interrupt for a sync httpx read blocked in recv(), whether
+        parked before headers (prefill) or mid-stream."""
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
             connections = list(getattr(pool, "_connections", []) or [])
@@ -8675,10 +8676,11 @@ class LlamaCppBackend:
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
                         try:
+                            # response.close() can't wake a read already blocked in
+                            # recv(); only a socket shutdown does, so shut down first.
+                            LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             if r is not None:
                                 r.close()
-                            else:
-                                LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             return
                         except Exception as e:
                             logger.debug(f"Error closing request in cancel watcher: {e}")
@@ -8982,6 +8984,7 @@ class LlamaCppBackend:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
@@ -10144,6 +10147,7 @@ class LlamaCppBackend:
                                 cancel_event = cancel_event,
                                 timeout = _effective_timeout,
                                 session_id = session_id,
+                                thread_id = thread_id,
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )

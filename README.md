@@ -230,6 +230,14 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
+Skip the post-install prompt that starts Studio (useful for automated installs):
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
+```
+```powershell
+$env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
+```
+
 Pin the Python version:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh
