@@ -266,6 +266,20 @@ def strip_result_for_model(result: str) -> str:
     return result
 
 
+def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
+    """Append a batch's no-op nudges as a single ``role=user`` message after the
+    tool results.
+
+    Held until here (rather than appended inline) so a no-op never splits an
+    assistant's ``tool_calls`` from their ``role=tool`` results, and merged into
+    one message (deduped, order-preserving) so parallel suppressions don't stack
+    extra user turns.
+    """
+    contents = list(dict.fromkeys(msg["content"] for msg in msgs))
+    if contents:
+        conversation.append({"role": "user", "content": "\n\n".join(contents)})
+
+
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     function = tool.get("function")
     if not isinstance(function, Mapping):

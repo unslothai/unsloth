@@ -13,12 +13,29 @@ if _BACKEND_DIR not in sys.path:
 
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     canonical_tool_call_key,
     coerce_tool_arguments,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
 )
+
+
+def test_append_deferred_nudges_merges_deduped_into_one_message():
+    conversation = [{"role": "assistant", "tool_calls": [1]}, {"role": "tool", "content": "r"}]
+    nudges = [
+        {"role": "user", "content": "duplicate"},
+        {"role": "user", "content": "duplicate"},  # dropped: same content
+        {"role": "user", "content": "disabled foo"},
+    ]
+    append_deferred_nudges(conversation, nudges)
+    # One user message, after the results, with distinct contents joined.
+    assert conversation[2:] == [{"role": "user", "content": "duplicate\n\ndisabled foo"}]
+    # Empty is a no-op.
+    before = list(conversation)
+    append_deferred_nudges(conversation, [])
+    assert conversation == before
 
 
 def _tool(name: str) -> dict:

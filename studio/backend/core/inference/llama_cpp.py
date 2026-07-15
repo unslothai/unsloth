@@ -82,6 +82,7 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -10107,6 +10108,11 @@ class LlamaCppBackend:
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
+                # No-op nudges (duplicate / disabled / render_html_repeat) are held
+                # here and appended after the batch's tool results, so they never split
+                # an assistant's tool_calls from their results. A no-op no longer aborts
+                # the batch, so legitimate parallel calls after it still run.
+                deferred_noop_msgs: list = []
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -10149,14 +10155,14 @@ class LlamaCppBackend:
                                 "provenance": decision.provenance,
                             }
                         completion = tool_controller.record_noop(decision)
-                        conversation.append(completion.model_message())
+                        deferred_noop_msgs.append(completion.model_message())
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
                         logger.info(
                             "Suppressed local GGUF tool call as internal no-op: "
                             f"action={decision.action} tool={decision.tool_name}"
                         )
-                        break
+                        continue
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
@@ -10274,6 +10280,9 @@ class LlamaCppBackend:
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                # Deliver the deferred no-op nudges after every tool result.
+                append_deferred_nudges(conversation, deferred_noop_msgs)
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
