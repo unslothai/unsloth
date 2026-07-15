@@ -264,38 +264,3 @@ def test_text_with_a_few_stray_replacement_chars_kept(monkeypatch):
     out = _fetch_with(monkeypatch, body, "text/html")
     assert "Real article text." in out
     assert "binary content" not in out
-
-
-@pytest.mark.parametrize("charset", ["iso-8859-1", "latin-1", "windows-1252", "cp1252"])
-def test_declared_latin1_high_byte_binary_rejected(monkeypatch, charset):
-    # Latin-1/cp1252 decode high bytes to printable chars, so binary evades the
-    # control-char check; the ASCII-structure gate must still reject it.
-    body = bytes(range(0xA0, 0x100)) * 40
-    out = _fetch_with(monkeypatch, body, f"text/plain; charset={charset}")
-    assert "binary content" in out
-
-
-@pytest.mark.parametrize("charset", ["iso-8859-1", "windows-1252"])
-def test_declared_latin1_real_text_still_kept(monkeypatch, charset):
-    # Genuine accented Western text is ASCII-dominated and must not be rejected.
-    body = ("Cafe un tres bon eleve a l ecole. MARKERWORD ".replace("e", "é") + "voila ").encode(
-        "cp1252"
-    ) * 40
-    out = _fetch_with(monkeypatch, body, f"text/plain; charset={charset}")
-    assert "MARKERWORD" in out
-    assert "binary content" not in out
-
-
-@pytest.mark.parametrize(
-    "charset,codec,sample",
-    [
-        ("windows-1251", "cp1251", "Это настоящая русская статья. Привет. "),
-        ("koi8-r", "koi8-r", "Это настоящая русская статья. Привет. "),
-        ("iso-8859-7", "iso-8859-7", "Αυτό είναι ένα ελληνικό άρθρο. "),
-    ],
-)
-def test_declared_non_latin_single_byte_text_kept(monkeypatch, charset, codec, sample):
-    # Cyrillic/Greek single-byte pages are high-byte dense; the Latin-1 ASCII
-    # gate must not touch them or legitimate non-Western text would be dropped.
-    out = _fetch_with(monkeypatch, (sample * 40).encode(codec), f"text/plain; charset={charset}")
-    assert "binary content" not in out

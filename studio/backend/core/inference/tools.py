@@ -3890,14 +3890,6 @@ def _fetch_page_text(
                 raw_html = alt
             else:
                 return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
-        elif declared_codec in ("iso8859-1", "cp1252") and not (
-            _has_single_byte_text_evidence(raw_bytes)
-        ):
-            # Latin-1/cp1252 map every byte to a printable character, so high-byte
-            # binary decodes cleanly and slips past _looks_binary; require ASCII text
-            # structure. Other single-byte charsets are left alone so legitimate
-            # non-Latin pages (Cyrillic, Greek, ...) are not rejected.
-            return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
     except _HTTPError as e:
         return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
     except Exception as e:
