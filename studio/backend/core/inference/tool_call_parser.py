@@ -54,6 +54,8 @@ TOOL_XML_SIGNALS = (
     # Kimi K2 / Moonshot.
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
+    # TML Inkling native call marker.
+    "<|content_invoke_tool_json|>",
 )
 
 

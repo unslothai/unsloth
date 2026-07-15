@@ -652,6 +652,10 @@ _TOOL_TEMPLATE_MARKERS = (
     "{%- if tools -%}",
     "{% if tools %}",
     "{% if tools -%}",
+    # Defensive templates guard with `tools is defined` before truth-testing
+    # (e.g. Inkling: `{%- if tools is defined and tools -%}`).
+    "{%- if tools is defined",
+    "{% if tools is defined",
     '"role" == "tool"',
     "'role' == 'tool'",
     'message.role == "tool"',
@@ -667,9 +671,10 @@ _TOOL_TEMPLATE_MARKERS = (
 
 
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
-# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max') so we
-# only ever offer levels the template actually understands.
-_REASONING_EFFORT_SCALE = ("minimal", "low", "medium", "high", "max")
+# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
+# uses the full 'none'..'max' ladder) so we only ever offer levels the template
+# actually understands.
+_REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _extract_reasoning_effort_levels(chat_template: str) -> list:
@@ -751,10 +756,22 @@ def detect_reasoning_flags(
         logger.info(f"{prefix}model supports reasoning (enable_thinking)")
     elif "reasoning_effort" in tpl:
         # gpt-oss / Harmony use reasoning_effort
-        # ("low" | "medium" | "high"), not a boolean.
+        # ("low" | "medium" | "high"), not a boolean. Inkling maps a wider
+        # named ladder ('none'..'max'); surface the levels the template
+        # actually branches on so the Think menu offers exactly those and
+        # nothing more ('none' renders as thinking off: effort 0). Guard:
+        # trust the scan only when it includes the core 'low' and 'high'
+        # literals, so a template that quotes e.g. 'none' for an unrelated
+        # comparison keeps the default low/medium/high set.
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
-        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+        scanned = _extract_reasoning_effort_levels(tpl)
+        if "low" in scanned and "high" in scanned:
+            flags["reasoning_effort_levels"] = scanned
+        logger.info(
+            f"{prefix}model supports reasoning "
+            f"(reasoning_effort: {flags['reasoning_effort_levels'] or 'default levels'})"
+        )
     elif "thinking" in tpl:
         # DeepSeek uses 'thinking', not 'enable_thinking'
         normalized_id = (model_identifier or "").lower()
@@ -1924,13 +1941,37 @@ class LlamaCppBackend:
     def reasoning_default(self) -> bool:
         return self._reasoning_default
 
+    # Inkling's template takes a numeric thinking-effort dial (0..0.99) and its
+    # float() coercion turns unrecognized named levels into 0, i.e. no thinking.
+    # Map OpenAI-style names to the values the model was trained on.
+    _INKLING_REASONING_EFFORT = {
+        "none": 0.0,
+        "minimal": 0.2,
+        "low": 0.2,
+        "medium": 0.7,
+        "high": 0.9,
+        "xhigh": 0.99,
+        "max": 0.99,
+    }
+
+    def _coerce_reasoning_effort(self, kwargs: dict) -> dict:
+        if getattr(self, "_architecture", None) == "inkling":
+            effort = kwargs.get("reasoning_effort")
+            if isinstance(effort, str):
+                mapped = self._INKLING_REASONING_EFFORT.get(effort.strip().lower())
+                if mapped is not None:
+                    kwargs["reasoning_effort"] = mapped
+        return kwargs
+
     def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
         if self._reasoning_style == "enable_thinking_effort":
             # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
             # the template's default effort (max) in place.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
-            return {"reasoning_effort": "high" if enable_thinking else "low"}
+            return self._coerce_reasoning_effort(
+                {"reasoning_effort": "high" if enable_thinking else "low"}
+            )
         return {"enable_thinking": enable_thinking}
 
     def _request_reasoning_kwargs(
@@ -1978,6 +2019,7 @@ class LlamaCppBackend:
                     kwargs["enable_thinking"] = enable_thinking
         if self._supports_preserve_thinking and preserve_thinking is not None:
             kwargs["preserve_thinking"] = preserve_thinking
+        self._coerce_reasoning_effort(kwargs)
         return kwargs or None
 
     @property
@@ -3505,6 +3547,19 @@ class LlamaCppBackend:
     _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
     _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
 
+    # Inkling (inkling): with the reserve fix in the bundled llama.cpp (full-cache
+    # reserve context reports the whole cache as position-contiguous, so the
+    # worst-case graph is the banded flash path instead of the dense-bias
+    # fallback), the ctx-linear compute term is just the banded KQ-mask cont:
+    # measured on UD-IQ1_S (ub=512) 64K -> 1M total-VRAM slope of 50.6 KiB/tok,
+    # of which 45,056 B/tok is KV -> ~5.6 KiB/tok compute. 8192 adds ~1.5x
+    # headroom. (Pre-fix builds reserved the dense fallback at ~402 KiB/tok and
+    # could not load large contexts at all.)
+    _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
+    # Dense relative-bias fallback rate (quantized KV cache disables the banded
+    # path): measured 402.5 GiB reserve at 1M ctx pre-fix, ~402 KiB per token.
+    _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
+
     def _estimate_compute_buffer_bytes(
         self,
         *,
@@ -3561,6 +3616,17 @@ class LlamaCppBackend:
                 self._DSV4_CTX_COMPUTE_FLAT_BYTES
                 + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
             )
+        if getattr(self, "_architecture", None) == "inkling":
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            # The fused banded path requires an f32/f16/bf16 KV cache. A quantized
+            # cache forces the dense relative-bias fallback, whose compute buffer is
+            # [n_kv, ub, n_head] f32 (~402 KiB per context token at ub=512); size the
+            # fit for that so a q8_0 cache gets a small honest context instead of an
+            # unloadable one that crash-loops the server.
+            if cache_type_kv and _kv_bytes_per_elem(cache_type_kv) < 2.0:
+                return int(self._INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK * n_ctx * ub_scale)
+            # Banded flash path (see constants): linear, ub-scaled.
+            return int(self._INKLING_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale)
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the dequant scratch dominates and scales with n_embd.
             # MLA (compressed KV) needs far less of it: measured 0.94 x n_embd on
