@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
 import base64
 import json
 import os
@@ -271,15 +270,13 @@ def test_delete_chat_attachment_missing_targets(tmp_path, monkeypatch):
 
 def test_list_attachments_route(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
-    result = asyncio.run(chat_history.list_attachments(current_subject = "unsloth"))
+    result = chat_history.list_attachments(current_subject = "unsloth")
     assert [a["id"] for a in result["attachments"]] == ["att-1"]
 
 
 def test_attachment_file_serves_image_bytes(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == PNG_BYTES
     assert response.media_type == "image/png"
 
@@ -290,9 +287,7 @@ def test_attachment_file_tolerates_whitespace_in_base64(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:image/png;base64," + wrapped}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == PNG_BYTES
 
 
@@ -301,7 +296,7 @@ def test_attachment_file_corrupt_base64_is_422(tmp_path, monkeypatch):
     attachment["content"] = [{"type": "image", "image": "data:image/png;base64,%%%"}]
     _seed(tmp_path, monkeypatch, [attachment])
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth"))
+        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert excinfo.value.status_code == 422
 
 
@@ -312,9 +307,7 @@ def test_attachment_file_accepts_urlsafe_base64(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:image/png;base64," + payload}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == data
 
 
@@ -323,9 +316,7 @@ def test_attachment_file_accepts_missing_padding(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:image/png;base64," + payload}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == PNG_BYTES
 
 
@@ -333,9 +324,7 @@ def test_attachment_file_serves_percent_encoded_data_url(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:text/plain,hello%20world"}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == b"hello world"
     # Non-image data URL types are clamped so markup never renders same-origin.
     assert response.media_type == "application/octet-stream"
@@ -352,9 +341,7 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
         ],
     }
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
     assert response.body.decode("utf-8") == "first\nsecond"
     assert response.media_type.startswith("text/plain")
 
@@ -362,16 +349,14 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
 def test_attachment_file_no_content_is_404(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [{"id": "att-empty", "name": "ghost", "content": []}])
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            chat_history.get_attachment_file("msg-1", "att-empty", current_subject = "unsloth")
-        )
+        chat_history.get_attachment_file("msg-1", "att-empty", current_subject = "unsloth")
     assert excinfo.value.status_code == 404
 
 
 def test_attachment_file_missing_message_is_404(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(chat_history.get_attachment_file("nope", "att-1", current_subject = "unsloth"))
+        chat_history.get_attachment_file("nope", "att-1", current_subject = "unsloth")
     assert excinfo.value.status_code == 404
 
 
@@ -380,7 +365,7 @@ def test_attachment_file_non_data_url_image_is_404(tmp_path, monkeypatch):
     attachment["content"] = [{"type": "image", "image": "https://example.com/a.png"}]
     _seed(tmp_path, monkeypatch, [attachment])
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth"))
+        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert excinfo.value.status_code == 404
 
 
@@ -389,9 +374,7 @@ def test_attachment_file_defaults_media_type(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:;base64," + payload}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == b"raw-bytes"
     assert response.media_type == "application/octet-stream"
 
@@ -402,9 +385,7 @@ def test_attachment_file_svg_media_type(tmp_path, monkeypatch):
     attachment = _image_attachment()
     attachment["content"] = [{"type": "image", "image": "data:image/svg+xml;base64," + payload}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == svg
     # SVG can carry scripts, so it downloads as bytes instead of rendering.
     assert response.media_type == "application/octet-stream"
@@ -412,12 +393,10 @@ def test_attachment_file_svg_media_type(tmp_path, monkeypatch):
 
 def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
-    result = asyncio.run(
-        chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
-    )
+    result = chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
     assert result == {"ok": True}
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth"))
+        chat_history.delete_attachment("msg-1", "att-1", current_subject = "unsloth")
     assert excinfo.value.status_code == 404
 
 
@@ -450,9 +429,7 @@ def test_audio_attachment_lists_with_size(tmp_path, monkeypatch):
 
 def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_audio_attachment()])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
     assert response.body == WAV_BYTES
     assert response.media_type == "audio/wav"
 
@@ -462,9 +439,7 @@ def test_audio_attachment_media_type_from_format(tmp_path, monkeypatch):
     attachment["contentType"] = None
     attachment["content"] = [{"type": "audio", "audio": {"data": WAV_B64, "format": "mp3"}}]
     _seed(tmp_path, monkeypatch, [attachment])
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
-    )
+    response = chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
     assert response.media_type == "audio/mpeg"
 
 
@@ -473,9 +448,7 @@ def test_audio_attachment_corrupt_payload_is_422(tmp_path, monkeypatch):
     attachment["content"] = [{"type": "audio", "audio": {"data": "%%%", "format": "wav"}}]
     _seed(tmp_path, monkeypatch, [attachment])
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
-        )
+        chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
     assert excinfo.value.status_code == 422
 
 
@@ -505,42 +478,64 @@ def _seed_compare(tmp_path, monkeypatch):
     studio_db.upsert_chat_message(_compare_message())
 
 
+_CONTENT_PART_PREFIX = "content-part-sha256-"
+
+
+def _content_part_id_for(message_id: str, kind: str) -> str:
+    """Resolve the stable content-hash id for a message's stored blob.
+
+    Content-part ids are SHA-256 hashes of the blob payload, not array
+    indices, so tests look them up from the listing instead of hardcoding an
+    index that would shift when an earlier part is deleted.
+    """
+    for record in studio_db.list_chat_attachments():
+        if record["messageId"] == message_id and record["type"] == kind:
+            return record["id"]
+    raise AssertionError(f"no {kind} content-part upload for {message_id}")
+
+
 def test_content_part_uploads_are_listed(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
     records = studio_db.list_chat_attachments()
-    ids = sorted(r["id"] for r in records)
-    assert ids == ["content-part-0", "content-part-1"]
-    image = next(r for r in records if r["id"] == "content-part-0")
-    assert image["type"] == "image"
+    # Ids are stable content hashes, not array indices.
+    assert all(r["id"].startswith(_CONTENT_PART_PREFIX) for r in records)
+    assert {r["type"] for r in records} == {"image", "audio"}
+    image = next(r for r in records if r["type"] == "image")
     assert image["contentType"] == "image/png"
     assert abs(image["sizeBytes"] - len(PNG_BYTES)) <= 2
-    audio = next(r for r in records if r["id"] == "content-part-1")
+    audio = next(r for r in records if r["type"] == "audio")
     assert audio["type"] == "audio"
 
 
 def test_content_part_file_serves_image_bytes(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-cmp", "content-part-0", current_subject = "unsloth")
-    )
+    image_id = _content_part_id_for("msg-cmp", "image")
+    response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
     assert response.body == PNG_BYTES
     assert response.media_type == "image/png"
 
 
 def test_content_part_delete_keeps_text(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
-    assert studio_db.delete_chat_attachment("msg-cmp", "content-part-0") is True
+    image_id = _content_part_id_for("msg-cmp", "image")
+    assert studio_db.delete_chat_attachment("msg-cmp", image_id) is True
     message = studio_db.get_chat_message("thread-1", "msg-cmp")
     types = [p["type"] for p in message["content"]]
     assert types == ["audio", "text"]
-    # Remaining blob re-lists under its new index.
-    assert [r["id"] for r in studio_db.list_chat_attachments()] == ["content-part-0"]
+    # The surviving audio blob keeps its own stable hash id after the delete.
+    remaining = studio_db.list_chat_attachments()
+    assert [r["type"] for r in remaining] == ["audio"]
+    assert remaining[0]["id"].startswith(_CONTENT_PART_PREFIX)
+    assert remaining[0]["id"] != image_id
 
 
 def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
-    # Index 2 is the text part: not a stored upload, must not be deletable.
-    assert studio_db.delete_chat_attachment("msg-cmp", "content-part-2") is False
+    # The text part is not a stored upload, so it never gets an id: only the
+    # image and audio blobs are addressable.
+    assert len(studio_db.list_chat_attachments()) == 2
+    # A well-formed but unknown content-hash id, and malformed ids, all no-op.
+    assert studio_db.delete_chat_attachment("msg-cmp", _CONTENT_PART_PREFIX + "0" * 64) is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-99") is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-x") is False
 
@@ -581,8 +576,9 @@ def test_html_data_url_serves_as_octet_stream(tmp_path, monkeypatch):
         {"type": "image", "image": f"data:text/html;base64,{html_b64}"},
     ]
     studio_db.upsert_chat_message(message)
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-html", "content-part-0", current_subject = "unsloth")
+    attachment_id = _content_part_id_for("msg-html", "image")
+    response = chat_history.get_attachment_file(
+        "msg-html", attachment_id, current_subject = "unsloth"
     )
     # Never echo a script-capable media type back under the app origin.
     assert response.media_type == "application/octet-stream"
@@ -598,15 +594,13 @@ def test_svg_data_url_serves_as_octet_stream(tmp_path, monkeypatch):
         {"type": "image", "image": f"data:image/svg+xml;base64,{svg_b64}"},
     ]
     studio_db.upsert_chat_message(message)
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-svg", "content-part-0", current_subject = "unsloth")
-    )
+    attachment_id = _content_part_id_for("msg-svg", "image")
+    response = chat_history.get_attachment_file("msg-svg", attachment_id, current_subject = "unsloth")
     assert response.media_type == "application/octet-stream"
 
 
 def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
-    response = asyncio.run(
-        chat_history.get_attachment_file("msg-cmp", "content-part-0", current_subject = "unsloth")
-    )
+    image_id = _content_part_id_for("msg-cmp", "image")
+    response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
     assert response.media_type == "image/png"

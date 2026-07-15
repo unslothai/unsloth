@@ -2086,7 +2086,15 @@ export function HubModelPicker({
   // Pinned quants of repos still in the cache (stale pins stay hidden), in
   // pin order, filtered by the search query on repo id or quant name.
   const pinnedQuants = useMemo(() => {
-    const cached = new Set(visibleCachedGguf.map((c) => c.repo_id));
+    // The existence check ignores the text query (but keeps the format filter)
+    // so a pinned quant stays findable by its quant name even when the repo id
+    // does not match the query; querying visibleCachedGguf here would drop the
+    // repo before the `${repoId} ${quant}` predicate below could surface it.
+    const cached = new Set(
+      sortedCachedGguf
+        .filter((c) => matchesFormatFilter(c.repo_id, true, formatFilter))
+        .map((c) => c.repo_id),
+    );
     const q = normalizeForSearch(debouncedQuery.trim());
     return pinnedQuantEntries(pinnedIds).filter(
       (entry) =>
@@ -2094,7 +2102,7 @@ export function HubModelPicker({
         (!q ||
           normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q)),
     );
-  }, [pinnedIds, visibleCachedGguf, debouncedQuery]);
+  }, [pinnedIds, sortedCachedGguf, formatFilter, debouncedQuery]);
 
   const pinnedCachedModelRows = useMemo(
     () => visibleCachedModelRows.filter((c) => pinnedSet.has(pinKey(c.repo_id))),
@@ -2772,6 +2780,7 @@ export function HubModelPicker({
             successMessage={`Deleted ${entry.repoId} ${entry.quant}`}
             buttonClassName="p-1"
             iconClassName="size-3"
+            disabled={deleteDisabled}
             onConfirm={async () => {
               await deleteCachedModel(entry.repoId, entry.quant);
               refreshCachedLists();
