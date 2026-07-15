@@ -4,6 +4,7 @@
 """Unit coverage for the preview follow-ups: rate limiter, client IP, kill switch."""
 
 from pathlib import Path
+import importlib.util
 import sys
 import types as _types
 
@@ -12,9 +13,10 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
+if importlib.util.find_spec("loggers") is None:
+    _loggers_stub = _types.ModuleType("loggers")
+    _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    sys.modules.setdefault("loggers", _loggers_stub)
 
 import utils.preview_rate_limit as rl
 from utils.client_ip import client_ip
@@ -75,13 +77,21 @@ class _Req:
         self,
         host,
         headers = None,
+        *,
+        trust_cloudflare_client_ip = False,
     ):
         self.client = _types.SimpleNamespace(host = host) if host else None
         self.headers = headers or {}
+        self.app = _types.SimpleNamespace(
+            state = _types.SimpleNamespace(
+                trust_cloudflare_client_ip = trust_cloudflare_client_ip,
+            )
+        )
 
 
 def test_client_ip_uses_socket_peer_by_default(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
     # Forwarded header is ignored unless the operator opts in.
     req = _Req("203.0.113.9", {"x-forwarded-for": "198.51.100.7"})
     assert client_ip(req) == "203.0.113.9"
@@ -96,11 +106,22 @@ def test_client_ip_uses_rightmost_forwarded_when_trusted(monkeypatch):
     assert client_ip(req) == "198.51.100.7"
 
 
-def test_client_ip_uses_cf_connecting_ip_on_loopback(monkeypatch):
-    # Managed Cloudflare tunnel terminates at loopback; key by the real visitor.
+def test_client_ip_uses_cf_connecting_ip_for_managed_tunnel(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
-    req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
+    req = _Req(
+        "127.0.0.1",
+        {"cf-connecting-ip": "198.51.100.7"},
+        trust_cloudflare_client_ip = True,
+    )
     assert client_ip(req) == "198.51.100.7"
+
+
+def test_client_ip_ignores_cf_header_without_managed_tunnel(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
+    req = _Req("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
+    assert client_ip(req) == "127.0.0.1"
 
 
 def test_client_ip_ignores_cf_header_from_non_loopback(monkeypatch):

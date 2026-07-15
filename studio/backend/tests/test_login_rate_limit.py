@@ -14,6 +14,7 @@ Covers:
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,7 @@ def _reset_buckets():
 @pytest.fixture
 def env_no_proxy(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_FORWARDED", raising = False)
+    monkeypatch.delenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", raising = False)
 
 
 @pytest.fixture
@@ -55,10 +57,16 @@ class _FakeRequest:
         self,
         client_host = "127.0.0.1",
         headers = None,
+        *,
+        trust_cloudflare_client_ip = False,
     ):
         from starlette.datastructures import Headers
-        self.client = type("Client", (), {"host": client_host})()
+
+        self.client = SimpleNamespace(host = client_host)
         self.headers = Headers(headers or {})
+        self.app = SimpleNamespace(
+            state = SimpleNamespace(trust_cloudflare_client_ip = trust_cloudflare_client_ip)
+        )
 
 
 # ---------- _client_ip ----------
@@ -143,6 +151,31 @@ class TestClientIp:
         req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "not-an-ip"})
         assert _client_ip(req) == "127.0.0.1"
 
+    @pytest.mark.parametrize(
+        ("peer", "managed", "cf_ip", "expected"),
+        [
+            ("127.0.0.1", False, "198.51.100.7", "127.0.0.1"),
+            ("127.0.0.1", True, "198.51.100.7", "198.51.100.7"),
+            ("203.0.113.9", True, "198.51.100.7", "203.0.113.9"),
+            ("127.0.0.1", True, "not-an-ip", "127.0.0.1"),
+        ],
+    )
+    def test_cf_connecting_ip_trust(self, env_no_proxy, peer, managed, cf_ip, expected):
+        from routes.auth import _client_ip
+        request = _FakeRequest(
+            peer,
+            {"cf-connecting-ip": cf_ip},
+            trust_cloudflare_client_ip = managed,
+        )
+        assert _client_ip(request) == expected
+
+    def test_cf_connecting_ip_used_when_explicitly_trusted(self, env_no_proxy, monkeypatch):
+        from routes.auth import _client_ip
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_TRUST_CF_CONNECTING_IP", "1")
+        req = _FakeRequest("127.0.0.1", {"cf-connecting-ip": "198.51.100.7"})
+        assert _client_ip(req) == "198.51.100.7"
+
 
 # ---------- bucket compose / blocking ----------
 
@@ -192,17 +225,18 @@ class TestBucketKeyAndBlocking:
 
         monkeypatch.setattr(auth_routes, "_LOGIN_IP_MAX_FAILS", 5)
         req = _FakeRequest("203.0.113.10")
+        unknown_key = auth_routes._bucket_key(req, auth_routes._UNKNOWN_LOGIN_USER)
         for idx in range(5):
-            auth_routes._record_login_failure(auth_routes._unknown_user_key(req))
+            auth_routes._record_login_failure(unknown_key)
             # Per-(ip,username) alone wouldn't throttle distinct usernames; the IP aggregate must.
-        assert auth_routes._login_blocked(auth_routes._unknown_user_key(req)) > 0
+        assert auth_routes._login_blocked(unknown_key) > 0
 
     def test_unknown_user_bucket_is_single_sentinel(self, env_no_proxy):
         """Random unknown usernames from one IP collapse to one bucket."""
         from routes import auth as auth_routes
 
         req = _FakeRequest("203.0.113.11")
-        unknown_key = auth_routes._unknown_user_key(req)
+        unknown_key = auth_routes._bucket_key(req, auth_routes._UNKNOWN_LOGIN_USER)
         for _ in range(20):
             auth_routes._record_login_failure(unknown_key)
         # Exactly one sentinel bucket for this IP regardless of usernames sprayed.

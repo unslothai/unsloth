@@ -259,6 +259,19 @@ class TestSecurityHeadersMiddleware:
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
 
+    @pytest.mark.parametrize(
+        ("is_kaggle", "frame_ancestors"),
+        [(False, "*"), (True, "'none'")],
+    )
+    def test_colab_and_kaggle_frame_policy(
+        self, main_module, monkeypatch, is_kaggle, frame_ancestors
+    ):
+        monkeypatch.setattr(main_module, "_IS_COLAB", True)
+        monkeypatch.setattr(main_module, "_IS_KAGGLE", is_kaggle)
+        response = TestClient(_make_csp_app(main_module)).get("/plain")
+        assert f"frame-ancestors {frame_ancestors}" in response.headers["content-security-policy"]
+        assert ("x-frame-options" in response.headers) is is_kaggle
+
     def test_internal_nonce_header_is_spliced_into_csp_and_stripped(self, main_module):
         nonce = "test-nonce-abc"
         app = _make_csp_app(main_module, attach_nonce = nonce)
@@ -275,6 +288,46 @@ class TestSecurityHeadersMiddleware:
         assert "'unsafe-inline'" not in plain.split("script-src", 1)[1].split(";", 1)[0]
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
+
+    @pytest.mark.parametrize(
+        ("is_kaggle", "expected_proxy_headers"),
+        [(False, True), (True, False)],
+    )
+    def test_colab_run_server_config_sets_proxy_headers_by_notebook_type(
+        self, is_kaggle, expected_proxy_headers
+    ):
+        import run
+
+        kwargs = run._server_config_kwargs(
+            "0.0.0.0",
+            8888,
+            is_colab = True,
+            is_kaggle = is_kaggle,
+        )
+        assert kwargs["proxy_headers"] is expected_proxy_headers
+        assert ("forwarded_allow_ips" in kwargs) is expected_proxy_headers
+
+    def test_kaggle_launcher_is_link_only(self, monkeypatch):
+        import IPython.display as ipython_display
+        import colab
+
+        rendered = []
+        url = "https://studio.trycloudflare.com"
+        monkeypatch.setattr(colab, "_is_kaggle_environment", lambda: True)
+        monkeypatch.setattr(
+            colab,
+            "get_colab_url",
+            lambda port: pytest.fail("Kaggle queried the Colab proxy"),
+        )
+        monkeypatch.setattr(colab, "_kaggle_bootstrap_notice_html", lambda: "notice")
+        monkeypatch.setattr(ipython_display, "HTML", lambda html: html)
+        monkeypatch.setattr(ipython_display, "display", rendered.append)
+
+        colab._show_and_embed(8888, cloudflare_url = url)
+
+        assert rendered[0] == "notice"
+        assert url in rendered[1]
+        assert all("<iframe" not in html for html in rendered)
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many

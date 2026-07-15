@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 
 def _build_request(
@@ -121,6 +123,25 @@ def test_is_same_origin_request_userinfo_in_netloc_ignored():
 
     req = _build_request("user:pass@example.com:80", origin = "http://example.com")
     assert _is_same_origin_request(req) is True
+
+
+def test_public_tunnel_suppresses_bootstrap_injection(tmp_path, monkeypatch):
+    import main
+
+    build_dir = tmp_path / "dist"
+    build_dir.mkdir()
+    (build_dir / "index.html").write_text("<html><head></head><body>Studio</body></html>")
+
+    monkeypatch.setattr(main.storage, "requires_password_change", lambda username: True)
+    app = FastAPI()
+    app.state.bootstrap_password = "temporary-password"
+    app.state.suppress_bootstrap_injection_for_public_tunnel = True
+
+    assert main.setup_frontend(app, build_dir) is True
+
+    response = TestClient(app).get("/")
+    assert response.status_code == 200
+    assert "__UNSLOTH_BOOTSTRAP__" not in response.text
 
 
 def test_is_same_origin_request_explicit_non_default_port_still_mismatch():

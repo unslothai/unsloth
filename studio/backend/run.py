@@ -1057,6 +1057,27 @@ def _cloudflare_tunnel_should_start(
     return host in ("0.0.0.0", "::") and not api_only
 
 
+def _server_config_kwargs(
+    host: str,
+    port: int,
+    *,
+    is_colab: bool = False,
+    is_kaggle: bool = False,
+) -> dict:
+    config_kwargs = dict(
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        server_header = False,
+    )
+    if is_kaggle:
+        config_kwargs["proxy_headers"] = False
+    elif is_colab:
+        config_kwargs.update(proxy_headers = True, forwarded_allow_ips = "*")
+    return config_kwargs
+
+
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
     unset (tools default on, per-request enable_tools honored). Host is never
@@ -1167,7 +1188,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    from main import app, setup_frontend, _IS_COLAB
+    from main import app, setup_frontend, _IS_COLAB, _IS_KAGGLE
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -1202,7 +1223,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -1274,21 +1295,12 @@ def run_server(
                 )
                 ready_event.set()
 
-    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
-    config_kwargs = dict(
-        host = host,
-        port = port,
-        log_level = "info",
-        access_log = False,
-        server_header = False,
+    config_kwargs = _server_config_kwargs(
+        host,
+        port,
+        is_colab = _IS_COLAB,
+        is_kaggle = _IS_KAGGLE,
     )
-    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees
-    # the real https origin. forwarded_allow_ips="*" is safe in Colab's
-    # single-user sandbox but too lax for local/standalone, so leave uvicorn's
-    # loopback-only default elsewhere.
-    if _IS_COLAB:
-        config_kwargs["proxy_headers"] = True
-        config_kwargs["forwarded_allow_ips"] = "*"
     config = uvicorn.Config(app, **config_kwargs)
     _server = _ReadyServer(config)
     _shutdown_event = Event()
@@ -1384,12 +1396,14 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     _cloudflare_requested = _cloudflare_enabled
+    app.state.trust_cloudflare_client_ip = False
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
 
             _cloudflare_url = start_studio_tunnel(port)
             app.state.cloudflare_url = _cloudflare_url
+            app.state.trust_cloudflare_client_ip = bool(_cloudflare_url)
             # Backstop: tear the tunnel down even on an abnormal exit that bypasses
             # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
             atexit.register(stop_studio_tunnel)

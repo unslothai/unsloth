@@ -625,25 +625,22 @@ _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 
 
-# /content is Colab's working directory — more reliable than env vars, which
-# aren't always set depending on Colab runtime version.
-import importlib.util as _importlib_util
-
-_IS_COLAB = os.path.isdir("/content") and (
-    bool(os.environ.get("COLAB_BACKEND_URL"))
-    or bool(os.environ.get("COLAB_JUPYTER_IP"))
-    or _importlib_util.find_spec("google.colab") is not None
+from utils.notebook_env import (  # noqa: E402
+    is_colab_environment as _is_colab_environment,
+    is_kaggle_environment as _is_kaggle_environment,
 )
+
+_IS_COLAB = _is_colab_environment()
+_IS_KAGGLE = _is_kaggle_environment()
 
 
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
-    # Colab parent frames span multi-level *.prod.colab.dev subdomains (CSP
-    # wildcards match one level only) and null-origin iframes; use '*' since
-    # Colab is already a sandboxed single-user environment.
-    frame_ancestors = "*" if _IS_COLAB else "'none'"
+    # Normal Colab embeds Studio through its private proxy. Kaggle uses a public
+    # link instead, so it keeps the standalone frame policy.
+    frame_ancestors = "*" if _IS_COLAB and not _IS_KAGGLE else "'none'"
 
     # In Colab, the kernel/output scaffolding injects scripts and fetch/WS from
     # *.prod.colab.dev and *.googleusercontent.com, so widen script-src and
@@ -705,9 +702,8 @@ class SecurityHeadersMiddleware:
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
                 headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-                # Omit X-Frame-Options in Colab: CSP frame-ancestors handles it, and
-                # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                # Colab's proxy renders Studio in an iframe; Kaggle is link-only.
+                if not (_IS_COLAB and not _IS_KAGGLE) and path != _ARTIFACT_PREVIEW_FRAME_PATH:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")
@@ -1411,7 +1407,11 @@ def setup_frontend(app: FastAPI, build_path: Path):
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
         # Bootstrap pw is same-origin only; Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request):
+        # Public notebook tunnels disable injection and show the password-file
+        # path in notebook output instead.
+        if _is_same_origin_request(request) and not getattr(
+            app.state, "suppress_bootstrap_injection_for_public_tunnel", False
+        ):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None

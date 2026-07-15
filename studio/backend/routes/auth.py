@@ -35,6 +35,7 @@ from auth.authentication import (
     get_current_subject_allow_password_change,
     refresh_access_token,
 )
+from utils.client_ip import _trusted_cloudflare_client_ip
 
 router = APIRouter()
 
@@ -201,6 +202,7 @@ def _forwarded_for_from_element(element: str) -> str:
 def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
+    client_host = (request.client.host if request.client else None) or "_unknown"
     if _trust_forwarded_for():
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
@@ -214,15 +216,11 @@ def _client_ip(request: Request | None) -> str:
             normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
             if normalized:
                 return normalized
-    return (request.client.host if request.client else None) or "_unknown"
+    return _trusted_cloudflare_client_ip(request, _normalize_forwarded_addr) or client_host
 
 
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
     return (_client_ip(request), (username or "").casefold())
-
-
-def _unknown_user_key(request: Request | None) -> tuple[str, str]:
-    return (_client_ip(request), _UNKNOWN_LOGIN_USER)
 
 
 def _prune_bucket(bucket: deque, now: float) -> None:
@@ -378,14 +376,14 @@ async def auth_status() -> AuthStatusResponse:
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
     key = _bucket_key(request, payload.username)
-    unknown_key = _unknown_user_key(request)
+    unknown_key = (key[0], _UNKNOWN_LOGIN_USER)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
     if blocked_for > 0:
         raise HTTPException(
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body; behind a proxy/NAT it's
             # misleading or an info leak.
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            detail = (f"Too many failed login attempts. Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
