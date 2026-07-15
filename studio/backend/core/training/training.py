@@ -941,6 +941,7 @@ class TrainingBackend:
         self._metric_buffer.clear()
         self._run_finalized = False
         self._db_run_created = False
+        self._db_create_in_progress = False  # a stale watchdog create can't block this run
         self._db_total_steps_set = False
         self._db_config = _sanitize_db_config(config)
         self._db_started_at = datetime.now(timezone.utc).isoformat()
@@ -1801,9 +1802,14 @@ class TrainingBackend:
             logger.warning("Failed to create DB run record for early failure", exc_info = True)
         finally:
             with self._lock:
-                if created:
-                    self._db_run_created = True  # publish only after the insert commits
-                self._db_create_in_progress = False
+                # Publish the flags only if this is still the current run. A killed worker
+                # lets a new /start proceed mid-create, and these flags are backend-wide, so
+                # a stale create for the captured job must not satisfy the new run's DB state
+                # (the row was still created by id; the new run owns/creates its own row).
+                if self.current_job_id == job_id:
+                    if created:
+                        self._db_run_created = True  # publish only after the insert commits
+                    self._db_create_in_progress = False
 
     def _finalize_run_in_db(
         self,

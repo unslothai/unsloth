@@ -665,6 +665,34 @@ def test_ensure_db_run_created_stays_unpublished_on_failure(monkeypatch):
     assert b._db_create_in_progress is False, "the in-progress flag must be cleared on failure"
 
 
+def test_ensure_db_run_created_does_not_publish_for_a_new_run(monkeypatch):
+    # A killed worker lets a new /start proceed while the watchdog is still creating the old
+    # run's row. The stale create must not publish the backend-wide flags against the new
+    # current_job_id, or the new run would skip inserting its own row.
+    b = TrainingBackend()
+    b.current_job_id = "job_old"
+    b._db_config = {"model_name": "m"}
+    b._db_run_created = False
+    b._db_create_in_progress = False
+
+    fake_storage = _types.ModuleType("storage")
+    fake_db = _types.ModuleType("storage.studio_db")
+
+    def _create(**kw):
+        b.current_job_id = "job_new"  # a new run takes over during the slow create
+
+    fake_db.create_run = _create
+    fake_storage.studio_db = fake_db
+    monkeypatch.setitem(sys.modules, "storage", fake_storage)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", fake_db)
+
+    b._ensure_db_run_created()
+
+    assert b._db_run_created is False, "must not publish the created flag against the new run"
+    # The stale claim is left for start_training to reset, not satisfied for the new run.
+    assert b._db_create_in_progress is True, "must not clear the claim once the run is not current"
+
+
 # ----------------------------------------------------------------------------
 # (h) The escalation finalizes the watched run by id (so it is never left running).
 # ----------------------------------------------------------------------------
