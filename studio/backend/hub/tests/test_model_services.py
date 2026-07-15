@@ -36,6 +36,20 @@ from hub.utils import (
 from hub.workers import hf_download
 
 
+@pytest.fixture(autouse = True)
+def _denylist_inert(monkeypatch):
+    # The browse tests here exercise allowlist containment, symlink safety and
+    # the sensitive-name filter, not the system-directory denylist (which has
+    # its own suite in tests/test_browse_denylist.py). On macOS tmp_path
+    # resolves under /private/var, a denied prefix, so _resolve_browse_target
+    # would 403 the fixture dirs before that logic runs. Keep the denylist inert
+    # so these assertions hold on every platform. folder_browser binds
+    # is_denied_system_path at import, so patch it on that module, not on
+    # scan_folders. The "rejects" cases still 403 via the allowlist/sensitive
+    # checks, and the non-browse tests never call it.
+    monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
+
+
 def _repo(repo_id: str, files: list[SimpleNamespace], repo_path: Path):
     return SimpleNamespace(
         repo_id = repo_id,
@@ -228,7 +242,8 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
     (home / "models").mkdir()
-    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda: [home])
+    # Accept and ignore the optional (media_roots, drive_roots) args the caller now passes.
+    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda *_a, **_k: [home])
 
     response = folder_browser.browse_folders_response(str(home), show_hidden = True)
 

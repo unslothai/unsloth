@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -78,6 +80,10 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
+  /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
+  requires_transformers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgrade. */
+  transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 
 export interface GgufVariantDetail {
@@ -343,6 +349,15 @@ export interface OpenAIChatCompletionsRequest {
   mcp_enabled?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
+  /**
+   * Local models + enable_tools only. Gate level for local tool calls: "ask"
+   * prompts on every call, "auto" prompts only on calls flagged unsafe, "off"
+   * never prompts, "full" never prompts and drops the sandbox. Unset behaves
+   * as "ask".
+   */
+  permission_mode?: "ask" | "auto" | "off" | "full";
+  /** Local models + enable_tools only. Full-access escape hatch. */
+  bypass_permissions?: boolean;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

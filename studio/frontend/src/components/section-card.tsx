@@ -17,10 +17,10 @@ interface SectionCardProps {
 }
 
 const accentStyles = {
+  // Brand accent variant; follows the active palette via --control-accent.
   emerald: {
-    border: "ring-emerald-500/20",
-    iconBox:
-      "ring-emerald-200 bg-emerald-50 text-emerald-600 dark:ring-emerald-800 dark:bg-emerald-950 dark:text-emerald-400",
+    border: "ring-control-accent/20",
+    iconBox: "ring-control-accent/25 bg-control-accent/10 text-control-accent",
   },
   indigo: {
     border: "ring-indigo-500/20",
@@ -61,7 +61,7 @@ export function SectionCard({
       )}
     >
       {featured && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-emerald-500/[0.04] to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-control-accent/[0.04] to-transparent" />
       )}
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -77,7 +77,7 @@ export function SectionCard({
           <div className="flex items-center gap-2 pb-1">
             <h3 className="text-sm font-semibold">{title}</h3>
             {badge && (
-              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300">
+              <span className="rounded-full bg-control-accent/15 px-2 py-0.5 text-[10px] font-semibold text-control-accent">
                 {badge}
               </span>
             )}

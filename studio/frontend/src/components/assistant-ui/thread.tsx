@@ -79,6 +79,7 @@ import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
+import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
@@ -131,7 +132,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -1217,7 +1217,7 @@ const ThreadComposerDock: FC<{
       <div
         aria-hidden={true}
         className={cn(
-          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
+          "thread-bottom-fade absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[10px]",
@@ -1317,6 +1317,7 @@ const ThreadWelcome: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
+  const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
@@ -1333,10 +1334,12 @@ const ThreadWelcome: FC<{
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            <MascotImg
-              src={currentEmojiSrc}
-              className="size-[44px] -translate-y-[2px]"
-            />
+            {showGreetingSloth && (
+              <MascotImg
+                src={currentEmojiSrc}
+                className="size-[44px] -translate-y-[2px]"
+              />
+            )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
               {incognito ? "Temporary chat" : welcome.text}
             </h1>
@@ -1425,11 +1428,14 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  // More than 4 pills: collapse to icons only. Search and Code always show;
+  // More than 4 pills: collapse to icons only. Search and Code always show; the
+  // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
     2 +
+      (permissionMode !== "off" ? 1 : 0) +
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
@@ -1853,9 +1859,9 @@ const Composer: FC<{
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
           <ComposerToolsMenu side={effectiveMenuSide} />
-          {/* Active-mode badge: always visible when bypass is on, even while
-              the pill row is collapsed (returns null when off). */}
-          <BypassPermissionsToggle />
+          {/* Permission-level pill: always visible, even while the pill row
+              is collapsed; opens the permission level dropdown. */}
+          <PermissionModeComposerPill side={effectiveMenuSide} />
           {composerExpanded ? (
             <>
               <WebSearchToggle />
@@ -2617,36 +2623,6 @@ const ArtifactsToggle: FC = () => {
   );
 };
 
-// Claude gold pill shown while Bypass permissions is on; click to turn it off.
-// Mirror of shared-composer's badge so both composers surface the state.
-const BypassPermissionsToggle: FC = () => {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
-  if (!bypassPermissions) return null;
-  return (
-    <button
-      type="button"
-      onClick={() => setBypassPermissions(false)}
-      className="composer-pill-btn"
-      data-active="true"
-      data-variant="danger"
-      aria-label="Disable Bypass permissions"
-      title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
-    >
-      <PillGlyph>
-        <HugeiconsIcon
-          icon={ShieldBanIcon}
-          strokeWidth={2}
-          className="size-[15px]"
-        />
-      </PillGlyph>
-      <span>Bypass permissions</span>
-    </button>
-  );
-};
-
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -3283,7 +3259,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
                         cancelEditing();
                       }
                     }}
-                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35"
+                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring"
                     aria-label={`Edit queued prompt ${visiblePosition}`}
                   />
                   <Button
@@ -3637,7 +3613,7 @@ const AssistantMessage: FC = () => {
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
               autoFocus
               onInput={adjustHeight}
               onKeyDown={(e) => {
@@ -4006,7 +3982,7 @@ const UserMessage: FC = () => {
       <UserMessageAudio />
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
-        <div className="aui-user-message-content wrap-break-word w-fit rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+        <div className="aui-user-message-content wrap-break-word w-fit max-w-full rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
           <MessagePrimitive.Parts />
         </div>
         <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">
