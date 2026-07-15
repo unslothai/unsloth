@@ -9,11 +9,10 @@ import { useEffect, useMemo, useRef } from "react";
 import { tailText } from "./tool-result-output";
 
 /**
- * Live-scrolling stdout/stderr pane for a running server-side tool.
- *
- * Backed by the transient `toolLiveOutput` store map fed by `tool_output` SSE
- * events: renders nothing until the first chunk, then follows the tail. Only
- * mounted while running; the finished card shows the persisted result instead.
+ * Live-scrolling stdout/stderr pane for a running server-side tool, backed by
+ * the transient `toolLiveOutput` map fed by `tool_output` SSE events. Renders
+ * nothing until the first chunk, then follows the tail. Mounted only while
+ * running; the finished card shows the persisted result instead.
  */
 export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
   const paneScope = useToolPaneScope();
@@ -21,12 +20,11 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
     (s) => s.toolLiveOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
   );
   const scrollRef = useRef<HTMLPreElement>(null);
-  // Pinned to the bottom by default; the scroll handler flips this when the
-  // user scrolls up, so streaming chunks no longer yank them down.
+  // Pinned to the bottom until the user scrolls up (handler below), so
+  // streaming chunks no longer yank them down.
   const pinnedToBottom = useRef(true);
 
-  // The stream can grow to hundreds of KB; render only the tail while live. The
-  // finished card offers the full text with a "Show all" control.
+  // The stream can reach hundreds of KB; render only the tail while live.
   const visible = useMemo(() => tailText(output).visible, [output]);
 
   const handleScroll = () => {
@@ -34,7 +32,7 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
     if (!el) {
       return;
     }
-    // Treat "within 40px of the bottom" as pinned (tolerates small nudges).
+    // Within 40px of the bottom counts as pinned (tolerates small nudges).
     pinnedToBottom.current =
       el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   };

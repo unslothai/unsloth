@@ -32,7 +32,7 @@ export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 /**
  * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
  * finish_reason chunk): the connection dropped mid-generation. The adapter
- * surfaces this as an explicit interrupted state instead of ending the turn.
+ * surfaces it as an explicit interrupted state instead of ending the turn.
  */
 export class StreamInterruptedError extends Error {
   constructor() {
@@ -866,8 +866,8 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
-  // A stream that hits EOF without `[DONE]` or a finish_reason chunk was cut
-  // mid-generation and must surface as interrupted, not a silent success.
+  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
+  // mid-generation: surface as interrupted, not silent success.
   let sawTerminalSignal = false;
 
   try {
@@ -951,8 +951,8 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // A finish_reason chunk is a valid terminal signal for providers
-        // that close the stream without an explicit [DONE] sentinel.
+        // finish_reason is a valid terminal signal for providers that close
+        // the stream without an explicit [DONE] sentinel.
         const finishReason = (
           parsed as {
             choices?: Array<{ finish_reason?: string | null }>;

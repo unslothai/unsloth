@@ -122,8 +122,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const code = (args as { code?: string })?.code ?? "";
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
-  // Args still streaming = the model is WRITING the code; execution hasn't
-  // started, so say so instead of "Running".
+  // Args still streaming = the model is WRITING the code, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCode = isRunning && propStatus.code === "streaming";
 
@@ -143,9 +142,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = "";
   }
 
-  // When the live stream captured more than the truncated result, show the
-  // full stream instead, but keep the result's exit status. Session-transient:
-  // after a reload only the result remains.
+  // Show the fuller live stream over a truncated result, keeping its exit
+  // status. Session-transient: after a reload only the result remains.
   const paneScope = useToolPaneScope();
   const fullOutput = useChatRuntimeStore(
     (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
@@ -155,8 +153,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const authToken = getAuthToken();
 
   return (
-    // Mounted mid-run the card opens so live output is visible; from history it
-    // stays collapsed.
+    // Open when mounted mid-run so live output shows; collapsed from history.
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}

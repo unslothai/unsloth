@@ -702,11 +702,11 @@ type ChatRuntimeStore = {
   webFetchToolsEnabled: boolean;
   toolStatus: string | null;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
-   *  appended by tool_output events, cleared on tool_end or run end. */
+   *  appended by tool_output, cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
-  /** Full live output of FINISHED tools whose result was truncated for the
-   *  model, keyed by toolCallId. Session-transient: finished python/terminal
-   *  cards prefer this over the truncated result. Set from tool_end. */
+  /** Full live output of finished tools whose result was truncated for the
+   *  model, keyed by toolCallId. Set from tool_end; finished cards prefer it
+   *  over the truncated result. Session-transient. */
   toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;

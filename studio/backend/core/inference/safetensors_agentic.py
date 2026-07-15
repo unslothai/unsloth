@@ -407,9 +407,9 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
 def _accepts_output_callback(func: Callable[..., str]) -> bool:
     """Whether an injectable ``execute_tool`` supports ``output_callback``.
 
-    The loop's ``execute_tool`` is a parameter (tests inject fakes), so the
-    live-output kwarg is only forwarded when the callable declares it (or
-    takes ``**kwargs``)."""
+    The loop's ``execute_tool`` is a parameter (tests inject fakes), so forward
+    the live-output kwarg only when the callable declares it or takes ``**kwargs``.
+    """
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
@@ -570,9 +570,8 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
-        # Live argument streaming offset for the provisional render_html card:
-        # the drained call text streams as tool_args so the canvas shows the
-        # HTML being written instead of a dead spinner.
+        # Live-args offset for the provisional render_html card: the drained call
+        # text streams as tool_args so the canvas shows the HTML being written.
         _live_args_streamed_upto = -1
         # When a human confirmation gate is active the real tool_start is keyed
         # by an approval id and carries awaiting_confirmation, so an early
@@ -1207,9 +1206,9 @@ def run_safetensors_tool_loop(
                 result = RAG_SEARCH_CAP_NUDGE
             else:
                 # Execute in a worker thread so live stdout chunks and heartbeats
-                # stream while the tool blocks (the SSE route turns heartbeats
-                # into keepalives). ``execute_tool`` is injectable; only pass
-                # output_callback when the callable accepts it.
+                # stream while the tool blocks (the SSE route turns heartbeats into
+                # keepalives). execute_tool is injectable; pass output_callback
+                # only when it accepts it.
                 def _invoke_tool(_output_callback, _decision = decision):
                     kwargs = dict(
                         cancel_event = cancel_event,

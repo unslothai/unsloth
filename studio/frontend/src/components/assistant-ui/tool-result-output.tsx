@@ -5,8 +5,7 @@
 
 import { useMemo, useState } from "react";
 
-/** Tail-N cap on the rendered output so a very large text never mounts a
- *  megabyte <pre> block. */
+/** Tail-line cap so a huge output never mounts a megabyte <pre> block. */
 const TAIL_LINES = 2000;
 /** Char backstop for pathological single-line outputs. */
 const TAIL_CHARS = 200_000;
@@ -34,9 +33,9 @@ export function tailText(text: string): Tail {
 }
 
 /**
- * Finished-tool output pane: renders the tail (last ~2000 lines) with a "Show
- * all" toggle, so a large output stays scrollable without janking the DOM.
- * Copy buttons keep copying the FULL text (owned by the caller), not the tail.
+ * Finished-tool output pane: renders the tail (~2000 lines) with a "Show all"
+ * toggle so a large output stays scrollable without janking the DOM. Copy
+ * buttons still copy the FULL text (owned by the caller), not the tail.
  */
 export function ToolResultOutput({ text }: { text: string }) {
   const [showAll, setShowAll] = useState(false);

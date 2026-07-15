@@ -1637,10 +1637,8 @@ class TestAnthropicMessagesToolRouting:
         return "".join(c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks)
 
     def test_plain_streaming_unclassified_error_emits_error_event(self, monkeypatch):
-        # Regression: an unclassified mid-stream failure (llama-server crash,
-        # decode OOM, a dropped upstream socket) must surface as an Anthropic SSE
-        # `error` event and stop, not fall through to a normal message_stop that
-        # masks a truncated turn as a clean finish.
+        # An unclassified mid-stream failure must surface as an SSE `error` event
+        # and stop, not a message_stop that masks a truncated turn as clean.
         def _gen_boom(**_kwargs):
             yield "partial"
             raise RuntimeError("llama-server crashed mid-decode")
@@ -2123,11 +2121,10 @@ def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkey
 
 
 def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
-    """Heartbeats emitted while a parallel-disabled tool call is being dropped
-    must still reach the client as SSE keepalives: the dropped call executes
-    server-side (minutes for a slow tool), and the stall keepalive never fires
-    while the generator keeps producing events, so swallowing them recreates
-    the silent window the heartbeats exist to prevent."""
+    """Heartbeats from a parallel-disabled, dropped tool call must still reach
+    the client as SSE keepalives: the dropped call runs server-side and the
+    stall keepalive never fires while the generator keeps producing events, so
+    swallowing them recreates the silent window keepalives exist to prevent."""
     import threading as _threading
 
     from routes.inference import (
@@ -2150,8 +2147,8 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
                 "tool_call_id": "call_0",
                 "result": "r1",
             }
-            # Second call the same turn: dropped by disable_parallel_tool_use,
-            # but still executed server-side (heartbeats + live output).
+            # Second call: dropped by disable_parallel_tool_use, still executed
+            # server-side (heartbeats + live output).
             yield {
                 "type": "tool_start",
                 "tool_name": "python",
@@ -2201,11 +2198,10 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
 
 
 def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
-    """A chatty tool that streams tool_output/tool_args with no heartbeats keeps
-    the generator busy, so the stall keepalive never fires; the Anthropic path
-    cannot translate those events and drops them. Dropping without any wire
-    bytes would leave an idle-sensitive proxy free to kill the stream, so the
-    drop branch emits a rate-limited comment keepalive instead of silence."""
+    """A chatty tool streaming tool_output/tool_args with no heartbeats keeps the
+    generator busy (stall keepalive never fires); the Anthropic path can't
+    translate those events and drops them. Dropping silently would let an idle
+    proxy kill the stream, so the drop branch emits a rate-limited keepalive."""
     import threading as _threading
 
     import routes.inference as inf_mod
@@ -2214,12 +2210,11 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
         _anthropic_tool_stream,
     )
 
-    # Deterministic clock: only the drop-branch keepalive uses time.monotonic in
-    # this coroutine, so a monotonic that jumps well past the stall window per
-    # call makes each dropped event cross the rate-limit threshold. asyncio.wait
-    # uses the loop clock (unaffected), and next(gen) completes promptly, so the
-    # OUTER stall keepalive never fires -- every keepalive here is from the drop
-    # branch.
+    # Deterministic clock: only the drop-branch keepalive uses time.monotonic
+    # here, so jumping past the stall window per call makes each dropped event
+    # cross the rate-limit threshold. asyncio.wait uses the loop clock and
+    # next(gen) returns promptly, so the outer stall keepalive never fires --
+    # every keepalive here is from the drop branch.
     _real_time = inf_mod.time
     _tick = {"v": 0.0}
 
@@ -2245,7 +2240,7 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
                 "tool_call_id": "call_0",
                 "arguments": {},
             }
-            # Chatty streamed stdout, no heartbeats between chunks.
+            # Chatty streamed stdout, no heartbeats.
             for i in range(n_output):
                 yield {
                     "type": "tool_output",
@@ -2279,20 +2274,17 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
 
     chunks = asyncio.run(_drive())
     keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
-    # Every dropped tool_output crossed the (deterministically advanced) window.
     assert len(keepalives) == n_output
-    # The final answer text still reaches the client (drop is transport-only).
+    # Final answer still reaches the client (drop is transport-only).
     assert any("final answer" in c for c in chunks)
 
 
 def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(monkeypatch):
-    """Under disable_parallel_tool_use a chatty SECOND tool call is dropped
-    whole (drop_until_tool_end). Its tool_output/tool_args events must still emit
+    """Under disable_parallel_tool_use a chatty second call is dropped whole
+    (drop_until_tool_end). Its tool_output/tool_args events must still emit
     rate-limited keepalives: the drop window can last minutes with no heartbeats
-    (the wrapper heartbeats only while idle) and no stall keepalive (next(gen)
-    returns promptly), so swallowing them silently would let an idle proxy kill
-    the stream. The keepalive branch is checked before the drop skip so these
-    dropped events stay alive too."""
+    and no stall keepalive, so swallowing them silently would let an idle proxy
+    kill the stream. The keepalive branch runs before the drop skip."""
     import threading as _threading
 
     import routes.inference as inf_mod
@@ -2301,8 +2293,7 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
         _anthropic_tool_stream,
     )
 
-    # Deterministic clock: jumps past the stall window per call so every dropped
-    # output event crosses the rate-limit threshold (see the sibling test).
+    # Deterministic clock: jumps past the stall window per call (see sibling test).
     _real_time = inf_mod.time
     _tick = {"v": 0.0}
 
@@ -2335,9 +2326,8 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
                 "tool_call_id": "call_0",
                 "result": "r1",
             }
-            # Second call the same turn: dropped whole by disable_parallel_tool_use
-            # but still executed server-side, streaming chatty stdout with NO
-            # heartbeats between chunks.
+            # Second call: dropped whole by disable_parallel_tool_use but still
+            # executed server-side, streaming chatty stdout with no heartbeats.
             yield {
                 "type": "tool_start",
                 "tool_name": "python",
@@ -2378,20 +2368,17 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
 
     chunks = asyncio.run(_drive())
     keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
-    # Each dropped-call output event kept the stream alive.
     assert len(keepalives) == n_output
     # The dropped call must not surface as a second tool_use block.
     tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
     assert len(tool_use_starts) == 1
-    # The final answer still reaches the client.
     assert any("final answer" in c for c in chunks)
 
 
 def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
     """No-tool Anthropic stream must emit SSE keepalives while a long prompt
-    prefill blocks next(gen), matching the tool stream (finding 5). Before the
-    fix the plain stream waited in a single unbounded to_thread(next, ...) and
-    could sit silent past a proxy idle cap."""
+    prefill blocks next(gen), matching the tool stream (finding 5). The old
+    single unbounded to_thread(next, ...) could sit silent past a proxy idle cap."""
     import threading as _threading
     import time as _time
 
@@ -2424,11 +2411,10 @@ def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
 
 
 def test_plain_stream_closes_generator_on_disconnect():
-    """On disconnect the no-tool teardown must drain any pending worker and
-    close the generator (finding 6). Before the fix the finally only stopped the
-    disconnect watcher and never closed the generator, leaking it. A fake
-    generator records close() so this asserts the teardown deterministically,
-    not via GC."""
+    """On disconnect the no-tool teardown must drain any pending worker and close
+    the generator (finding 6). The old finally only stopped the disconnect
+    watcher, leaking the generator. A fake generator records close() so the
+    teardown is asserted deterministically, not via GC."""
     import threading as _threading
 
     from routes.inference import _anthropic_plain_stream
@@ -2462,8 +2448,7 @@ def test_plain_stream_closes_generator_on_disconnect():
         async for chunk in resp.body_iterator:
             out.append(chunk)
             if "tok0" in chunk:
-                # Simulate the client dropping right after the first token; the
-                # next loop turn observes the disconnect and tears down.
+                # Client drops after the first token; the next loop turn tears down.
                 state["disconnected"] = True
         return out
 

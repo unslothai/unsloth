@@ -251,9 +251,8 @@ const ToolGroupImpl: FC<
           ),
       ),
   );
-  // Keep the group open once a confirmation or live output forced it, so an
-  // allow/deny doesn't snap it shut between sequential calls. Reverts to
-  // collapsed once the turn finishes.
+  // Keep the group open once a confirmation or live output forced it (so an
+  // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
   const forcedOpenRef = useRef(false);
   if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
   const forceOpen =

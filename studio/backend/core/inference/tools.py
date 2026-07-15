@@ -87,9 +87,8 @@ def _env_int(name: str, default: int) -> int:
 
 
 # Model-visible cap on python/terminal tool results (protects the context
-# window). The live UI stream is capped separately and higher
-# (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS), so the truncation notice
-# stays mode-neutral (see _truncate).
+# window). The live UI stream is capped separately and higher, so _truncate's
+# notice stays mode-neutral (see tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
 _MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
@@ -3763,12 +3762,11 @@ def _github_repo_readme_api_url(url: str) -> str | None:
     return f"https://api.github.com/repos/{owner}/{repo}/readme"
 
 
-# A single fetch can chain several network steps: the GitHub README API attempt,
-# its HTML fallback, and up to five redirect hops, each reading a body. A
-# per-operation socket timeout bounds one stalled step but not their sum, so a
-# redirect-happy or slow server can run well past the tool timeout, and nothing
-# aborts when the client has already disconnected. One overall wall-clock
-# deadline (plus a cooperative cancel_event) bounds the whole fetch instead.
+# A single fetch can chain several steps (README API attempt, HTML fallback, up
+# to five redirect hops, each reading a body). A per-operation socket timeout
+# bounds one stalled step but not their sum, and nothing aborts on client
+# disconnect, so one overall wall-clock deadline (plus a cooperative
+# cancel_event) bounds the whole fetch instead.
 def _fetch_budget_exceeded(deadline, cancel_event):
     """User-facing error string when the fetch must stop early, else None."""
     if cancel_event is not None and cancel_event.is_set():
@@ -3780,9 +3778,9 @@ def _fetch_budget_exceeded(deadline, cancel_event):
 
 def _fetch_hop_timeout(timeout, deadline):
     """Per-operation socket timeout: the lesser of the caller's per-op timeout
-    and the time left on the overall deadline, so one slow hop cannot overrun
-    the whole budget. Callers check ``_fetch_budget_exceeded`` first, so the
-    remaining time is positive here; the tiny floor only guards a race."""
+    and the time left on the deadline, so one slow hop cannot overrun the whole
+    budget. Callers check ``_fetch_budget_exceeded`` first, so remaining time is
+    positive here; the tiny floor only guards a race."""
     if deadline is None:
         return timeout
     remaining = deadline - time.monotonic()
@@ -3795,11 +3793,10 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     """``_validate_and_resolve_host`` bounded by the overall fetch budget.
 
     ``getaddrinfo`` is blocking with no deadline of its own, so a slow resolver
-    (or a request already cancelled before dispatch) could run past the
-    wall-clock budget. Resolve on a daemon thread and poll the budget so the
-    fetch aborts on time; the abandoned lookup finishes and is discarded. With
-    no deadline and no cancel_event this is a plain synchronous call, so callers
-    that opt out keep the old behavior and cost.
+    (or a request cancelled before dispatch) could run past the budget. Resolve
+    on a daemon thread and poll the budget so the fetch aborts on time; the
+    abandoned lookup is discarded. With no deadline and no cancel_event this is a
+    plain synchronous call, so opt-out callers keep the old behavior and cost.
     """
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
@@ -3835,9 +3832,9 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     re-tightened toward the deadline) each round. The joined bytes are identical
     to one capped read. Returns ``(error_or_None, body_bytes)``.
     """
-    # Best-effort handle on the underlying socket so its timeout can be tightened
-    # as the deadline nears; absent on test doubles, where the loop still bounds
-    # the read via the between-chunk budget check.
+    # Best-effort handle on the underlying socket so its timeout tightens as the
+    # deadline nears; absent on test doubles, where the between-chunk budget
+    # check still bounds the read.
     sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
     chunks = []
     remaining = max_bytes
@@ -3962,9 +3959,9 @@ def _fetch_url_raw(
                     return reason2, "", ""
                 current_host = rp.hostname
                 continue
-            # Success: read the capped body enforcing the overall budget between
-            # chunks, so a slow-drip server (dribbling bytes just inside each
-            # socket timeout) cannot stretch a single resp.read past the deadline.
+            # Success: read the capped body enforcing the budget between chunks
+            # (see _read_capped_body), so a slow-drip server can't stretch a
+            # single resp.read past the deadline.
             body_error, raw_bytes = _read_capped_body(
                 resp,
                 max_bytes,
@@ -4027,21 +4024,20 @@ def _looks_like_html(body: str) -> bool:
     """True only when the document ITSELF opens with HTML.
 
     Matches an HTML doctype or a leading document/structure tag after optional
-    whitespace, not a mere substring in the first 256 chars, so a Markdown README
-    with a fenced HTML example or tags further down stays Markdown. Also detects
-    bare fragments (``<body>``/``<article>``/``<section>``) with no doctype, so a
-    page served with a missing/wrong Content-Type is still converted.
+    whitespace, not a mere substring, so a Markdown README with a fenced HTML
+    example or tags further down stays Markdown. Also detects bare fragments
+    (``<body>``/``<article>``/...) with no doctype, so a page with a
+    missing/wrong Content-Type is still converted.
     """
     probe = body.lstrip()[:256].lower()
     return bool(_HTML_LEADING_RE.match(probe))
 
 
-# Stricter than _HTML_LEADING_RE: only a real HTML document opener (a doctype or
-# a leading <html>/<head>/<body>), never a block tag a Markdown file can open
-# with (<ul>, <ol>, <dl>, <pre>, <blockquote>, ...). Used on the raw GitHub
-# README body so a Markdown README that merely starts with an HTML block is not
-# run through html_to_markdown, which would collapse its headings, lists and
-# fenced code into a single line.
+# Stricter than _HTML_LEADING_RE: only a real document opener (doctype or leading
+# <html>/<head>/<body>), never a block tag a Markdown file can open with. Used on
+# the raw GitHub README body so a Markdown README starting with an HTML block is
+# not run through html_to_markdown, which would collapse its headings, lists and
+# fenced code onto one line.
 _HTML_DOCUMENT_RE = re.compile(r"<(?:!doctype\s+html\b|/?(?:html|head|body)\b)")
 
 
@@ -4090,18 +4086,15 @@ def _fetch_page_text(
             deadline = deadline,
             cancel_event = cancel_event,
         )
-        # The README API is unauthenticated and rate-limited; on any failure
-        # fall back to the HTML page fetch. A 200 body is authoritative even when
-        # it is HTML (a .html README): convert it to Markdown rather than
-        # discarding it and falling back to the repo page's UI chrome, keeping
-        # the raw body if extraction yields nothing.
+        # The README API is unauthenticated and rate-limited; on any failure fall
+        # back to the HTML page fetch. A 200 body is authoritative even when it is
+        # HTML (a .html README): convert it rather than falling back to the repo
+        # page's UI chrome, keeping the raw body if extraction yields nothing.
         if err is None and body.strip():
             readme_body = body
-            # The README API returns the raw file, almost always Markdown. Only a
-            # real HTML document (a .html README) is converted; a Markdown README
-            # that merely opens with a block tag (<ul>/<pre>/<blockquote>/...) is
-            # kept as-is, else html_to_markdown collapses its headings, lists and
-            # fenced code into a single line.
+            # The raw file is almost always Markdown. Only a real HTML document (a
+            # .html README) is converted; a Markdown README that merely opens with
+            # a block tag is kept as-is (see _HTML_DOCUMENT_RE).
             if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
                 converted = html_to_markdown(body, main_content = True)
@@ -4158,10 +4151,9 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is a blocking call we cannot
-    # interrupt mid-flight, so gate on either side: skip the search for an
-    # already-cancelled request, and discard results that land after the client
-    # has gone, matching the direct-URL path's cancellation.
+    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be
+    # interrupted mid-flight, so gate on either side: skip an already-cancelled
+    # request, and discard results that land after the client has gone.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
@@ -5208,11 +5200,10 @@ def _kill_process_tree(proc) -> None:
 def _killpg_captured(pgid) -> None:
     """SIGKILL a process group captured before its leader was waited on.
 
-    ``_kill_process_tree`` short-circuits once ``proc`` has exited, and after
-    the leader is reaped ``os.getpgid(proc.pid)`` fails, so a grandchild that
-    inherited stdout and outlived the parent could not otherwise be signaled.
-    The setsid group id captured before the wait still targets the whole tree.
-    No-op when there is no ``os.killpg`` (Windows) or nothing was captured.
+    Once ``proc`` exits, ``os.getpgid(proc.pid)`` fails and ``_kill_process_tree``
+    short-circuits, so a stdout-holding grandchild that outlived the parent could
+    not otherwise be signaled. The pre-captured setsid group id still targets the
+    whole tree. No-op with no ``os.killpg`` (Windows) or nothing captured.
     """
     if pgid is None or not hasattr(os, "killpg"):
         return
@@ -5243,10 +5234,10 @@ def _cancel_watcher(
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
-    # Mode-neutral notice: this result string serves both the streaming UI and
-    # non-streaming callers, and must stay byte-identical with and without an
-    # output_callback (the invariant the regression tests assert), so it can't
-    # claim the user saw the full output.
+    # Mode-neutral notice: this result serves both the streaming UI and
+    # non-streaming callers and must stay byte-identical with and without an
+    # output_callback (a regression-tested invariant), so it can't claim the
+    # user saw the full output.
     if len(text) > limit:
         return text[:limit] + (
             f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
@@ -5303,11 +5294,11 @@ def _extract_missing_abs_path(output: str) -> str | None:
 def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
     """True when ``abs_path`` is not the working directory or under it.
 
-    ``workdir`` is the executor's actual working directory. It defaults to the
-    default sandbox root, but project-backed sessions run under a project root
-    OUTSIDE ``~/studio_sandbox`` (see ``_get_workdir``), so a legitimate miss
-    inside that project workspace must be judged against the real workdir, not
-    a static sandbox root, or it is wrongly classed as an external habit path.
+    ``workdir`` is the executor's actual working directory (defaults to the
+    sandbox root). Project-backed sessions run under a root OUTSIDE
+    ``~/studio_sandbox`` (see ``_get_workdir``), so a legitimate miss inside a
+    project must be judged against the real workdir, not a static sandbox root,
+    or it is wrongly classed as an external habit path.
     """
     try:
         root = os.path.realpath(workdir or _SANDBOX_ROOT)
@@ -5510,9 +5501,8 @@ def _python_exec(
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
-        # unconditionally, so the invocation stays byte-identical with and
-        # without streaming; unlike PYTHONUNBUFFERED=1 it never pollutes the
-        # child's os.environ, so buffering changes never alter the bytes.
+        # unconditionally to stay byte-identical with and without streaming;
+        # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
         proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
@@ -5544,8 +5534,8 @@ def _python_exec(
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
         # Detect the missing-path pattern on the full output (truncation could
-        # hide the trailing traceback), append the hint after truncation. Judge
-        # external paths against the real workdir (project sessions live outside
+        # hide the trailing traceback); append the hint after truncation. External
+        # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"

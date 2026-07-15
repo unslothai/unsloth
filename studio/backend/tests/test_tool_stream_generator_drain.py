@@ -3,15 +3,11 @@
 
 """Regression tests for generator-close cleanup in the tool-streaming routes.
 
-The safetensors and Anthropic tool streams run ``next(gen)`` in a worker thread
-via ``asyncio.to_thread``. On disconnect/cancellation that worker may still be
-inside ``next(gen)`` (blocked in a web/MCP/generator call). Closing the
-generator while the thread is executing it raises
-``ValueError: generator already executing`` and leaves the generator's
-``finally`` (tool/resource cleanup) unrun -- the exact GGUF-vs-others asymmetry
-these routes now fix by draining the pending task first
-(``_drain_pending_next_task``). These tests exercise the shared helper against a
-generator that blocks inside ``next`` exactly as the routes do.
+Tool streams run ``next(gen)`` in an ``asyncio.to_thread`` worker. Closing the
+generator while that worker is still inside ``next`` raises ``ValueError:
+generator already executing`` and skips the generator's ``finally`` (tool
+cleanup); the routes drain the pending task first (``_drain_pending_next_task``),
+which these tests exercise.
 """
 
 from __future__ import annotations
@@ -32,8 +28,7 @@ def test_drain_before_close_avoids_generator_already_executing():
     def blocking_gen():
         try:
             entered.set()
-            # Simulate a blocking call inside next(gen) that respects the
-            # generation cancel flag (as a real web/MCP tool step would).
+            # Blocking call inside next(gen) that respects the cancel flag.
             cancel_event.wait()
             yield "value"
         finally:
@@ -42,18 +37,15 @@ def test_drain_before_close_avoids_generator_already_executing():
     async def scenario():
         gen = blocking_gen()
         next_task = asyncio.create_task(asyncio.to_thread(next, gen, object()))
-        # Wait until the worker is actually inside next(gen).
-        await asyncio.to_thread(entered.wait)
+        await asyncio.to_thread(entered.wait)  # worker now inside next(gen)
 
-        # Regression guard: closing the generator while the worker is inside
-        # next(gen) races and raises, leaving the finally-cleanup unrun.
+        # Closing mid-next races and raises, leaving the finally unrun.
         with pytest.raises(ValueError):
             gen.close()
         assert not finally_ran.is_set()
 
-        # The fix: drain the pending next(gen) task (which sets the cancel flag
-        # so the worker returns), THEN close cleanly. No ValueError, and the
-        # generator's finally runs, releasing tool/resources.
+        # Draining sets the cancel flag so the worker returns; then close is
+        # clean and the generator's finally runs.
         await _drain_pending_next_task(next_task, cancel_event)
         gen.close()
         return
@@ -63,9 +55,7 @@ def test_drain_before_close_avoids_generator_already_executing():
 
 
 def test_drain_pending_next_task_is_noop_without_task():
-    # The happy path passes None (the task reference was cleared after its
-    # result was consumed); draining must be a safe no-op that never touches the
-    # cancel flag.
+    # None (task already consumed): draining is a no-op, cancel flag untouched.
     cancel_event = threading.Event()
 
     asyncio.run(_drain_pending_next_task(None, cancel_event))
@@ -73,9 +63,8 @@ def test_drain_pending_next_task_is_noop_without_task():
 
 
 def test_drain_pending_next_task_returns_when_worker_finishes():
-    # A worker that finishes on its own (StopIteration -> sentinel) is drained
-    # without error and the cancel flag is still set (the caller is tearing the
-    # stream down).
+    # A worker finishing on its own drains without error; the cancel flag stays
+    # set (the caller is tearing the stream down).
     cancel_event = threading.Event()
     release = threading.Event()
 
@@ -86,8 +75,7 @@ def test_drain_pending_next_task_returns_when_worker_finishes():
     async def scenario():
         g = gen()
         task = asyncio.create_task(asyncio.to_thread(next, g, object()))
-        # Let the worker complete on its own before draining.
-        release.set()
+        release.set()  # let the worker complete before draining
         await _drain_pending_next_task(task, cancel_event)
         assert task.done()
 

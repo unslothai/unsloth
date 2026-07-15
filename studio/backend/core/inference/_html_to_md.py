@@ -8,11 +8,10 @@ Replaces the external ``html2text`` (GPL-3.0) dependency with a ~250-line
 ``html.parser.HTMLParser`` subclass. Covers headings, links, bold/italic,
 lists, tables, blockquotes, code blocks, and entity decoding.
 
-``main_content=True`` additionally applies a readability-style heuristic:
-conversion is scoped to the page's ``<article>`` (else ``<main>``) subtree
-when one exists and carries substantial text, and known boilerplate
-fragments (skip-links, client-side error placeholders, session banners,
-cookie prompts) are stripped from the result.
+``main_content=True`` also applies a readability-style heuristic: scope
+conversion to the page's ``<article>`` (else ``<main>``) subtree when it
+carries substantial text, and strip known boilerplate fragments (skip-links,
+error placeholders, session banners, cookie prompts) from the result.
 """
 
 from __future__ import annotations
@@ -89,11 +88,10 @@ def _style_hides_element(style: str) -> bool:
 
 
 def _is_hidden_element(attr_dict: dict) -> bool:
-    """True when the element is not rendered: the ``hidden`` attribute,
-    ``aria-hidden="true"``, or an inline ``style`` hiding it. Such client-side
-    placeholders ship in the HTML but only show via JS, so they must not reach
-    the Markdown output. ``hidden`` is enumerated: any present value (even
-    ``hidden="false"``) means not rendered."""
+    """True when the element is not rendered: ``hidden`` attribute,
+    ``aria-hidden="true"``, or an inline ``style`` hiding it. Such JS-only
+    placeholders ship in the HTML but must not reach the output. ``hidden`` is
+    enumerated: any present value (even ``hidden="false"``) means not rendered."""
     if "hidden" in attr_dict:
         return True
     if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
@@ -101,10 +99,9 @@ def _is_hidden_element(attr_dict: dict) -> bool:
     return _style_hides_element(attr_dict.get("style") or "")
 
 
-# HTML5 optional end tags: a value-set start tag implicitly closes an open
-# element of the key type, as browsers do. Without this an unclosed
-# ``<p hidden>`` / ``<li hidden>`` would swallow every following sibling.
-# Keys: elements whose end tag may be omitted; values: start tags that close them.
+# HTML5 optional end tags: a listed start tag implicitly closes an open element
+# of the key type (as browsers do), else an unclosed ``<p hidden>``/``<li hidden>``
+# swallows every following sibling. Keys: closable elements; values: closers.
 _P_CLOSING_TAGS = frozenset(
     {
         "address",
@@ -205,9 +202,8 @@ class _MarkdownRenderer(HTMLParser):
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
 
-        # Per-top-level-scope-element output boundaries, so a caller can size
-        # each candidate individually and a swarm of tiny sibling <article>
-        # cards cannot pass an aggregate threshold and displace the real <main>.
+        # Output boundaries per top-level scope element, so a caller can size each
+        # candidate alone and a swarm of tiny sibling cards can't clear the threshold.
         self.scope_segments: list[str] = []
         self._scope_seg_start: int | None = None
 
@@ -311,15 +307,13 @@ class _MarkdownRenderer(HTMLParser):
     # ------------------------------------------------------------------
     # Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _close_implicit(self, tag: str) -> None:
-        """Apply HTML5 optional-end-tag recovery for a start tag about to open.
+        """HTML5 optional-end-tag recovery for a start tag about to open.
 
-        Pops each implicitly-closed ancestor (and hidden marks ending with it),
-        searching down the whole stack so an open ``<p>``/``<li>`` still closes
-        under an unclosed inline descendant like ``<span>``. Stops at a
-        ``_CLOSE_BARRIERS`` container so recovery never crosses a nested list /
-        table / dl and leaks the outer item's hidden content. Runs even for
-        skipped ``<nav>``/``<footer>`` tags, which also implicitly close ``<p>``.
-        """
+        Pops each implicitly-closed ancestor (and its hidden marks), scanning the
+        whole stack so an open ``<p>``/``<li>`` still closes under an unclosed inline
+        ``<span>``. Stops at a ``_CLOSE_BARRIERS`` container so recovery never crosses
+        a nested list/table/dl and leaks the outer item's hidden content. Runs even
+        for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
         barriers = _CLOSE_BARRIERS.get(tag, ())
         while True:
             close_at = None
@@ -614,10 +608,9 @@ class _MarkdownRenderer(HTMLParser):
             else:
                 self._out.append("\n\n" + prefixed + "\n\n")
 
-        # A scope left open by truncated HTML never reached _exit_tag, so its
-        # output was never appended to scope_segments and would score 0. Flush
-        # the still-open segment here (after the side-buffers above) so a
-        # truncated main-content page is still scored and preferred.
+        # A scope left open by truncated HTML never reached _exit_tag, so its output
+        # never joined scope_segments and would score 0. Flush the still-open segment
+        # here (after the side-buffers) so a truncated main-content page is scored.
         if self._scope_seg_start is not None:
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
             self._scope_seg_start = None
@@ -691,10 +684,9 @@ _BOILERPLATE_NORMALIZED = frozenset(
 def _line_is_boilerplate(line: str) -> bool:
     """True only when a whole line is composed of known furniture phrases.
 
-    Splits on sentence terminators and requires every non-empty segment to be a
-    known furniture phrase, so a line stacking several phrases is dropped while
-    real prose that merely quotes one is kept (its other words leave a
-    non-furniture segment)."""
+    Splits on sentence terminators and requires every segment to be furniture, so a
+    line stacking several phrases is dropped while prose that merely quotes one is
+    kept (its other words leave a non-furniture segment)."""
     normalized = re.sub(r"\s+", " ", line).strip().casefold()
     if not normalized:
         return False

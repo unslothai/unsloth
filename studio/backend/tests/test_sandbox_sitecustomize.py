@@ -84,10 +84,9 @@ def test_always_remap_prefixes_map_into_cwd(monkeypatch, tmp_path):
 
 
 def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path):
-    # A hallucinated habit path can carry '..' in its suffix. The remapped
-    # target must stay under the per-conversation CWD, never climb above it into
-    # a sibling session's directory. '..' components are dropped (they cannot
-    # ascend past the sandbox root) while the rest of the subpath is preserved.
+    # A hallucinated habit path can carry '..' in its suffix. The remapped target
+    # must stay under the per-conversation CWD, never climbing into a sibling
+    # session's directory: '..' components are dropped, the rest of the subpath kept.
     mod = _load_shim()
     workdir = tmp_path / "session_current" / "work"
     workdir.mkdir(parents = True)
@@ -104,7 +103,7 @@ def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path
         # Never escapes the CWD subtree.
         assert mapped == cwd or mapped.startswith(cwd + os.sep), (escaping, mapped)
         assert os.path.realpath(mapped).startswith(os.path.realpath(cwd))
-    # The concrete containment: '../other_session/file' collapses to CWD/other_session/file.
+    # '../other_session/file' collapses to CWD/other_session/file.
     assert mod._remap("/mnt/data/../other_session/file") == os.path.join(
         cwd, "other_session", "file"
     )
@@ -113,10 +112,9 @@ def test_prefix_remap_contains_parent_traversal_inside_cwd(monkeypatch, tmp_path
 
 
 def test_write_fallback_refuses_dotdot_basename(monkeypatch, tmp_path):
-    # os.path.basename('/no/such/tree/..') == '..'; joining that onto the CWD
-    # would target the CWD's parent (outside the sandbox). The write fallback
-    # must refuse such non-filename basenames and return the path unchanged so
-    # the real open raises rather than healing into an escaping target.
+    # basename('/no/such/tree/..') == '..'; joining that onto the CWD would target
+    # its parent (outside the sandbox). The fallback must refuse such non-filename
+    # basenames and return the path unchanged so the real open raises.
     mod = _load_shim()
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -126,10 +124,9 @@ def test_write_fallback_refuses_dotdot_basename(monkeypatch, tmp_path):
 
 
 def test_write_fallback_remaps_hallucinated_absolute_path(monkeypatch, tmp_path):
-    # Models invent absolute paths from seeing their CWD (e.g.
-    # /home/ubuntu/Sandbox/x.html). Prefix lists cannot enumerate these, so a
-    # write/create-mode open on an absolute path outside the CWD whose parent is
-    # missing is redirected to the basename in the CWD.
+    # Models invent absolute paths from their CWD (e.g. /home/ubuntu/Sandbox/x.html),
+    # which prefix lists cannot enumerate. A write/create-mode open on an absolute
+    # path outside the CWD whose parent is missing is redirected to the basename in the CWD.
     mod = _load_shim()
     workdir = tmp_path / "workdir"
     workdir.mkdir()
@@ -143,8 +140,8 @@ def test_write_fallback_remaps_hallucinated_absolute_path(monkeypatch, tmp_path)
 
 
 def test_write_fallback_never_touches_read_modes(monkeypatch, tmp_path):
-    # Reading a real system file (or a genuinely missing one) must fail or
-    # succeed truthfully -- the fallback is write-only.
+    # Reading a real (or genuinely missing) file must succeed/fail truthfully --
+    # the fallback is write-only.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     for mode in ("r", "rb", "r+"):
@@ -154,8 +151,8 @@ def test_write_fallback_never_touches_read_modes(monkeypatch, tmp_path):
 
 
 def test_write_fallback_passes_through_existing_external_dir(monkeypatch, tmp_path):
-    # A write to an absolute path whose parent directory exists is a deliberate,
-    # working target (e.g. a real writable dir) and must NOT be redirected.
+    # A write to an absolute path whose parent dir exists is a deliberate, working
+    # target and must NOT be redirected.
     mod = _load_shim()
     external = tmp_path / "external"
     external.mkdir()
@@ -167,12 +164,10 @@ def test_write_fallback_passes_through_existing_external_dir(monkeypatch, tmp_pa
 
 
 def test_write_fallback_never_clobbers_same_basename(monkeypatch, tmp_path):
-    # A same-named file already in the working directory is an unrelated
-    # persistent conversation file. Redirecting an invented absolute path (with
-    # a missing parent) onto it would truncate/append to data the model never
-    # asked to touch. The fallback must REFUSE the redirect and return the
-    # original path so the real open() raises FileNotFoundError and the existing
-    # file is preserved. Semantics: refuse-on-collision for every create mode.
+    # A same-named CWD file is an unrelated persistent conversation file.
+    # Redirecting an invented absolute path (missing parent) onto it would clobber
+    # data the model never asked to touch, so the fallback refuses on collision for
+    # every create mode: it returns the original path and the real open() raises.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
 
@@ -195,20 +190,18 @@ def test_write_fallback_never_clobbers_same_basename(monkeypatch, tmp_path):
 
 
 def test_write_fallback_reserves_same_target_on_repeated_writes(monkeypatch, tmp_path):
-    # Iterative overwrite of the SAME invented absolute path must keep landing on
-    # the CWD target the fallback first healed it to. The first write creates
-    # ./app.html; a naive anti-clobber guard would then see that file exist and
-    # return the original (parent-missing) path, so every later regenerate would
-    # raise FileNotFoundError. The fallback must recognise its own prior remap of
-    # this exact source and re-serve it.
+    # Iterative overwrite of the SAME invented path must keep landing on the CWD
+    # target the fallback first healed it to. Once ./app.html exists, a naive
+    # anti-clobber guard would return the original (parent-missing) path and every
+    # regenerate would raise; the fallback must recognise its own prior remap and re-serve it.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
     invented = "/home/ubuntu/Sandbox/app.html"
     target = os.path.join(cwd, "app.html")
 
-    # First write: healed into the CWD, and actually create the file so the
-    # collision guard would trigger on the next call without the fix.
+    # First write: healed into the CWD, and create the file so the collision guard
+    # would trigger on the next call without the fix.
     assert mod._remap_open(invented, "w") == target
     with open(mod._remap_open(invented, "w"), "w") as fh:
         fh.write("v1")
@@ -220,37 +213,32 @@ def test_write_fallback_reserves_same_target_on_repeated_writes(monkeypatch, tmp
         fh.write("v2")
     assert Path(target).read_text() == "v2"
 
-    # A DIFFERENT invented source that collides on basename is still refused, so
-    # it can never clobber the artifact the first path owns.
+    # A DIFFERENT invented source colliding on basename is still refused, so it can
+    # never clobber the artifact the first path owns.
     other = "/opt/other/app.html"
     assert mod._remap_open(other, "w") == other
 
 
 def test_write_fallback_reserves_healed_target_across_separate_runs(monkeypatch, tmp_path):
-    # Each sandbox tool call is a FRESH subprocess, so the in-process remap map is
-    # empty on the next run while the healed file persists in the per-session
-    # working directory. A second run overwriting the SAME invented absolute path
-    # (whose healed basename now exists in the CWD) must still re-serve that
-    # target -- otherwise the model could never overwrite the artifact it created
-    # last turn. The on-disk sidecar carries the mapping across runs. Each
-    # _load_shim() call loads a fresh module with an empty _remapped_writes,
-    # simulating a brand-new interpreter.
+    # Each tool call is a FRESH subprocess, so the in-process remap map is empty on
+    # the next run while the healed file persists in the working directory. A second
+    # run overwriting the SAME invented path (whose healed basename now exists) must
+    # still re-serve that target via the on-disk sidecar, else the model could never
+    # overwrite last turn's artifact. Each _load_shim() simulates a brand-new interpreter.
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
     invented = "/home/ubuntu/Sandbox/app.html"
     target = os.path.join(cwd, "app.html")
 
-    # Run 1: a fresh interpreter heals the invented path and creates the file,
-    # persisting the source->target mapping to the sidecar.
+    # Run 1: heal the invented path, create the file, persist source->target to the sidecar.
     run1 = _load_shim()
     assert run1._remap_open(invented, "w") == target
     with open(run1._remap_open(invented, "w"), "w") as fh:
         fh.write("v1")
 
-    # Run 2: a brand-new interpreter -- nothing carried over in memory -- still
-    # recognises its own prior heal from the on-disk sidecar and re-serves it,
-    # even though ./app.html now exists (which without the sidecar would trip the
-    # anti-clobber guard and raise FileNotFoundError on the missing parent).
+    # Run 2: brand-new interpreter, nothing in memory -- still recognises its prior
+    # heal from the sidecar and re-serves it, even though ./app.html now exists
+    # (which without the sidecar would trip the anti-clobber guard and raise).
     run2 = _load_shim()
     assert run2._remapped_writes == {}
     assert run2._remap_open(invented, "w") == target
@@ -258,14 +246,14 @@ def test_write_fallback_reserves_healed_target_across_separate_runs(monkeypatch,
         fh.write("v2")
     assert Path(target).read_text() == "v2"
 
-    # A DIFFERENT invented source that only collides on basename is still refused
-    # across runs: the sidecar records solely the source it actually healed, so an
-    # unrelated path can never adopt/clobber the artifact.
+    # A DIFFERENT invented source colliding only on basename is still refused across
+    # runs: the sidecar records solely the source it healed, so an unrelated path
+    # can never adopt/clobber the artifact.
     other = "/opt/other/app.html"
     assert run2._remap_open(other, "w") == other
 
-    # And a genuinely foreign CWD file (created directly, never healed) stays
-    # protected in a later run from an invented path sharing its basename.
+    # A foreign CWD file (created directly, never healed) stays protected in a later
+    # run from an invented path sharing its basename.
     (tmp_path / "notes.txt").write_text("KEEP-ME")
     run3 = _load_shim()
     assert run3._remap_open("/some/missing/notes.txt", "w") == "/some/missing/notes.txt"
@@ -276,11 +264,10 @@ def test_write_fallback_reserves_healed_target_across_separate_runs(monkeypatch,
 
 @pytest.mark.parametrize("mode", ["r+", "rb+"])
 def test_read_update_modes_never_redirected_even_with_missing_parent(monkeypatch, tmp_path, mode):
-    # r+ / rb+ REQUIRE the target to already exist; they never create. A "+" in
-    # the mode must not qualify as creation, or a missing absolute path would be
-    # redirected onto a same-basename workspace file and opened for read/update,
-    # corrupting unrelated data. The parent here is missing, so only the mode
-    # predicate protects the victim.
+    # r+ / rb+ REQUIRE the target to exist and never create; a "+" must not qualify
+    # as creation, or a missing absolute path would be redirected onto a same-basename
+    # workspace file and corrupt it. The parent is missing, so only the mode predicate
+    # protects the victim.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
 
@@ -295,11 +282,10 @@ def test_read_update_modes_never_redirected_even_with_missing_parent(monkeypatch
 
 
 def test_existing_convention_prefix_is_not_shadowed(monkeypatch, tmp_path):
-    # A convention prefix (/mnt/data etc.) is remapped ONLY while it is absent.
-    # If a real host directory exists at that prefix it must pass through so its
-    # own filesystem semantics apply -- a real read succeeds, a missing file
-    # under an EXISTING real prefix is created there by a write, never shadowed
-    # by a CWD file.
+    # A convention prefix (/mnt/data etc.) is remapped ONLY while absent. If a real
+    # host directory exists there it must pass through so its own filesystem semantics
+    # apply: a real read succeeds, and a missing file under it is created there by a
+    # write, never shadowed by a CWD file.
     mod = _load_shim()
     external = tmp_path / "real_prefix"
     external.mkdir()
@@ -316,8 +302,8 @@ def test_existing_convention_prefix_is_not_shadowed(monkeypatch, tmp_path):
     assert mod._remap(target) == target
     assert mod._remap_open(target, "r") == target
     assert mod._remap_open(target, "w") == target
-    # A missing file under the EXISTING real prefix is left alone (parent
-    # exists), so the real directory creates it -- not a CWD shadow.
+    # A missing file under the EXISTING real prefix is left alone (parent exists),
+    # so the real directory creates it -- not a CWD shadow.
     missing = str(external / "new.txt")
     assert mod._remap_open(missing, "w") == missing
 
@@ -328,10 +314,9 @@ def test_existing_convention_prefix_is_not_shadowed(monkeypatch, tmp_path):
 
 
 def test_os_open_and_path_touch_remap_convention_path(monkeypatch, tmp_path):
-    # Path.touch() and other low-level creators go through os.open, not
-    # builtins/io.open. Keep the shim's patches installed (like the mkdir test)
-    # under a chdir into tmp_path so os.open is patched, and confirm a
-    # convention path is healed into the working directory instead of raising.
+    # Path.touch() and other low-level creators go through os.open, not builtins/io.open.
+    # Keep the shim's patches installed under a chdir into tmp_path so os.open is
+    # patched, and confirm a convention path is healed into the CWD instead of raising.
     saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_osopen", _SHIM)
     mod = importlib.util.module_from_spec(spec)
@@ -351,12 +336,10 @@ def test_os_open_and_path_touch_remap_convention_path(monkeypatch, tmp_path):
 
 
 def test_path_write_read_text_remap_convention_path(monkeypatch, tmp_path):
-    # Path.open / write_text / read_text route through io.open (3.11+) or the
-    # captured accessor open (< 3.11). Keep the shim's patches installed (like
-    # the os.open/touch test) under a chdir into tmp_path and confirm a
-    # convention path is healed into the working directory on every version,
-    # rather than raising FileNotFoundError. This is the hermetic guard for the
-    # 3.10 accessor path that a plain io.open patch does not reach.
+    # Path.open / write_text / read_text route through io.open (3.11+) or the captured
+    # accessor open (< 3.11). Keep the patches installed under a chdir into tmp_path
+    # and confirm a convention path is healed into the CWD on every version. This is
+    # the hermetic guard for the 3.10 accessor path a plain io.open patch misses.
     saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_writetext", _SHIM)
     mod = importlib.util.module_from_spec(spec)
@@ -382,40 +365,37 @@ def test_write_fallback_leaves_relative_and_bytes_paths(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     # Relative paths are already inside the CWD.
     assert mod._remap_open("out.txt", "w") == "out.txt"
-    # Bytes paths are left untouched (os.getcwd() is str; prefix remap skips
-    # non-str too).
+    # Bytes paths are left untouched (prefix remap skips non-str).
     assert mod._remap_open(b"/no/such/tree/x.bin", "w") == b"/no/such/tree/x.bin"
 
 
 def test_remap_open_still_applies_prefix_remaps(monkeypatch, tmp_path):
-    # The prefix remap runs first in open() and preserves subpaths. A write heals
-    # onto the CWD unconditionally; the write-mode fallback is only the last resort.
+    # The prefix remap runs first and preserves subpaths. A write heals onto the CWD
+    # unconditionally; the write-mode fallback is only the last resort.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
     assert mod._remap_open("/mnt/data/sub/out.txt", "w") == os.path.join(cwd, "sub", "out.txt")
-    # A read whose mapped target does NOT exist keeps the original absolute path:
-    # a missing input must stay truthful, not silently redirect into the CWD.
+    # A read whose mapped target does NOT exist keeps the original path: a missing
+    # input stays truthful, not silently redirected into the CWD.
     assert mod._remap_open("/mnt/data/sub/out.txt", "r") == "/mnt/data/sub/out.txt"
 
 
 def test_prefix_read_heals_only_when_mapped_target_exists(monkeypatch, tmp_path):
-    # A convention-prefix READ must not silently redirect onto the working
-    # directory when the mapped target is absent -- that masks a genuine
-    # missing-input error (the model read a path that truly does not exist) and
-    # could serve an unrelated same-basename workdir file. It heals only when the
-    # mapped CWD target already exists, so re-reading an artifact an earlier write
-    # produced still works.
+    # A convention-prefix READ must not redirect onto the CWD when the mapped target
+    # is absent -- that masks a genuine missing-input error and could serve an
+    # unrelated same-basename workdir file. It heals only when the mapped CWD target
+    # exists, so re-reading an artifact an earlier write produced still works.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     cwd = os.getcwd()
 
-    # Mapped target absent: read keeps the original absolute path (truthful miss).
+    # Mapped target absent: read keeps the original path (truthful miss).
     assert mod._remap_open("/mnt/data/input.csv", "r") == "/mnt/data/input.csv"
     with pytest.raises(FileNotFoundError):
         open(mod._remap_open("/mnt/data/input.csv", "r"))
 
-    # r+ (read-update, never creates) behaves the same: no redirect while absent.
+    # r+ (never creates) behaves the same: no redirect while absent.
     assert mod._remap_open("/mnt/data/input.csv", "r+") == "/mnt/data/input.csv"
 
     # A write heals onto the CWD and creates the artifact...
@@ -424,8 +404,7 @@ def test_prefix_read_heals_only_when_mapped_target_exists(monkeypatch, tmp_path)
     with open(mapped, "w") as fh:
         fh.write("col\n1\n")
 
-    # ...and now a READ of the same convention path heals onto that existing
-    # workdir artifact and sees what the write produced.
+    # ...and now a READ of the same convention path heals onto that existing artifact.
     read_target = mod._remap_open("/mnt/data/input.csv", "r")
     assert read_target == os.path.join(cwd, "input.csv")
     with open(read_target) as fh:
@@ -433,10 +412,9 @@ def test_prefix_read_heals_only_when_mapped_target_exists(monkeypatch, tmp_path)
 
 
 def test_prefix_boundary_not_matched_by_similar_paths(monkeypatch, tmp_path):
-    # The prefix match is anchored on a segment boundary (the prefix itself or
-    # prefix + '/'), so a sibling path that merely shares the textual prefix must
-    # NOT be remapped: /workspace2 is not /workspace, /mnt/database is not
-    # /mnt/data. Guards against a collision that would hijack unrelated paths.
+    # The prefix match is anchored on a segment boundary (prefix or prefix + '/'), so
+    # a sibling merely sharing the textual prefix must NOT be remapped: /workspace2
+    # is not /workspace, /mnt/database is not /mnt/data.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     for unrelated in ("/workspace2/file.txt", "/mnt/database/x", "/home/sandboxed/y"):
@@ -448,8 +426,8 @@ def test_prefix_boundary_not_matched_by_similar_paths(monkeypatch, tmp_path):
 def test_tmp_outputs_is_a_conditional_prefix():
     mod = _load_shim()
     assert "/tmp/outputs" in mod._CONDITIONAL_PREFIXES
-    # It must NOT be in the always-remap set: /tmp exists on the host, so an
-    # unconditional remap could shadow a real /tmp/outputs the user code made.
+    # NOT in the always-remap set: /tmp exists on the host, so an unconditional remap
+    # could shadow a real /tmp/outputs the user code made.
     assert "/tmp/outputs" not in mod._PREFIXES
 
 
@@ -474,14 +452,11 @@ def test_tmp_outputs_remapped_only_while_absent(monkeypatch, tmp_path):
 
 
 def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
-    # `Path('/mnt/data').mkdir(parents=True, exist_ok=True)` is a stock
-    # code-interpreter setup line. pathlib drives it through os.mkdir (not
-    # os.makedirs) per component and, on FileExistsError, Path.is_dir()/os.stat
-    # -- so the shim must patch os.mkdir AND Path.mkdir for the whole
-    # parents/exist_ok dance to land in the working directory instead of raising
-    # before any open() runs. This keeps the shim's mkdir patches installed
-    # (unlike _load_shim) under a chdir into tmp_path, so the only real writes
-    # land in that temp dir, and restores every patched global in finally.
+    # `Path('/mnt/data').mkdir(parents=True, exist_ok=True)` is a stock setup line.
+    # pathlib drives it through os.mkdir per component and Path.is_dir()/os.stat on
+    # FileExistsError, so the shim must patch os.mkdir AND Path.mkdir for the whole
+    # parents/exist_ok dance to land in the CWD instead of raising. Keeps the mkdir
+    # patches installed under a chdir into tmp_path and restores them in finally.
     saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_mkdir", _SHIM)
     mod = importlib.util.module_from_spec(spec)
@@ -490,14 +465,14 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
     try:
         spec.loader.exec_module(mod)  # installs the os.mkdir / Path.mkdir patches
         mod._notified = True
-        # Bare convention path maps onto the CWD itself, which already exists:
-        # exist_ok=True must be honoured against the mapped location, not raise.
+        # Bare convention path maps onto the CWD, which already exists: exist_ok=True
+        # must be honoured against the mapped location, not raise.
         pathlib.Path("/mnt/data").mkdir(parents = True, exist_ok = True)
         # A nested convention path is created inside the CWD, parents and all.
         pathlib.Path("/mnt/data/plots/run1").mkdir(parents = True, exist_ok = True)
         assert os.path.isdir(os.path.join(cwd, "plots", "run1"))
-        # Re-running the same setup is idempotent: exist_ok is evaluated on the
-        # mapped path (which now exists), not the never-present /mnt/data.
+        # Idempotent: exist_ok is evaluated on the mapped path (which now exists),
+        # not the never-present /mnt/data.
         pathlib.Path("/mnt/data/plots/run1").mkdir(parents = True, exist_ok = True)
 
         # Passthrough: real paths are created verbatim through both patches,
@@ -513,9 +488,8 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
 
 
 def test_read_of_missing_prefix_path_emits_no_notice(monkeypatch, tmp_path, capsys):
-    # A read of a missing convention path keeps the original path and must not
-    # spend the one-shot notice; a genuine remap afterward still notifies, with
-    # the original convention-prefix subject.
+    # A read of a missing convention path keeps the original path and must not spend
+    # the one-shot notice; a genuine remap afterward still notifies.
     mod = _load_shim()
     monkeypatch.chdir(tmp_path)
     mod._notified = False  # re-arm the one-shot notice for this test
@@ -530,9 +504,9 @@ def test_read_of_missing_prefix_path_emits_no_notice(monkeypatch, tmp_path, caps
 
 
 def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_path):
-    # O_TRUNC / O_APPEND without O_CREAT cannot create a missing file, so the
-    # shim treats them as a read: a missing convention path stays truthful (the
-    # error names the path the caller used) and nothing is created in the CWD.
+    # O_TRUNC / O_APPEND without O_CREAT cannot create a missing file, so the shim
+    # treats them as a read: a missing convention path stays truthful (the error
+    # names the caller's path) and nothing is created in the CWD.
     saved = _save_patch_targets()
     spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_trunc", _SHIM)
     mod = importlib.util.module_from_spec(spec)

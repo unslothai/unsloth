@@ -300,8 +300,8 @@ class TestSandboxEnvIsolation:
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
-        # PYTHONPATH is whitelist-built, never inherited: it carries only the
-        # sandbox sitecustomize shim directory (code-interpreter path remap).
+        # PYTHONPATH is whitelist-built, never inherited: only the sandbox
+        # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
 
@@ -321,9 +321,8 @@ class TestSandboxEnvIsolation:
         assert env["TERM"] == "dumb"
 
     def test_bypass_env_installs_sitecustomize_path_shim(self, tmp_path):
-        # Bypass mode must install the same /mnt/data path-remap shim the safe
-        # env gets (finding 17), or model code that writes to /mnt/data succeeds
-        # in normal mode and FileNotFoundErrors in bypass mode.
+        # Bypass mode must install the same /mnt/data path-remap shim as the safe
+        # env (finding 17), else /mnt/data writes work only in normal mode.
         from core.inference.tools import _SANDBOX_SITE_DIR, _build_bypass_env
         env = _build_bypass_env(str(tmp_path))
         assert _SANDBOX_SITE_DIR in env["PYTHONPATH"].split(os.pathsep)

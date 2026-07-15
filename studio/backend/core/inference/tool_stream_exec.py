@@ -36,8 +36,8 @@ def accepts_output_callback(func: Callable[..., str]) -> bool:
     """Whether an injectable ``execute_tool`` supports ``output_callback``.
 
     ``execute_tool`` is replaceable (tests inject fakes / the pre-PR signature),
-    so forward the kwarg only when the callable declares it or takes ``**kwargs``;
-    passing it unconditionally would ``TypeError`` on an old signature.
+    so forward the kwarg only when the callable declares it or takes ``**kwargs``
+    (passing it unconditionally would ``TypeError`` on an old signature).
     """
     try:
         params = inspect.signature(func).parameters
@@ -56,10 +56,9 @@ TOOL_HEARTBEAT_INTERVAL_S = 10.0
 _POLL_INTERVAL_S = 0.25
 
 # Upper bound on how long teardown waits for the worker once the stream is
-# closed (client disconnect) or errors. A cancel-observing tool returns well
-# within this after ``cancel_event`` is set; a cancel-ignoring one is a daemon
-# and is left to finish on its own rather than blocking request teardown for the
-# tool's full timeout.
+# closed or errors. A cancel-observing tool returns within this after
+# ``cancel_event`` is set; a cancel-ignoring one is a daemon left to finish on
+# its own rather than blocking teardown for the tool's full timeout.
 _WORKER_JOIN_TIMEOUT_S = 5.0
 
 # Cap on total streamed live-output characters per tool call, bounding the
@@ -74,11 +73,10 @@ _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
-    With ``max_chars`` set, stop concatenating once the budget is reached and
-    discard the remaining queued chunks in place, bounding peak allocation on a
-    batch that overshoots the live-output cap (a chatty tool can queue far more
-    than the cap before the consumer wakes). The crossing chunk is sliced to one
-    char past the budget, enough for the caller's truncation to stay
+    With ``max_chars`` set, stop concatenating at the budget and discard the
+    remaining chunks in place, bounding peak allocation when a chatty tool queues
+    far more than the cap before the consumer wakes. The crossing chunk is sliced
+    to one char past the budget, enough for the caller's truncation to stay
     byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
     scanned so completion is detected promptly.
     """
@@ -97,8 +95,7 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
         if dropping:
             continue
         if max_chars is not None and total + len(item) > max_chars:
-            # Keep only enough of the crossing chunk to push one past the budget,
-            # preserving the overflow signal while dropping the remainder.
+            # Keep one char past the budget as the overflow signal; drop the rest.
             parts.append(item[: max(0, max_chars - total) + 1])
             dropping = True
             continue
@@ -123,23 +120,22 @@ def stream_tool_execution(
     tool propagate to the caller unchanged after the worker thread finishes.
 
     ``cancel_event`` is the request-level cancellation signal already handed to
-    the tool. If the consumer closes this generator early (an SSE client
-    disconnect calls ``gen.close()``, raising ``GeneratorExit`` at a ``yield``),
-    the wrapper sets it so a cancel-observing tool stops, then joins the worker
-    with a bounded timeout. It is set ONLY on that abnormal-exit path, never on a
-    clean finish, because the event is shared across the tool calls in a turn and
-    setting it early would abort the next tool.
+    the tool. If the consumer closes this generator early (an SSE disconnect
+    calls ``gen.close()``, raising ``GeneratorExit`` at a ``yield``), the wrapper
+    sets it so a cancel-observing tool stops, then joins the worker with a bounded
+    timeout. Set ONLY on that abnormal-exit path, never on a clean finish, because
+    the event is shared across a turn's tool calls and setting it early would
+    abort the next tool.
     """
     output_queue: queue.Queue[Any] = queue.Queue()
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
-    # Bound accepted live output at the PRODUCER boundary: the consumer-side cap
-    # alone wouldn't stop a fast worker from enqueuing unboundedly while a slow
-    # SSE client backpressures. Accept at most one char past the cap (so the
-    # consumer still emits the capped notice) and drop the rest, keeping
-    # heartbeats alive. The final result is captured independently, so this never
-    # changes the byte-identical result.
+    # Bound accepted output at the PRODUCER boundary: the consumer-side cap alone
+    # wouldn't stop a fast worker enqueuing unboundedly while a slow SSE client
+    # backpressures. Accept at most one char past the cap (so the consumer still
+    # emits the capped notice) and drop the rest. The final result is captured
+    # independently, so this never changes the byte-identical result.
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
@@ -190,9 +186,8 @@ def stream_tool_execution(
     def _drain_and_drop() -> None:
         """Discard the current and every queued chunk without concatenating.
 
-        Past the cap every chunk is thrown away, so a chatty tool must not pay to
-        build a combined string only to drop it. Still detect completion so the
-        loop can exit promptly.
+        Past the cap every chunk is dropped, so don't pay to build a combined
+        string only to drop it. Still detect completion so the loop can exit.
         """
         nonlocal finished
         while True:
@@ -212,8 +207,7 @@ def stream_tool_execution(
             except queue.Empty:
                 # A disconnect sets cancel_event while the worker is silent;
                 # surface a heartbeat this poll so the route regains control and
-                # can tear down at once, instead of waiting up to a full
-                # heartbeat interval for the next scheduled keepalive.
+                # tears down at once, not after a full heartbeat interval.
                 if cancel_event is not None and cancel_event.is_set():
                     yield {"type": "heartbeat"}
                     continue
@@ -227,11 +221,10 @@ def stream_tool_execution(
                 break
 
             if stream_capped:
-                # Past the cap, drop this chunk and every queued sibling without
-                # concatenating (see _drain_and_drop). Pace the drain with one
-                # time.sleep per poll (not time.monotonic -- tests patch the clock)
-                # counted as an idle poll, so heartbeats keep flowing while a chatty
-                # tool keeps the queue non-empty.
+                # Past the cap: drop this chunk and every queued sibling (see
+                # _drain_and_drop). Pace with one time.sleep per poll (not
+                # time.monotonic -- tests patch the clock), counted as an idle
+                # poll so heartbeats keep flowing while the queue stays non-empty.
                 _drain_and_drop()
                 if finished:
                     break
@@ -261,14 +254,13 @@ def stream_tool_execution(
                     "text": chunk,
                 }
     except BaseException:
-        # The only way the loop raises is the consumer closing us early: an SSE
-        # client disconnect calls gen.close() (GeneratorExit at the current
-        # yield), or the route throws in. Signal cancellation so a cancel-observing
-        # tool returns; the daemon worker is then abandoned (see the finally).
-        # Re-raise so the caller still sees the real cause (GeneratorExit must
-        # not be swallowed). This runs ONLY on abnormal exit, so the shared
-        # cancel_event is never set out from under the next tool in a clean
-        # multi-tool turn.
+        # The loop only raises when the consumer closes us early: an SSE
+        # disconnect calls gen.close() (GeneratorExit at the yield) or the route
+        # throws in. Signal cancellation so a cancel-observing tool returns; the
+        # daemon worker is then abandoned (see finally). Re-raise so the caller
+        # sees the real cause (GeneratorExit must not be swallowed). Runs ONLY on
+        # abnormal exit, so the shared cancel_event is never set out from under
+        # the next tool in a clean multi-tool turn.
         abnormal_exit = True
         if cancel_event is not None:
             try:
@@ -278,12 +270,10 @@ def stream_tool_execution(
         raise
     finally:
         # Clean finish: the worker already recorded its result and queued the
-        # sentinel we consumed, so this join returns at once. Abnormal exit
-        # (disconnect/error): cancel_event is set and the daemon worker is
-        # abandoned, so there is nothing to wait for -- join with a zero timeout
-        # so teardown never blocks the caller (the route may close this generator
-        # on the event loop). A cancel-ignoring tool can no longer stall teardown,
-        # and the daemon cannot outlive the process.
+        # sentinel we consumed, so this join returns at once. Abnormal exit:
+        # cancel_event is set and the daemon worker abandoned, so join with a zero
+        # timeout -- teardown never blocks the caller (the route may close this
+        # generator on the event loop), and the daemon cannot outlive the process.
         worker.join(timeout = 0 if abnormal_exit else _WORKER_JOIN_TIMEOUT_S)
 
     error = outcome.get("error")

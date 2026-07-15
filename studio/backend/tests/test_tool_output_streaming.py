@@ -140,8 +140,7 @@ def test_tool_exception_propagates_after_stream():
 
 
 def test_output_before_worker_raises_is_preserved():
-    # A tool that streams then raises: the already-streamed output survives and
-    # the exception still propagates.
+    # Output streamed before the worker raises survives; the exception still propagates.
     def tool(callback):
         callback("partial before crash\n")
         time.sleep(0.02)
@@ -157,8 +156,8 @@ def test_output_before_worker_raises_is_preserved():
 
 
 def test_generator_close_cancels_observing_tool():
-    # Closing the stream early (an SSE client disconnect calls gen.close()) sets
-    # the shared cancel_event so a cancel-observing tool returns at once.
+    # gen.close() (SSE client disconnect) sets the shared cancel_event, so a
+    # cancel-observing tool returns at once.
     cancel_event = threading.Event()
     started = threading.Event()
     returned = threading.Event()
@@ -190,8 +189,7 @@ def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
     release = threading.Event()
 
     def tool(_cb):
-        # Ignores cancel_event entirely; the long wait stands in for a
-        # web_search / MCP call that does not poll cancellation mid-flight.
+        # Ignores cancel_event; stands in for a web_search/MCP call that never polls it.
         release.wait(timeout = 30)
         return "slow"
 
@@ -211,8 +209,8 @@ def test_generator_close_is_bounded_for_cancel_ignoring_tool(monkeypatch):
 
 
 def test_cancel_event_not_set_on_clean_finish():
-    # cancel_event is shared across a turn's tool calls; a clean finish must
-    # leave it unset so the next tool in the same turn is not aborted.
+    # cancel_event is shared across a turn; a clean finish must leave it unset so
+    # the next tool in the same turn is not aborted.
     cancel_event = threading.Event()
 
     def tool(_cb):
@@ -228,8 +226,8 @@ def test_cancel_event_not_set_on_clean_finish():
 
 
 def test_no_worker_thread_leak_under_repeated_close(monkeypatch):
-    # Repeatedly starting then closing the wrapper must not accumulate live
-    # worker threads: each cancel-observing worker exits once close() signals it.
+    # Repeated start-then-close must not leak worker threads: each cancel-observing
+    # worker exits once close() signals it.
     monkeypatch.setattr("core.inference.tool_stream_exec._WORKER_JOIN_TIMEOUT_S", 0.2)
 
     def _live_tool_workers():
@@ -280,10 +278,9 @@ def test_streamed_output_is_capped_but_result_is_not():
 
 
 def test_heartbeats_continue_while_capped_output_flows():
-    # After the stream cap, discarded chunks must not starve the keepalive:
-    # a tool that keeps printing keeps the queue non-empty, so no idle poll
-    # (and before the fix no heartbeat) would ever fire, leaving the SSE
-    # stream silent past proxy idle timeouts for the rest of the run.
+    # After the cap, discarded chunks must not starve the keepalive: a chatty tool
+    # keeps the queue non-empty, so without the fix no heartbeat fires and the SSE
+    # stream stays silent past proxy idle timeouts.
     release = threading.Event()
 
     def tool(callback):
@@ -293,9 +290,8 @@ def test_heartbeats_continue_while_capped_output_flows():
             time.sleep(0.005)
         return "done"
 
-    # Watchdog: on regressed code the generator never yields while spam
-    # flows, so next(gen) would block forever; ending the tool from a timer
-    # turns that hang into a clean assertion failure (zero heartbeats).
+    # Watchdog: on regressed code next(gen) blocks forever while spam flows; the
+    # timer ends the tool, turning that hang into a clean assertion failure.
     watchdog = threading.Timer(8.0, release.set)
     watchdog.start()
     gen = stream_tool_execution(
@@ -325,11 +321,8 @@ def test_heartbeats_continue_while_capped_output_flows():
 
 
 def test_drain_queue_bounds_the_over_cap_batch():
-    # The batch that first crosses the cap must not join the entire backlog: a
-    # chatty tool can queue far more than the cap before the consumer wakes, and
-    # the surplus is truncated away anyway, so joining it first would defeat the
-    # cap's memory ceiling. _drain_queue stops concatenating once the cap is
-    # first exceeded and discards the rest in place.
+    # _drain_queue stops concatenating once the cap is first exceeded and discards
+    # the rest in place, so a chatty tool's huge backlog never defeats the memory ceiling.
     import queue as _queue
 
     from core.inference.tool_stream_exec import _drain_queue
@@ -348,12 +341,10 @@ def test_drain_queue_bounds_the_over_cap_batch():
 
 
 def test_drain_queue_does_not_materialize_surplus_crossing_chunk():
-    # The single chunk that first crosses the cap must not be joined in full: a
-    # tool can emit one multi-megabyte line, and when the budget is already met
-    # (max_chars <= 0, e.g. an outer item that alone fills the live cap) the
-    # next queued chunk would otherwise be materialized whole only to be
-    # truncated away. Keep just enough (one char past the budget) to preserve
-    # the caller's overflow signal and byte-identical truncation.
+    # The single chunk that first crosses the cap must not be materialized in full
+    # (a tool can emit one multi-megabyte line). Keep just one char past the budget
+    # to preserve the overflow signal and byte-identical truncation, even when the
+    # budget is already met (max_chars <= 0).
     import queue as _queue
 
     from core.inference.tool_stream_exec import _drain_queue
@@ -361,8 +352,7 @@ def test_drain_queue_does_not_materialize_surplus_crossing_chunk():
     sentinel = object()
     huge = "z" * 1_000_000
 
-    # Budget already met: still one char past the (non-positive) budget, and the
-    # kept slice is a true prefix so downstream truncation stays byte-identical.
+    # Budget already met (non-positive): keep one char, a true prefix.
     for cap in (0, -500):
         q: _queue.Queue = _queue.Queue()
         q.put(huge)
@@ -384,8 +374,8 @@ def test_drain_queue_does_not_materialize_surplus_crossing_chunk():
 
 
 def test_drain_queue_unbounded_joins_everything():
-    # Without a cap the join is complete and ordered (the sub-cap path relies on
-    # this to stream every chunk verbatim).
+    # Without a cap the join is complete and ordered (the sub-cap path streams
+    # every chunk verbatim on this).
     import queue as _queue
 
     from core.inference.tool_stream_exec import _drain_queue
@@ -401,8 +391,8 @@ def test_drain_queue_unbounded_joins_everything():
 
 
 def test_over_cap_crossing_batch_streams_capped_output():
-    # End-to-end: a burst that crosses the cap inside one drain still yields a
-    # correctly capped live stream and an untouched final result.
+    # End-to-end: a burst crossing the cap in one drain still yields a capped live
+    # stream and an untouched final result.
     chunk = "z" * 1000
 
     def tool(callback):
@@ -433,8 +423,7 @@ def test_python_exec_result_identical_with_streaming():
 
 
 def test_python_exec_streams_lines_incrementally():
-    # Two prints separated by a sleep: the first line must arrive via the
-    # callback well before the process exits.
+    # The first of two sleep-separated prints must reach the callback well before exit.
     code = (
         "import time\n"
         "print('first', flush=True)\n"
@@ -452,17 +441,15 @@ def test_python_exec_streams_lines_incrementally():
     finished = time.monotonic()
     assert "first" in result and "second" in result
     assert first_seen_at, "callback never invoked"
-    # The first line arrived before the sleep completed (with margin for a
-    # slow interpreter start, assert it beat process completion clearly).
+    # First line arrived before the sleep completed (margin for slow interpreter start).
     assert first_seen_at[0] - started < finished - started - 0.5
 
 
 def test_python_exec_unflushed_print_streams_live_and_result_identical():
-    # The common long-running case: a bare print() WITHOUT flush=True, then a
-    # sleep. -u forces the child's stdout unbuffered, so the line must reach the
-    # callback well before the process exits (otherwise CPython block-buffers the
-    # pipe and the live pane stays empty until exit). The final joined result is
-    # byte-identical to the non-streaming run: -u changes buffering/timing only.
+    # A bare print() WITHOUT flush=True then a sleep. -u forces the child's stdout
+    # unbuffered so the line reaches the callback before exit (else CPython
+    # block-buffers the pipe and the live pane stays empty). -u changes timing only,
+    # so the joined result stays byte-identical to the non-streaming run.
     code = (
         "import time\n"
         "print('progress')\n"  # no flush=True
@@ -482,8 +469,7 @@ def test_python_exec_unflushed_print_streams_live_and_result_identical():
     assert streamed == baseline
     assert "progress" in streamed and "done" in streamed
     assert first_seen_at, "callback never invoked for unflushed print"
-    # The unflushed line arrived before the streamed run finished the sleep,
-    # proving it streamed live rather than at process exit.
+    # Unflushed line arrived before the sleep finished: streamed live, not at exit.
     assert first_seen_at[0] - started < finished - started - 0.5
 
 
@@ -520,11 +506,9 @@ def test_bash_exec_result_identical_with_streaming():
 
 
 def test_bash_exec_invalid_utf8_identical_with_streaming():
-    # Invalid UTF-8 in tool output must not kill either path: the pipe
-    # decodes with errors="replace" (like _python_exec), so the streaming
-    # reader thread cannot die on UnicodeDecodeError (which readline raises
-    # as a ValueError subclass and the reader used to swallow, silently
-    # truncating output) and both paths return the same replaced text.
+    # Invalid UTF-8 must not kill either path: the pipe decodes with
+    # errors="replace", so the streaming reader thread cannot die on the
+    # UnicodeDecodeError readline raises, and both paths return the same replaced text.
     command = "printf 'ok\\377bad\\n'"  # \377 = 0xFF, invalid UTF-8
     baseline = _bash_exec(command, timeout = 60)
     chunks: list[str] = []
@@ -537,10 +521,9 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
 
 
 def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
-    # A background grandchild inherits stdout, keeps the pipe open past the
-    # main shell's exit, and writes ~7s later, beyond the bounded 5s drain a
-    # short-circuiting join would allow. With timeout=None the drain must wait
-    # for EOF like communicate(timeout=None), so the late output is included.
+    # A background grandchild holds the pipe open past the shell's exit and writes
+    # ~7s later. With timeout=None the drain must wait for EOF like
+    # communicate(timeout=None), so the late output is included.
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     chunks: list[str] = []
     result = _bash_exec(command, timeout = None, output_callback = chunks.append)
@@ -550,10 +533,9 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
 
 
 def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
-    # A backgrounded grandchild inherits stdout, holds the pipe open while it
-    # sleeps past the finite timeout, then would write a sentinel. The parent
-    # shell has already exited by the time the drain gives up, so killing only
-    # the (reaped) parent leaves the grandchild running; the drain must kill the
+    # A backgrounded grandchild holds the pipe open past the finite timeout, then
+    # would write a sentinel. The parent shell has already exited, so killing only
+    # the reaped parent leaves the grandchild running; the drain must kill the
     # process group captured before the wait so the grandchild never writes.
     sentinel = tmp_path / "grandchild_ran"
     command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
@@ -565,10 +547,9 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
-    # The NON-streaming path (output_callback=None) uses proc.communicate() +
-    # _kill_process_tree, which short-circuits once the reaped leader has
-    # exited. A backgrounded grandchild holding stdout would then survive unless
-    # the group captured right after spawn is killed too. This must match the
+    # The NON-streaming path (communicate() + _kill_process_tree) short-circuits
+    # once the reaped leader has exited, so a stdout-holding grandchild survives
+    # unless the group captured right after spawn is killed too. Must match the
     # streaming path's exited-leader handling.
     sentinel = tmp_path / "grandchild_ran"
     command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
@@ -594,10 +575,9 @@ def test_python_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
 
 
 def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
-    # On Windows os.getpgid / os.killpg do not exist; _drain_process_output must
-    # not raise AttributeError before it can read the child's output. Simulate
-    # that by removing the APIs and flipping os.name. The child still runs and
-    # its output is captured; only the process-group kill path is skipped.
+    # On Windows os.getpgid / os.killpg are absent; _drain_process_output must not
+    # raise AttributeError before reading the child's output. Removing the APIs and
+    # flipping os.name: the child still runs and is captured, only the group kill is skipped.
     import subprocess as _sp
 
     from core.inference.tools import _drain_process_output
@@ -619,10 +599,9 @@ def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_captured_group_survives_fast_leader_reap(tmp_path):
-    # Capture the group right after spawn, deliberately reap the leader first
-    # (as a polling cancel watcher would), then drain: the pre-captured pgid must
-    # still reap the stdout-holding grandchild even though os.getpgid(pid) would
-    # now fail on the reaped leader.
+    # Capture the group after spawn, reap the leader first (as a polling cancel
+    # watcher would), then drain: the pre-captured pgid must still reap the
+    # stdout-holding grandchild even though os.getpgid(pid) would now fail.
     import subprocess as _sp
 
     from core.inference.tools import _capture_process_group, _drain_process_output
@@ -648,22 +627,19 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
-    # After the leader exits the cancel watcher (which loops on proc.poll()) is
-    # gone, so the finite-timeout drain itself must honor cancellation: a chatty
-    # grandchild inherits stdout and streams for far longer than the reader would
-    # otherwise be waited on. With a large finite timeout, a mid-drain
-    # cancel_event must break the drain promptly and kill the process group,
-    # instead of draining the grandchild for the whole budget.
+    # Once the leader exits the cancel watcher (which loops on proc.poll()) is gone,
+    # so the finite-timeout drain itself must honor cancellation: a mid-drain
+    # cancel_event must break the drain promptly and kill the process group instead
+    # of draining a chatty grandchild for the whole large budget.
     import subprocess as _sp
     import threading as _th
 
     from core.inference.tools import _capture_process_group, _drain_process_output
 
     sentinel = tmp_path / "grandchild_late"
-    # Grandchild inherits stdout, keeps the pipe open, streams a line every
-    # 0.2s, and would touch the sentinel only after 10s -- well past the moment
-    # we cancel. The leader exits immediately, so the drain enters the finite
-    # branch with a live, chatty reader.
+    # Grandchild holds the pipe open, streams every 0.2s, and touches the sentinel
+    # only after 10s -- well past the cancel. The leader exits immediately, so the
+    # drain enters the finite branch with a live, chatty reader.
     proc = _sp.Popen(
         [
             "bash",
@@ -681,12 +657,11 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     proc.wait()  # leader exits at once; the cancel watcher would now be gone
 
     cancel_event = _th.Event()
-    # Signal cancellation shortly into the drain.
-    _th.Timer(0.6, cancel_event.set).start()
+    _th.Timer(0.6, cancel_event.set).start()  # cancel shortly into the drain
 
     started = time.monotonic()
-    # Finite timeout is large (30s); without the cancel poll the drain would
-    # keep reading the grandchild until the pipe closes ~20s later.
+    # Large finite timeout (30s); without the cancel poll the drain keeps reading
+    # the grandchild until the pipe closes ~20s later.
     output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
@@ -699,13 +674,11 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, monkeypatch):
-    # The proc.wait() timeout branch normally kills the whole group via
-    # _kill_process_tree because the leader is still alive when the wait expires.
-    # But the leader can exit in the tiny window before _kill_process_tree
-    # samples its pgid, which then short-circuits on the reaped leader and leaves
-    # a stdout-holding grandchild running. Model that race by making
-    # _kill_process_tree a no-op; the captured-pgid kill in the timeout branch
-    # must still reap the grandchild, matching the non-streaming timeout path.
+    # The proc.wait() timeout branch normally kills the group via _kill_process_tree.
+    # But the leader can exit before _kill_process_tree samples its pgid, which then
+    # short-circuits on the reaped leader and leaves a stdout-holding grandchild.
+    # Model that race with _kill_process_tree as a no-op; the captured-pgid kill in
+    # the timeout branch must still reap the grandchild, matching non-streaming.
     import subprocess as _sp
 
     from core.inference import tools as _tools_mod
@@ -714,9 +687,8 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     monkeypatch.setattr(_tools_mod, "_kill_process_tree", lambda proc: None)
 
     sentinel = tmp_path / "grandchild_ran"
-    # Leader sleeps well past the timeout so proc.wait() genuinely times out
-    # (enters the TimeoutExpired branch); a same-group grandchild holds stdout
-    # and would touch the sentinel after the timeout unless the group is killed.
+    # Leader sleeps past the timeout so proc.wait() genuinely times out; a same-group
+    # grandchild holds stdout and would touch the sentinel unless the group is killed.
     proc = _sp.Popen(
         ["bash", "-c", f"( sleep 3; touch '{sentinel}' ) & sleep 30"],
         stdout = _sp.PIPE,
@@ -796,8 +768,8 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
             msg for payload in payloads for msg in payload["messages"] if msg.get("role") == "tool"
         ]
 
-    # The role=tool message fed to the model is byte-identical: streaming is
-    # purely observational and must not perturb parsing/nudging/healing.
+    # The role=tool message fed to the model is byte-identical: streaming is purely
+    # observational and must not perturb parsing/nudging/healing.
     assert _tool_messages(payloads_streaming) == _tool_messages(payloads_plain)
     assert _tool_messages(payloads_streaming) == [
         {
@@ -870,9 +842,8 @@ def test_truncate_notice_is_neutral_and_mentions_workdir():
     assert out.startswith("y" * 10)
     assert "truncated" in out and "50 chars total" in out
     assert "persist in the working directory" in out
-    # The notice must NOT claim the user saw the output: this same wrapper
-    # serves non-streaming chat/API and direct execute_tool() callers where no
-    # output_callback delivers anything to anyone.
+    # The notice must NOT claim the user saw the output: this wrapper also serves
+    # non-streaming callers where no output_callback delivers anything.
     assert "the user was shown the full output" not in out
     assert "shown" not in out
     # Under the limit: untouched.
@@ -880,10 +851,9 @@ def test_truncate_notice_is_neutral_and_mentions_workdir():
 
 
 def test_truncated_result_identical_and_notice_neutral_with_streaming():
-    # A long output crosses the model-visible cap. The truncation notice must be
-    # byte-identical with and without an output_callback (the streaming vs
-    # non-streaming hard invariant, which a mode-dependent notice would break),
-    # and must not claim the user was shown the full output.
+    # The truncation notice must be byte-identical with and without an
+    # output_callback (the streaming vs non-streaming invariant a mode-dependent
+    # notice would break) and must not claim the user was shown the full output.
     code = f"print('x' * {_MAX_OUTPUT_CHARS + 5000})"
     baseline = _python_exec(code, timeout = 60)
     streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
@@ -920,8 +890,8 @@ def test_missing_path_hint_detection():
 
 
 def test_missing_path_hint_generalizes_beyond_convention_prefixes():
-    # A hallucinated absolute path outside the enumerated prefixes (invented
-    # from the model's CWD) still earns the hint, echoing that path.
+    # A hallucinated absolute path outside the enumerated prefixes still earns the
+    # hint, echoing that path.
     err = (
         "FileNotFoundError: [Errno 2] No such file or directory: "
         "'/home/ubuntu/Sandbox/flappy_bird.html'"
@@ -935,19 +905,17 @@ def test_missing_path_hint_generalizes_beyond_convention_prefixes():
 
 
 def test_missing_path_hint_respects_project_workdir():
-    # Project-backed sessions run under a project root OUTSIDE ~/studio_sandbox
-    # (see _get_workdir). A legitimate miss INSIDE that project workspace must
-    # not be misclassified as an external habit path and told to flatten to its
-    # basename; judged against the real workdir it gets no hint. Fabricated
-    # absolute paths (realpath needs no real dirs) that contain no convention
-    # prefix substring, so only the workdir judgement decides.
+    # Project-backed sessions run under a root OUTSIDE ~/studio_sandbox. A legitimate
+    # miss INSIDE that project workspace must not be misclassified as an external
+    # habit path and flattened to its basename; judged against the real workdir it
+    # gets no hint. The fabricated paths carry no convention prefix, so only the
+    # workdir judgement decides.
     workdir = "/srv/projroot/session_area"
     missing = "/srv/projroot/session_area/data/missing.csv"
     output = f"FileNotFoundError: [Errno 2] No such file or directory: '{missing}'"
-    # Judged against the static sandbox root (no workdir) it is an external
-    # absolute path and wrongly earns the flatten hint.
+    # Against the static sandbox root (no workdir) it looks external and wrongly earns the hint.
     assert "working directory is writable" in _missing_path_hint(output)
-    # Judged against the real project workdir it is local -> no hint.
+    # Against the real project workdir it is local -> no hint.
     assert _missing_path_hint(output, workdir) == ""
     # A path genuinely outside the project workdir still earns the hint.
     outside_err = "FileNotFoundError: [Errno 2] No such file or directory: '/srv/other/x.html'"
@@ -955,17 +923,15 @@ def test_missing_path_hint_respects_project_workdir():
 
 
 def test_missing_path_hint_project_workdir_under_convention_prefix():
-    # A project workdir can legitimately live under a convention prefix such as
-    # /workspace (common in container deployments). A genuine miss INSIDE that
-    # project root then contains the "/workspace" substring on the failing line,
-    # but it is a real local path, not a code-interpreter habit path: the
-    # convention fast path must not fire and steer the model to flatten it to a
-    # bare basename (which would drop the project subdirectory).
+    # A project workdir can live under a convention prefix like /workspace (common in
+    # containers). A genuine miss INSIDE it carries the "/workspace" substring but is
+    # a real local path, not a habit path: the convention fast path must not fire and
+    # flatten it to a bare basename (which would drop the project subdirectory).
     workdir = "/workspace/proj"
     nested = "/workspace/proj/sub/data.csv"
     output = f"FileNotFoundError: [Errno 2] No such file or directory: '{nested}'"
-    # Judged against the real project workdir the miss is local -> no hint, so
-    # the intended /workspace/proj/sub path is not flattened away.
+    # Against the real project workdir the miss is local -> no hint, so
+    # /workspace/proj/sub is not flattened away.
     assert _missing_path_hint(output, workdir) == ""
     # A miss at the project root itself is likewise local.
     at_root = "/workspace/proj/data.csv"
@@ -981,10 +947,9 @@ def test_missing_path_hint_project_workdir_under_convention_prefix():
 
 
 def test_missing_path_hint_convention_scoped_to_failing_line():
-    # A convention prefix that appears only OUTSIDE the failing-path error line
-    # (a traceback frame under a /workspace project root, or the user's own code
-    # printing /mnt/data) must not trigger the "use a relative path" hint when
-    # the actual miss was a relative / in-workdir path.
+    # A convention prefix appearing only OUTSIDE the failing-path line (a traceback
+    # frame under /workspace, or the user's code printing /mnt/data) must not trigger
+    # the hint when the actual miss was a relative / in-workdir path.
     frame_err = (
         "Traceback (most recent call last):\n"
         '  File "/workspace/proj/script.py", line 5, in <module>\n'
@@ -1010,9 +975,8 @@ def test_code_tool_descriptions_mention_relative_paths():
 
 
 def test_python_exec_mnt_data_open_is_remapped_into_workdir():
-    # The sitecustomize shim remaps open()/os.makedirs() on /mnt/data into the
-    # sandbox CWD and prints a one-line stderr notice, identically with and
-    # without streaming.
+    # The shim remaps open()/os.makedirs() on /mnt/data into the sandbox CWD and
+    # prints a one-line stderr notice, identically with and without streaming.
     fname = f"remap_{_uuid.uuid4().hex}.txt"
     code = (
         "import os\n"
@@ -1066,14 +1030,13 @@ def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
 
 
 def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
-    # The reported failure: the model invents an absolute path from its CWD
-    # (not one of the enumerated prefixes) and opens it for writing. The
-    # write-mode fallback redirects it to the basename in the sandbox workdir
-    # instead of dying with FileNotFoundError.
+    # The model invents an absolute path outside the enumerated prefixes and opens
+    # it for writing; the write-mode fallback redirects it to the basename in the
+    # sandbox workdir instead of dying with FileNotFoundError.
     fname = f"remap_{_uuid.uuid4().hex}.html"
     hallucinated = f"/nonexistent_root_xyz/Sandbox/{fname}"
-    # Read-back goes through the mapped basename, not the hallucinated path:
-    # reads are never redirected by the fallback (only the write is healed).
+    # Read-back goes through the mapped basename: reads are never redirected, only
+    # the write is healed.
     code = (
         f"with open('{hallucinated}', 'w') as f:\n"
         "    f.write('hello fallback')\n"
@@ -1097,8 +1060,8 @@ def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
 
 
 def test_python_exec_unremapped_mnt_data_failure_gets_hint():
-    # os.listdir is deliberately not remapped: the failure must carry the
-    # model-visible retry hint instead, identically with and without streaming.
+    # os.listdir is deliberately not remapped: the failure carries the retry hint
+    # instead, identically with and without streaming.
     import re as _re
 
     code = "import os\nos.listdir('/mnt/data/nonexistent_dir_xyz')\n"
@@ -1107,8 +1070,7 @@ def test_python_exec_unremapped_mnt_data_failure_gets_hint():
     assert "working directory is writable" in baseline
     streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
 
-    # The traceback embeds each run's random temp filename; normalize it (the
-    # byte-identity invariant is per-execution, and these are two executions).
+    # Normalize each run's random temp filename (byte-identity is per-execution).
     def normalize(text: str) -> str:
         return _re.sub(r"studio_exec_\w+\.py", "studio_exec.py", text)
 
@@ -1132,10 +1094,10 @@ def test_bash_exec_local_failure_gets_no_hint():
 
 
 def test_producer_queue_is_bounded_under_tight_print_loop(monkeypatch):
-    # The consumer-side cap only bounds the concatenated stream; a fast worker
-    # can still enqueue unboundedly while the SSE consumer is backpressured.
-    # The producer boundary now discards callbacks past the cap so the queue
-    # can never grow without limit (finding 12).
+    # The consumer-side cap only bounds the concatenated stream; a fast worker can
+    # still enqueue unboundedly while the SSE consumer is backpressured. The producer
+    # boundary now discards callbacks past the cap so the queue cannot grow without
+    # limit (finding 12).
     import queue as _queue
 
     from core.inference import tool_stream_exec
@@ -1157,16 +1119,16 @@ def test_producer_queue_is_bounded_under_tight_print_loop(monkeypatch):
 
     events, result = _run_stream(tool, tool_name = "python")
     assert result == "done"
-    # At most cap + 1 chars are ever accepted into the queue, so the number of
-    # queued items (1 char each) cannot exceed that, regardless of consumer lag.
+    # At most cap + 1 chars enter the queue, so 1-char items cannot exceed that
+    # regardless of consumer lag.
     assert observed
     assert max(observed) <= TOOL_OUTPUT_STREAM_MAX_CHARS + 2
 
 
 def test_continuous_over_cap_output_does_not_starve_heartbeats():
-    # Once the cap is tripped, a continuously producing tool must not keep the
-    # drain spinning forever with no heartbeat: callbacks past the budget never
-    # enter the queue, so the idle heartbeat path resumes (finding 13).
+    # Once the cap is tripped, a continuously producing tool must not spin the drain
+    # forever with no heartbeat: callbacks past the budget never enter the queue, so
+    # the idle heartbeat path resumes (finding 13).
     release = threading.Event()
 
     def tool(callback):
@@ -1230,11 +1192,10 @@ def test_accepts_output_callback_signature_detection():
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
-    # NON-streaming (output_callback=None) cancellation: the shell leader exits
-    # immediately while a backgrounded grandchild holds stdout. The cancel
-    # watcher loops on the leader's poll() and is already gone, so before the fix
-    # communicate() blocked until the grandchild finished (running its side
-    # effect). The unified drain kills the captured group on cancel instead.
+    # NON-streaming cancellation: the leader exits at once while a grandchild holds
+    # stdout. The cancel watcher loops on the leader's poll() and is gone, so before
+    # the fix communicate() blocked until the grandchild finished. The unified drain
+    # kills the captured group on cancel instead.
     sentinel = tmp_path / "grandchild_ran"
     command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
     cancel_event = threading.Event()

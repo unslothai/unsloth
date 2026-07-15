@@ -1499,19 +1499,16 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
 
 
 def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
-    # A textual Mistral-style call that carries an explicit ``id`` must reconcile
-    # onto the already-open provisional TEXT card (keyed "call_0") instead of
-    # spawning a second, duplicate card under the explicit id. The parser keeps
-    # the explicit id for execution, so without reuse the live card and the
-    # finished card mismatch.
+    # A textual Mistral-style call with an explicit ``id`` must reconcile onto the
+    # open provisional TEXT card (keyed "call_0"), not spawn a duplicate under the
+    # explicit id (which the parser keeps for execution).
     big_query = "cats " * 80  # push the drained call past the provisional floor
     call = "[TOOL_CALLS]" + json.dumps(
         [{"name": "web_search", "arguments": {"query": big_query}, "id": "explicit-42"}]
     )
     assert len(call) > 256
-    # Stream the textual call in small chunks so the live-args provisional card
-    # opens mid-generation (a single-shot delta parses instantly and never shows
-    # a provisional, so it could not exercise the duplicate-card path).
+    # Small chunks so the provisional card opens mid-generation (a single-shot
+    # delta parses instantly and never shows a provisional to exercise).
     chunks = [call[i : i + 24] for i in range(0, len(call), 24)]
     streams = [
         [_sse({"content": c}) for c in chunks] + [_done()],
@@ -1537,21 +1534,18 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
 
     assert calls == [("web_search", {"query": big_query})]
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
-    # The empty-args card is the provisional open; the full-args card is the
-    # reconciled real start (both carry provisional provenance by design).
+    # Empty-args card = provisional open; full-args card = reconciled real start.
     provisional = [e for e in tool_starts if not e.get("arguments")]
     real = [e for e in tool_starts if e.get("arguments", {}).get("query")]
-    # The provisional card actually opened (guards against a vacuous test).
-    assert len(provisional) == 1, tool_starts
+    assert len(provisional) == 1, tool_starts  # provisional actually opened
     prov_id = provisional[0]["tool_call_id"]
-    # Exactly one real card, sharing the provisional id rather than opening a
-    # duplicate under the explicit "explicit-42" id.
+    # Exactly one real card, sharing the provisional id, not a duplicate under
+    # the explicit "explicit-42" id.
     assert len(real) == 1, tool_starts
     assert real[0]["tool_call_id"] == prov_id
     assert real[0]["tool_name"] == "web_search"
     assert {e["tool_call_id"] for e in tool_starts} == {prov_id}
-    # A single tool_end reconciles that card with the real result; there is no
-    # extra provisional close with an empty result under a stale id.
+    # A single tool_end reconciles the card; no stale empty-result close.
     ends = [e for e in events if e.get("type") == "tool_end"]
     assert [e["tool_call_id"] for e in ends] == [prov_id]
     assert ends[0]["result"] == "result"
@@ -2998,10 +2992,10 @@ def _python_tool_schema() -> list[dict]:
 
 
 def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
-    """While the model writes a large structured tool call, the arguments must
-    stream as tool_args events to the provisional card (first the backlog that
-    triggered the card, then each fragment), and the executed call plus the
-    conversation the model sees must be exactly what the accumulator built."""
+    """A large structured tool call must stream its arguments as tool_args events
+    to the provisional card (backlog that triggered the card, then each
+    fragment), while the executed call and the model's view stay exactly what the
+    accumulator built."""
 
     code = "print('x')\n" + ("# pad\n" * 80)
     args_json = json.dumps({"code": code})
@@ -3052,8 +3046,7 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
     args_events = [e for e in events if e.get("type") == "tool_args"]
     assert args_events, "no tool_args events were streamed"
     assert all(e["tool_call_id"] == call_id for e in args_events)
-    # First event carries the backlog that tripped the provisional card; the
-    # rest are raw fragments; together they are exactly the arguments JSON.
+    # First event is the backlog, the rest raw fragments; together the args JSON.
     assert args_events[0]["text"] == frag1
     assert "".join(e["text"] for e in args_events) == args_json
 
@@ -3062,15 +3055,14 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
     assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     tc = assistant_messages[-1]["tool_calls"][0]
     assert tc["id"] == call_id
-    # The controller re-serializes arguments (normalized JSON); the parsed
-    # payload must be exactly what was streamed.
+    # Controller re-serializes args (normalized JSON); parsed payload unchanged.
     assert json.loads(tc["function"]["arguments"]) == {"code": code}
 
 
 def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
-    """A TEXT (XML) tool call drained by the state machine must stream its raw
-    call text as tool_args under the id the stream-end parser will assign
-    ("call_0"), so the provisional card and the final tool_start reconcile."""
+    """A TEXT (XML) tool call must stream its raw call text as tool_args under the
+    id the stream-end parser assigns ("call_0"), so the provisional card and the
+    final tool_start reconcile."""
 
     code = "print('hello')\n" + ("# filler\n" * 60)
     call_json = json.dumps({"name": "python", "arguments": {"code": code}})
@@ -3099,8 +3091,7 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
 
     starts = [e for e in events if e.get("type") == "tool_start"]
     assert starts, "no tool_start emitted"
-    # Provisional card first, under the parser's first-call id, then the
-    # authoritative start reconciling the same card.
+    # Provisional card first (parser's first-call id), then the reconciling start.
     assert starts[0]["tool_call_id"] == "call_0"
     assert starts[0]["arguments"] == {}
     assert starts[-1]["tool_call_id"] == "call_0"
@@ -3109,8 +3100,8 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
     assert args_events, "no tool_args events for the text call"
     assert all(e["tool_call_id"] == "call_0" for e in args_events)
     streamed = "".join(e["text"] for e in args_events)
-    # The streamed text is the drained call (display only); it must contain
-    # the code payload as written and never leak into content events.
+    # Streamed text is the drained call (display only); it must never leak into
+    # content events.
     assert '"name": "python"' in streamed
     assert executed == [("python", {"code": code})]
     content_events = [e for e in events if e.get("type") == "content"]
@@ -3142,10 +3133,10 @@ def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
 
 
 def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
-    """A >=256-char enabled-name text sniff opens a provisional card; when the
-    drained text then fails to parse as a tool call (auto-heal off, truncated
-    call), the DRAINING false-positive path must close the card with a
-    tool_end instead of leaving it spinning forever."""
+    """A >=256-char enabled-name text sniff opens a provisional card; if the
+    drained text then fails to parse (auto-heal off, truncated call), the
+    DRAINING false-positive path must close the card with a tool_end instead of
+    leaving it spinning forever."""
 
     # Truncated mid-arguments and never closed: unparseable without healing.
     call_text = '<tool_call>{"name": "python", "arguments": {"code": "' + "x" * (

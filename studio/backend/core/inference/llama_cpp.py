@@ -9290,15 +9290,12 @@ class LlamaCppBackend:
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
-                # Live argument streaming: ids whose card already got its first
-                # tool_args event (accumulated args so far); later fragments
-                # stream individually so the card isn't a dead spinner while the
-                # model spends minutes writing a big payload.
+                # Cards that already got their first tool_args event; later
+                # fragments stream individually so a big payload isn't a dead spinner.
                 arg_streamed_tool_call_ids: set[str] = set()
-                # TEXT tool-call path equivalents: once DRAINING commits to an
-                # enabled call, its raw text streams to a provisional card under
-                # the id the stream-end parser assigns the first call ("call_0"),
-                # so the final tool_start reconciles in place.
+                # TEXT tool-call path: a committed call's raw text streams to a
+                # provisional card under the parser's first-call id ("call_0"), so
+                # the final tool_start reconciles in place.
                 _text_args_call_start = -1
                 _text_args_streamed_upto = -1
                 _text_args_id = ""
@@ -9466,11 +9463,9 @@ class LlamaCppBackend:
                                                     provisional = True,
                                                 ),
                                             }
-                                        # Live argument streaming: forward the
-                                        # arguments text so the UI shows the code
-                                        # being written. First event carries the
-                                        # backlog, later ones the fragment;
-                                        # display only, accumulator untouched.
+                                        # Stream argument text so the UI shows the code being
+                                        # written: first event the backlog, later the fragment.
+                                        # Display only; accumulator untouched.
                                         if current_id in provisional_started_tool_calls:
                                             if current_id not in arg_streamed_tool_call_ids:
                                                 arg_streamed_tool_call_ids.add(current_id)
@@ -9529,13 +9524,10 @@ class LlamaCppBackend:
                                     content_accum += token
 
                                     if detect_state == _S_DRAINING:
-                                        # Accumulate silently for parsing, but
-                                        # stream the drained TEXT call to a
-                                        # provisional card. Gated on an
-                                        # enabled-name sniff + size floor so
-                                        # prose/small calls spawn no pane; the id
-                                        # matches the first call, so the final
-                                        # tool_start reconciles the same card.
+                                        # Accumulate silently for parsing, but stream the drained
+                                        # TEXT call to a provisional card. Gated on an enabled-name
+                                        # sniff + size floor so prose/small calls spawn no pane; id
+                                        # matches the first call so the final tool_start reconciles.
                                         if (
                                             not has_structured_tc
                                             and not _confirm_gated_iteration
@@ -9692,9 +9684,8 @@ class LlamaCppBackend:
                                             # without yielding. A live <think> prefix is
                                             # separate from it -- close that.
                                             detect_state = _S_DRAINING
-                                            # Call text begins where the held
-                                            # buffer begins (live arg display
-                                            # only; the UI extracts the code).
+                                            # Call text begins at the held buffer
+                                            # (live arg display only; UI extracts the code).
                                             _text_args_call_start = len(content_accum) - len(
                                                 content_buffer
                                             )
@@ -9725,9 +9716,8 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
-                                            # Live-arg display starts at the held
-                                            # buffer (visible prefix flushed
-                                            # above; the UI extracts the code).
+                                            # Live-arg display starts at the held buffer
+                                            # (visible prefix flushed above; UI extracts the code).
                                             _text_args_call_start = len(content_accum) - len(
                                                 content_buffer
                                             )
@@ -9978,10 +9968,9 @@ class LlamaCppBackend:
                             f"{'structured delta' if has_structured_tc else 'content text'}"
                         )
                     if not tool_calls:
-                        # DRAINING but no tool calls (false positive). Close any
-                        # provisional cards first (a sniff can open a card whose
-                        # call later fails to parse); without a tool_end it would
-                        # spin forever while the text is delivered as content.
+                        # DRAINING but no tool calls (false positive): close any
+                        # provisional cards (a sniff can open one whose call never
+                        # parses); without a tool_end the card spins forever.
                         for _pid, _pname in provisional_started_tool_calls.items():
                             if _pid not in resolved_provisional_tool_call_ids:
                                 resolved_provisional_tool_call_ids.add(_pid)
@@ -10053,10 +10042,9 @@ class LlamaCppBackend:
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
 
-                # The text-path provisional card uses the parser's default id
-                # ("call_0"), but a Mistral-style textual call carries its own id
-                # and would open a duplicate. Reconcile the first matching call
-                # (same tool name) onto the still-open card by reusing its id.
+                # The text-path provisional card uses the parser's default id ("call_0");
+                # a Mistral-style call carries its own id and would open a duplicate. Reuse
+                # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
                 for tc in tool_calls or []:
@@ -10181,14 +10169,12 @@ class LlamaCppBackend:
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
                     else:
-                        # Execute in a worker thread so live stdout chunks and
-                        # heartbeats stream while the tool blocks (the SSE route
-                        # turns heartbeats into keepalives). Result is
-                        # byte-identical to a direct call.
+                        # Execute in a worker thread so live stdout chunks and heartbeats
+                        # stream while the tool blocks (the SSE route turns heartbeats into
+                        # keepalives). Result is byte-identical to a direct call.
                         def _invoke_tool(_output_callback, _decision = decision):
-                            # execute_tool is injectable and may be monkey-patched
-                            # with the pre-PR signature; only forward
-                            # output_callback when the callable accepts it.
+                            # execute_tool is injectable and may be monkey-patched with the
+                            # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
                                 cancel_event = cancel_event,
                                 timeout = _effective_timeout,

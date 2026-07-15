@@ -9,23 +9,20 @@ sandbox subprocess PYTHONPATH (see ``tools._build_safe_env``), so it loads at
 interpreter startup in every sandboxed ``python`` run and any Python the
 ``terminal`` tool launches.
 
-It remaps those prefixes onto the working directory in ``open`` / ``io.open``,
-``os.open``, ``os.makedirs`` / ``os.mkdir`` and ``pathlib.Path.mkdir``. A write
-(or create) to a convention prefix always heals onto the CWD; a READ of one
-heals only when the mapped CWD target already exists (re-reading an artifact an
-earlier write produced), so a genuine missing input stays truthful on the path
-the model used rather than being silently redirected onto a same-basename
-workdir file. Because prefix lists cannot enumerate every path a model invents,
-``open`` / ``io.open`` also get a write-mode fallback: a create-mode open of an
-absolute path outside the CWD whose parent is missing is redirected to the
-basename in the CWD. Reads never hit the fallback, and mkdir never does either
-(an arbitrary absolute directory can legitimately succeed). The fallback is
-collision-safe: it refuses to redirect onto an existing CWD file (letting the
-original open raise). The
-patch set (io.open, os.open, os.mkdir, Path.mkdir, and the <3.11
-``_NormalAccessor.open``) covers the low-level entry points pathlib routes
-through. A one-line stderr notice fires on the first remap. Everything is
-wrapped in try/except so a failure never breaks the interpreter.
+It remaps those prefixes onto the CWD in ``open`` / ``io.open``, ``os.open``,
+``os.makedirs`` / ``os.mkdir`` and ``pathlib.Path.mkdir``. A write/create to a
+convention prefix always heals onto the CWD; a READ heals only when the mapped
+target already exists (re-reading an earlier write), so a genuinely missing
+input stays truthful on the path the model used instead of silently reading a
+same-basename workdir file. Since prefix lists cannot cover every invented path,
+``open`` / ``io.open`` also get a create-mode fallback: an absolute path outside
+the CWD whose parent is missing is redirected to the basename in the CWD. Reads
+and mkdir never use the fallback (an arbitrary absolute directory can legitimately
+succeed). It is collision-safe: it refuses to redirect onto an existing CWD file
+(letting open raise). The patch set (io.open, os.open, os.mkdir, Path.mkdir, and
+the <3.11 ``_NormalAccessor.open``) covers the low-level entry points pathlib
+routes through. A one-line stderr notice fires on the first remap, and everything
+is wrapped in try/except so a failure never breaks the interpreter.
 
 Identical with and without output streaming because the child env is.
 """
@@ -36,29 +33,26 @@ import json
 import os
 import sys
 
-# Code-interpreter convention prefixes. Remapping is gated on the prefix ROOT
-# being ABSENT (see _remap) so a genuine host mount / user directory is never
-# shadowed and reads/writes under it stay truthful.
+# Code-interpreter convention prefixes. Remapping is gated on the prefix being
+# ABSENT (see _remap) so a genuine host mount / user dir is never shadowed.
 _PREFIXES = ("/mnt/data", "/mnt/outputs", "/home/sandbox", "/workspace")
-# /tmp exists on the host; kept separate only to document that. The absence gate
-# below applies to every prefix alike.
+# /tmp exists on the host; separate only to note that. The absence gate applies alike.
 _CONDITIONAL_PREFIXES = ("/tmp/outputs",)
 _notified = False
-# Invented absolute write path -> healed CWD target, so overwriting the same
-# generated artifact re-serves that target instead of tripping the anti-clobber
-# guard on the file it created earlier.
+# Invented absolute write path -> healed CWD target, so re-writing the same
+# artifact re-serves it instead of tripping the anti-clobber guard.
 _remapped_writes: dict = {}
-# Each tool call is a fresh subprocess (in-process map empty on entry), so this
-# on-disk sidecar carries the same map across runs. It only records sources the
-# fallback itself healed, so an unrelated same-basename file is never adopted.
+# Each tool call is a fresh subprocess (in-process map starts empty), so this
+# on-disk sidecar carries the map across runs. It records only sources the
+# fallback healed, so an unrelated same-basename file is never adopted.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 
 
 def _note(subject, original, mapped):
     """Print the one-shot stderr notice so the model learns the real location.
 
-    ``subject`` is what "does not exist" (the convention prefix, or the whole
-    invented path); ``original`` is echoed in the ``(original -> mapped)`` tail.
+    ``subject`` is what "does not exist" (the prefix, or the whole invented
+    path); ``original`` is echoed in the ``(original -> mapped)`` tail.
     """
     global _notified
     if _notified:
@@ -74,10 +68,9 @@ def _note(subject, original, mapped):
 def _contained_join(cwd, rel):
     """Join ``rel`` onto ``cwd`` so the result can never escape ``cwd``.
 
-    A habit path can carry ``..`` segments; joining verbatim would let the mapped
-    target climb above the per-conversation sandbox. Parent-traversal components
-    are dropped and empty / ``.`` components ignored, keeping the result under
-    ``cwd`` while preserving as much of the subpath as possible.
+    A habit path can carry ``..`` segments; joining verbatim would let the target
+    climb above the sandbox. ``..`` components are dropped and empty / ``.`` ones
+    ignored, keeping the result under ``cwd``.
     """
     parts = []
     for part in rel.split("/"):
@@ -99,10 +92,9 @@ def _map_onto_cwd(
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD, noting it once.
 
     The suffix is contained under the CWD (see ``_contained_join``) so a path
-    like ``/mnt/data/../other_session/file`` cannot escape the sandbox workdir.
-    ``notify`` is False when the caller has not yet decided to use the mapping
-    (a read that may keep the original path), so the one-shot notice is not
-    spent on a remap that never happens.
+    like ``/mnt/data/../other_session/file`` cannot escape the workdir.
+    ``notify`` is False when the caller may keep the original path (a read), so
+    the one-shot notice is not spent on a remap that never happens.
     """
     rel = text[len(prefix) :].lstrip("/")
     mapped = _contained_join(os.getcwd(), rel)
@@ -127,7 +119,7 @@ def _load_sidecar(cwd):
 
 
 def _record_sidecar(cwd, source, target):
-    """Persist ``source -> target`` in the sidecar so the next run re-serves it.
+    """Persist ``source -> target`` so the next run re-serves it.
 
     Written atomically (temp + ``os.replace``) and wrapped so a read-only/full
     filesystem never breaks the interpreter. The path is inside the CWD, so the
@@ -149,9 +141,9 @@ def _record_sidecar(cwd, source, target):
 def _is_creating_mode(mode):
     """True only when an ``open()`` mode string can CREATE a missing file.
 
-    Only ``w`` / ``a`` / ``x`` create a target. ``r+`` / ``rb+`` require the path
-    to exist, so they must not trip the write fallback (which would corrupt an
-    unrelated same-basename file); ``w+`` / ``a+`` / ``x+`` still match.
+    Only ``w`` / ``a`` / ``x`` create. ``r+`` / ``rb+`` require the path to exist,
+    so they must not trip the write fallback (which would corrupt an unrelated
+    same-basename file); ``w+`` / ``a+`` / ``x+`` still match.
     """
     return isinstance(mode, str) and any(c in mode for c in ("w", "a", "x"))
 
@@ -159,31 +151,23 @@ def _is_creating_mode(mode):
 def _remap_open(file, mode):
     """Remap for ``open()`` / ``io.open()``.
 
-    A prefix remap runs first. A write/create heals onto the CWD unconditionally;
-    a READ heals only when the mapped CWD target already exists (re-reading an
-    artifact an earlier write produced). Otherwise the original absolute path is
-    kept, so a genuine missing input fails truthfully on the path the caller used
-    instead of being silently redirected onto a same-basename workdir file or
-    masking the error. Only if no prefix matched and the call is a create does
-    the fallback kick in: an absolute target outside the CWD whose parent is
-    missing is redirected to the basename in the CWD.
-
-    Collision safety: if ``CWD/<basename>`` already exists (an unrelated
-    conversation file), refuse the redirect and return the original path so the
-    real ``open()`` raises ``FileNotFoundError`` and the existing file is kept.
+    A prefix remap runs first: a write/create heals onto the CWD; a READ heals
+    only when the mapped target already exists (re-reading an earlier write),
+    else the original path is kept so a genuine missing input fails truthfully
+    instead of silently reading a same-basename workdir file. Only if no prefix
+    matched and the call creates does the fallback kick in: an absolute target
+    outside the CWD whose parent is missing is redirected to the basename in the
+    CWD, unless ``CWD/<basename>`` already exists (an unrelated file), in which
+    case the original path is kept so open raises.
     """
     creating = _is_creating_mode(mode)
-    # notify=False: only emit the one-shot notice once we commit to the mapping
-    # below, so a read that keeps its original path does not spend the notice.
+    # notify=False: emit the notice only once we commit to the mapping below.
     mapped = _remap(file, notify = False)
     if mapped is not file:
-        # A write always heals onto the CWD. A read heals only when the mapped
-        # target exists; otherwise keep the original absolute path so a missing
-        # input stays truthful instead of silently reading a workdir file.
+        # Write always heals; a read only when the mapped target exists (else keep
+        # the original path so a missing input stays truthful).
         if creating or os.path.exists(mapped):
-            # Emit the one-shot notice now that we commit to the redirect (the
-            # notify=False peek above kept a read that keeps its original path
-            # from spending the notice on a remap that never happened).
+            # Commit: emit the notice now (the notify=False peek above deferred it).
             _remap(file, notify = True)
             return mapped
         return file
@@ -201,21 +185,20 @@ def _remap_open(file, mode):
     if text == cwd or text.startswith(cwd + os.sep):
         return file
     parent = os.path.dirname(text)
-    # Only redirect when the parent is missing; an existing external directory is
-    # a deliberate target and must stay truthful (os.path.exists follows symlinks).
+    # Redirect only when the parent is missing; an existing external directory is
+    # a deliberate target and stays truthful (os.path.exists follows symlinks).
     if parent and os.path.exists(parent):
         return file
     base = os.path.basename(text)
-    # A trailing separator or '.'/'..' component yields a basename that would
-    # redirect onto the CWD itself or its parent; refuse and let open raise.
+    # A trailing sep or '.'/'..' basename would redirect onto the CWD or its
+    # parent; refuse and let open raise.
     if base in ("", ".", ".."):
         return file
     remapped = os.path.join(cwd, base)
-    # Never clobber an unrelated workspace file sharing this basename (lexists
-    # catches dangling symlinks): refuse and let open raise. But a target THIS
-    # fallback already healed for the same invented path (per the in-process map
-    # or the cross-run sidecar) is the artifact the model is re-writing, so
-    # re-serve it rather than FileNotFoundError on every overwrite after the first.
+    # Never clobber an unrelated file sharing this basename (lexists catches
+    # dangling symlinks). But a target this fallback already healed for the same
+    # invented path (in-process map or cross-run sidecar) is the artifact being
+    # re-written, so re-serve it instead of raising on every overwrite.
     if os.path.lexists(remapped) and remapped not in (
         _remapped_writes.get(text),
         _load_sidecar(cwd).get(text),
@@ -231,7 +214,7 @@ def _remap(path, notify = True):
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD; other paths pass through.
 
     ``notify`` is forwarded to ``_map_onto_cwd``; ``_remap_open`` passes False so
-    a read that ends up keeping its original path does not emit a false notice.
+    a read that keeps its original path emits no false notice.
     """
     try:
         text = os.fspath(path)
@@ -288,11 +271,9 @@ def _install():
         *,
         dir_fd = None,
     ):
-        # Path.touch() and other low-level callers go through os.open, not
-        # builtins.open. Only O_CREAT can create a missing target, so only it
-        # maps to the "creating" mode; O_TRUNC / O_APPEND without O_CREAT still
-        # require the file to exist, so they behave as a read (heal only when the
-        # mapped target already exists, matching _remap_open).
+        # Path.touch() etc. go through os.open, not builtins.open. Only O_CREAT
+        # can create, so only it maps to "creating" mode; O_TRUNC / O_APPEND
+        # without O_CREAT still require the file to exist, so behave as a read.
         logical_mode = "w" if (flags & os.O_CREAT) else "r"
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
@@ -301,8 +282,8 @@ def _install():
 
     def _path_mkdir(self, *args, **kwargs):
         # pathlib probes Path.is_dir()/os.stat (unpatched) on FileExistsError, so
-        # a bare os.mkdir remap would still raise when the mapped target exists.
-        # Remap the receiver up front so parents/exist_ok stays idempotent.
+        # a bare os.mkdir remap would still raise when the target exists. Remap
+        # the receiver up front so parents/exist_ok stays idempotent.
         mapped = _remap(self)
         target = self if mapped is self else self.__class__(mapped)
         return original_path_mkdir(target, *args, **kwargs)
@@ -310,10 +291,10 @@ def _install():
     builtins.open = _open
     # pathlib.Path.open / write_text / read_text call io.open directly, so patch both.
     io.open = _io_open
-    # Python < 3.11 only: pathlib's accessor singleton captured the ORIGINAL
-    # io.open at import (``_NormalAccessor.open = io.open``), so the io.open patch
-    # never reaches it. Repoint it at the same wrapper (staticmethod so it stays
-    # unbound). 3.11+ dropped the accessor, so this is an idempotent no-op there.
+    # Python < 3.11 only: pathlib's accessor captured the ORIGINAL io.open at
+    # import (``_NormalAccessor.open = io.open``), so the io.open patch misses it.
+    # Repoint it at the same wrapper (staticmethod to stay unbound); 3.11+ dropped
+    # the accessor, so this is a no-op there.
     accessor = getattr(pathlib, "_NormalAccessor", None)
     if accessor is not None and hasattr(accessor, "open"):
         accessor.open = staticmethod(_io_open)

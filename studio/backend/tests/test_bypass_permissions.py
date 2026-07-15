@@ -95,13 +95,11 @@ def test_safe_env_excludes_host_and_secret(monkeypatch, tmp_path):
 
 
 class _FakeProc:
-    """A subprocess.Popen double faithful to the interface the unified
-    non-streaming/streaming drain path (``tools._drain_process_output``) uses:
+    """A subprocess.Popen double for the drain path (``tools._drain_process_output``):
     a readable ``stdout`` pipe yielding the fake output then EOF, plus
-    ``wait()`` / ``poll()`` / ``pid``. The pid is a non-existent process id so
-    ``_capture_process_group``'s ``os.getpgid`` lookup fails and returns None
-    (no real process group is targeted); the drain never kills on this path
-    since ``wait`` returns immediately.
+    ``wait()`` / ``poll()`` / ``pid``. The pid is non-existent so
+    ``_capture_process_group``'s ``os.getpgid`` returns None; ``wait`` returns
+    immediately so the drain never kills.
     """
 
     returncode = 0

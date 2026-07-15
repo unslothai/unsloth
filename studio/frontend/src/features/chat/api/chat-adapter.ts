@@ -237,11 +237,9 @@ function wait(ms: number): Promise<void> {
 
 /**
  * Best-effort partial parse of a live tool_args stream into a tool part's
- * `args`, so tool cards render the payload while the model is still writing it.
- *
- * The structured path streams the raw arguments JSON; the text path streams the
- * surrounding call markup, so a call envelope is unwrapped when present.
- * Returns null until anything parseable arrives; never throws.
+ * `args`, so cards render the payload while the model is still writing it. The
+ * structured path streams raw arguments JSON; the text path wraps it in call
+ * markup, unwrapped here. Returns null until something parses; never throws.
  */
 function parseLiveToolArgs(
   raw: string,
@@ -1929,9 +1927,9 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Tool output store keys are scoped by pane identity since local tool ids
-      // ("call_0") repeat across turns and concurrent panes (compare mode).
-      // Track the keys this run wrote so cleanup can't wipe another pane's.
+      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
+      // turns and concurrent panes (compare mode). Track this run's keys so
+      // cleanup can't wipe another pane's.
       const toolOutputPaneScope = toolPaneScope(
         options.modelType,
         options.pairId,
@@ -2488,19 +2486,17 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
-      // Raw tool_args stream accumulator per card: the backend forwards the
-      // arguments while the model is still WRITING them, and the partial parse
-      // below feeds the card's args so the code renders live.
+      // Raw tool_args accumulator per card: the backend forwards arguments while
+      // the model is still WRITING them, and the partial parse below feeds the
+      // card's args so the code renders live.
       const liveArgsTextById = new Map<string, string>();
-      // Backend tool ids ("call_0", "call_1", ...) restart every assistant
-      // response, so keying the shared transient tool-output maps by the bare
-      // backend id lets a later turn's stream overwrite the preserved output an
-      // earlier, still-mounted finished card in the same pane reads (the
-      // stale-clear at tool_start only guards the forward direction). Mint one
-      // per-run-unique part id per backend id (awaiting-confirmation ids already
-      // synthesize their own) so every card's store key is unique; every
-      // tool_start/output/args/end for one call resolves the same id via this
-      // map, and the entry is dropped at tool_end.
+      // Backend tool ids ("call_0", ...) restart every response, so a bare id as
+      // store key lets a later turn's stream overwrite the preserved output an
+      // earlier still-mounted finished card reads (the tool_start stale-clear
+      // only guards the forward direction). Mint one per-run-unique part id per
+      // backend id (confirmation ids already synthesize their own) so each card
+      // key is unique; every tool_start/output/args/end resolves the same id via
+      // this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string => {
         if (!backendToolCallId) {
@@ -3253,9 +3249,9 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
-                  // Incremental stdout from a running tool: append to the
-                  // transient live-output store keyed by part id so the card
-                  // renders it while the spinner runs. Final result via tool_end.
+                  // Incremental stdout from a running tool: append to the live
+                  // store so the card renders it while the spinner runs. Final
+                  // result arrives via tool_end.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId = resolveToolPartId(backendToolCallId);
@@ -3271,10 +3267,10 @@ export function createOpenAIStreamAdapter(
                   continue;
                 }
                 if (toolEvent.type === "tool_args") {
-                  // The model is still WRITING this call's arguments. Accumulate
+                  // The model is still WRITING this call's arguments: accumulate
                   // the raw stream and feed a partial parse into the part's args
-                  // so the card shows the code live; the final tool_start
-                  // replaces args with the authoritative parse.
+                  // so the card shows the code live. tool_start later replaces
+                  // args with the authoritative parse.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId = resolveToolPartId(backendToolCallId);
@@ -3332,9 +3328,8 @@ export function createOpenAIStreamAdapter(
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
-                  // Backend tool ids repeat across turns/iterations ("call_0"
-                  // restarts every response): drop stale live/preserved output
-                  // under this key, else the card shows the previous call's.
+                  // "call_0" restarts every response: drop stale live/preserved
+                  // output under this key, else the card shows the previous call's.
                   const staleKey = scopedToolOutputKey(id);
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
@@ -3387,12 +3382,11 @@ export function createOpenAIStreamAdapter(
                     toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
-                  // The final result replaces the transient live output, but if
-                  // the live stream captured MORE than the truncated result,
-                  // preserve the full stream so the finished card keeps showing
-                  // everything. Defer to the shared truncation-aware predicate
-                  // rather than a raw length compare (the result's footer /
-                  // "Exit code N:" / __IMAGES__ tail can make it longer by byte).
+                  // The result replaces the live output, but if the stream
+                  // captured MORE than the truncated result, preserve it so the
+                  // finished card keeps everything. Uses the shared predicate,
+                  // not a length compare (footer / "Exit code N:" / __IMAGES__
+                  // tail can make the result longer by byte).
                   const liveKey = scopedToolOutputKey(id);
                   const liveOutput =
                     useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
@@ -3976,8 +3970,8 @@ export function createOpenAIStreamAdapter(
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof StreamInterruptedError) {
-            // Connection dropped mid-turn: make the interruption explicit. The
-            // rethrow below also marks the message with an inline error + Retry.
+            // Connection dropped mid-turn: surface it explicitly (the rethrow
+            // below also marks the message with an inline error + Retry).
             toast.error("Response interrupted", {
               description:
                 "The connection dropped before the model finished. " +
@@ -4010,12 +4004,10 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
-        // Live tool output is transient; the persisted result is the record.
-        // Clear only this run's keys: a concurrent pane owns its own entries.
-        // A key still here streamed stdout but never reached tool_end (SSE drop
-        // or cancel), so it has no persisted result. Promote the captured stream
-        // to full output before clearing it, else the partial diagnostics the
-        // user was watching vanish from the card.
+        // Clear only this run's live keys (a concurrent pane owns its own). A
+        // key still here streamed stdout but never reached tool_end (SSE drop or
+        // cancel), so promote it to full output first, else the partial
+        // diagnostics the user was watching vanish from the card.
         for (const liveKey of runToolLiveOutputKeys) {
           const store = useChatRuntimeStore.getState();
           const liveOutput = store.toolLiveOutput[liveKey] ?? "";
