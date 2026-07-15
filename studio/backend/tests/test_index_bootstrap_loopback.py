@@ -11,10 +11,13 @@ def _request(
     request_host = "127.0.0.1",
     headers = None,
 ):
-    """Build a minimal request; ``None`` models an unresolved socket peer."""
+    """Build a minimal request; ``None`` models an unresolved peer / absent Host."""
     client = None if client_host is None else SimpleNamespace(host = client_host, port = 0)
-    url = SimpleNamespace(hostname = request_host)
-    return SimpleNamespace(client = client, headers = headers or {}, url = url)
+    hdrs = {}
+    if request_host is not None:
+        hdrs["host"] = request_host
+    hdrs.update(headers or {})
+    return SimpleNamespace(client = client, headers = hdrs, url = SimpleNamespace(hostname = request_host))
 
 
 def test_loopback_peers_are_local():
@@ -67,3 +70,37 @@ def test_unparseable_request_host_fails_safe():
         client = SimpleNamespace(host = "127.0.0.1", port = 0), headers = {}, url = _RaisingURL()
     )
     assert _is_local_bootstrap_request(request) is False
+
+
+def test_reverse_proxy_forwarded_headers_are_remote():
+    """A loopback proxy relaying a remote client (non-Cloudflare headers) is remote."""
+    from main import _is_local_bootstrap_request
+    for header in ("forwarded", "x-forwarded-for", "x-forwarded-host", "x-real-ip"):
+        request = _request("127.0.0.1", "localhost", headers = {header: "203.0.113.7"})
+        assert _is_local_bootstrap_request(request) is False, header
+
+
+def test_malformed_or_absent_host_is_remote():
+    """A malformed/absent Host must not fall back to the loopback server address."""
+    from main import _is_local_bootstrap_request
+    for host in ("e_vil", "[malformed", "", None):
+        assert _is_local_bootstrap_request(_request("127.0.0.1", host)) is False, host
+
+
+def test_colab_allows_notebook_proxy_but_not_shareable_tunnel(monkeypatch):
+    """Colab autofills its single-user proxy, but not a public Cloudflare link."""
+    import main
+    monkeypatch.setattr(main, "_IS_COLAB", True)
+    # In-notebook proxy: same-origin, no tunnel header, injects off-loopback too.
+    assert main._should_inject_bootstrap(_request("10.0.0.2", "colab.proxy")) is True
+    # Shareable Cloudflare link marks visitors with cf-connecting-ip; withhold.
+    tunnel = _request("127.0.0.1", "localhost", headers = {"cf-connecting-ip": "203.0.113.7"})
+    assert main._should_inject_bootstrap(tunnel) is False
+
+
+def test_non_colab_gate_requires_local_client(monkeypatch):
+    """Outside Colab the gate injects only for a direct loopback client."""
+    import main
+    monkeypatch.setattr(main, "_IS_COLAB", False)
+    assert main._should_inject_bootstrap(_request("127.0.0.1", "localhost")) is True
+    assert main._should_inject_bootstrap(_request("192.168.1.10", "localhost")) is False

@@ -1376,20 +1376,41 @@ def _is_loopback_ip(host: Optional[str]) -> bool:
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
+# A loopback peer carrying any of these is a proxy/tunnel relaying a remote
+# client, so the peer is the proxy, not the caller: cloudflared sets
+# cf-connecting-ip, reverse proxies set the rest (uvicorn only consumes
+# x-forwarded-for, so the others survive to here).
+_PROXIED_CLIENT_HEADERS = (
+    "cf-connecting-ip", "forwarded", "x-forwarded-for",
+    "x-forwarded-host", "x-real-ip",
+)
+
+
+def _host_header_is_loopback(host_header: Optional[str]) -> bool:
+    """Loopback/localhost check on the raw Host header.
+
+    Reads the header directly so a malformed or absent Host cannot fall back to
+    ``request.url.hostname``'s (loopback) ASGI server address.
+    """
+    if not host_header:
+        return False
+    host = host_header.strip()
+    if host.startswith("["):        # [IPv6](:port)
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:      # host:port
+        host = host.split(":", 1)[0]
+    host = host.lower().rstrip(".")
+    return host == "localhost" or _is_loopback_ip(host)
+
+
 def _is_local_bootstrap_request(request: Request) -> bool:
     """Allow bootstrap injection only through a direct loopback authority."""
     client = request.client
     if client is None or not _is_loopback_ip(client.host):
         return False
-    # cloudflared connects over loopback, but marks requests at the edge.
-    if request.headers.get("cf-connecting-ip") is not None:
+    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
         return False
-    try:
-        request_host = request.url.hostname
-    except ValueError:
-        return False
-    request_host = (request_host or "").lower().rstrip(".")
-    return request_host == "localhost" or _is_loopback_ip(request_host)
+    return _host_header_is_loopback(request.headers.get("host"))
 
 
 def _is_same_origin_request(request: Request) -> bool:
@@ -1427,6 +1448,17 @@ def _is_same_origin_request(request: Request) -> bool:
     return origin_canon == self_canon
 
 
+def _should_inject_bootstrap(request: Request) -> bool:
+    """Whether to embed the seeded bootstrap password in index.html."""
+    if not _is_same_origin_request(request):
+        return False
+    if _IS_COLAB:
+        # Single-user notebook proxy: allow autofill, but never a public
+        # shareable tunnel (a Colab Cloudflare link sets cf-connecting-ip).
+        return request.headers.get("cf-connecting-ip") is None
+    return _is_local_bootstrap_request(request)
+
+
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1439,10 +1471,10 @@ def setup_frontend(app: FastAPI, build_path: Path):
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
-        # Bootstrap pw is same-origin only, and (outside Colab's single-user
-        # sandbox) only to a client on this machine: a wildcard bind must not
-        # serve it in-page to a LAN peer. Vary: Origin keeps caches honest.
-        if _is_same_origin_request(request) and (_IS_COLAB or _is_local_bootstrap_request(request)):
+        # Bootstrap pw goes only to a same-origin, direct-loopback client (or
+        # Colab's single-user notebook proxy): a wildcard bind must not serve it
+        # in-page to a LAN or proxied peer. Vary: Origin keeps caches honest.
+        if _should_inject_bootstrap(request):
             content, nonce = _inject_bootstrap(content, app)
         else:
             nonce = None
