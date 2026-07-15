@@ -11,14 +11,14 @@ INDEX_CSS = REPO / "studio/frontend/src/index.css"
 
 def test_thinking_control_has_compact_hooks_in_both_composers():
     for path in (THREAD_TSX, SHARED_TSX):
-        source = path.read_text()
+        source = path.read_text(encoding = "utf-8")
         assert 'className="unsloth-thinking-label"' in source
         assert "unsloth-thinking-caret size-[15px]" in source
         assert 'data-pill-label="Thinking settings"' in source
 
 
 def test_narrow_composer_collapses_thinking_to_the_bulb():
-    css = INDEX_CSS.read_text()
+    css = INDEX_CSS.read_text(encoding = "utf-8")
 
     # Query the composer width instead of the full viewport.
     assert css.count("container-type: inline-size;") >= 2
