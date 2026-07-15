@@ -3813,14 +3813,35 @@ const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const isSpeaking = useAuiState(({ message }) => message.speech != null);
 
   const handleDelete = async () => {
-    // Guard: stopSpeaking throws unless this message is the one playing.
-    // Stop first so read-aloud does not outlive its only Stop control.
-    if (isSpeaking) aui.message().stopSpeaking();
-    const remoteId = aui.threadListItem().getState().remoteId;
     const thread = aui.thread();
+    // Deleting a message, and for a user prompt its cascaded assistant replies,
+    // unmounts their only Stop reading control. Stop read-aloud first when the
+    // spoken message is among those removed. Read speech state at click time and
+    // guard the call, which throws if playback already ended.
+    const speakingId = thread.getState().speech?.messageId;
+    if (speakingId) {
+      const { messages } = thread.export();
+      const target = messages.find(({ message }) => message.id === messageId);
+      const removed = new Set<string>([messageId]);
+      if (target?.message.role === "user") {
+        for (const { parentId, message } of messages) {
+          if (parentId === messageId && message.role === "assistant") {
+            removed.add(message.id);
+          }
+        }
+      }
+      if (removed.has(speakingId)) {
+        try {
+          thread.stopSpeaking();
+        } catch {
+          // Playback ended between reading the state and stopping it.
+        }
+      }
+    }
+
+    const remoteId = aui.threadListItem().getState().remoteId;
     try {
       await deleteThreadMessage({
         thread: {

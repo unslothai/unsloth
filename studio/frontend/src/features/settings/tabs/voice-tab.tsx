@@ -457,6 +457,9 @@ export function VoiceTab() {
         audio.addEventListener("error", () => {
           releasePreviewAudio();
           markPreviewing(false);
+          // Surface playback failures like the catch below, instead of just
+          // resetting the button with no explanation.
+          toast.error("TTS preview failed");
         });
         previewAudioRef.current = audio;
         await audio.play();
