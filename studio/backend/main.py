@@ -566,7 +566,8 @@ async def lifespan(app: FastAPI):
         print("\n" + "=" * 60)
         print("DEFAULT ADMIN ACCOUNT CREATED")
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
-        print(f"    password saved to: {bootstrap_path}")
+        print(f"    password: {bootstrap_pw}")
+        print(f"    (also saved to: {bootstrap_path})")
         print("    Open the Studio UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
