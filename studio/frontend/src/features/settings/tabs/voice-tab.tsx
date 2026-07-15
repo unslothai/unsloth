@@ -599,7 +599,18 @@ export function VoiceTab() {
             <Input
               value={entry}
               onChange={(e) => updateDictionaryEntry(index, e.target.value)}
-              onBlur={() => commitDictionaryEntry(index)}
+              // Skip the empty-row commit-splice when focus moves to this row's
+              // Remove button (keyboard Tab), so its index stays valid and its
+              // activation deletes this row instead of the next one.
+              onBlur={(e) => {
+                if (
+                  (e.relatedTarget as HTMLElement | null)?.dataset.dictRemove ===
+                  String(index)
+                ) {
+                  return;
+                }
+                commitDictionaryEntry(index);
+              }}
               className="h-8 flex-1 text-sm"
               aria-label={`Dictionary entry ${index + 1}`}
             />
@@ -607,8 +618,9 @@ export function VoiceTab() {
               variant="ghost"
               size="icon"
               className="size-8 shrink-0 text-muted-foreground hover:text-destructive"
-              // Keep the click from blurring an empty input first, which would
-              // commit-splice this row and make onClick delete the next one.
+              data-dict-remove={index}
+              // Mouse: keep the click from blurring an empty input first, which
+              // would commit-splice this row and make onClick delete the next.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => removeDictionaryEntry(index)}
               aria-label={`Remove dictionary entry ${index + 1}`}
