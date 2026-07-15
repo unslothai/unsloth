@@ -32,6 +32,7 @@ from .import_fixes import (
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
     fix_bitsandbytes_rocm_arch_detection,
+    fix_torchao_windows_rocm_import,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
@@ -70,6 +71,10 @@ except Exception:
 configure_amdgpu_asic_id_table_path()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
+# Must also precede `import unsloth_zoo` below (it triggers the transformers/torchao
+# import chain): makes real torchao importable on legacy Windows ROCm wheels so
+# unsloth_zoo's torchao stub self-disables. Strict no-op elsewhere.
+fix_torchao_windows_rocm_import()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -80,6 +85,7 @@ fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
 del fix_bitsandbytes_rocm_arch_detection
+del fix_torchao_windows_rocm_import
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
