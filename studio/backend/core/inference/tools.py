@@ -3896,7 +3896,10 @@ def _fetch_url_raw(
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     ok, reason, pinned_ip = _resolve_with_budget(
-        parsed.hostname, port, deadline, cancel_event,
+        parsed.hostname,
+        port,
+        deadline,
+        cancel_event,
     )
     if not ok:
         return reason, "", ""
@@ -3963,7 +3966,11 @@ def _fetch_url_raw(
             # chunks, so a slow-drip server (dribbling bytes just inside each
             # socket timeout) cannot stretch a single resp.read past the deadline.
             body_error, raw_bytes = _read_capped_body(
-                resp, max_bytes, timeout, deadline, cancel_event,
+                resp,
+                max_bytes,
+                timeout,
+                deadline,
+                cancel_event,
             )
             if body_error is not None:
                 return body_error, "", ""

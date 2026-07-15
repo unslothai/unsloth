@@ -1072,7 +1072,11 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
             pass
 
     class _Opener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             return _DrippingResp()
 
     monkeypatch.setattr(
@@ -1111,7 +1115,6 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
 
     def advance_past_deadline():
         import time as _t
-
         _t.sleep(0.1)
         clock["t"] += 100.0
 
@@ -1119,7 +1122,10 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
     t.start()
     try:
         ok, reason, ip = tools_mod._resolve_with_budget(
-            "example.com", 443, 1005.0, None,
+            "example.com",
+            443,
+            1005.0,
+            None,
         )
     finally:
         release.set()

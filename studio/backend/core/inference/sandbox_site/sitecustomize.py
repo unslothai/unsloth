@@ -91,7 +91,11 @@ def _contained_join(cwd, rel):
     return os.path.join(cwd, *parts) if parts else cwd
 
 
-def _map_onto_cwd(prefix, text, notify = True):
+def _map_onto_cwd(
+    prefix,
+    text,
+    notify = True,
+):
     """Map ``<prefix>/rest`` onto ``./rest`` in the CWD, noting it once.
 
     The suffix is contained under the CWD (see ``_contained_join``) so a path
