@@ -2041,15 +2041,35 @@ def save_to_gguf(
                         f"Error: {e}"
                     )
 
+        # Outputs already on disk pre-date this run; never delete them on a failure.
+        preexisting_outputs = {
+            m
+            for m in methods_to_quantize
+            if os.path.exists(os.path.join(gguf_directory, f"{model_name}.{m.upper()}.gguf"))
+        }
+        # Each llama-quantize pass loads the whole base GGUF into RAM, so only run two at
+        # once when the host has headroom for two copies, else a multi-quant export that
+        # fit sequentially could OOM.
+        try:
+            base_bytes = sum(
+                os.path.getsize(f)
+                for f in initial_files
+                if "-mmproj" not in os.path.basename(f).lower()
+            )
+            mem_ok = psutil.virtual_memory().available >= int(2.5 * base_bytes)
+        except Exception:
+            mem_ok = False
         # Independent llama-quantize runs on the same base GGUF can overlap. Kept at 2
         # workers; run sequentially when streaming logs (UNSLOTH_ENABLE_LOGGING), on
-        # Kaggle (each pass loads the whole model into RAM, so two can OOM), or when the
-        # kill switch (0/false/no/off/empty) is set.
+        # Kaggle/Colab, when RAM is tight, or when the kill switch (0/false/no/off/empty)
+        # is set.
         _parallel_flag = os.environ.get("UNSLOTH_PARALLEL_GGUF_QUANTS", "1").strip().lower()
         parallel_quants = (
             len(methods_to_quantize) > 1
             and not print_output
             and not IS_KAGGLE_ENVIRONMENT
+            and not IS_COLAB_ENVIRONMENT
+            and mem_ok
             and _parallel_flag not in ("0", "false", "no", "off", "")
         )
         if parallel_quants:
@@ -2074,18 +2094,15 @@ def save_to_gguf(
                     fut.cancel()
                 first_exc = next((f.exception() for f in done if f.exception() is not None), None)
                 if first_exc is not None:
-                    # Drop only outputs from passes that ran this session, so a failure
-                    # leaves no orphans; a canceled pass never wrote its file, so its
-                    # (possibly pre-existing) output is left untouched. Base kept for retry.
+                    # Remove only outputs this run newly created; a file that pre-dated the
+                    # run (or a canceled pass that never wrote) is left intact, so a rerun
+                    # never deletes a prior artifact. Base kept for retry.
                     wait(future_to_idx)
-                    for fut, i in future_to_idx.items():
-                        if fut.cancelled():
+                    for method in methods_to_quantize:
+                        if method in preexisting_outputs:
                             continue
                         Path(
-                            os.path.join(
-                                gguf_directory,
-                                f"{model_name}.{methods_to_quantize[i].upper()}.gguf",
-                            )
+                            os.path.join(gguf_directory, f"{model_name}.{method.upper()}.gguf")
                         ).unlink(missing_ok = True)
                     raise first_exc
                 for fut, i in future_to_idx.items():
