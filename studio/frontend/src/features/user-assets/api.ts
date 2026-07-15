@@ -67,11 +67,10 @@ async function request(
     const method = (init?.method ?? "GET").toUpperCase();
     const mutatesUserAssets =
       method === "POST" || method === "PUT" || method === "DELETE";
-    const guard = mutatesUserAssets
-      ? {
-          expectedSubjectKey: options.expectedSubjectKey ?? getAuthSubjectKey(),
-        }
-      : undefined;
+    const expectedSubjectKey =
+      options.expectedSubjectKey ??
+      (mutatesUserAssets ? getAuthSubjectKey() : undefined);
+    const guard = expectedSubjectKey ? { expectedSubjectKey } : undefined;
     return await authFetch(
       `${USER_ASSETS_BASE}${path}`,
       {
@@ -151,8 +150,14 @@ export type RecipeAssetRecord<TPayload> = {
   updatedAt: number;
 };
 
-export function bootstrapUserAssets(): Promise<UserAssetsBootstrap> {
-  return requestJson<UserAssetsBootstrap>("/bootstrap");
+export function bootstrapUserAssets(
+  options: { signal?: AbortSignal; expectedSubjectKey?: string } = {},
+): Promise<UserAssetsBootstrap> {
+  return requestJson<UserAssetsBootstrap>(
+    "/bootstrap",
+    { signal: options.signal },
+    options,
+  );
 }
 
 export async function listServerRecipes<TPayload>(): Promise<

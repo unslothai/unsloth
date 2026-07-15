@@ -928,7 +928,9 @@ export function useRecipeExecutions({
           settings,
           runName,
         });
-        const createdJob = await createRecipeJob(jobPayload);
+        const createdJob = await createRecipeJob(jobPayload, {
+          expectedSubjectKey: owner.subjectKey,
+        });
         jobCreated = true;
         const executionWithJob = {
           ...baseExecution,

@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ReactElement, useEffect, useRef } from "react";
+import { getAuthSubjectKey, subscribeAuthSubject } from "@/features/auth";
+import { toastError } from "@/shared/toast";
+import {
+  type ReactElement,
+  useEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import {
   type LegacyImportItemResult,
   type UserAssetsBootstrap,
@@ -38,6 +45,8 @@ export type LegacyImportOptions = Omit<
   "onImported"
 > & {
   signal: AbortSignal;
+  expectedSubjectKey?: string;
+  onProgress?: () => void;
 };
 
 type LegacyBatchPlan<T> = {
@@ -122,23 +131,41 @@ function reportRejectedItems(
   console.error(`Legacy ${kind} exceeded the import batch limit.`, rejected);
 }
 
+function throwIfAborted(signal: AbortSignal): void {
+  if (!signal.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException("The legacy import was cancelled.", "AbortError");
+}
+
+function readableError(error: unknown): string {
+  const detail =
+    error instanceof Error && error.message.trim()
+      ? error.message
+      : "The saved browser data could not be imported.";
+  const sentence = /[.!?]$/.test(detail) ? detail : `${detail}.`;
+  return `${sentence} Refresh the page to retry; items already imported will not be duplicated.`;
+}
+
 async function importRecipePages(
   bootstrap: UserAssetsBootstrap,
   readRecipes: LegacyPageReader<LegacyRecipe>,
   signal: AbortSignal,
-): Promise<void> {
+  expectedSubjectKey: string,
+  onProgress?: () => void,
+): Promise<number> {
   const importedIds = new Set(bootstrap.importLedger.recipes);
+  let rejectedCount = 0;
   let cursor: string | null = null;
   do {
-    if (signal.aborted) {
-      return;
-    }
+    throwIfAborted(signal);
     const page = await readRecipes(cursor, LEGACY_PAGE_SIZE);
+    throwIfAborted(signal);
     const recipes = page.items
       .filter((item) => !importedIds.has(item.id))
       .map(withoutRevision);
     const plan = splitByLegacyBatchBytes(recipes, "recipes", bootstrap.subject);
     reportRejectedItems("recipes", plan.rejected);
+    rejectedCount += plan.rejected.length;
     for (const recipeBatch of plan.batches) {
       await importLegacyUserAssets(
         {
@@ -147,14 +174,16 @@ async function importRecipePages(
           recipes: recipeBatch,
           executions: [],
         },
-        { signal },
+        { signal, expectedSubjectKey },
       );
+      onProgress?.();
     }
     if (cursor !== null && page.nextCursor === cursor) {
       throw new Error("Legacy recipe cursor did not advance.");
     }
     cursor = page.nextCursor;
   } while (cursor);
+  return rejectedCount;
 }
 
 function effectiveRetryIds(results: LegacyImportItemResult[]): Set<string> {
@@ -169,14 +198,16 @@ async function importExecutionPages(
   bootstrap: UserAssetsBootstrap,
   readExecutions: LegacyPageReader<LegacyExecution>,
   signal: AbortSignal,
-): Promise<void> {
+  expectedSubjectKey: string,
+  onProgress?: () => void,
+): Promise<number> {
   const importedIds = new Set(bootstrap.importLedger.executions);
+  let rejectedCount = 0;
   let cursor: string | null = null;
   do {
-    if (signal.aborted) {
-      return;
-    }
+    throwIfAborted(signal);
     const page = await readExecutions(cursor, LEGACY_PAGE_SIZE);
+    throwIfAborted(signal);
     const executions = page.items.filter((item) => !importedIds.has(item.id));
     const plan = splitByLegacyBatchBytes(
       executions,
@@ -184,6 +215,7 @@ async function importExecutionPages(
       bootstrap.subject,
     );
     reportRejectedItems("executions", plan.rejected);
+    rejectedCount += plan.rejected.length;
     for (const executionBatch of plan.batches) {
       const result = await importLegacyUserAssets(
         {
@@ -192,8 +224,9 @@ async function importExecutionPages(
           recipes: [],
           executions: executionBatch,
         },
-        { signal },
+        { signal, expectedSubjectKey },
       );
+      onProgress?.();
       const retryIds = effectiveRetryIds(result.executions);
       if (retryIds.size > 0) {
         await importLegacyUserAssets(
@@ -203,8 +236,9 @@ async function importExecutionPages(
             recipes: [],
             executions: executionBatch.filter((item) => retryIds.has(item.id)),
           },
-          { signal },
+          { signal, expectedSubjectKey },
         );
+        onProgress?.();
       }
     }
     if (cursor !== null && page.nextCursor === cursor) {
@@ -212,6 +246,7 @@ async function importExecutionPages(
     }
     cursor = page.nextCursor;
   } while (cursor);
+  return rejectedCount;
 }
 
 // Shared with the direct editor route so it can migrate before declaring a
@@ -221,10 +256,41 @@ export async function importLegacyUserAssetsFromIndexedDb({
   readRecipes,
   readExecutions,
   signal,
+  expectedSubjectKey = getAuthSubjectKey(),
+  onProgress,
 }: LegacyImportOptions): Promise<void> {
-  const bootstrap = await bootstrapUserAssets();
-  await importRecipePages(bootstrap, readRecipes, signal);
-  await importExecutionPages(bootstrap, readExecutions, signal);
+  let requestSubjectKey = expectedSubjectKey;
+  const bootstrap = await bootstrapUserAssets({
+    signal,
+    expectedSubjectKey: requestSubjectKey,
+  });
+  throwIfAborted(signal);
+  // Tauri may intentionally establish its account while an anonymous guarded
+  // bootstrap is in flight. authFetch only permits that specific transition;
+  // bind every subsequent import mutation to the newly established subject.
+  if (requestSubjectKey === "anonymous") {
+    requestSubjectKey = getAuthSubjectKey();
+  }
+  const rejectedRecipes = await importRecipePages(
+    bootstrap,
+    readRecipes,
+    signal,
+    requestSubjectKey,
+    onProgress,
+  );
+  const rejectedExecutions = await importExecutionPages(
+    bootstrap,
+    readExecutions,
+    signal,
+    requestSubjectKey,
+    onProgress,
+  );
+  const rejectedCount = rejectedRecipes + rejectedExecutions;
+  if (rejectedCount > 0) {
+    throw new Error(
+      `${rejectedCount} browser-saved item${rejectedCount === 1 ? " was" : "s were"} too large to import. Remove large embedded data from those items, then retry.`,
+    );
+  }
 }
 
 export function LegacyImportCoordinator({
@@ -232,6 +298,11 @@ export function LegacyImportCoordinator({
   readRecipes,
   readExecutions,
 }: LegacyImportCoordinatorProps): ReactElement | null {
+  const authSubjectKey = useSyncExternalStore(
+    subscribeAuthSubject,
+    getAuthSubjectKey,
+    getAuthSubjectKey,
+  );
   const onImportedRef = useRef(onImported);
   useEffect(() => {
     onImportedRef.current = onImported;
@@ -239,21 +310,42 @@ export function LegacyImportCoordinator({
 
   useEffect(() => {
     const controller = new AbortController();
+    let madeProgress = false;
+    let completed = false;
 
     importLegacyUserAssetsFromIndexedDb({
       readRecipes,
       readExecutions,
       signal: controller.signal,
+      expectedSubjectKey: authSubjectKey,
+      onProgress: () => {
+        madeProgress = true;
+      },
     })
       .then(() => {
-        if (!controller.signal.aborted) {
+        completed = true;
+      })
+      .catch((error: unknown) => {
+        if (
+          controller.signal.aborted ||
+          getAuthSubjectKey() !== authSubjectKey
+        ) {
+          return;
+        }
+        toastError("Could not import browser recipes", readableError(error));
+      })
+      .finally(() => {
+        if (
+          !controller.signal.aborted &&
+          getAuthSubjectKey() === authSubjectKey &&
+          (completed || madeProgress)
+        ) {
           onImportedRef.current();
         }
-      })
-      .catch(() => undefined);
+      });
 
     return () => controller.abort();
-  }, [readExecutions, readRecipes]);
+  }, [authSubjectKey, readExecutions, readRecipes]);
 
   return null;
 }

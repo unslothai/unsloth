@@ -227,10 +227,120 @@ export function serializeExecutionMetadata(
   return metadata;
 }
 
-function incomingWins(
+function preferString(
+  current: string | null,
+  incoming: string | null,
+): string | null {
+  return incoming || current;
+}
+
+function mergeStringLists(current: string[], incoming: string[]): string[] {
+  const merged = [...current];
+  const seen = new Set(current);
+  for (const item of incoming) {
+    if (!seen.has(item)) {
+      seen.add(item);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+function mergeJsonValue(current: unknown, incoming: unknown): unknown {
+  if (incoming === null || incoming === undefined) return current;
+  if (current === null || current === undefined) return incoming;
+  if (Array.isArray(current) && Array.isArray(incoming)) {
+    return incoming.length > current.length ? incoming : current;
+  }
+  if (
+    typeof current === "object" &&
+    !Array.isArray(current) &&
+    typeof incoming === "object" &&
+    !Array.isArray(incoming)
+  ) {
+    const merged = { ...(current as Record<string, unknown>) };
+    for (const [key, value] of Object.entries(
+      incoming as Record<string, unknown>,
+    )) {
+      merged[key] = mergeJsonValue(merged[key], value);
+    }
+    return merged;
+  }
+  return incoming;
+}
+
+function mergeOptionalObject<T extends object>(
+  current: T | null,
+  incoming: T | null,
+): T | null {
+  return mergeJsonValue(current, incoming) as T | null;
+}
+
+function persistedMetadata(
+  current: PersistedRecipeExecution,
+): RecipeExecutionMetadata {
+  const metadata = { ...current };
+  Reflect.deleteProperty(metadata, "revision");
+  Reflect.deleteProperty(metadata, "updatedAt");
+  return metadata;
+}
+
+function mergeSameTerminalSnapshot(
   incoming: RecipeExecutionMetadata,
   current: PersistedRecipeExecution,
-): boolean {
+): RecipeExecutionMetadata | null {
+  const currentMetadata = persistedMetadata(current);
+  const merged: RecipeExecutionMetadata = {
+    ...currentMetadata,
+    jobId: preferString(current.jobId, incoming.jobId),
+    run_name: preferString(current.run_name, incoming.run_name),
+    rows: Math.max(current.rows, incoming.rows),
+    recipeSignature:
+      preferString(current.recipeSignature, incoming.recipeSignature) ?? "",
+    stage: preferString(current.stage, incoming.stage),
+    current_column: preferString(
+      current.current_column,
+      incoming.current_column,
+    ),
+    completed_columns: mergeStringLists(
+      current.completed_columns,
+      incoming.completed_columns,
+    ),
+    progress: mergeOptionalObject(current.progress, incoming.progress),
+    column_progress: mergeOptionalObject(
+      current.column_progress,
+      incoming.column_progress,
+    ),
+    batch: mergeOptionalObject(current.batch, incoming.batch),
+    source_progress: mergeOptionalObject(
+      current.source_progress,
+      incoming.source_progress,
+    ),
+    model_usage: mergeOptionalObject(
+      current.model_usage,
+      incoming.model_usage,
+    ),
+    datasetTotal: Math.max(current.datasetTotal, incoming.datasetTotal),
+    analysis: mergeOptionalObject(current.analysis, incoming.analysis),
+    error: preferString(current.error, incoming.error),
+    createdAt: Math.min(current.createdAt, incoming.createdAt),
+    finishedAt:
+      current.finishedAt === null
+        ? incoming.finishedAt
+        : incoming.finishedAt === null
+          ? current.finishedAt
+          : Math.max(current.finishedAt, incoming.finishedAt),
+  };
+  if (!fitsExecutionBudget(merged)) return null;
+  return JSON.stringify(merged) === JSON.stringify(currentMetadata)
+    ? null
+    : merged;
+}
+
+function reconcileIncoming(
+  incoming: RecipeExecutionMetadata,
+  current: PersistedRecipeExecution,
+): RecipeExecutionMetadata | null {
   const incomingEvent = incoming.lastEventId ?? -1;
   const currentEvent = current.lastEventId ?? -1;
   const incomingTerminal = TERMINAL.has(incoming.status);
@@ -239,9 +349,19 @@ function incomingWins(
     // Once the server has reached a terminal state, a delayed non-terminal
     // snapshot can never revive it.  A later terminal event may still carry a
     // genuine progression (for example, a newer authoritative completion).
-    return incomingTerminal && incomingEvent > currentEvent;
+    if (!incomingTerminal) return null;
+    if (incomingEvent !== currentEvent) {
+      return incomingEvent > currentEvent ? incoming : null;
+    }
+    if (incoming.status !== current.status) return null;
+
+    // Terminal writes for the same tracker event can race: the later snapshot
+    // may add analysis, final progress, or other bounded resume metadata. Merge
+    // fields monotonically so accepting that enrichment cannot discard values
+    // already committed by another writer.
+    return mergeSameTerminalSnapshot(incoming, current);
   }
-  return incomingTerminal || incomingEvent > currentEvent;
+  return incomingTerminal || incomingEvent > currentEvent ? incoming : null;
 }
 
 async function persistOnce(
@@ -250,20 +370,12 @@ async function persistOnce(
   owner: RecipeExecutionPersistenceOwner,
 ): Promise<void> {
   assertOwnerCurrent(owner, record);
-  const metadata = serializeExecutionMetadata(record);
+  let metadata = serializeExecutionMetadata(record);
   const knownCurrent = persistedExecutions.get(key);
   if (knownCurrent && TERMINAL.has(knownCurrent.status)) {
-    const incomingTerminal = TERMINAL.has(metadata.status);
-    const incomingEvent = metadata.lastEventId ?? -1;
-    const currentEvent = knownCurrent.lastEventId ?? -1;
-    if (
-      !incomingTerminal ||
-      incomingEvent < currentEvent ||
-      (metadata.status !== knownCurrent.status &&
-        incomingEvent === currentEvent)
-    ) {
-      return;
-    }
+    const reconciled = reconcileIncoming(metadata, knownCurrent);
+    if (!reconciled) return;
+    metadata = reconciled;
   }
   let expectedRevision = revisions.get(key) ?? record.revision;
   let lastConflict: UserAssetApiError | null = null;
@@ -296,7 +408,9 @@ async function persistOnce(
       if (!current) throw error;
       revisions.set(key, current.revision);
       persistedExecutions.set(key, current);
-      if (!incomingWins(metadata, current)) return;
+      const reconciled = reconcileIncoming(metadata, current);
+      if (!reconciled) return;
+      metadata = reconciled;
       expectedRevision = current.revision;
       lastConflict = error;
     }
