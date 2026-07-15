@@ -1970,6 +1970,12 @@ export function ChatPage({
             "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
         });
       }
+      if (outcome === "busy") {
+        toast.info("Download already in progress", {
+          description:
+            "Another download for this model is still running. Reselect it once that finishes to load it.",
+        });
+      }
       setPendingHubAutoLoad((current) => (current === pending ? null : current));
     })();
     return () => {
