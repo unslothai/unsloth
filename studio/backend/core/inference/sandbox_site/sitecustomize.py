@@ -91,15 +91,19 @@ def _contained_join(cwd, rel):
     return os.path.join(cwd, *parts) if parts else cwd
 
 
-def _map_onto_cwd(prefix, text):
-    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD and note it once.
+def _map_onto_cwd(prefix, text, notify = True):
+    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD, noting it once.
 
     The suffix is contained under the CWD (see ``_contained_join``) so a path
     like ``/mnt/data/../other_session/file`` cannot escape the sandbox workdir.
+    ``notify`` is False when the caller has not yet decided to use the mapping
+    (a read that may keep the original path), so the one-shot notice is not
+    spent on a remap that never happens.
     """
     rel = text[len(prefix) :].lstrip("/")
     mapped = _contained_join(os.getcwd(), rel)
-    _note(prefix, text, mapped)
+    if notify:
+        _note(prefix, text, mapped)
     return mapped
 
 
@@ -165,12 +169,18 @@ def _remap_open(file, mode):
     real ``open()`` raises ``FileNotFoundError`` and the existing file is kept.
     """
     creating = _is_creating_mode(mode)
-    mapped = _remap(file)
+    # notify=False: only emit the one-shot notice once we commit to the mapping
+    # below, so a read that keeps its original path does not spend the notice.
+    mapped = _remap(file, notify = False)
     if mapped is not file:
         # A write always heals onto the CWD. A read heals only when the mapped
         # target exists; otherwise keep the original absolute path so a missing
         # input stays truthful instead of silently reading a workdir file.
         if creating or os.path.exists(mapped):
+            # Emit the one-shot notice now that we commit to the redirect (the
+            # notify=False peek above kept a read that keeps its original path
+            # from spending the notice on a remap that never happened).
+            _remap(file, notify = True)
             return mapped
         return file
     if not creating:
@@ -213,8 +223,12 @@ def _remap_open(file, mode):
     return remapped
 
 
-def _remap(path):
-    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD; other paths pass through."""
+def _remap(path, notify = True):
+    """Map ``<prefix>/rest`` onto ``./rest`` in the CWD; other paths pass through.
+
+    ``notify`` is forwarded to ``_map_onto_cwd``; ``_remap_open`` passes False so
+    a read that ends up keeping its original path does not emit a false notice.
+    """
     try:
         text = os.fspath(path)
     except TypeError:
@@ -225,7 +239,7 @@ def _remap(path):
         # Heal only while the real prefix directory is absent, so a genuine host
         # mount / user directory at that prefix is never shadowed.
         if (text == prefix or text.startswith(prefix + "/")) and not os.path.exists(prefix):
-            return _map_onto_cwd(prefix, text)
+            return _map_onto_cwd(prefix, text, notify = notify)
     return path
 
 
@@ -271,10 +285,11 @@ def _install():
         dir_fd = None,
     ):
         # Path.touch() and other low-level callers go through os.open, not
-        # builtins.open. Map the create flags onto the logical mode the remap
-        # expects: O_CREAT / O_TRUNC / O_APPEND means "creating", else a read.
-        create_flags = os.O_CREAT | os.O_TRUNC | os.O_APPEND
-        logical_mode = "w" if (flags & create_flags) else "r"
+        # builtins.open. Only O_CREAT can create a missing target, so only it
+        # maps to the "creating" mode; O_TRUNC / O_APPEND without O_CREAT still
+        # require the file to exist, so they behave as a read (heal only when the
+        # mapped target already exists, matching _remap_open).
+        logical_mode = "w" if (flags & os.O_CREAT) else "r"
         mapped = _remap_open(path, logical_mode)
         if dir_fd is None:
             return original_os_open(mapped, flags, mode)

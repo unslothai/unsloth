@@ -510,3 +510,39 @@ def test_pathlib_mkdir_parents_remaps_convention_path(monkeypatch, tmp_path):
         assert real_os.is_dir()
     finally:
         _restore_patch_targets(saved)
+
+
+def test_read_of_missing_prefix_path_emits_no_notice(monkeypatch, tmp_path, capsys):
+    # A read of a missing convention path keeps the original path and must not
+    # spend the one-shot notice; a genuine remap afterward still notifies, with
+    # the original convention-prefix subject.
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    mod._notified = False  # re-arm the one-shot notice for this test
+    # Read of a missing prefixed path: original kept, no notice, flag unspent.
+    assert mod._remap_open("/mnt/data/missing.csv", "r") == "/mnt/data/missing.csv"
+    assert mod._notified is False
+    assert "does not exist" not in capsys.readouterr().err
+    # A committed write then heals and fires the notice exactly once.
+    assert mod._remap_open("/mnt/data/out.txt", "w") == os.path.join(os.getcwd(), "out.txt")
+    assert mod._notified is True
+    assert "/mnt/data does not exist in this sandbox" in capsys.readouterr().err
+
+
+def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_path):
+    # O_TRUNC / O_APPEND without O_CREAT cannot create a missing file, so the
+    # shim treats them as a read: a missing convention path stays truthful (the
+    # error names the path the caller used) and nothing is created in the CWD.
+    saved = _save_patch_targets()
+    spec = importlib.util.spec_from_file_location("_sandbox_sitecustomize_trunc", _SHIM)
+    mod = importlib.util.module_from_spec(spec)
+    monkeypatch.chdir(tmp_path)
+    try:
+        spec.loader.exec_module(mod)
+        mod._notified = True
+        with pytest.raises(FileNotFoundError) as exc:
+            os.open("/mnt/data/missing_xyz.bin", os.O_WRONLY | os.O_TRUNC)
+        assert exc.value.filename == "/mnt/data/missing_xyz.bin"
+        assert not os.path.exists(os.path.join(os.getcwd(), "missing_xyz.bin"))
+    finally:
+        _restore_patch_targets(saved)
