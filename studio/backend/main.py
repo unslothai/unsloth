@@ -1366,7 +1366,7 @@ def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]
 
 def _is_loopback_ip(host: Optional[str]) -> bool:
     """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
-    if not host:
+    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
         return False
     try:
         ip = ipaddress.ip_address(host)

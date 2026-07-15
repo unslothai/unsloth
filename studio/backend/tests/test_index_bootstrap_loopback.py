@@ -34,7 +34,9 @@ def test_loopback_peers_are_local():
 
 def test_non_loopback_peers_are_remote():
     from main import _is_local_bootstrap_request
-    for host in ("192.168.1.10", "::ffff:192.168.1.10"):
+    # ::1%eth0 is a scope-id'd address, which ipaddress treats as loopback on
+    # 3.9+; it must not count as a direct local peer.
+    for host in ("192.168.1.10", "::ffff:192.168.1.10", "::1%eth0"):
         assert _is_local_bootstrap_request(_request(host)) is False, host
 
 
@@ -81,9 +83,9 @@ def test_reverse_proxy_forwarded_headers_are_remote():
 
 
 def test_malformed_or_absent_host_is_remote():
-    """A malformed/absent Host must not fall back to the loopback server address."""
+    """A malformed/absent/scope-id Host must not fall back to the loopback server address."""
     from main import _is_local_bootstrap_request
-    for host in ("e_vil", "[malformed", "", None):
+    for host in ("e_vil", "[malformed", "", None, "[::1%25eth0]:8888"):
         assert _is_local_bootstrap_request(_request("127.0.0.1", host)) is False, host
 
 
