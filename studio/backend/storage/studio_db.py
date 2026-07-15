@@ -27,7 +27,7 @@ from utils.paths import (
     project_workspaces_root,
     studio_db_path,
 )
-from utils.paths.external_media import is_linux_run_media_path
+from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
 )
@@ -67,6 +67,25 @@ def _denied_path_prefixes() -> list[str]:
         pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
         return [os.path.normcase(p) for p in [win, pf, pf86]]
     return []
+
+
+def is_denied_system_path(path: str) -> bool:
+    """True if *path* is, or descends from, a denied system directory.
+
+    Mirrors the denylist add_scan_folder() enforces at registration so the
+    browser refuses /etc, /proc, C:\\Windows, etc. even when the allowlist holds
+    a broad root (a Windows drive root C:\\ or a legacy-registered / root). The
+    /run carve-out keeps Linux removable-media mounts browseable. Expects an
+    already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
+    """
+    is_win = platform.system() == "Windows"
+    check = os.path.normcase(path) if is_win else path
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
+            return True
+    return False
 
 
 def _contains_sensitive_path_component(path: str) -> bool:
@@ -931,6 +950,12 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    # Reject a local filesystem root ("/", or a bare Windows drive root "C:\\"):
+    # registering one seeds the browse allowlist with a root above denied system
+    # dirs. A UNC share root (\\server\share) has none under it and was
+    # registerable before this guard, so it stays allowed. Mirrors scan_folders.py.
+    if is_local_filesystem_root(normalized):
+        raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
 
