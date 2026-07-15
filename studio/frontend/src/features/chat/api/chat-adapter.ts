@@ -2492,6 +2492,32 @@ export function createOpenAIStreamAdapter(
       // arguments while the model is still WRITING them, and the partial parse
       // below feeds the card's args so the code renders live.
       const liveArgsTextById = new Map<string, string>();
+      // Backend tool ids ("call_0", "call_1", ...) restart every assistant
+      // response, so keying the shared transient tool-output maps by the bare
+      // backend id lets a later turn's stream overwrite the preserved output an
+      // earlier, still-mounted finished card in the same pane reads (the
+      // stale-clear at tool_start only guards the forward direction). Mint one
+      // per-run-unique part id per backend id (awaiting-confirmation ids already
+      // synthesize their own) so every card's store key is unique; every
+      // tool_start/output/args/end for one call resolves the same id via this
+      // map, and the entry is dropped at tool_end.
+      const toolPartIdByBackendId = new Map<string, string>();
+      const resolveToolPartId = (backendToolCallId: string): string => {
+        if (!backendToolCallId) {
+          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
+        }
+        const confirmationId =
+          toolConfirmationIdsByBackendId.get(backendToolCallId);
+        if (confirmationId) {
+          return confirmationId;
+        }
+        let partId = toolPartIdByBackendId.get(backendToolCallId);
+        if (!partId) {
+          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
+          toolPartIdByBackendId.set(backendToolCallId, partId);
+        }
+        return partId;
+      };
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -3232,13 +3258,7 @@ export function createOpenAIStreamAdapter(
                   // renders it while the spinner runs. Final result via tool_end.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const liveId =
-                    (backendToolCallId
-                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
-                      : undefined) ||
-                    backendToolCallId ||
-                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
-                    "";
+                  const liveId = resolveToolPartId(backendToolCallId);
                   const liveText =
                     typeof toolEvent.text === "string" ? toolEvent.text : "";
                   if (liveId && liveText) {
@@ -3257,13 +3277,7 @@ export function createOpenAIStreamAdapter(
                   // replaces args with the authoritative parse.
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const liveId =
-                    (backendToolCallId
-                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
-                      : undefined) ||
-                    backendToolCallId ||
-                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
-                    "";
+                  const liveId = resolveToolPartId(backendToolCallId);
                   const fragment =
                     typeof toolEvent.text === "string" ? toolEvent.text : "";
                   if (liveId && fragment) {
@@ -3311,9 +3325,10 @@ export function createOpenAIStreamAdapter(
                   const id =
                     awaitingConfirmation && approvalId
                       ? `${toolConfirmationScopeId}:${approvalId}`
-                      : backendToolCallId ||
-                        approvalId ||
-                        `${toolEvent.tool_name}_${Date.now()}`;
+                      : backendToolCallId
+                        ? resolveToolPartId(backendToolCallId)
+                        : approvalId ||
+                          `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
@@ -3366,15 +3381,10 @@ export function createOpenAIStreamAdapter(
                 } else if (toolEvent.type === "tool_end") {
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const id =
-                    (backendToolCallId
-                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
-                      : undefined) ||
-                    backendToolCallId ||
-                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
-                    "";
+                  const id = resolveToolPartId(backendToolCallId);
                   if (backendToolCallId) {
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                    toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
                   // The final result replaces the transient live output, but if
