@@ -520,30 +520,6 @@ export function isDownloadableHubRepo(x: {
   );
 }
 
-export function isPendingGguf(pending: PendingModelSelection | null): boolean {
-  return pending != null && hasGgufSource(pending);
-}
-
-/** Whether `pending` refers to the same model as `pick` (id + GGUF variant +
- *  native path token, optionals null-normalized). Native ids are display labels
- *  that can collide, so the token must match too — id alone can land on the
- *  wrong file. */
-export function pendingSelectionMatches(
-  pending: PendingModelSelection | null,
-  pick: {
-    id: string;
-    ggufVariant?: string | null;
-    nativePathToken?: string | null;
-  },
-): boolean {
-  return (
-    pending != null &&
-    pending.id === pick.id &&
-    (pending.ggufVariant ?? null) === (pick.ggufVariant ?? null) &&
-    (pending.nativePathToken ?? null) === (pick.nativePathToken ?? null)
-  );
-}
-
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
