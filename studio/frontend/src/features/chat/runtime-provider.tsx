@@ -33,6 +33,7 @@ import {
   useRef,
 } from "react";
 import { toast } from "sonner";
+import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
 import {
   ThreadAutosaveHandle,
@@ -77,6 +78,7 @@ const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
 
 type TitleResponse = {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string;
     };
@@ -474,6 +476,8 @@ async function generateTitleWithModel(payload: {
       max_tokens: 24,
       top_k: 20,
       repetition_penalty: 1.0,
+      enable_thinking: false,
+      reasoning_effort: "none",
       messages: [
         {
           role: "system",
@@ -489,8 +493,10 @@ async function generateTitleWithModel(payload: {
     .json()
     .catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
-  const raw: string | undefined = body?.choices?.[0]?.message?.content;
-  if (!raw) return null;
+  const choice = body?.choices?.[0];
+  if (choice?.finish_reason === "length") return null;
+  const raw: string | undefined = choice?.message?.content;
+  if (!raw || /<\/?think>/i.test(raw)) return null;
   return normalizeTitle(raw);
 }
 
@@ -1028,6 +1034,13 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
+  const speech = useMemo(
+    () =>
+      StudioSpeechSynthesisAdapter.isSupported()
+        ? new StudioSpeechSynthesisAdapter()
+        : undefined,
+    [],
+  );
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([
@@ -1042,8 +1055,8 @@ function useStudioRuntimeAdapters(
     [],
   );
   const adapters = useMemo(
-    () => ({ history, dictation, attachments }),
-    [history, dictation, attachments],
+    () => ({ history, dictation, speech, attachments }),
+    [history, dictation, speech, attachments],
   );
 
   return adapters;
