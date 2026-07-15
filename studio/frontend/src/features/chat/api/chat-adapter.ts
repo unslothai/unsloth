@@ -12,6 +12,7 @@ import { parseParamCountB } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
+import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -51,6 +52,11 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import {
+  shouldPreserveFullOutput,
+  toolOutputKey,
+  toolPaneScope,
+} from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -85,6 +91,7 @@ import {
   listGgufVariants,
   loadModel,
   streamChatCompletions,
+  StreamInterruptedError,
   validateModel,
 } from "./chat-api";
 import {
@@ -173,6 +180,7 @@ interface ResponseDetailsMetadata {
     artifacts: boolean;
     confirmToolCalls: boolean;
     bypassPermissions: boolean;
+    permissionMode?: string;
   };
 }
 
@@ -225,6 +233,49 @@ const pendingFirstThreadSaves = new Map<string, Promise<void>>();
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Best-effort partial parse of a live tool_args stream into a tool part's
+ * `args`, so cards render the payload while the model is still writing it. The
+ * structured path streams raw arguments JSON; the text path wraps it in call
+ * markup, unwrapped here. Returns null until something parses; never throws.
+ */
+function parseLiveToolArgs(
+  raw: string,
+): { args: Record<string, unknown>; argsText: string } | null {
+  let candidate = raw.trimStart();
+  if (!candidate.startsWith("{")) {
+    const brace = candidate.indexOf("{");
+    if (brace < 0) return null;
+    candidate = candidate.slice(brace);
+  }
+  const parsed = parsePartialJsonObject(candidate) as
+    | Record<string, unknown>
+    | undefined;
+  if (!parsed || typeof parsed !== "object") return null;
+  // Call envelope from the text path: unwrap to the arguments payload.
+  const inner = parsed.arguments ?? parsed.parameters;
+  if (typeof parsed.name === "string" && inner !== undefined) {
+    if (typeof inner === "string") {
+      // Stringified arguments: partial-parse the inner JSON string.
+      const innerParsed = parsePartialJsonObject(inner) as
+        | Record<string, unknown>
+        | undefined;
+      if (innerParsed && typeof innerParsed === "object") {
+        return { args: innerParsed, argsText: inner };
+      }
+      return null;
+    }
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+      return {
+        args: inner as Record<string, unknown>,
+        argsText: JSON.stringify(inner),
+      };
+    }
+    return null;
+  }
+  return { args: parsed, argsText: candidate };
 }
 
 function parseSystemVariablesMap(raw: string): Record<string, unknown> {
@@ -1454,6 +1505,11 @@ async function autoLoadSmallestModel(): Promise<{
       blockedByTrustRemoteCode = true;
       return false;
     }
+    // Never install packages from a background load; explicit loads raise the upgrade dialog.
+    if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
+      return false;
+    }
     return true;
   }
 
@@ -1871,6 +1927,16 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
+      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
+      // turns and concurrent panes (compare mode). Track this run's keys so
+      // cleanup can't wipe another pane's.
+      const toolOutputPaneScope = toolPaneScope(
+        options.modelType,
+        options.pairId,
+      );
+      const scopedToolOutputKey = (id: string) =>
+        toolOutputKey(toolOutputPaneScope, id);
+      const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
@@ -1946,6 +2012,7 @@ export function createOpenAIStreamAdapter(
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
+        permissionMode,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2419,6 +2486,34 @@ export function createOpenAIStreamAdapter(
       };
       // Tool call parts, cumulative; result lands on tool_end.
       const toolCallParts: PositionedToolCallPart[] = [];
+      // Raw tool_args accumulator per card: the backend forwards arguments while
+      // the model is still WRITING them, and the partial parse below feeds the
+      // card's args so the code renders live.
+      const liveArgsTextById = new Map<string, string>();
+      // Backend tool ids ("call_0", ...) restart every response, so a bare id as
+      // store key lets a later turn's stream overwrite the preserved output an
+      // earlier still-mounted finished card reads (the tool_start stale-clear
+      // only guards the forward direction). Mint one per-run-unique part id per
+      // backend id (confirmation ids already synthesize their own) so each card
+      // key is unique; every tool_start/output/args/end resolves the same id via
+      // this map, dropped at tool_end.
+      const toolPartIdByBackendId = new Map<string, string>();
+      const resolveToolPartId = (backendToolCallId: string): string => {
+        if (!backendToolCallId) {
+          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
+        }
+        const confirmationId =
+          toolConfirmationIdsByBackendId.get(backendToolCallId);
+        if (confirmationId) {
+          return confirmationId;
+        }
+        let partId = toolPartIdByBackendId.get(backendToolCallId);
+        if (!partId) {
+          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
+          toolPartIdByBackendId.set(backendToolCallId, partId);
+        }
+        return partId;
+      };
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -2637,6 +2732,7 @@ export function createOpenAIStreamAdapter(
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
+            permissionMode,
           },
         });
         const externalCapabilities = getProviderCapabilities(
@@ -2948,6 +3044,16 @@ export function createOpenAIStreamAdapter(
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
               : {}),
+            // Permission level for local tool calls is sent for every local
+            // chat, not only when a tool pill is on: a process policy
+            // (unsloth run --enable-tools) can open the tool loop with no pill,
+            // and the backend must still see the selected gate. ask/auto request
+            // the confirm gate ("auto" only pauses calls flagged unsafe); off
+            // and full never prompt, full also drops the sandbox.
+            permission_mode: permissionMode,
+            confirm_tool_calls:
+              permissionMode === "ask" || permissionMode === "auto",
+            bypass_permissions: bypassPermissions,
             ...(supportsTools &&
             (toolsEnabled ||
               codeToolsEnabled ||
@@ -2969,10 +3075,6 @@ export function createOpenAIStreamAdapter(
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  // Bypass Permissions wins: never request the confirm gate
-                  // while bypassing, and tell the backend to drop the sandbox.
-                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
-                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
@@ -3146,6 +3248,66 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "tool_output") {
+                  // Incremental stdout from a running tool: append to the live
+                  // store so the card renders it while the spinner runs. Final
+                  // result arrives via tool_end.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId = resolveToolPartId(backendToolCallId);
+                  const liveText =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && liveText) {
+                    const liveKey = scopedToolOutputKey(liveId);
+                    runToolLiveOutputKeys.add(liveKey);
+                    useChatRuntimeStore
+                      .getState()
+                      .appendToolLiveOutput(liveKey, liveText);
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "tool_args") {
+                  // The model is still WRITING this call's arguments: accumulate
+                  // the raw stream and feed a partial parse into the part's args
+                  // so the card shows the code live. tool_start later replaces
+                  // args with the authoritative parse.
+                  const backendToolCallId =
+                    (toolEvent.tool_call_id as string) || "";
+                  const liveId = resolveToolPartId(backendToolCallId);
+                  const fragment =
+                    typeof toolEvent.text === "string" ? toolEvent.text : "";
+                  if (liveId && fragment) {
+                    const accum =
+                      (liveArgsTextById.get(liveId) ?? "") + fragment;
+                    liveArgsTextById.set(liveId, accum);
+                    const partial = parseLiveToolArgs(accum);
+                    const idx = toolCallParts.findIndex(
+                      (p) => p.toolCallId === liveId,
+                    );
+                    if (partial && idx !== -1) {
+                      const existing = toolCallParts[
+                        idx
+                      ] as PositionedToolCallPart;
+                      toolCallParts[idx] = {
+                        ...existing,
+                        args: partial.args as ToolCallMessagePart["args"],
+                        argsText: partial.argsText,
+                      };
+                      yield {
+                        content: buildAssistantContent(cumulativeText),
+                        metadata: {
+                          timing: buildTiming(
+                            streamStartTime,
+                            totalChunks,
+                            firstTokenTime,
+                          ),
+                          custom: { reasoningDuration },
+                        },
+                      };
+                    }
+                  }
+                  continue;
+                }
                 closeReasoningContent();
                 const toolProvenance = parseToolProvenance(
                   toolEvent.provenance,
@@ -3159,12 +3321,18 @@ export function createOpenAIStreamAdapter(
                   const id =
                     awaitingConfirmation && approvalId
                       ? `${toolConfirmationScopeId}:${approvalId}`
-                      : backendToolCallId ||
-                        approvalId ||
-                        `${toolEvent.tool_name}_${Date.now()}`;
+                      : backendToolCallId
+                        ? resolveToolPartId(backendToolCallId)
+                        : approvalId ||
+                          `${toolEvent.tool_name}_${Date.now()}`;
                   if (awaitingConfirmation && backendToolCallId) {
                     toolConfirmationIdsByBackendId.set(backendToolCallId, id);
                   }
+                  // "call_0" restarts every response: drop stale live/preserved
+                  // output under this key, else the card shows the previous call's.
+                  const staleKey = scopedToolOutputKey(id);
+                  useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
+                  useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
                     {}) as ToolCallMessagePart["args"];
                   const idx = toolCallParts.findIndex(
@@ -3208,17 +3376,35 @@ export function createOpenAIStreamAdapter(
                 } else if (toolEvent.type === "tool_end") {
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
-                  const id =
-                    (backendToolCallId
-                      ? toolConfirmationIdsByBackendId.get(backendToolCallId)
-                      : undefined) ||
-                    backendToolCallId ||
-                    toolCallParts[toolCallParts.length - 1]?.toolCallId ||
-                    "";
+                  const id = resolveToolPartId(backendToolCallId);
                   if (backendToolCallId) {
                     toolConfirmationIdsByBackendId.delete(backendToolCallId);
+                    toolPartIdByBackendId.delete(backendToolCallId);
                   }
                   useChatRuntimeStore.getState().clearToolConfirmation(id);
+                  // The result replaces the live output, but if the stream
+                  // captured MORE than the truncated result, preserve it so the
+                  // finished card keeps everything. Uses the shared predicate,
+                  // not a length compare (footer / "Exit code N:" / __IMAGES__
+                  // tail can make the result longer by byte).
+                  const liveKey = scopedToolOutputKey(id);
+                  const liveOutput =
+                    useChatRuntimeStore.getState().toolLiveOutput[liveKey] ??
+                    "";
+                  if (
+                    id &&
+                    shouldPreserveFullOutput(
+                      liveOutput,
+                      (toolEvent.result as string) ?? "",
+                    )
+                  ) {
+                    useChatRuntimeStore
+                      .getState()
+                      .setToolFullOutput(liveKey, liveOutput);
+                  }
+                  useChatRuntimeStore.getState().clearToolLiveOutput(liveKey);
+                  runToolLiveOutputKeys.delete(liveKey);
+                  liveArgsTextById.delete(id);
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -3783,7 +3969,16 @@ export function createOpenAIStreamAdapter(
         );
         if (!abortSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (isContextLimitError(msg)) {
+          if (err instanceof StreamInterruptedError) {
+            // Connection dropped mid-turn: surface it explicitly (the rethrow
+            // below also marks the message with an inline error + Retry).
+            toast.error("Response interrupted", {
+              description:
+                "The connection dropped before the model finished. " +
+                "The partial answer is kept. Use Retry to regenerate.",
+              duration: 8000,
+            });
+          } else if (isContextLimitError(msg)) {
             // llama-server runs with --no-context-shift, returning a hard
             // error instead of silently dropping old KV-cache turns. Point
             // the user at the control that raises the ceiling.
@@ -3809,6 +4004,19 @@ export function createOpenAIStreamAdapter(
         }
         runtime.setGeneratingStatus(null);
         runtime.setToolStatus(null);
+        // Clear only this run's live keys (a concurrent pane owns its own). A
+        // key still here streamed stdout but never reached tool_end (SSE drop or
+        // cancel), so promote it to full output first, else the partial
+        // diagnostics the user was watching vanish from the card.
+        for (const liveKey of runToolLiveOutputKeys) {
+          const store = useChatRuntimeStore.getState();
+          const liveOutput = store.toolLiveOutput[liveKey] ?? "";
+          if (liveOutput) {
+            store.setToolFullOutput(liveKey, liveOutput);
+          }
+          store.clearToolLiveOutput(liveKey);
+        }
+        runToolLiveOutputKeys.clear();
         // Drop the transient denoising canvas so the finished bubble shows only
         // the committed markdown answer (cancellation/error included).
         runtime.setActiveDiffusionCanvas(null);

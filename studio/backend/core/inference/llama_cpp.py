@@ -301,6 +301,27 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
     return False
 
 
+_TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
+_TEXT_TOOL_GEMMA_RE = re.compile(r"\s*call:([\w.\-]+)")
+_TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
+
+
+def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
+    """Best-effort tool name from a partially drained TEXT tool call, gated on
+    enabled names so prose can never spawn a card. Used only to open the live
+    argument pane early; the authoritative parse still happens at stream end."""
+    m = _TEXT_TOOL_NAME_RE.search(text[:4096])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    return ""
+
+
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
     """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
     active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
@@ -8969,16 +8990,38 @@ class LlamaCppBackend:
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
+
+        permission_mode: "ask" confirms every call (with confirm_tool_calls),
+        "auto" only pauses calls detected as potentially unsafe, "off" never
+        pauses (sandbox stays on), "full" is the same as bypass_permissions.
+        Unset/unknown behaves as "ask".
 
         Yields dicts:
           {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import build_rag_autoinject, execute_tool
+        from core.inference.tool_stream_exec import accepts_output_callback, stream_tool_execution
+        from core.inference.tools import (
+            build_rag_autoinject,
+            execute_tool,
+            is_always_safe_tool,
+            is_potentially_unsafe_tool_call,
+        )
+
+        # Normalize the mode: "full" and bypass_permissions are the same
+        # switch, whichever arrives first wins toward the permissive side.
+        # "off" keeps the sandbox but never prompts.
+        if permission_mode == "full":
+            bypass_permissions = True
+        elif bypass_permissions:
+            permission_mode = "full"
+        elif permission_mode not in ("ask", "auto", "off"):
+            permission_mode = "ask"
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
@@ -8986,8 +9029,14 @@ class LlamaCppBackend:
         conversation = list(messages)
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
-        # the same tool card + citations a real call would.
-        _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+        # the same tool card + citations a real call would. Skip it only when a
+        # retrieval call would actually prompt (ask mode); auto never gates the
+        # safe search_knowledge_base tool, so retrieval must still run there.
+        # off never prompts either, so it also keeps first-pass retrieval.
+        _skip_autoinject = (
+            confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+        )
+        _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
@@ -9241,6 +9290,17 @@ class LlamaCppBackend:
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
+                # Cards that already got their first tool_args event; later
+                # fragments stream individually so a big payload isn't a dead spinner.
+                arg_streamed_tool_call_ids: set[str] = set()
+                # TEXT tool-call path: a committed call's raw text streams to a
+                # provisional card under the parser's first-call id ("call_0"), so
+                # the final tool_start reconciles in place.
+                _text_args_call_start = -1
+                _text_args_streamed_upto = -1
+                _text_args_id = ""
+                _text_args_name = ""
+                _confirm_gated_iteration = bool(confirm_tool_calls) and not bypass_permissions
 
                 with self._open_stream(url, payload, cancel_event) as (
                     response,
@@ -9357,8 +9417,16 @@ class LlamaCppBackend:
                                             in provisional_started_tool_calls.values()
                                         )
                                         # Later parallel cards only reconcile when parallel use is enabled.
+                                        # In auto mode an always-safe tool (render_html) never
+                                        # prompts, so it must stream its early card too; mirror
+                                        # that here instead of gating on the raw confirm flag.
                                         _confirm_gated = (
-                                            confirm_tool_calls and not bypass_permissions
+                                            confirm_tool_calls
+                                            and not bypass_permissions
+                                            and not (
+                                                permission_mode == "auto"
+                                                and is_always_safe_tool(current_name)
+                                            )
                                         )
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(
@@ -9395,6 +9463,29 @@ class LlamaCppBackend:
                                                     provisional = True,
                                                 ),
                                             }
+                                        # Stream argument text so the UI shows the code being
+                                        # written: first event the backlog, later the fragment.
+                                        # Display only; accumulator untouched.
+                                        if current_id in provisional_started_tool_calls:
+                                            if current_id not in arg_streamed_tool_call_ids:
+                                                arg_streamed_tool_call_ids.add(current_id)
+                                                _args_backlog = tool_calls_acc[idx]["function"].get(
+                                                    "arguments", ""
+                                                )
+                                                if _args_backlog:
+                                                    yield {
+                                                        "type": "tool_args",
+                                                        "tool_call_id": current_id,
+                                                        "tool_name": current_name,
+                                                        "text": _args_backlog,
+                                                    }
+                                            elif func.get("arguments"):
+                                                yield {
+                                                    "type": "tool_args",
+                                                    "tool_call_id": current_id,
+                                                    "tool_name": current_name,
+                                                    "text": func["arguments"],
+                                                }
                                     continue
 
                                 # ── Reasoning tokens ──
@@ -9433,7 +9524,60 @@ class LlamaCppBackend:
                                     content_accum += token
 
                                     if detect_state == _S_DRAINING:
-                                        pass  # accumulate silently
+                                        # Accumulate silently for parsing, but stream the drained
+                                        # TEXT call to a provisional card. Gated on an enabled-name
+                                        # sniff + size floor so prose/small calls spawn no pane; id
+                                        # matches the first call so the final tool_start reconciles.
+                                        if (
+                                            not has_structured_tc
+                                            and not _confirm_gated_iteration
+                                            and _text_args_call_start >= 0
+                                        ):
+                                            if not _text_args_id:
+                                                _call_text = content_accum[_text_args_call_start:]
+                                                _sniffed = _sniff_text_tool_name(
+                                                    _call_text, _enabled_tool_names
+                                                )
+                                                if _sniffed and (
+                                                    _sniffed == "render_html"
+                                                    or len(_call_text)
+                                                    >= _PROVISIONAL_ARGS_MIN_CHARS
+                                                ):
+                                                    _text_args_id = "call_0"
+                                                    _text_args_name = _sniffed
+                                                    if (
+                                                        _text_args_id
+                                                        not in provisional_started_tool_calls
+                                                    ):
+                                                        provisional_started_tool_calls[
+                                                            _text_args_id
+                                                        ] = _sniffed
+                                                        yield {
+                                                            "type": "tool_start",
+                                                            "tool_name": _sniffed,
+                                                            "tool_call_id": _text_args_id,
+                                                            "arguments": {},
+                                                            "provenance": tool_event_provenance(
+                                                                provisional = True,
+                                                            ),
+                                                        }
+                                                    yield {
+                                                        "type": "tool_args",
+                                                        "tool_call_id": _text_args_id,
+                                                        "tool_name": _sniffed,
+                                                        "text": _call_text,
+                                                    }
+                                                    _text_args_streamed_upto = len(content_accum)
+                                            elif len(content_accum) > _text_args_streamed_upto:
+                                                yield {
+                                                    "type": "tool_args",
+                                                    "tool_call_id": _text_args_id,
+                                                    "tool_name": _text_args_name,
+                                                    "text": content_accum[
+                                                        _text_args_streamed_upto:
+                                                    ],
+                                                }
+                                                _text_args_streamed_upto = len(content_accum)
 
                                     elif detect_state == _S_STREAMING:
                                         if in_thinking:
@@ -9540,6 +9684,11 @@ class LlamaCppBackend:
                                             # without yielding. A live <think> prefix is
                                             # separate from it -- close that.
                                             detect_state = _S_DRAINING
+                                            # Call text begins at the held buffer
+                                            # (live arg display only; UI extracts the code).
+                                            _text_args_call_start = len(content_accum) - len(
+                                                content_buffer
+                                            )
                                             if _close_streamed_think():
                                                 yield {
                                                     "type": "content",
@@ -9567,6 +9716,11 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
+                                            # Live-arg display starts at the held buffer
+                                            # (visible prefix flushed above; UI extracts the code).
+                                            _text_args_call_start = len(content_accum) - len(
+                                                content_buffer
+                                            )
                                         elif _hold_buffer or (
                                             is_prefix
                                             and (
@@ -9814,9 +9968,20 @@ class LlamaCppBackend:
                             f"{'structured delta' if has_structured_tc else 'content text'}"
                         )
                     if not tool_calls:
-                        # DRAINING but no tool calls (false positive). Merge
-                        # accumulated metrics from prior tool iterations so
-                        # they aren't silently dropped.
+                        # DRAINING but no tool calls (false positive): close any
+                        # provisional cards (a sniff can open one whose call never
+                        # parses); without a tool_end the card spins forever.
+                        for _pid, _pname in provisional_started_tool_calls.items():
+                            if _pid not in resolved_provisional_tool_call_ids:
+                                resolved_provisional_tool_call_ids.add(_pid)
+                                yield {
+                                    "type": "tool_end",
+                                    "tool_name": _pname,
+                                    "tool_call_id": _pid,
+                                    "result": "",
+                                    "provenance": tool_event_provenance(provisional = True),
+                                }
+                        # Merge metrics from prior tool iterations so they aren't dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.
@@ -9877,9 +10042,22 @@ class LlamaCppBackend:
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
 
+                # The text-path provisional card uses the parser's default id ("call_0");
+                # a Mistral-style call carries its own id and would open a duplicate. Reuse
+                # the card's id for the first matching call (same tool name) to reconcile.
+                _text_provisional_id = _text_args_id if not has_structured_tc else ""
+
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
+                    if (
+                        _text_provisional_id
+                        and _text_provisional_id in provisional_started_tool_calls
+                        and _text_provisional_id not in resolved_provisional_tool_call_ids
+                        and tc.get("id") not in provisional_started_tool_calls
+                        and provisional_started_tool_calls[_text_provisional_id] == tool_name
+                    ):
+                        tc = {**tc, "id": _text_provisional_id}
                     provisional_match = tc.get("id") in provisional_started_tool_calls
                     decision = tool_controller.prepare_call(
                         tc,
@@ -9925,7 +10103,18 @@ class LlamaCppBackend:
 
                     # Bypass wins over the confirm gate at the loop level too,
                     # so a direct internal caller with both flags never prompts.
-                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+                    # In "auto" mode only calls detected as potentially unsafe
+                    # pause; read-only calls run straight through. "off" never
+                    # prompts (sandbox stays on).
+                    needs_confirm = (
+                        bool(confirm_tool_calls)
+                        and not bypass_permissions
+                        and permission_mode != "off"
+                    )
+                    if needs_confirm and permission_mode == "auto":
+                        needs_confirm = is_potentially_unsafe_tool_call(
+                            decision.tool_name, decision.arguments
+                        )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -9980,15 +10169,33 @@ class LlamaCppBackend:
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
                     else:
-                        result = execute_tool(
-                            decision.tool_name,
-                            decision.arguments,
+                        # Execute in a worker thread so live stdout chunks and heartbeats
+                        # stream while the tool blocks (the SSE route turns heartbeats into
+                        # keepalives). Result is byte-identical to a direct call.
+                        def _invoke_tool(_output_callback, _decision = decision):
+                            # execute_tool is injectable and may be monkey-patched with the
+                            # pre-PR signature; forward output_callback only if it's accepted.
+                            kwargs = dict(
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                                thread_id = thread_id,
+                                rag_scope = rag_scope,
+                                disable_sandbox = bypass_permissions,
+                            )
+                            if accepts_output_callback(execute_tool):
+                                kwargs["output_callback"] = _output_callback
+                            return execute_tool(
+                                _decision.tool_name,
+                                _decision.arguments,
+                                **kwargs,
+                            )
+
+                        result = yield from stream_tool_execution(
+                            _invoke_tool,
+                            tool_name = decision.tool_name,
+                            tool_call_id = decision.tool_call_id,
                             cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                            thread_id = thread_id,
-                            rag_scope = rag_scope,
-                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
