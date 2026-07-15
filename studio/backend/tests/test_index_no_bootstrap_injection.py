@@ -34,7 +34,7 @@ def test_index_never_contains_bootstrap_seed(tmp_path, monkeypatch):
         ("/some/spa/route", {}),
         ("/", {"origin": "http://testserver"}),
     ):
-        r = client.get(path, headers=headers)
+        r = client.get(path, headers = headers)
         assert r.status_code == 200, (path, r.status_code)
         assert "SEED-DO-NOT-LEAK" not in r.text, path
         assert "__UNSLOTH_BOOTSTRAP__" not in r.text, path
