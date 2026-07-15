@@ -12549,7 +12549,12 @@ async def _anthropic_tool_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server
+            # crash, decode OOM, a dropped upstream socket) still emits an SSE
+            # error event and returns, instead of falling through to a normal
+            # message_stop that masks a truncated turn as a clean finish. Matches
+            # the Anthropic passthrough path.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
@@ -12641,7 +12646,12 @@ async def _anthropic_plain_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server
+            # crash, decode OOM, a dropped upstream socket) still emits an SSE
+            # error event and returns, instead of falling through to a normal
+            # message_stop that masks a truncated turn as a clean finish. Matches
+            # the Anthropic passthrough path.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return

@@ -1631,6 +1631,52 @@ class TestAnthropicMessagesToolRouting:
         assert entry["status"] == "cancelled"
         assert monitor.active_count() == 0
 
+    @staticmethod
+    def _sse_blob(chunks):
+        # StreamingResponse may hand back str or already-encoded bytes.
+        return "".join(
+            c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks
+        )
+
+    def test_plain_streaming_unclassified_error_emits_error_event(self, monkeypatch):
+        # Regression: an unclassified mid-stream failure (llama-server crash,
+        # decode OOM, a dropped upstream socket) must surface as an Anthropic SSE
+        # `error` event and stop, not fall through to a normal message_stop that
+        # masks a truncated turn as a clean finish.
+        def _gen_boom(**_kwargs):
+            yield "partial"
+            raise RuntimeError("llama-server crashed mid-decode")
+
+        _mock_backend(monkeypatch, generate_chat_completion = _gen_boom)
+        payload = _basic_payload(stream = True)
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        blob = self._sse_blob(self._consume_response(response))
+
+        assert "event: error" in blob
+        assert '"type": "error"' in blob
+        assert "event: message_stop" not in blob
+
+    def test_tool_streaming_unclassified_error_emits_error_event(self, monkeypatch):
+        # Same guarantee on the tool-calling stream path.
+        def _gen_tools_boom(**_kwargs):
+            yield {"type": "content", "text": "partial"}
+            raise RuntimeError("llama-server crashed mid-decode")
+
+        _mock_backend(monkeypatch, generate_chat_completion_with_tools = _gen_tools_boom)
+        payload = _basic_payload(
+            stream = True,
+            enable_tools = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        blob = self._sse_blob(self._consume_response(response))
+
+        assert "event: error" in blob
+        assert '"type": "error"' in blob
+        assert "event: message_stop" not in blob
+
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
