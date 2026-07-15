@@ -4314,9 +4314,7 @@ class LlamaCppBackend:
         return None
 
     @staticmethod
-    def _diffusion_gpu_arg(
-        gpu_ids: Optional[List[int]], *, cpu_only: bool = False
-    ) -> str:
+    def _diffusion_gpu_arg(gpu_ids: Optional[List[int]], *, cpu_only: bool = False) -> str:
         """Device token passed to the diffusion visual-server child.
 
         The visual engine replaces its child's CUDA visibility mask with this

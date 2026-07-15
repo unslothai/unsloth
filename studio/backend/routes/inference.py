@@ -3771,8 +3771,7 @@ def _estimate_gguf_required_gb(
 def _is_diffusion_gguf(config: ModelConfig) -> bool:
     """Match the GGUFs that ``load_model`` routes to the single-GPU runner."""
     identity = " ".join(
-        str(getattr(config, attr, "") or "")
-        for attr in ("identifier", "gguf_hf_repo", "gguf_file")
+        str(getattr(config, attr, "") or "") for attr in ("identifier", "gguf_hf_repo", "gguf_file")
     ).lower()
     if "diffusion" in identity:
         return True
@@ -3784,7 +3783,6 @@ def _is_diffusion_gguf(config: ModelConfig) -> bool:
             variant = getattr(config, "gguf_variant", None)
             if repo and variant:
                 from hub.utils.gguf import resolve_local_gguf_path
-
                 main = resolve_local_gguf_path(repo, variant)
         if not main or not Path(main).is_file():
             return False
