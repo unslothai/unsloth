@@ -701,7 +701,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-VL-72B-Instruct-bnb-4bit",
     ),
     "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit" : (
-        "unsloth/DeepHermes-3-Llama-3-8B-Preview",
+        "unsloth/DeepScaleR-1.5B-Preview",
         "agentica-org/DeepScaleR-1.5B-Preview",
         "unsloth/DeepScaleR-1.5B-Preview-bnb-4bit",
     ),
