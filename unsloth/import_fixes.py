@@ -3231,10 +3231,17 @@ _TORCHAO_ROCM_LEGACY_ERR = (
 # Optional transport backends: must stay ABSENT so torch's guarded
 # `from torch._C._distributed_c10d import ProcessGroupX` probes conclude the backend is
 # unavailable (they sit behind try/except or capability checks).
-_TORCHAO_ROCM_OPTIONAL_BACKENDS = frozenset({
-    "ProcessGroupNCCL", "ProcessGroupGloo", "ProcessGroupMPI", "ProcessGroupUCC",
-    "ProcessGroupXCCL", "_ProcessGroupWrapper", "_c10d_init",
-})
+_TORCHAO_ROCM_OPTIONAL_BACKENDS = frozenset(
+    {
+        "ProcessGroupNCCL",
+        "ProcessGroupGloo",
+        "ProcessGroupMPI",
+        "ProcessGroupUCC",
+        "ProcessGroupXCCL",
+        "_ProcessGroupWrapper",
+        "_c10d_init",
+    }
+)
 
 
 class _TorchaoRocmSentinelMeta(type):
@@ -3281,22 +3288,46 @@ def _make_torchao_rocm_fake_c10d():
     # Data-holder option types: constructible no-ops (safe to build at import; never used
     # to do work). Kept distinct from loud sentinels so import-time construction cannot raise.
     for name in (
-        "_DistributedBackendOptions", "AllgatherOptions", "AllreduceCoalescedOptions",
-        "AllreduceOptions", "AllToAllOptions", "BarrierOptions", "BroadcastOptions",
-        "GatherOptions", "ReduceOptions", "ReduceScatterOptions", "ScatterOptions",
+        "_DistributedBackendOptions",
+        "AllgatherOptions",
+        "AllreduceCoalescedOptions",
+        "AllreduceOptions",
+        "AllToAllOptions",
+        "BarrierOptions",
+        "BroadcastOptions",
+        "GatherOptions",
+        "ReduceOptions",
+        "ReduceScatterOptions",
+        "ScatterOptions",
     ):
         setattr(mod, name, type(name, (), {"__init__": lambda self, *a, **k: None}))
     for name in ("PrefixStore", "Store", "HashStore", "Work"):
         setattr(mod, name, _torchao_rocm_sentinel(name))
-    for name in ("_register_process_group", "_resolve_process_group",
-                 "_unregister_all_process_groups", "_unregister_process_group"):
+    for name in (
+        "_register_process_group",
+        "_resolve_process_group",
+        "_unregister_all_process_groups",
+        "_unregister_process_group",
+    ):
+
         def _loud(*a, **k):
             raise RuntimeError(_TORCHAO_ROCM_LEGACY_ERR)
+
         setattr(mod, name, _loud)
 
     ReduceOp = _torchao_rocm_sentinel("ReduceOp")
-    _reduce_members = ("SUM", "AVG", "PRODUCT", "MIN", "MAX", "BAND", "BOR", "BXOR",
-                       "PREMUL_SUM", "UNUSED")
+    _reduce_members = (
+        "SUM",
+        "AVG",
+        "PRODUCT",
+        "MIN",
+        "MAX",
+        "BAND",
+        "BOR",
+        "BXOR",
+        "PREMUL_SUM",
+        "UNUSED",
+    )
     for m in _reduce_members:
         setattr(ReduceOp, m, _torchao_rocm_sentinel(f"ReduceOp.{m}"))
     RedOpType = _torchao_rocm_sentinel("ReduceOp.RedOpType")
@@ -3414,9 +3445,12 @@ def fix_torchao_windows_rocm_import():
                 if sys.modules.get(_C10D_EXT_MODULE) is fake:
                     del sys.modules[_C10D_EXT_MODULE]
             for name in [
-                n for n in set(sys.modules) - modules_before
-                if n == "torchao" or n.startswith("torchao.")
-                or n == "torch.distributed" or n.startswith("torch.distributed.")
+                n
+                for n in set(sys.modules) - modules_before
+                if n == "torchao"
+                or n.startswith("torchao.")
+                or n == "torch.distributed"
+                or n.startswith("torch.distributed.")
             ]:
                 sys.modules.pop(name, None)
             return

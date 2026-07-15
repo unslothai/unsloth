@@ -773,7 +773,6 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
 
 def _torch_minor_tuple():
     import torch
-
     base = torch.__version__.split("+", 1)[0].split(".")
     return (int(base[0]), int(base[1]))
 
@@ -784,9 +783,7 @@ def _live_c10d_functional_ops():
     get_ops = getattr(torch._C, "_dispatch_get_all_op_names", None)
     if not callable(get_ops):
         pytest.skip("dispatcher op enumeration unavailable")
-    return sorted(
-        {n.split("::", 1)[1] for n in get_ops() if n.startswith("_c10d_functional::")}
-    )
+    return sorted({n.split("::", 1)[1] for n in get_ops() if n.startswith("_c10d_functional::")})
 
 
 def test_torchao_rocm_shim_schema_table_matches_installed_torch():
@@ -865,7 +862,7 @@ def test_torchao_rocm_shim_native_present_builds_no_library(monkeypatch):
 
     monkeypatch.setattr(sys, "platform", "win32")
     if not getattr(getattr(torch, "version", None), "hip", None):
-        monkeypatch.setattr(torch.version, "hip", "6.4.0", raising=False)
+        monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
 
     assert _native_c10d_functional_present(torch) is True
 
@@ -878,9 +875,9 @@ def test_torchao_rocm_shim_native_present_builds_no_library(monkeypatch):
 
     monkeypatch.setattr(torch.library, "Library", _tripwire)
     fix_torchao_windows_rocm_import()
-    assert calls["n"] == 0, (
-        "torchao shim constructed a torch.library.Library despite a real distributed build."
-    )
+    assert (
+        calls["n"] == 0
+    ), "torchao shim constructed a torch.library.Library despite a real distributed build."
 
 
 _TORCHAO_ROCM_FRAGMENT_PROBE = """
@@ -913,13 +910,13 @@ def test_torchao_rocm_shim_fragment_semantics_subprocess():
 
     result = subprocess.run(
         [sys.executable, "-c", _TORCHAO_ROCM_FRAGMENT_PROBE],
-        capture_output=True,
-        text=True,
-        timeout=300,
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
-    assert "FRAGMENT_OK" in result.stdout, (
-        f"FRAGMENT probe failed:\nSTDOUT:{result.stdout}\nSTDERR:{result.stderr}"
-    )
+    assert (
+        "FRAGMENT_OK" in result.stdout
+    ), f"FRAGMENT probe failed:\nSTDOUT:{result.stdout}\nSTDERR:{result.stderr}"
 
 
 def test_torchao_rocm_shim_source_has_guards_fragment_and_rollback():
