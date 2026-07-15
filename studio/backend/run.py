@@ -1209,6 +1209,69 @@ def _terminal_password_gate(
     return (True, True) if changed else (False, False)
 
 
+def _apply_supplied_password(password_value: "Optional[str]") -> None:
+    """Non-interactively set the INITIAL admin password before the socket binds,
+    for a direct ``python run.py`` launch (the CLI does this in its own parent
+    and forwards nothing). Value comes from --password / the
+    UNSLOTH_STUDIO_PASSWORD env var / stdin.
+
+    Only ever sets the FIRST password: an already-set password is a hard error
+    (never an override), and an invalid value fails closed. Deliberately NOT
+    wrapped in a broad try/except: an auth storage failure must abort startup
+    rather than expose the default credential.
+    """
+    from auth import hashing as _auth_hashing
+    from auth import storage as _auth_storage
+    from auth.terminal_prompt import SUPPLIED_PASSWORD_ENV, resolve_supplied_password
+
+    supplied = resolve_supplied_password(password_value)
+    # Strip the env var now that it has been read, so the subprocesses run_server
+    # later spawns (cloudflared, llama-server, the code-exec tools) cannot inherit
+    # the plaintext password through their environment -- it would otherwise be
+    # readable via /proc/PID/environ. Mirrors the CLI, which pops it before re-exec.
+    # Unconditional: strips a leftover env value even when a literal --password won.
+    os.environ.pop(SUPPLIED_PASSWORD_ENV, None)
+    if not supplied:
+        return
+
+    _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
+    _auth_storage.ensure_default_admin()
+    if not _auth_storage.requires_password_change(_admin):
+        print(
+            "Error: a Studio admin password is already set; --password only sets "
+            "the initial password. Run `unsloth studio reset-password` first.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+
+    def _is_current_password(candidate: str) -> bool:
+        record = _auth_storage.get_user_and_secret(_admin)
+        if record is None:
+            return False
+        salt, pwd_hash, _jwt_secret, _must_change = record
+        return _auth_hashing.verify_password(candidate, salt, pwd_hash)
+
+    if len(supplied) < _auth_storage.MIN_PASSWORD_LENGTH:
+        print(
+            f"Error: password must be at least {_auth_storage.MIN_PASSWORD_LENGTH} "
+            "characters; not starting.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    if _is_current_password(supplied):
+        print(
+            "Error: the new password must differ from the current bootstrap "
+            "password; not starting.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    _auth_storage.update_password(_admin, supplied, revoke_refresh_tokens = True)
+    print(f"Password updated for '{_admin}'.", file = sys.stderr, flush = True)
+
+
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
     """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
     unset (tools default on, per-request enable_tools honored). Host is never
@@ -1230,6 +1293,7 @@ def run_server(
     cloudflare: "Optional[bool]" = None,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    password: "Optional[str]" = None,
     emit_tauri_port: bool = True,
 ):
     """
@@ -1350,7 +1414,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -1462,6 +1526,11 @@ def run_server(
             _shutdown_event.set()
 
     app.state.trigger_shutdown = _trigger_shutdown
+
+    # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial
+    # admin password before the gate and the socket bind (direct `python run.py`
+    # launches; the CLI applies it in its own parent and forwards nothing here).
+    _apply_supplied_password(password)
 
     # Never publish Studio with the seeded default password active: prompt for
     # a new one first (or warn / fail closed headless; see
@@ -1654,6 +1723,14 @@ def _build_arg_parser():
         default = "127.0.0.1",
         help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
     )
+    parser.add_argument(
+        "--password",
+        default = None,
+        help = "Set the INITIAL admin password non-interactively (headless), only when "
+        "none is set yet. Also reads UNSLOTH_STUDIO_PASSWORD, or --password - for stdin. "
+        "A literal value is visible in the process list. Rotate later via "
+        "`unsloth studio reset-password`.",
+    )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
@@ -1762,6 +1839,7 @@ if __name__ == "__main__":
         cloudflare = args.cloudflare,
         secure = args.secure,
         enable_tools = args.enable_tools,
+        password = args.password,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

@@ -313,3 +313,93 @@ def test_clear_bootstrap_password_warns_truthfully_when_not_cleared(monkeypatch,
     assert "remove it manually" in warning
     # Must not falsely claim the contents were cleared (the bug being fixed).
     assert "cleared its contents" not in warning
+
+
+# ── _apply_supplied_password: non-interactive initial password (direct run.py) ──
+
+
+def _seed_stub_admin(
+    monkeypatch,
+    *,
+    requires_change,
+    bootstrap_pw = "bootstrap-secret",
+):
+    """Stub storage so _apply_supplied_password sees a seeded admin whose current
+    password is ``bootstrap_pw`` and whose must-change flag is ``requires_change``;
+    return the recorded update_password calls."""
+    from auth import hashing
+
+    salt, pwd_hash = hashing.hash_password(bootstrap_pw)
+    monkeypatch.setattr(auth_storage, "ensure_default_admin", lambda: False)
+    monkeypatch.setattr(auth_storage, "requires_password_change", lambda u: requires_change)
+    monkeypatch.setattr(
+        auth_storage, "get_user_and_secret", lambda u: (salt, pwd_hash, "jwt", requires_change)
+    )
+    calls = []
+    monkeypatch.setattr(
+        auth_storage, "update_password", lambda u, p, **kw: calls.append((u, p, kw))
+    )
+    return calls
+
+
+def test_apply_supplied_password_sets_initial(monkeypatch):
+    calls = _seed_stub_admin(monkeypatch, requires_change = True)
+    monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
+    run._apply_supplied_password(None)  # resolves from the env var
+    admin = auth_storage.DEFAULT_ADMIN_USERNAME
+    assert calls == [(admin, "brand-new-password", {"revoke_refresh_tokens": True})]
+
+
+def test_apply_supplied_password_off_is_noop(monkeypatch):
+    calls = _seed_stub_admin(monkeypatch, requires_change = True)
+    monkeypatch.delenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, raising = False)
+    run._apply_supplied_password(None)
+    run._apply_supplied_password("")
+    assert calls == []
+
+
+def test_apply_supplied_password_already_set_fails_closed(monkeypatch):
+    calls = _seed_stub_admin(monkeypatch, requires_change = False)
+    monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
+    with pytest.raises(SystemExit) as exc:
+        run._apply_supplied_password(None)
+    assert exc.value.code == 1
+    assert calls == []  # never overrides an existing password
+
+
+def test_apply_supplied_password_too_short_fails_closed(monkeypatch):
+    calls = _seed_stub_admin(monkeypatch, requires_change = True)
+    monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "short")
+    with pytest.raises(SystemExit) as exc:
+        run._apply_supplied_password(None)
+    assert exc.value.code == 1
+    assert calls == []
+
+
+def test_apply_supplied_password_must_differ_fails_closed(monkeypatch):
+    calls = _seed_stub_admin(monkeypatch, requires_change = True, bootstrap_pw = "bootstrap-secret")
+    monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "bootstrap-secret")
+    with pytest.raises(SystemExit) as exc:
+        run._apply_supplied_password(None)
+    assert exc.value.code == 1
+    assert calls == []
+
+
+def test_apply_supplied_password_strips_env_from_subprocess_environment(monkeypatch):
+    # The plaintext password must not linger in os.environ: run_server later spawns
+    # cloudflared/llama-server/code-exec tools that would otherwise inherit it (also
+    # readable via /proc/PID/environ). The direct-run.py path pops it itself; the CLI
+    # pops it before re-exec. Assert the pop happens on the apply path...
+    _seed_stub_admin(monkeypatch, requires_change = True)
+    monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "brand-new-password")
+    run._apply_supplied_password(None)
+    assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ
+
+
+def test_apply_supplied_password_strips_env_even_when_literal_wins(monkeypatch):
+    # A literal --password wins over the env var, but a stale env value would still
+    # leak to subprocesses; the unconditional pop must clear it regardless of source.
+    _seed_stub_admin(monkeypatch, requires_change = True)
+    monkeypatch.setenv(terminal_prompt.SUPPLIED_PASSWORD_ENV, "env-should-be-stripped")
+    run._apply_supplied_password("literal-new-password")
+    assert terminal_prompt.SUPPLIED_PASSWORD_ENV not in run.os.environ

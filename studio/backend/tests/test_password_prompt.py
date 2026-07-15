@@ -266,3 +266,59 @@ def test_stream_eof_aborts_instead_of_submitting(monkeypatch):
     monkeypatch.setattr(tp, "_getch", _fake_getch(list("abc") + [""]))
     with pytest.raises(EOFError):
         tp._read_password("New password: ", out = err)
+
+
+# ── resolve_supplied_password: non-interactive --password / env / stdin ──
+
+
+def test_resolve_supplied_password_literal_value_and_note(monkeypatch):
+    import io
+
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    out = io.StringIO()
+    assert tp.resolve_supplied_password("hunter2pw", out = out) == "hunter2pw"
+    # A literal value warns that it is visible in the process list / history.
+    assert "process list" in out.getvalue()
+
+
+def test_resolve_supplied_password_stdin(monkeypatch):
+    import io
+
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("from-stdin-pw\n"))
+    assert tp.resolve_supplied_password("-") == "from-stdin-pw"
+
+
+def test_resolve_supplied_password_stdin_empty_is_none(monkeypatch):
+    import io
+
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert tp.resolve_supplied_password("-") is None
+
+
+def test_resolve_supplied_password_env(monkeypatch):
+    monkeypatch.setenv(tp.SUPPLIED_PASSWORD_ENV, "env-secret-pw")
+    assert tp.resolve_supplied_password("") == "env-secret-pw"
+    assert tp.resolve_supplied_password(None) == "env-secret-pw"
+
+
+def test_resolve_supplied_password_literal_beats_env(monkeypatch):
+    import io
+    monkeypatch.setenv(tp.SUPPLIED_PASSWORD_ENV, "env-secret-pw")
+    assert tp.resolve_supplied_password("cli-wins-pw", out = io.StringIO()) == "cli-wins-pw"
+
+
+def test_resolve_supplied_password_stdin_beats_env(monkeypatch):
+    # `--password -` reads stdin and short-circuits, so a set env var does not win.
+    import io
+
+    monkeypatch.setenv(tp.SUPPLIED_PASSWORD_ENV, "env-secret-pw")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("stdin-wins-pw\n"))
+    assert tp.resolve_supplied_password("-") == "stdin-wins-pw"
+
+
+def test_resolve_supplied_password_off_by_default(monkeypatch):
+    monkeypatch.delenv(tp.SUPPLIED_PASSWORD_ENV, raising = False)
+    assert tp.resolve_supplied_password("") is None
+    assert tp.resolve_supplied_password(None) is None

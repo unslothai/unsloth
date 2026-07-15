@@ -714,6 +714,75 @@ def _cli_update_password(conn: sqlite3.Connection, username: str, new_password: 
             )
 
 
+def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
+    """Non-interactively set the INITIAL admin password (from --password / the
+    UNSLOTH_STUDIO_PASSWORD env var / stdin) before the server binds, when the
+    account still has its auto-generated bootstrap password.
+
+    Only ever sets the FIRST password: if one is already set this is a hard error
+    (never an override -- that would be an auth bypass on a public launch). An
+    invalid value fails closed so a public launch never proceeds with the default
+    credential. Runs in the parent before any re-exec, mirroring the interactive
+    gate, so the secret never crosses to the child argv.
+    """
+    if not supplied_password:
+        return
+    try:
+        conn = _connect_auth_db()
+    except (OSError, sqlite3.Error) as exc:
+        typer.echo(
+            f"Error: --password could not open the Studio auth database ({exc}); not starting.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    try:
+        _ensure_cli_default_admin(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT password_salt, password_hash, must_change_password "
+            "FROM auth_user WHERE username = ?",
+            (DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+        if not row:
+            typer.echo(
+                "Error: --password could not initialize the admin account; not starting.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        if not row[2]:
+            typer.echo(
+                "Error: a Studio admin password is already set; --password only sets "
+                "the initial password. Run `unsloth studio reset-password` first "
+                "(or change it in the UI).",
+                err = True,
+            )
+            raise typer.Exit(1)
+        password_salt, password_hash = row[0], row[1]
+
+        def _is_current_password(candidate: str) -> bool:
+            return hmac.compare_digest(
+                _pbkdf2_hex(candidate, password_salt.encode("utf-8")), password_hash
+            )
+
+        problem = _password_prompt.validate_new_password(supplied_password, _is_current_password)
+        if problem is not None:
+            typer.echo(f"Error: {problem} Not starting.", err = True)
+            raise typer.Exit(1)
+        _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, supplied_password)
+        typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
+    except (OSError, sqlite3.Error) as exc:
+        # Any DB failure across ensure/commit/SELECT/update fails closed with a
+        # clean message (typer.Exit is not caught here, so the deliberate Exit(1)
+        # branches above propagate unchanged).
+        typer.echo(
+            f"Error: --password could not update the Studio auth database ({exc}); not starting.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    finally:
+        conn.close()
+
+
 def _strip_seeded_bootstrap_password_or_exit(*, context: str) -> None:
     """Remove the seeded plaintext bootstrap password before a public re-exec.
 
@@ -1217,6 +1286,14 @@ def studio_default(
         help = "Force server-side tools (web search, code execution) on or off for "
         "every request. Default: on for every bind, with the per-chat UI toggle honored.",
     ),
+    password: str = typer.Option(
+        "",
+        "--password",
+        help = "Set the INITIAL admin password non-interactively (headless setups), "
+        "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
+        "`--password -` to read one line from stdin. A literal value is visible in the "
+        "process list and shell history. Rotate later with `unsloth studio reset-password`.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
@@ -1285,6 +1362,16 @@ def studio_default(
                 f"plain-server path only. For `unsloth studio "
                 f"{ctx.invoked_subcommand}`, put it after the subcommand: "
                 f"`unsloth studio {ctx.invoked_subcommand} --api-only ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        # Same for --password: it applies to the plain-server path only.
+        if password:
+            typer.echo(
+                f"Error: --password on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --password ...`",
                 err = True,
             )
             raise typer.Exit(2)
@@ -1365,6 +1452,13 @@ def studio_default(
         )
 
     # Public (tunnel) exposure with the seeded default password: force a
+    # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial
+    # admin password here, in the parent, before the gate and any re-exec, so the
+    # secret never reaches the child argv; strip the env var so a re-exec'd child
+    # cannot re-read it. After this the interactive gate below no-ops.
+    _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
+    os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
+
     # terminal password change first, before any re-exec or server exists. The
     # child is self-suppressing when we serve in-process or re-exec this install's
     # own run.py (its pre-bind gate suppresses the injection), letting the gate
@@ -1679,6 +1773,14 @@ def run(
             "decode speed, MoE usually don't."
         ),
     ),
+    password: str = typer.Option(
+        "",
+        "--password",
+        help = "Set the INITIAL admin password non-interactively (headless setups), "
+        "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
+        "`--password -` to read one line from stdin. A literal value is visible in the "
+        "process list and shell history. Rotate later with `unsloth studio reset-password`.",
+    ),
 ):
     """Start Studio, load a model, print an API key -- one-liner server.
 
@@ -1827,6 +1929,13 @@ def run(
         )
 
     # Public (tunnel) exposure with the seeded default password: force a
+    # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial
+    # admin password here, in the parent, before the gate and any re-exec, so the
+    # secret never reaches the child argv; strip the env var so a re-exec'd child
+    # cannot re-read it. After this the interactive gate below no-ops.
+    _apply_supplied_password_before_launch(_password_prompt.resolve_supplied_password(password))
+    os.environ.pop(_password_prompt.SUPPLIED_PASSWORD_ENV, None)
+
     # terminal password change first, before any re-exec or server exists. The
     # re-exec here runs the studio venv's `unsloth` console script (a
     # possibly-OLD child), so it is NOT provably self-suppressing -- only the

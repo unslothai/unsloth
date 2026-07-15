@@ -1169,3 +1169,196 @@ def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auth"
     assert stat.S_IMODE(auth_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE((auth_dir / "auth.db").stat().st_mode) == 0o600
+
+
+# ── non-interactive --password / UNSLOTH_STUDIO_PASSWORD / stdin ──────
+
+
+def _exec_argv(events):
+    return next(argv for kind, argv in events if kind == "exec")
+
+
+def test_studio_default_password_sets_initial_no_prompt_no_forward(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    before = _seed_auth(studio_mod)
+
+    _invoke_studio_default(monkeypatch, events, ["--secure", "--password", "cli-supplied-pw12"])
+
+    # No interactive prompt: --password applied in the parent, so the gate no-ops.
+    assert [kind for kind, _ in events] == ["exec"], events
+    after = _auth_state(studio_mod)
+    assert after["must_change_password"] == 0
+    assert after["password_hash"] != before["password_hash"]
+    assert after["jwt_secret"] != before["jwt_secret"]
+    assert after["n_refresh"] == 0
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+    # The secret never crosses to the child argv.
+    assert "--password" not in _exec_argv(events)
+
+
+def test_studio_default_password_via_env_strips_child_env(monkeypatch, tmp_path):
+    import os
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "env-supplied-pw12")
+
+    _invoke_studio_default(monkeypatch, events, ["--secure"])
+
+    assert [kind for kind, _ in events] == ["exec"], events
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+    # Env var stripped so a re-exec'd child cannot re-read it.
+    assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+
+
+def test_studio_default_password_via_stdin(monkeypatch, tmp_path):
+    # `--password -` reads one line from stdin. CliRunner owns stdin during
+    # invoke, so feed it via input= rather than patching sys.stdin.
+    import typer as _typer
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    _install_studio_default_reexec(monkeypatch, events)
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    CliRunner().invoke(
+        app,
+        ["--secure", "--password", "-"],
+        input = "stdin-supplied-pw12\n",
+        catch_exceptions = True,
+    )
+
+    assert [kind for kind, _ in events] == ["exec"], events
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+
+
+def test_studio_default_password_too_short_fails_closed(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    result = _invoke_studio_default(monkeypatch, events, ["--secure", "--password", "short"])
+
+    assert result.exit_code == 1
+    assert [kind for kind, _ in events] == []  # never reached the gate / re-exec
+    assert _auth_state(studio_mod)["must_change_password"] == 1  # unchanged
+
+
+def test_studio_default_password_must_differ_fails_closed(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text()
+
+    result = _invoke_studio_default(monkeypatch, events, ["--secure", "--password", bootstrap_pw])
+
+    assert result.exit_code == 1
+    assert _auth_state(studio_mod)["must_change_password"] == 1  # unchanged
+
+
+def test_studio_default_password_already_set_fails_closed(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod, must_change = False)  # a password is already set
+
+    result = _invoke_studio_default(
+        monkeypatch, events, ["--secure", "--password", "another-pw-12345"]
+    )
+
+    assert result.exit_code == 1
+    assert [kind for kind, _ in events] == []
+
+
+def test_studio_default_password_before_subcommand_errors(monkeypatch, tmp_path):
+    # --password on `unsloth studio` (before a subcommand) is a plain-only option;
+    # like --secure/--cloudflare it must error, not be silently dropped.
+    import typer as _typer
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "_ensure_studio_env_exported", lambda: None)
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+    result = CliRunner().invoke(app, ["studio", "--password", "x", "run", "--model", "X"])
+    assert result.exit_code == 2
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--password" in combined
+
+
+def test_run_password_sets_initial_no_prompt_no_forward(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    before = _seed_auth(studio_mod)
+
+    _invoke_run(monkeypatch, events, _BASE + ["--secure", "--password", "cli-supplied-pw12"])
+
+    assert [kind for kind, _ in events] == ["exec"], events
+    after = _auth_state(studio_mod)
+    assert after["must_change_password"] == 0
+    assert after["password_hash"] != before["password_hash"]
+    assert "--password" not in _exec_argv(events)
+
+
+def test_run_password_via_env_strips_child_env(monkeypatch, tmp_path):
+    # The `run` mirror must also strip UNSLOTH_STUDIO_PASSWORD before re-exec so a
+    # shadowed child cannot re-read the secret (parity with studio_default).
+    import os
+
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = False)
+    _seed_auth(studio_mod)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PASSWORD", "env-supplied-pw12")
+
+    _invoke_run(monkeypatch, events, _BASE + ["--secure"])
+
+    assert [kind for kind, _ in events] == ["exec"], events
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+    assert "UNSLOTH_STUDIO_PASSWORD" not in os.environ
+
+
+def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypatch, tmp_path):
+    # The apply is scoped to "any launch", not just --secure/--cloudflare: a raw
+    # public wildcard bind (-H 0.0.0.0, no tunnel) must set the initial password
+    # before bind and re-exec, with the gate no-op'ing (must_change now 0).
+    studio_mod = _studio()
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    before = _seed_auth(studio_mod)
+
+    _invoke_studio_default(
+        monkeypatch, events, ["-H", "0.0.0.0", "--password", "headless-set-pw12"]
+    )
+
+    assert [kind for kind, _ in events] == ["exec"], events
+    after = _auth_state(studio_mod)
+    assert after["must_change_password"] == 0
+    assert after["password_hash"] != before["password_hash"]
+    assert "--password" not in _exec_argv(events)
+
+
+def test_reset_password_then_password_roundtrip(monkeypatch, tmp_path):
+    # After reset-password wipes the DB, the next start re-seeds a fresh admin
+    # that again requires a change, so --password can set a new initial password.
+    import typer
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    conn = studio_mod._connect_auth_db()
+    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "first-password-1")
+    conn.close()
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+
+    # reset-password deletes the auth DB + seeded credential files.
+    try:
+        studio_mod.reset_password()
+    except typer.Exit:
+        pass
+    assert not (tmp_path / "auth" / "auth.db").exists()
+
+    # A restart re-seeds (ensure_default_admin, must_change=1); --password sets anew.
+    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _invoke_studio_default(monkeypatch, events, ["--secure", "--password", "second-password-2"])
+    assert [kind for kind, _ in events] == ["exec"], events
+    assert _auth_state(studio_mod)["must_change_password"] == 0

@@ -26,6 +26,10 @@ _CTRL_Z = "\x1a"
 _BACKSPACES = ("\x7f", "\x08")
 _SUBMITS = ("\r", "\n")
 
+# Env var that supplies the initial admin password non-interactively (mirror in
+# unsloth_cli/commands/_password_prompt.py). Keep the name in sync.
+SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
+
 
 def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux CI
     import msvcrt
@@ -261,3 +265,30 @@ def prompt_for_password_change(
         out.write("Password change aborted; not exposing Studio.\n")
         out.flush()
         return False
+
+
+def resolve_supplied_password(cli_value: "str | None", out: "TextIO | None" = None) -> "str | None":
+    """Resolve a non-interactive initial admin password, or None if unset.
+
+    Precedence: an explicit ``--password`` value (the literal ``-`` reads one
+    line from stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var. An empty or
+    omitted ``--password`` means the feature is off (fall back to the
+    interactive prompt / browser setup). A literal value on argv is visible in
+    the process list and shell history, so a one-line note points at the env var
+    or stdin instead. Mirror of the CLI helper -- keep the two in sync.
+    """
+    if out is None:
+        out = sys.stderr
+    if cli_value == "-":
+        line = sys.stdin.readline()
+        if not line:
+            return None
+        return line.rstrip("\r\n") or None
+    if cli_value:
+        out.write(
+            "Note: --password is visible in the process list and shell history; "
+            f"prefer {SUPPLIED_PASSWORD_ENV} or --password - (stdin).\n"
+        )
+        out.flush()
+        return cli_value
+    return os.environ.get(SUPPLIED_PASSWORD_ENV) or None

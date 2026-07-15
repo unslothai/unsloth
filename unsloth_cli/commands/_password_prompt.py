@@ -23,6 +23,10 @@ from typing import Callable, TextIO
 # (new_password min_length) and studio/backend/auth/storage.py.
 MIN_PASSWORD_LENGTH = 8
 
+# Env var that supplies the initial admin password non-interactively (mirror in
+# studio/backend/auth/terminal_prompt.py). Keep the name in sync.
+SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
+
 _BACKSPACE_CHARS = ("\x7f", "\x08")
 _SUBMIT_CHARS = ("\r", "\n")
 
@@ -204,3 +208,41 @@ def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | Non
             out.flush()
             continue
         return password
+
+
+def resolve_supplied_password(cli_value: "str | None", out: TextIO | None = None) -> "str | None":
+    """Resolve a non-interactive initial admin password, or None if unset.
+
+    Precedence: an explicit ``--password`` value (the literal ``-`` reads one
+    line from stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var. An empty or
+    omitted ``--password`` means the feature is off (fall back to the
+    interactive prompt / browser setup). A literal value on argv is visible in
+    the process list and shell history, so a one-line note points at the env var
+    or stdin instead. Mirror of the backend helper -- keep the two in sync.
+    """
+    if out is None:
+        out = sys.stderr
+    if cli_value == "-":
+        line = sys.stdin.readline()
+        if not line:
+            return None
+        return line.rstrip("\r\n") or None
+    if cli_value:
+        out.write(
+            "Note: --password is visible in the process list and shell history; "
+            f"prefer {SUPPLIED_PASSWORD_ENV} or --password - (stdin).\n"
+        )
+        out.flush()
+        return cli_value
+    return os.environ.get(SUPPLIED_PASSWORD_ENV) or None
+
+
+def validate_new_password(candidate: str, verify_current: Callable[[str], bool]) -> "str | None":
+    """Return an error message if ``candidate`` is not an acceptable new password
+    (too short, or equal to the current one), else None. Same policy as the
+    interactive loop, for the non-interactive supplied-password path."""
+    if len(candidate) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if verify_current(candidate):
+        return "New password must differ from the current password."
+    return None

@@ -220,6 +220,16 @@ The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port o
 
 The first time Studio is published on a public URL (`--secure` or `--cloudflare`) with the auto-generated admin password still in place, it asks for a new admin password in the terminal (masked input with confirmation) before the public link goes up. Without an attached terminal it warns instead and keeps the bootstrap deadline: Studio shuts down after `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT` (default 1 hour) unless the password is changed in the web UI.
 
+For headless setups that cannot answer that prompt, set the initial admin password non-interactively with `--password` (only takes effect when no password is set yet; if one already exists it is a hard error, so rotate later with `unsloth studio reset-password`):
+
+```bash
+unsloth studio --secure --password 'your-strong-password'        # visible in `ps`/history
+UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
+printf '%s\n' 'your-strong-password' | unsloth studio --secure --password -   # via stdin
+```
+
+A literal `--password VALUE` is visible in the process list and shell history, so prefer the `UNSLOTH_STUDIO_PASSWORD` env var or `--password -` (stdin) for automation. This applies to any launch (public or a headless `-H 0.0.0.0` bind), and the password is set in the parent before the server binds, so it never reaches a re-executed child process.
+
 Server-side tools (web search, Python and terminal code execution) run as your user and are on by default. Anyone who can reach the server with the API key can run code on this machine, so keep your API key private and pass `--disable-tools` when exposing Studio.
 
 #### Advanced launch options
