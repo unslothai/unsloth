@@ -1381,17 +1381,12 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # sections stripped during conversion; 512 KB reaches article content even
 # where <head> alone is ~200 KB.
 _MAX_FETCH_BYTES = 512 * 1024
-# Chars that don't occur in real text: undecodable bytes (U+FFFD) plus control
-# chars (C0 minus tab/newline/CR and ESC, DEL, C1). ESC is excluded so a text
-# page of ANSI-colored terminal output isn't mistaken for binary. A decoded page
-# is treated as binary when more than 1/_BINARY_CHAR_DIVISOR (12.5%) of its chars
-# are these, tolerating up to _MIN_BINARY_CHARS so minor glitches don't drop it.
+# Undecodable bytes and controls, excluding text whitespace and ESC for ANSI logs.
+# More than 12.5% is binary after allowing 16 minor encoding glitches.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
-# Leading bytes of common binary formats that servers sometimes mislabel as
-# text/*; matched by signature because their replacement-char density alone can
-# be low (e.g. a PDF whose first chunk is mostly ASCII object/xref syntax).
+# Common binary signatures that can otherwise look text-heavy when mislabeled.
 _BINARY_MAGIC = (
     b"%PDF-",  # PDF
     b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
@@ -1405,17 +1400,13 @@ _BINARY_MAGIC = (
     b"\x28\xb5\x2f\xfd",  # zstd
 )
 
-# Undeclared legacy Western text should have substantial ASCII structure even
-# when its non-ASCII bytes are cp1252. Requiring at least 75% ASCII text bytes
-# prevents arbitrary high-byte binary from becoming printable-looking gibberish
-# merely because cp1252 defines a character for nearly every byte.
+# A cp1252 retry needs 75% ASCII structure so it cannot rescue high-byte binary.
 _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 
 def _looks_binary(text: str) -> bool:
-    """True when more than 1/_BINARY_CHAR_DIVISOR of ``text`` is binary chars
-    (control/undecodable, per _BINARY_CHAR_RE), past the _MIN_BINARY_CHARS floor."""
+    """Whether control or undecodable characters exceed the binary threshold."""
     return len(_BINARY_CHAR_RE.findall(text)) > max(
         _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
     )
@@ -1536,27 +1527,16 @@ _TEXT_APPLICATION_SUBTYPES = frozenset(
 )
 
 
-def _is_texty_content_type(content_type: str | None) -> bool:
-    """True for MIME types safe to decode or inspect as possible text.
-
-    This includes HTML, plain text, JSON/XML/YAML feeds, and generic
-    ``application/octet-stream`` downloads whose bytes must be sniffed. Known
-    binary types (PDF, images, archives, Office/ZIP) return False so the fetcher
-    never decodes them into replacement chars that poison the model context
-    (unslothai/unsloth#7084).
-
-    A missing Content-Type coerces to ``text/plain`` upstream, so unlabeled
-    bodies pass here and are caught instead by the binary-char fallback.
-    """
+def _is_text_candidate_content_type(content_type: str | None) -> bool:
+    """Whether a MIME type is textual or ambiguous enough for byte sniffing."""
     ct = (content_type or "").partition(";")[0].strip().lower()
     if not ct:
-        return True  # unlabeled: let the binary-char fallback decide
+        return True
     if ct.startswith("text/"):
         return True
     if ct.startswith("application/"):
-        # Match the exact subtype, not a loose substring, so a .docx labeled
-        # application/vnd.openxmlformats-... isn't read as xml. RFC 6839
-        # +json/+xml suffixes (ld+json, xhtml+xml, ...) pass too.
+        # Exact matches avoid treating "openxmlformats" as XML. Structured
+        # +json/+xml suffixes remain valid text candidates.
         subtype = ct[len("application/") :].removeprefix("x-")
         return (
             subtype == "octet-stream"
@@ -1646,33 +1626,24 @@ def _fetch_page_text(
         else:
             return "Failed to fetch URL: too many redirects."
 
-        # Reject binary bodies (PDF, image, archive): decoding them as text
-        # floods the model context with U+FFFD replacement chars (#7084).
+        # Reject MIME types known to be binary before decoding.
         content_type = resp.headers.get_content_type()
-        if not _is_texty_content_type(content_type):
-            # Trim to a clean MIME token: get_content_type() can echo control
-            # chars from an obs-folded header, and this string is returned to
-            # the model.
+        if not _is_text_candidate_content_type(content_type):
+            # Only echo a clean MIME token back to the model.
             m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
             safe_type = m.group(0) if m else "unknown type"
             return f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)"
 
-        # A PDF/image/archive mislabeled as text/*: catch by signature, since a
-        # text-heavy first chunk can slip past the replacement-char density check.
+        # Catch text-labeled binary whose header and first chunk look textual.
         if raw_bytes.startswith(_BINARY_MAGIC):
             return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
 
         declared = resp.headers.get_content_charset()
         raw_html = raw_bytes.decode(declared or "utf-8", errors = "replace")
 
-        # Fallback for binary mislabeled as text/* or sent with no Content-Type,
-        # including valid-UTF-8 binary (NUL/control-heavy payloads) that decodes
-        # without replacement chars: a real text page has few binary chars.
+        # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
-            # An undeclared non-UTF-8 page (latin-1/cp1252) also decodes to many
-            # U+FFFD. Retry as cp1252 only when the bytes have substantial ASCII
-            # text structure; otherwise high-byte binary would become printable
-            # looking gibberish because cp1252 maps nearly every byte.
+            # Rescue undeclared cp1252 only when the bytes have text structure.
             alt = (
                 raw_bytes.decode("cp1252", "replace")
                 if declared is None and _has_single_byte_text_evidence(raw_bytes)
