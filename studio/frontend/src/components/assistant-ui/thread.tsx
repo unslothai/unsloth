@@ -2270,6 +2270,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             type="button"
             disabled={disabled}
             className="unsloth-thinking-pill"
+            data-pill-label="Thinking settings"
             data-active={activeLook ? "true" : "false"}
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
@@ -2279,9 +2280,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           >
             <ThinkIcon />
             {activeLook ? (
-              <span>{isEffort ? `Thinking · ${effortLabel}` : "Thinking"}</span>
+              <span className="unsloth-thinking-label">
+                {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
+              </span>
             ) : null}
-            <ArrowDownStandardIcon className="size-[15px]" />
+            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -2421,6 +2424,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         }
       }}
       className="unsloth-thinking-pill"
+      data-pill-label="Thinking"
       data-active={activeLook ? "true" : "false"}
       aria-label={thinkToggleAriaLabel({
         reasoningLockedOn,
@@ -2432,7 +2436,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       <PillGlyph>
         <ThinkIcon />
       </PillGlyph>
-      {activeLook ? <span>Thinking</span> : null}
+      {activeLook ? (
+        <span className="unsloth-thinking-label">Thinking</span>
+      ) : null}
     </button>
   );
 };
