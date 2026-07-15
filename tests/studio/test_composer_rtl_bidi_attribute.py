@@ -1,5 +1,5 @@
 """RTL bidi contract on chat composers: all three need dir="auto", and the IME
-smoke must drop the dead STUDIO_OLD_PW env var."""
+smoke must supply STUDIO_OLD_PW now that the served page no longer autofills the seed."""
 
 from __future__ import annotations
 
@@ -40,36 +40,36 @@ def test_compare_composer_has_dir_auto():
     assert 'dir="auto"' in block, 'compare composer is missing dir="auto"'
 
 
-def test_ime_workflow_step_does_not_set_studio_old_pw():
+def test_ime_workflow_step_sets_studio_old_pw():
     yml = WORKFLOW_YML.read_text()
     drive_idx = yml.find("Drive IME + multilingual paste regression")
     assert drive_idx != -1, "IME drive step not found in workflow"
     next_step_idx = yml.find("- name:", drive_idx + 1)
     drive_block = yml[drive_idx : next_step_idx if next_step_idx != -1 else None]
     assert (
-        "STUDIO_OLD_PW" not in drive_block
-    ), "IME drive step still passes dead STUDIO_OLD_PW env var"
+        "STUDIO_OLD_PW" in drive_block
+    ), "IME drive step must pass STUDIO_OLD_PW now the page no longer autofills the seed"
     assert "STUDIO_NEW_PW" in drive_block, "IME drive step missing STUDIO_NEW_PW"
 
 
-def test_ime_pass_password_step_does_not_export_old_pw():
+def test_ime_pass_password_step_exports_old_pw():
     yml = WORKFLOW_YML.read_text()
     pass_idx = yml.find("Pass bootstrap pw for IME / i18n test")
     assert pass_idx != -1, "IME password setup step not found"
     next_step_idx = yml.find("- name:", pass_idx + 1)
     pass_block = yml[pass_idx : next_step_idx if next_step_idx != -1 else None]
     assert (
-        "STUDIO_IME_OLD_PW" not in pass_block
-    ), "IME password setup still exports dead STUDIO_IME_OLD_PW"
+        "STUDIO_IME_OLD_PW" in pass_block
+    ), "IME password setup must export STUDIO_IME_OLD_PW for the non-autofill flow"
     assert "STUDIO_IME_NEW_PW" in pass_block
 
 
-def test_ime_playwright_script_does_not_read_studio_old_pw():
+def test_ime_playwright_script_reads_studio_old_pw():
     src = IME_PY.read_text()
     code_only = re.sub(r'""".*?"""', "", src, flags = re.DOTALL)
     assert (
-        "STUDIO_OLD_PW" not in code_only
-    ), "IME Playwright script still references dead STUDIO_OLD_PW env var"
+        'os.environ["STUDIO_OLD_PW"]' in code_only
+    ), "IME Playwright script must read STUDIO_OLD_PW to fill the current-password field"
     assert 'os.environ["STUDIO_NEW_PW"]' in code_only
 
 
