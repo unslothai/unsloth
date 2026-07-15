@@ -1161,3 +1161,47 @@ def test_web_search_query_cancelled_skips_search(monkeypatch):
     out = tools_mod._web_search("some query", cancel_event = ev)
     assert out == "Search cancelled."
     assert called["n"] == 0
+
+
+def test_fetch_page_text_markdown_readme_with_leading_block_tag_stays_markdown(monkeypatch):
+    # A raw-Markdown README from the README API that OPENS with an HTML block tag
+    # (<blockquote>, <ul>, <pre>, ...) must not be run through html_to_markdown,
+    # which would collapse its headings, list and fenced code into one line.
+    # Only a real HTML document (doctype / <html>) is converted.
+    md_readme = (
+        "<blockquote>Note: pre-release.</blockquote>\n\n"
+        "# My Project\n\n"
+        "Install:\n\n"
+        "- step one\n"
+        "- step two\n\n"
+        "```bash\npip install myproject\n```\n"
+    )
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        assert url == "https://api.github.com/repos/unslothai/unsloth/readme"
+        return None, md_readme, "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    out = _fetch_page_text("https://github.com/unslothai/unsloth")
+    assert "README of https://github.com/unslothai/unsloth" in out
+    # Markdown structure survives verbatim (heading, list, fenced code).
+    assert "# My Project" in out
+    assert "- step one" in out
+    assert "```bash" in out
+
+
+def test_looks_like_html_document_only_matches_real_documents():
+    from core.inference.tools import _looks_like_html_document
+
+    assert _looks_like_html_document("<!doctype html><html><body>x</body></html>")
+    assert _looks_like_html_document("\n  <HTML lang='en'>")
+    assert _looks_like_html_document("<body><h1>x</h1></body>")
+    # Block tags a Markdown README can open with are NOT full documents.
+    for frag in ("<blockquote>q</blockquote>", "<ul><li>x</li></ul>", "<pre>x</pre>", "<dl><dt>x</dt></dl>"):
+        assert not _looks_like_html_document(frag), frag

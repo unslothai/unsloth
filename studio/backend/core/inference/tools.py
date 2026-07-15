@@ -4036,6 +4036,21 @@ def _looks_like_html(body: str) -> bool:
     return bool(_HTML_LEADING_RE.match(probe))
 
 
+# Stricter than _HTML_LEADING_RE: only a real HTML document opener (a doctype or
+# a leading <html>/<head>/<body>), never a block tag a Markdown file can open
+# with (<ul>, <ol>, <dl>, <pre>, <blockquote>, ...). Used on the raw GitHub
+# README body so a Markdown README that merely starts with an HTML block is not
+# run through html_to_markdown, which would collapse its headings, lists and
+# fenced code into a single line.
+_HTML_DOCUMENT_RE = re.compile(r"<(?:!doctype\s+html\b|/?(?:html|head|body)\b)")
+
+
+def _looks_like_html_document(body: str) -> bool:
+    """True only when the body opens as a full HTML document (e.g. a .html README)."""
+    probe = body.lstrip()[:256].lower()
+    return bool(_HTML_DOCUMENT_RE.match(probe))
+
+
 def _truncate_page_text(text: str, max_chars: int) -> str:
     if not text:
         return "(page returned no readable text)"
@@ -4082,7 +4097,12 @@ def _fetch_page_text(
         # the raw body if extraction yields nothing.
         if err is None and body.strip():
             readme_body = body
-            if _looks_like_html(body):
+            # The README API returns the raw file, almost always Markdown. Only a
+            # real HTML document (a .html README) is converted; a Markdown README
+            # that merely opens with a block tag (<ul>/<pre>/<blockquote>/...) is
+            # kept as-is, else html_to_markdown collapses its headings, lists and
+            # fenced code into a single line.
+            if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
                 converted = html_to_markdown(body, main_content = True)
                 readme_body = converted if converted.strip() else body
