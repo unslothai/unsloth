@@ -219,7 +219,9 @@ def test_cancel_event_not_set_on_clean_finish():
         return "ok"
 
     events, result = _run_stream(
-        tool, tool_name = "python", cancel_event = cancel_event,
+        tool,
+        tool_name = "python",
+        cancel_event = cancel_event,
     )
     assert result == "ok"
     assert not cancel_event.is_set()

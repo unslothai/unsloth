@@ -945,7 +945,11 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     hops = {"n": 0}
 
     class _RedirectingOpener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             clock["t"] += 5.0
             hops["n"] += 1
             raise HTTPError(
@@ -986,7 +990,11 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
     opened = {"n": 0}
 
     class _Opener:
-        def open(self, req, timeout = None):
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
             opened["n"] += 1
             raise AssertionError("network must not be touched after cancel")
 
