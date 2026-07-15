@@ -1129,6 +1129,10 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
     assert [m["role"] for m in after[:2]] == ["tool", "tool"]
     assert [m.get("tool_call_id") for m in after[:2]] == ["call_a1", "call_b"]
     assert after[2]["role"] == "user"  # deferred duplicate nudge, after the results
+    assert after[2]["content"].startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in after[2]["content"].lower()
 
 
 def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):

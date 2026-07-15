@@ -288,8 +288,9 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
 def _noop_result(reason: NoopReason, tool_name: str) -> str:
     if reason == "duplicate":
         return (
-            "The previous tool request was not executed because this exact "
-            "tool call already completed successfully. Do not repeat the same "
+            f"One earlier request to call tool '{tool_name}' in this batch was "
+            "not executed because an identical call had already completed "
+            "successfully. Do not repeat the same "
             "tool call. Continue with a different enabled tool if that would "
             "materially help, or provide the final answer if you have enough "
             "information."
@@ -302,8 +303,8 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
             "the requested final note or answer."
         )
     return (
-        f"The previous tool request was not executed because tool "
-        f"'{tool_name}' is not enabled for this request. Provide the "
+        f"One earlier request to call tool '{tool_name}' in this batch was "
+        "not executed because that tool is not enabled for this request. Provide the "
         "final answer now without calling more tools."
     )
 

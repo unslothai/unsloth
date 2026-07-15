@@ -2893,6 +2893,10 @@ class TestLoopBehaviour:
         after = conv[conv.index(turn2) + 1 :]
         assert after[0]["role"] == "tool" and after[0]["content"] == "py-result"
         assert after[1]["role"] == "user"  # deferred duplicate nudge, after the result
+        assert after[1]["content"].startswith(
+            "One earlier request to call tool 'web_search' in this batch was not executed"
+        )
+        assert "previous tool request" not in after[1]["content"].lower()
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []

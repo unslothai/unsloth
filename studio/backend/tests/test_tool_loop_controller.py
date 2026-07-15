@@ -128,6 +128,10 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert not duplicate.should_execute
     assert not duplicate.emit_visible_events
     duplicate_nudge = completion.model_message()["content"]
+    assert duplicate_nudge.startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in duplicate_nudge.lower()
     assert "already completed successfully" in duplicate_nudge
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
@@ -182,7 +186,12 @@ def test_empty_enabled_tool_list_blocks_all_tool_calls():
     assert decision.action == "disabled"
     assert not decision.emit_visible_events
     assert completion.model_message()["role"] == "user"
-    assert "not enabled" in completion.model_message()["content"]
+    disabled_nudge = completion.model_message()["content"]
+    assert disabled_nudge.startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in disabled_nudge.lower()
+    assert "not enabled" in disabled_nudge
     assert controller.force_final_answer
     assert controller.active_tools() == []
 
