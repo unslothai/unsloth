@@ -700,8 +700,14 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
     class _FakeResp:
         headers = email.message_from_string("")
 
+        def __init__(self):
+            self._body = b"<html><body>hello</body></html>"
+
         def read(self, n = -1):
-            return b"<html><body>hello</body></html>"
+            # Stream-like: hand back the body once, then EOF, so the chunked
+            # capped-body reader terminates instead of re-reading forever.
+            body, self._body = self._body, b""
+            return body
 
     class _FakeOpener:
         def open(
@@ -1036,3 +1042,116 @@ def test_fetch_page_text_shares_one_deadline_across_readme_and_fallback(monkeypa
     assert len(seen_deadlines) == 2
     assert seen_deadlines[0] is not None
     assert seen_deadlines[0] == seen_deadlines[1]
+
+
+# -- overall deadline reaches the body read, the resolver, and the query path --
+
+
+def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
+    # A server that dribbles the body must not stretch the read past the overall
+    # deadline: the body is read in chunks with the budget re-checked between
+    # them, so a single slow resp.read cannot outlast the fetch budget.
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(tools_mod.time, "monotonic", lambda: clock["t"])
+
+    class _DrippingResp:
+        headers = email.message_from_string("")
+
+        def read(self, n = -1):
+            # Hand back one chunk, then jump the clock past the deadline so the
+            # next between-chunk budget check aborts instead of reading forever.
+            clock["t"] += 10.0
+            return b"x" * 16
+
+        def close(self):
+            pass
+
+    class _Opener:
+        def open(self, req, timeout = None):
+            return _DrippingResp()
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    err, body, content_type = tools_mod._fetch_url_raw(
+        "https://example.com/",
+        timeout = 30,
+        deadline = clock["t"] + 5.0,
+    )
+    assert err == "Failed to fetch URL: timed out."
+    assert body == ""
+
+
+def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
+    # getaddrinfo has no deadline of its own; a resolver slower than the budget
+    # must abort on time instead of blocking the whole fetch.
+    import threading
+
+    import core.inference.tools as tools_mod
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(tools_mod.time, "monotonic", lambda: clock["t"])
+
+    release = threading.Event()
+
+    def slow_resolve(host, port):
+        release.wait(5.0)  # block until released; the budget should abort first
+        return True, "", "203.0.113.7"
+
+    monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", slow_resolve)
+
+    def advance_past_deadline():
+        import time as _t
+
+        _t.sleep(0.1)
+        clock["t"] += 100.0
+
+    t = threading.Thread(target = advance_past_deadline, daemon = True)
+    t.start()
+    try:
+        ok, reason, ip = tools_mod._resolve_with_budget(
+            "example.com", 443, 1005.0, None,
+        )
+    finally:
+        release.set()
+    assert ok is False
+    assert reason == "Failed to fetch URL: timed out."
+
+
+def test_web_search_query_cancelled_skips_search(monkeypatch):
+    # A pre-set cancel_event (client disconnected) skips the blocking DDGS query
+    # entirely, matching the direct-URL path's cancellation.
+    import sys
+    import threading
+    import types
+
+    import core.inference.tools as tools_mod
+
+    ev = threading.Event()
+    ev.set()
+    called = {"n": 0}
+
+    class _DDGS:
+        def __init__(self, *a, **k):
+            called["n"] += 1
+
+        def text(self, *a, **k):
+            called["n"] += 1
+            return []
+
+    fake_mod = types.ModuleType("ddgs")
+    fake_mod.DDGS = _DDGS
+    monkeypatch.setitem(sys.modules, "ddgs", fake_mod)
+
+    out = tools_mod._web_search("some query", cancel_event = ev)
+    assert out == "Search cancelled."
+    assert called["n"] == 0

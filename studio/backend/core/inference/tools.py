@@ -13,6 +13,7 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import queue
 import random
 import re
 import shlex
@@ -3790,6 +3791,84 @@ def _fetch_hop_timeout(timeout, deadline):
     return remaining if timeout is None else min(timeout, remaining)
 
 
+def _resolve_with_budget(hostname, port, deadline, cancel_event):
+    """``_validate_and_resolve_host`` bounded by the overall fetch budget.
+
+    ``getaddrinfo`` is blocking with no deadline of its own, so a slow resolver
+    (or a request already cancelled before dispatch) could run past the
+    wall-clock budget. Resolve on a daemon thread and poll the budget so the
+    fetch aborts on time; the abandoned lookup finishes and is discarded. With
+    no deadline and no cancel_event this is a plain synchronous call, so callers
+    that opt out keep the old behavior and cost.
+    """
+    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+    if budget_error is not None:
+        return False, budget_error, ""
+    if deadline is None and cancel_event is None:
+        return _validate_and_resolve_host(hostname, port)
+
+    result: "queue.Queue" = queue.Queue(maxsize = 1)
+
+    def _resolve():
+        try:
+            result.put(_validate_and_resolve_host(hostname, port))
+        except Exception as exc:  # defensive: never let the worker die silently
+            result.put((False, f"Failed to resolve host: {exc}", ""))
+
+    threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
+    while True:
+        budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        if budget_error is not None:
+            return False, budget_error, ""
+        try:
+            return result.get(timeout = 0.05)
+        except queue.Empty:
+            continue
+
+
+def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
+    """Read up to ``max_bytes``, enforcing the overall budget between chunks.
+
+    A single ``resp.read(max_bytes)`` can block for the whole transfer if the
+    server dribbles bytes just inside each socket-inactivity timeout, so the body
+    is read in chunks with the budget re-checked (and the socket timeout
+    re-tightened toward the deadline) each round. The joined bytes are identical
+    to one capped read. Returns ``(error_or_None, body_bytes)``.
+    """
+    # Best-effort handle on the underlying socket so its timeout can be tightened
+    # as the deadline nears; absent on test doubles, where the loop still bounds
+    # the read via the between-chunk budget check.
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    chunks = []
+    remaining = max_bytes
+    while remaining > 0:
+        budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        if budget_error is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return budget_error, b""
+        if sock is not None:
+            try:
+                sock.settimeout(_fetch_hop_timeout(timeout, deadline))
+            except Exception:
+                pass
+        chunk = resp.read(min(65536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+    if budget_error is not None:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        return budget_error, b""
+    return None, b"".join(chunks)
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -3816,7 +3895,9 @@ def _fetch_url_raw(
         return "Blocked: URL is missing a hostname.", "", ""
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ip = _validate_and_resolve_host(parsed.hostname, port)
+    ok, reason, pinned_ip = _resolve_with_budget(
+        parsed.hostname, port, deadline, cancel_event,
+    )
     if not ok:
         return reason, "", ""
 
@@ -3868,20 +3949,24 @@ def _fetch_url_raw(
                 if rp.scheme not in ("http", "https") or not rp.hostname:
                     return "Blocked: redirect target is not a valid http/https URL.", "", ""
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ip = _validate_and_resolve_host(
+                ok2, reason2, pinned_ip = _resolve_with_budget(
                     rp.hostname,
                     rp_port,
+                    deadline,
+                    cancel_event,
                 )
                 if not ok2:
                     return reason2, "", ""
                 current_host = rp.hostname
                 continue
-            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
-            if budget_error is not None:
-                return budget_error, "", ""
-            # Success: read capped body. The socket timeout above (bounded by the
-            # remaining budget) also bounds a stalled body read.
-            raw_bytes = resp.read(max_bytes)
+            # Success: read the capped body enforcing the overall budget between
+            # chunks, so a slow-drip server (dribbling bytes just inside each
+            # socket timeout) cannot stretch a single resp.read past the deadline.
+            body_error, raw_bytes = _read_capped_body(
+                resp, max_bytes, timeout, deadline, cancel_event,
+            )
+            if body_error is not None:
+                return body_error, "", ""
             break
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
@@ -4046,10 +4131,18 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
+    # A disconnect sets cancel_event; DDGS.text() is a blocking call we cannot
+    # interrupt mid-flight, so gate on either side: skip the search for an
+    # already-cancelled request, and discard results that land after the client
+    # has gone, matching the direct-URL path's cancellation.
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
     try:
         from ddgs import DDGS
 
         results = DDGS(timeout = timeout).text(query, max_results = max_results)
+        if cancel_event is not None and cancel_event.is_set():
+            return "Search cancelled."
         if not results:
             return "No results found."
         parts = []
