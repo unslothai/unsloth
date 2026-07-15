@@ -22,7 +22,7 @@ function usageIndicatorClass(percent: number): string {
   if (percent >= 70) {
     return "bg-amber-500";
   }
-  return "bg-primary";
+  return "bg-control-accent";
 }
 
 function usageTextClass(percent: number): string {

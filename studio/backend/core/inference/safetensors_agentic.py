@@ -424,6 +424,7 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
     bypass_permissions: bool = False,
@@ -1116,6 +1117,7 @@ def run_safetensors_tool_loop(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
                         session_id = session_id,
+                        thread_id = thread_id,
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
