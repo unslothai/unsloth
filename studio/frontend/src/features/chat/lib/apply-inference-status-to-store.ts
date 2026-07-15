@@ -9,10 +9,10 @@ import {
 import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   CHAT_REASONING_ENABLED_KEY,
-  loadedGpuMemoryFields,
   type ReasoningEffort,
   type ReasoningStyle,
   loadOptionalBool,
+  loadedGpuMemoryFields,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -23,6 +23,10 @@ import {
 import type { ChatModelSummary } from "../types/runtime";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 // Canonicalises backend / persisted speculative mode values onto the UI modes.
 export function normalizeSpeculativeType(
@@ -209,6 +213,54 @@ export function applyActiveModelStatusToStore(
         status.requested_context_length ?? null,
       )
     : null;
+  const incomingGpuMode = status.is_gguf
+    ? (status.gpu_memory_mode ?? "auto")
+    : null;
+  const incomingGpuLayers =
+    incomingGpuMode === "manual" ? (status.gpu_layers ?? null) : null;
+  const incomingNCpuMoe =
+    incomingGpuMode === "manual" ? (status.n_cpu_moe ?? null) : null;
+  const incomingSplit =
+    incomingGpuMode === "manual" ? (status.tensor_split ?? null) : null;
+  const incomingGpuIds = status.is_gguf ? (status.gpu_ids ?? null) : null;
+  const gpuStatusChanged =
+    prevState.loadedGpuMemoryMode !== incomingGpuMode ||
+    prevState.loadedGpuLayers !== incomingGpuLayers ||
+    prevState.loadedNCpuMoe !== incomingNCpuMoe ||
+    !sameArray(prevState.loadedSplitRatio, incomingSplit) ||
+    !sameArray(prevState.loadedGpuIds, incomingGpuIds) ||
+    prevState.loadedCustomContextLength !== gpuPin;
+  const gpuMemoryEditsPending =
+    (prevState.loadedGpuMemoryMode !== null &&
+      prevState.gpuMemoryMode !== prevState.loadedGpuMemoryMode) ||
+    (prevState.loadedGpuMemoryMode === "manual" &&
+      (prevState.gpuLayers !== prevState.loadedGpuLayers ||
+        prevState.nCpuMoe !== prevState.loadedNCpuMoe ||
+        !sameArray(prevState.splitRatio, prevState.loadedSplitRatio))) ||
+    prevState.customContextLength !== prevState.loadedCustomContextLength;
+  const gpuIdsEditPending = !sameArray(
+    prevState.selectedGpuIds,
+    prevState.loadedGpuIds,
+  );
+  const incomingGpuFields = loadedGpuMemoryFields(status);
+  // A same-model reload from another client advances every loaded baseline.
+  // Preserve each editable group only when this tab has an unapplied change.
+  const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
+  const gpuStatusFields = {
+    ...incomingGpuFields,
+    customContextLength: gpuPin,
+    loadedCustomContextLength: gpuPin,
+    ...(preserveSameModelEdits &&
+      gpuMemoryEditsPending && {
+        gpuMemoryMode: prevState.gpuMemoryMode,
+        gpuLayers: prevState.gpuLayers,
+        nCpuMoe: prevState.nCpuMoe,
+        splitRatio: prevState.splitRatio,
+        customContextLength: prevState.customContextLength,
+      }),
+    ...(preserveSameModelEdits &&
+      gpuIdsEditPending && { selectedGpuIds: prevState.selectedGpuIds }),
+  };
 
   useChatRuntimeStore.setState({
     supportsReasoning,
@@ -275,18 +327,15 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    // A non-GGUF status never sets loadedGpuMemoryMode, so this "unseeded" guard
-    // stays true across refreshes there and the reseed repeats. That repeat is an
-    // idempotent reset (including the pin baseline above) -- except while the user
-    // is editing a staged GGUF pick (pendingSelection), whose Manual knob edits it
-    // would clobber mid-edit, so hold the seeding until the staging resolves.
+    // Re-seed on first hydration, model/variant changes, or a same-model backend
+    // placement change. gpuStatusFields preserves dirty local edits in the last
+    // case while advancing their loaded baselines.
     ...(seedLoadParams &&
       prevState.pendingSelection == null &&
-      (prevState.loadedGpuMemoryMode === null || hydratingExistingModel) && {
-        ...loadedGpuMemoryFields(status),
-        customContextLength: gpuPin,
-        loadedCustomContextLength: gpuPin,
-      }),
+      (prevState.loadedGpuMemoryMode === null ||
+        hydratingExistingModel ||
+        gpuStatusChanged) &&
+      gpuStatusFields),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {
@@ -348,6 +397,9 @@ export async function tryAdoptServerActiveModel(): Promise<boolean> {
   }
   const previousGgufVariant = useChatRuntimeStore.getState().activeGgufVariant;
   store.setCheckpoint(checkpointId, status.gguf_variant);
-  applyActiveModelStatusToStore(status, { previousCheckpoint, previousGgufVariant });
+  applyActiveModelStatusToStore(status, {
+    previousCheckpoint,
+    previousGgufVariant,
+  });
   return true;
 }

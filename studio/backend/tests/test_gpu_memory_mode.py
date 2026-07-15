@@ -685,6 +685,27 @@ def test_split_pin_mirrors_hip_mask_on_rocm(monkeypatch):
     assert "ROCR_VISIBLE_DEVICES" not in env
 
 
+# ── Diffusion single-device selection ───────────────────────────────────────
+
+
+def test_diffusion_gpu_arg_uses_lowest_explicit_physical_id(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,1")
+    monkeypatch.setenv("DG_GPU", "7")
+    assert LlamaCppBackend._diffusion_gpu_arg([3, 1]) == "1"
+
+
+def test_diffusion_gpu_arg_preserves_parent_mask_order(monkeypatch):
+    monkeypatch.delenv("DG_GPU", raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,1")
+    assert LlamaCppBackend._diffusion_gpu_arg(None) == "3"
+
+
+def test_diffusion_gpu_arg_honors_override_and_cpu_mask(monkeypatch):
+    monkeypatch.setenv("DG_GPU", "GPU-abc")
+    assert LlamaCppBackend._diffusion_gpu_arg(None) == "GPU-abc"
+    assert LlamaCppBackend._diffusion_gpu_arg(None, cpu_only = True) == ""
+
+
 # ── Deliberate zero-offload (manual gpu_layers=0): training-skip flag ─────────
 
 

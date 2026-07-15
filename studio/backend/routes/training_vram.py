@@ -197,15 +197,18 @@ def can_load_chat_during_training(
     requested_gpu_ids: Optional[List[int]],
     is_gguf: bool = False,
     required_override_gb: Optional[float] = None,
+    single_device: bool = False,
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide if a NEW chat model can load without OOMing active training (inverse
     of can_keep_chat_during_training: training is already resident, so size the
     chat model against the free VRAM that remains). Sizes/places it the same way
     the loader will: HF auto reuses auto_select_gpu_ids; HF explicit requires an
     even-share per-GPU floor for device_map="balanced"; GGUF sizes from
-    required_override_gb over the visible pool. `load_in_4bit` must be effective
-    (LoRA can flip 4-bit -> 16-bit). Non-CUDA allows the load; default-deny on any
-    CUDA case it can't size, so a load never OOMs training."""
+    required_override_gb over the visible pool. ``single_device`` checks the
+    tightest allowed GPU instead of pooling the set, for runners that select one
+    device. `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit).
+    Non-CUDA allows the load; default-deny on any CUDA case it can't size, so a
+    load never OOMs training."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -276,7 +279,11 @@ def can_load_chat_during_training(
             return False, {"mode": mode, "reason": "no_visible_gpus"}
 
         ranked = sorted(free_vals, reverse = True)
-        usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+        usable_gb = (
+            min(free_vals)
+            if single_device
+            else ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+        )
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
@@ -284,7 +291,7 @@ def can_load_chat_during_training(
         # near-full GPU hiding behind aggregate capacity. GGUF self-places, no floor.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
-        if mode == "explicit" and len(free_vals) > 1:
+        if not single_device and mode == "explicit" and len(free_vals) > 1:
             per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
 
         return aggregate_fits and per_gpu_fits, {

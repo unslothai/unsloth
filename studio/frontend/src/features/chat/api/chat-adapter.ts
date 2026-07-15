@@ -1415,12 +1415,13 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
-    // GGUF-only: scopes the training guard to the GPUs /load will use. The
-    // guard sizes conservatively (whole quantized model, plus KV for local
-    // files), so the offload/runtime knobs (gpu_layers/MoE/split/KV dtype/
-    // spec) are deliberately not sent. The safetensors fallback omits gpu_ids
-    // too: it loads via HF auto-placement.
+    // GGUF-only: scopes the training guard to the same placement policy /load
+    // will use. Manual mode must match because it makes placement user-owned.
+    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
+    // guard sizes conservatively, while Manual mode bypasses that estimate.
+    // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
+    gpu_memory_mode?: "auto" | "manual";
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1514,7 +1515,10 @@ async function autoLoadSmallestModel(): Promise<{
         gguf_variant: candidate.ggufVariant,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
-          ? { gpu_ids: effectiveGpuIds ?? undefined }
+          ? {
+              gpu_ids: effectiveGpuIds ?? undefined,
+              gpu_memory_mode: effectiveGpuMemoryMode,
+            }
           : {}),
       }))
     ) {
@@ -1829,6 +1833,7 @@ async function autoLoadSmallestModel(): Promise<{
           // The same live-store GPU pick the load below sends (a fresh default
           // model has no remembered settings to prefer).
           gpu_ids: rt.selectedGpuIds ?? undefined,
+          gpu_memory_mode: rt.gpuMemoryMode,
         }))
       ) {
         toast.dismiss(toastId);

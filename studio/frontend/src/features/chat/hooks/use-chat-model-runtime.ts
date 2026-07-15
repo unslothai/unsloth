@@ -699,6 +699,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               gpu_ids: validateGpuIds ?? undefined,
+              ...(isGguf ? { gpu_memory_mode: loadGpuMemoryMode } : {}),
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
@@ -1071,9 +1072,8 @@ export function useChatModelRuntime() {
                     tensorParallel: rollbackResponse.tensor_parallel ?? false,
                     loadedTensorParallel:
                       rollbackResponse.tensor_parallel ?? false,
-                    // refresh() can't re-derive the context pin (status has no
-                    // such field), so restore it to the rolled-back model's
-                    // directly.
+                    // refresh() is held while modelLoading remains true, so
+                    // restore the rolled-back model's context pin directly.
                     customContextLength:
                       stateBeforeUnload.loadedCustomContextLength,
                   }),

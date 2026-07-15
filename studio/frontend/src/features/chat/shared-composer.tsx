@@ -998,7 +998,10 @@ export function SharedComposer({
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
-            ? { gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined }
+            ? {
+                gpu_ids: compareLoadKnobs.selectedGpuIds ?? undefined,
+                gpu_memory_mode: compareLoadKnobs.gpuMemoryMode,
+              }
             : {}),
         });
         if (

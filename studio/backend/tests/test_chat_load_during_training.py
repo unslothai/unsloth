@@ -168,6 +168,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         devices,
         required_override = None,
         estimate = None,
+        single_device = False,
     ):
         with (
             patch("utils.hardware.get_device", return_value = DeviceType.CUDA),
@@ -183,6 +184,7 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
                 requested_gpu_ids = None,
                 is_gguf = True,
                 required_override_gb = required_override,
+                single_device = single_device,
             )
         return ok, info, auto_mock
 
@@ -197,6 +199,17 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         # places, so the per-GPU floor that would block HF doesn't apply -> allow.
         ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
         self.assertTrue(ok)
+
+    def test_single_device_uses_tightest_allowed_gpu(self):
+        # A single-device runner cannot pool 45 + 10 GB. The 20 GB model needs
+        # 27 GB with headroom, so the constrained device makes the load unsafe.
+        ok, info, _ = self._run(
+            devices = _devices((0, 80, 35), (1, 80, 70)),
+            required_override = 20.0,
+            single_device = True,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(info["usable_gb"], 10.0)
 
     def test_estimate_unavailable_refuses(self):
         # No override and the estimator can't size it -> default-deny.
@@ -310,6 +323,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         training_active,
         decision,
         gpu_memory_mode = "auto",
+        requested_gpu_ids = None,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
         with _stub_guard_deps(
@@ -321,7 +335,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
                 hf_token = None,
                 load_in_4bit = True,
                 max_seq_length = 0,
-                requested_gpu_ids = None,
+                requested_gpu_ids = requested_gpu_ids,
                 gpu_memory_mode = gpu_memory_mode,
             )
 
@@ -334,6 +348,34 @@ class TestChatLoadGuardRoute(unittest.TestCase):
     def test_allows_when_fits(self):
         self._guard(training_active = True, decision = (True, {"mode": "auto"}))
 
+    def test_diffusion_detection_uses_name_before_download(self):
+        config = SimpleNamespace(
+            identifier = "unsloth/DiffusionGemma-GGUF",
+            gguf_hf_repo = "unsloth/DiffusionGemma-GGUF",
+            gguf_file = None,
+        )
+        self.assertTrue(self.route._is_diffusion_gguf(config))
+
+    def test_diffusion_detection_reuses_loader_metadata_probe(self):
+        import tempfile
+
+        seen = []
+
+        class _Probe:
+            is_diffusion = False
+
+            def _read_gguf_metadata(self, path):
+                seen.append(path)
+                self.is_diffusion = True
+
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "renamed.gguf"
+            model.write_bytes(b"GGUF")
+            config = SimpleNamespace(identifier = "local", gguf_file = str(model))
+            with patch.object(self.route, "LlamaCppBackend", _Probe):
+                self.assertTrue(self.route._is_diffusion_gguf(config))
+        self.assertEqual(seen, [str(model)])
+
     def test_manual_gguf_bypasses_training_estimate(self):
         captured = []
         config = SimpleNamespace(is_gguf = True)
@@ -345,6 +387,25 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             gpu_memory_mode = "manual",
         )
         self.assertEqual(captured, [])
+
+    def test_manual_diffusion_uses_single_device_guard(self):
+        captured = []
+        config = SimpleNamespace(is_gguf = True)
+        with (
+            patch.object(self.route, "_is_diffusion_gguf", return_value = True),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (True, {"mode": "gguf"}),
+                gpu_memory_mode = "manual",
+                requested_gpu_ids = [3, 1],
+            )
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(captured[0]["single_device"])
+        self.assertEqual(captured[0]["requested_gpu_ids"], [1])
 
     def test_refuses_with_headroom_number(self):
         info = {"required_gb": 30.0, "usable_gb": 6.0, "needed_gb": 39.0, "mode": "auto"}

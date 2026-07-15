@@ -3768,6 +3768,35 @@ def _estimate_gguf_required_gb(
         return None
 
 
+def _is_diffusion_gguf(config: ModelConfig) -> bool:
+    """Match the GGUFs that ``load_model`` routes to the single-GPU runner."""
+    identity = " ".join(
+        str(getattr(config, attr, "") or "")
+        for attr in ("identifier", "gguf_hf_repo", "gguf_file")
+    ).lower()
+    if "diffusion" in identity:
+        return True
+
+    try:
+        main = getattr(config, "gguf_file", None)
+        if not (main and Path(main).is_file()):
+            repo = getattr(config, "gguf_hf_repo", None)
+            variant = getattr(config, "gguf_variant", None)
+            if repo and variant:
+                from hub.utils.gguf import resolve_local_gguf_path
+
+                main = resolve_local_gguf_path(repo, variant)
+        if not main or not Path(main).is_file():
+            return False
+
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(str(main))
+        return probe.is_diffusion
+    except Exception as e:
+        logger.debug("Could not identify diffusion GGUF for training guard: %s", e)
+        return False
+
+
 def _guard_chat_load_against_training(
     config: ModelConfig,
     *,
@@ -3783,17 +3812,15 @@ def _guard_chat_load_against_training(
     """Protect active training from automatically placed chat-model loads.
 
     No-op when training is inactive or unknown. `load_in_4bit` must be the
-    effective quantization (see _effective_load_in_4bit). Manual GGUF placement
-    is an explicit override: Auto layers delegate fitting to llama.cpp's
-    ``--fit`` and pinned layers are owned by the user, so neither is estimated
-    here. Other loads raise HTTP 409 when they would not fit beside training.
+    effective quantization (see _effective_load_in_4bit). Manual chat-GGUF
+    placement is an explicit override: Auto layers delegate fitting to
+    llama.cpp's ``--fit`` and pinned layers are owned by the user, so neither is
+    estimated here. Diffusion is still guarded because its mode-agnostic runner
+    ignores those controls and uses one GPU. Other loads raise HTTP 409 when
+    they would not fit beside training.
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
-
-    is_gguf = bool(getattr(config, "is_gguf", False))
-    if is_gguf and gpu_memory_mode == "manual":
-        return
 
     try:
         if not get_training_backend().is_training_active():
@@ -3801,6 +3828,17 @@ def _guard_chat_load_against_training(
     except Exception as e:
         logger.warning("Could not check training state for chat-load guard: %s", e)
         return
+
+    is_gguf = bool(getattr(config, "is_gguf", False))
+    is_diffusion = is_gguf and _is_diffusion_gguf(config)
+    if is_gguf and gpu_memory_mode == "manual" and not is_diffusion:
+        return
+
+    guard_gpu_ids = requested_gpu_ids
+    if is_diffusion and requested_gpu_ids:
+        # The runner uses the lowest selected physical id. Check that exact GPU
+        # instead of pooling or pessimistically charging every selected device.
+        guard_gpu_ids = [min(requested_gpu_ids)]
 
     required_override_gb = (
         _estimate_gguf_required_gb(
@@ -3819,9 +3857,10 @@ def _guard_chat_load_against_training(
         hf_token = hf_token,
         load_in_4bit = load_in_4bit,
         max_seq_length = max_seq_length,
-        requested_gpu_ids = requested_gpu_ids,
+        requested_gpu_ids = guard_gpu_ids,
         is_gguf = is_gguf,
         required_override_gb = required_override_gb,
+        single_device = is_diffusion,
     )
     if ok:
         return

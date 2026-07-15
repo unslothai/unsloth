@@ -4313,6 +4313,30 @@ class LlamaCppBackend:
 
         return None
 
+    @staticmethod
+    def _diffusion_gpu_arg(
+        gpu_ids: Optional[List[int]], *, cpu_only: bool = False
+    ) -> str:
+        """Device token passed to the diffusion visual-server child.
+
+        The visual engine replaces its child's CUDA visibility mask with this
+        token, so an unpinned load must carry forward the first token from the
+        parent's mask rather than turning a parent-relative ordinal into a new
+        physical selection.
+        """
+        if gpu_ids:
+            return str(sorted(gpu_ids)[0])
+        if cpu_only:
+            return ""
+        if "DG_GPU" in os.environ:
+            return os.environ["DG_GPU"]
+        parent_mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if parent_mask:
+            first = next((token.strip() for token in parent_mask.split(",") if token.strip()), "")
+            if first and first != "-1":
+                return first
+        return "0"
+
     def _start_diffusion_server(
         self,
         *,
@@ -4353,12 +4377,7 @@ class LlamaCppBackend:
         # so use the lowest selected GPU (matches the sorted set recorded below, so
         # the device used == the echoed gpu_ids[0]). With no pick, fall back to the
         # CPU-only mask, else DG_GPU / 0.
-        if gpu_ids:
-            gpu = str(sorted(gpu_ids)[0])
-        elif cpu_only:
-            gpu = ""
-        else:
-            gpu = os.environ.get("DG_GPU", "0")
+        gpu = self._diffusion_gpu_arg(gpu_ids, cpu_only = cpu_only)
 
         cmd = list(shim_cmd) + [
             "--gguf",
