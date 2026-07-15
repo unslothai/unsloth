@@ -21,6 +21,7 @@ from functools import lru_cache
 from typing import Callable
 
 from utils.hardware.hardware import DeviceType, get_device
+from utils.transformers_dtype import dtype_kwargs
 
 from . import config
 
@@ -157,9 +158,7 @@ def _get(model_name: str | None = None):
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name)
-            _model = SentenceTransformer(
-                name, device = device, model_kwargs = {"torch_dtype": "float16"}
-            )
+            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
             _name = name
         return _model
 

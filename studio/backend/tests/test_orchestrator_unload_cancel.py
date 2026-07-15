@@ -874,6 +874,35 @@ def test_load_model_aborts_when_cancelled_before_spawn(monkeypatch):
     assert o.models == {}
 
 
+def test_load_model_aborts_when_old_worker_survives_shutdown(monkeypatch):
+    # A wedged worker that outlives terminate/kill makes _shutdown_subprocess return
+    # False. load_model must not spawn a second worker over it (double GPU allocation +
+    # the survivor's handle is lost); it aborts so the load can retry once it exits.
+    import types
+
+    from utils import transformers_version as tv
+
+    o = _bare_orchestrator()
+    o.active_model_name = "old"
+    o.models = {"old": {}}
+    o.loading_models = set()
+    monkeypatch.setattr(tv, "needs_transformers_5", lambda name: False)
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *a, **k: ([0], "sel"))
+    monkeypatch.setattr(orch_mod.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_cancel_generation", lambda: None)
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda *a, **k: False)  # survivor
+    monkeypatch.setattr(
+        o, "_spawn_subprocess", lambda cfg: pytest.fail("must not spawn over a live survivor")
+    )
+
+    with pytest.raises(RuntimeError, match = "did not exit"):
+        o.load_model(types.SimpleNamespace(identifier = "new", gguf_variant = None))
+    # The except path cleared the loading marker and mirrors.
+    assert "new" not in o.loading_models
+    assert o.active_model_name is None
+
+
 def test_load_model_proceeds_when_not_cancelled(monkeypatch):
     # Guard against a false abort: an uncancelled load keeps its marker and spawns.
     o = _bare_orchestrator()
