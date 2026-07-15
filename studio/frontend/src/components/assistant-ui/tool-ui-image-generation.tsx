@@ -326,7 +326,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
               <button
                 type="button"
                 className={cn(
-                  "block cursor-zoom-in rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  "block cursor-zoom-in rounded-2xl focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
                   imageDimensions ? "size-full" : "max-w-full",
                 )}
                 onClick={showPreview}
@@ -382,7 +382,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
                 {promptCanExpand ? (
                   <button
                     type="button"
-                    className="mt-2 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    className="mt-2 inline-flex text-xs font-medium text-foreground/80 underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     onClick={() =>
                       setExpandedCaptionPrompt((value) =>
                         value === captionPrompt ? null : captionPrompt,

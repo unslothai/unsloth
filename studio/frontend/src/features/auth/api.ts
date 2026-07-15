@@ -82,6 +82,10 @@ async function redirectToAuth(): Promise<void> {
     // Fall through to /login on error
   }
 
+  if (window.location.pathname === target) {
+    isRedirecting = false;
+    return;
+  }
   window.location.href = target;
 }
 
