@@ -2570,7 +2570,10 @@ def run(
     if result.returncode != 0:
         _step("error", f"{label} failed (exit code {result.returncode})", _red)
         if result.stdout:
-            print(result.stdout.decode(errors = "replace"))
+            # Redact before printing: the failing pip command may carry a pinned
+            # --index-url with userinfo/?token= creds (this is the pip fallback for
+            # pip_install), so raw pip error text would leak them.
+            print(_redact_install_output(result.stdout))
         sys.exit(result.returncode)
     return result
 
@@ -2608,7 +2611,8 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
 def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
     _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
     if result.stdout:
-        print(result.stdout.strip())
+        # Redact any pinned --index-url credentials before printing captured output.
+        print(_redact_install_output(result.stdout).strip())
 
 
 def _flash_attn_install_disabled() -> bool:
