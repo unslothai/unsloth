@@ -231,7 +231,7 @@ def prompt_for_password_change(
         out = sys.stderr
     out.write(
         "\n"
-        "Unsloth Studio will be accessed in the world wide web, so set a\n"
+        "Unsloth Studio will be exposed on the public internet, so set a\n"
         "password now. Ctrl+C to abort.\n\n"
     )
     out.flush()

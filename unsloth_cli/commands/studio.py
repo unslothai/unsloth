@@ -1077,7 +1077,7 @@ def _enforce_password_change_before_exposure(
             )
 
         typer.echo(
-            "Unsloth Studio will be accessed in the world wide web, so set a "
+            "Unsloth Studio will be exposed on the public internet, so set a "
             "password now. Ctrl+C to abort.",
             err = True,
         )
@@ -1092,7 +1092,7 @@ def _enforce_password_change_before_exposure(
             )
             raise typer.Exit(1)
         _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password)
-        typer.echo("Admin password updated.", err = True)
+        typer.echo(f"Password updated for '{DEFAULT_ADMIN_USERNAME}'.", err = True)
     finally:
         conn.close()
 
@@ -1299,6 +1299,13 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            typer.echo(
+                "Note: --secure ignores -H (it binds loopback and serves only "
+                "through the Cloudflare tunnel). Drop --secure to bind "
+                f"{host} directly, or keep --secure for a tunnel-only public link.",
+                err = True,
+            )
         host = "127.0.0.1"
 
     # --verbose restores the per-request access logs that are suppressed by
@@ -1750,6 +1757,13 @@ def run(
                 err = True,
             )
             raise typer.Exit(2)
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            typer.echo(
+                "Note: --secure ignores -H (it binds loopback and serves only "
+                "through the Cloudflare tunnel). Drop --secure to bind "
+                f"{host} directly, or keep --secure for a tunnel-only public link.",
+                err = True,
+            )
         host = "127.0.0.1"
 
     # Tool policy no longer depends on the bind: tools default on everywhere

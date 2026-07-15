@@ -181,6 +181,35 @@ def test_studio_default_reexec_forwards_secure(monkeypatch):
     assert argv[argv.index("--host") + 1] == "127.0.0.1", argv
 
 
+def test_run_secure_warns_when_host_overridden(monkeypatch):
+    # -H 0.0.0.0 --secure forces the loopback bind; warn (not error) that -H is
+    # ignored so it does not silently read as "secure and on the network".
+    import typer as _typer
+
+    _install_run_reexec_capture(monkeypatch)
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(_studio().run)
+    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "ignores -H" in combined, combined
+
+
+def test_run_secure_no_warning_when_already_loopback(monkeypatch):
+    # --secure with an already-loopback -H must not warn about ignoring -H.
+    import typer as _typer
+
+    _install_run_reexec_capture(monkeypatch)
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(_studio().run)
+    result = CliRunner().invoke(app, _BASE + ["-H", "127.0.0.1", "--secure"], catch_exceptions = True)
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "ignores -H" not in combined, combined
+
+
 def test_studio_default_not_secure_alias_forwards_no_secure(monkeypatch):
     # --not-secure on `unsloth studio` forwards the canonical --no-secure.
     captured = _invoke_studio_default(monkeypatch, ["--not-secure"])
