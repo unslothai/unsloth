@@ -90,6 +90,7 @@ def test_malformed_or_absent_host_is_remote():
 def test_colab_allows_notebook_proxy_but_not_shareable_tunnel(monkeypatch):
     """Colab autofills its single-user proxy, but not a public Cloudflare link."""
     import main
+
     monkeypatch.setattr(main, "_IS_COLAB", True)
     # In-notebook proxy: same-origin, no tunnel header, injects off-loopback too.
     assert main._should_inject_bootstrap(_request("10.0.0.2", "colab.proxy")) is True
@@ -101,6 +102,7 @@ def test_colab_allows_notebook_proxy_but_not_shareable_tunnel(monkeypatch):
 def test_non_colab_gate_requires_local_client(monkeypatch):
     """Outside Colab the gate injects only for a direct loopback client."""
     import main
+
     monkeypatch.setattr(main, "_IS_COLAB", False)
     assert main._should_inject_bootstrap(_request("127.0.0.1", "localhost")) is True
     assert main._should_inject_bootstrap(_request("192.168.1.10", "localhost")) is False

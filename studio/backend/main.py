@@ -1381,8 +1381,11 @@ def _is_loopback_ip(host: Optional[str]) -> bool:
 # cf-connecting-ip, reverse proxies set the rest (uvicorn only consumes
 # x-forwarded-for, so the others survive to here).
 _PROXIED_CLIENT_HEADERS = (
-    "cf-connecting-ip", "forwarded", "x-forwarded-for",
-    "x-forwarded-host", "x-real-ip",
+    "cf-connecting-ip",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
 )
 
 
@@ -1395,9 +1398,9 @@ def _host_header_is_loopback(host_header: Optional[str]) -> bool:
     if not host_header:
         return False
     host = host_header.strip()
-    if host.startswith("["):        # [IPv6](:port)
+    if host.startswith("["):  # [IPv6](:port)
         host = host[1:].split("]", 1)[0]
-    elif host.count(":") == 1:      # host:port
+    elif host.count(":") == 1:  # host:port
         host = host.split(":", 1)[0]
     host = host.lower().rstrip(".")
     return host == "localhost" or _is_loopback_ip(host)
