@@ -10108,10 +10108,8 @@ class LlamaCppBackend:
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
-                # No-op nudges (duplicate / disabled / render_html_repeat) are held
-                # here and appended after the batch's tool results, so they never split
-                # an assistant's tool_calls from their results. A no-op no longer aborts
-                # the batch, so legitimate parallel calls after it still run.
+                # Collect no-op nudges and flush them after the batch, so a no-op
+                # doesn't abort it and drop the parallel calls that follow.
                 deferred_noop_msgs: list = []
 
                 # The text-path provisional card uses the parser's default id ("call_0");
@@ -10281,7 +10279,6 @@ class LlamaCppBackend:
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
 
-                # Deliver the deferred no-op nudges after every tool result.
                 append_deferred_nudges(conversation, deferred_noop_msgs)
 
                 # Close provisional cards not resolved by execution/no-op handling.
