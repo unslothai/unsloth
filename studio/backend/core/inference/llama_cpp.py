@@ -1945,8 +1945,13 @@ class LlamaCppBackend:
     # float() coercion turns unrecognized named levels into 0, i.e. no thinking.
     # Map OpenAI-style names to the values the model was trained on.
     _INKLING_REASONING_EFFORT = {
-        "none": 0.0, "minimal": 0.2, "low": 0.2, "medium": 0.7,
-        "high": 0.9, "xhigh": 0.99, "max": 0.99,
+        "none": 0.0,
+        "minimal": 0.2,
+        "low": 0.2,
+        "medium": 0.7,
+        "high": 0.9,
+        "xhigh": 0.99,
+        "max": 0.99,
     }
 
     def _coerce_reasoning_effort(self, kwargs: dict) -> dict:
@@ -1965,7 +1970,8 @@ class LlamaCppBackend:
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
             return self._coerce_reasoning_effort(
-                {"reasoning_effort": "high" if enable_thinking else "low"})
+                {"reasoning_effort": "high" if enable_thinking else "low"}
+            )
         return {"enable_thinking": enable_thinking}
 
     def _request_reasoning_kwargs(
