@@ -3266,8 +3266,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
         *)
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
-            substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+            substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+            substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3288,7 +3288,7 @@ else
         substep "source $_li_act_q"
         substep "unsloth studio -p 8888"
     fi
-    substep "(add -H 0.0.0.0 to allow network / cloud access)"
-    substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
 fi

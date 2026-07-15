@@ -560,8 +560,12 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
 
+    # run_server's pre-bind gate sets suppress_bootstrap_injection when a public
+    # URL is about to serve with the default credential active: never (re)capture
+    # the bootstrap password into app.state, or the HTML would hand it out.
+    _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     if storage.ensure_default_admin():
-        bootstrap_pw = storage.get_bootstrap_password()
+        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
         app.state.bootstrap_password = bootstrap_pw
 
         bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
@@ -572,7 +576,9 @@ async def lifespan(app: FastAPI):
         print("    Open the Studio UI to sign in and change it.")
         print("=" * 60 + "\n")
     else:
-        app.state.bootstrap_password = storage.get_bootstrap_password()
+        app.state.bootstrap_password = (
+            None if _suppress_bootstrap else storage.get_bootstrap_password()
+        )
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
