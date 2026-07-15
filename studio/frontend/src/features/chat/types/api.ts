@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -99,6 +101,10 @@ export interface ValidateModelResponse {
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
    *  0 for dense models, null until downloaded. */
   moe_layer_count?: number | null;
+  /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
+  requires_transformers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgrade. */
+  transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 
 export interface GgufVariantDetail {

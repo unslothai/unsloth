@@ -191,6 +191,27 @@ class ValidateModelRequest(BaseModel):
     )
 
 
+class TransformersUpgradeInfo(BaseModel):
+    """A model architecture no installed transformers ships, but a newer release does."""
+
+    model_type: str = Field(
+        ..., description = "config.json model_type unknown to every installed transformers"
+    )
+    pypi_version: Optional[str] = Field(
+        None, description = "Latest transformers release on PyPI at check time"
+    )
+    supported_in_pypi: bool = Field(
+        False,
+        description = "True if the latest PyPI release ships this model_type; Studio can "
+        "install it into a persistent sidecar after user consent.",
+    )
+    supported_in_main: bool = Field(
+        False,
+        description = "True if transformers GitHub main ships this model_type (dev-only; "
+        "not installable through Studio yet).",
+    )
+
+
 class ValidateModelResponse(BaseModel):
     """Result of model validation.
 
@@ -227,6 +248,48 @@ class ValidateModelResponse(BaseModel):
         None,
         description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
         "header alongside context_length; 0 for dense models, None when not read.",
+    )
+    # Additive fields; the consuming consent dialog ships in a follow-up frontend PR.
+    requires_transformers_upgrade: bool = Field(
+        False,
+        description = "True when the model's architecture is unknown to every installed "
+        "transformers but a newer transformers ships it; the UI should offer the "
+        "install-latest-transformers consent dialog (or the dev-only notice).",
+    )
+    transformers_upgrade: Optional[TransformersUpgradeInfo] = Field(
+        None,
+        description = "Details for the transformers-upgrade dialog; set only when "
+        "requires_transformers_upgrade is true.",
+    )
+
+
+class InstallLatestTransformersRequest(BaseModel):
+    """Consented request to install the latest transformers release into a sidecar."""
+
+    version: str = Field(
+        ...,
+        min_length = 1,
+        max_length = 64,
+        description = "Exact transformers version to install; must match the current "
+        "latest PyPI release reported by /validate.",
+    )
+
+
+class InstallLatestTransformersResponse(BaseModel):
+    """Result of the consented latest-transformers sidecar install."""
+
+    success: bool = Field(..., description = "Whether the sidecar was provisioned")
+    version: str = Field(..., description = "The requested transformers version")
+    message: str = Field(..., description = "Human-readable result")
+    model_unloaded: bool = Field(
+        False,
+        description = "Whether the active chat model was unloaded before the swap "
+        "(reported even on failure, so the client can restore its state)",
+    )
+    latest_version: Optional[str] = Field(
+        None,
+        description = "On a version-mismatch failure: the release that superseded "
+        "the requested one, so the client can retry with it",
     )
 
 
@@ -939,6 +1002,10 @@ class ChatCompletionRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -1807,6 +1874,10 @@ class AnthropicMessagesRequest(BaseModel):
     enable_tools: Optional[bool] = None
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
+    thread_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
     cancel_id: Optional[str] = None
     bypass_permissions: Optional[bool] = Field(
         False,

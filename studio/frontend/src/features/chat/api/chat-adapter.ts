@@ -907,6 +907,33 @@ function serializeAssistantToolCallPart(
   return entry;
 }
 
+export interface McpImageToolResult {
+  text: string;
+  images: { data: string; mimeType: string }[];
+}
+
+export function isMcpImageToolResult(
+  val: unknown,
+): val is McpImageToolResult {
+  if (typeof val !== "object" || val === null) {
+    return false;
+  }
+  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  return (
+    typeof v.text === "string" &&
+    v.sessionId === undefined &&
+    Array.isArray(v.images) &&
+    v.images.length > 0 &&
+    v.images.every(
+      (img: unknown) =>
+        typeof img === "object" &&
+        img !== null &&
+        typeof (img as { data?: unknown }).data === "string" &&
+        typeof (img as { mimeType?: unknown }).mimeType === "string",
+    )
+  );
+}
+
 function serializeToolResultPart(
   part: ToolCallMessagePart,
 ): SerializedToolResult | null {
@@ -926,6 +953,8 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
+  } else if (isMcpImageToolResult(result)) {
+    content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {
       content = JSON.stringify(result);
@@ -1436,6 +1465,11 @@ async function autoLoadSmallestModel(): Promise<{
       validation.requires_security_review
     ) {
       blockedByTrustRemoteCode = true;
+      return false;
+    }
+    // Never install packages from a background load; explicit loads raise the upgrade dialog.
+    if (validation.requires_transformers_upgrade) {
+      hadNonTrustFailure = true;
       return false;
     }
     return true;
@@ -3006,6 +3040,7 @@ export function createOpenAIStreamAdapter(
             audio_base64: audioBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+            ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
               ? reasoningStyle === "enable_thinking_effort"
@@ -3309,9 +3344,12 @@ export function createOpenAIStreamAdapter(
                     const rawResult = (toolEvent.result as string) ?? "";
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
+                    const mcpImgMarker = "\n__MCP_IMAGES__:";
+                    const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
                       | { text: string; images: string[]; sessionId: string }
+                      | McpImageToolResult
                       | {
                           image_b64: string;
                           image_mime: string;
@@ -3321,6 +3359,24 @@ export function createOpenAIStreamAdapter(
                           prompt?: string;
                         };
                     const imageB64 = toolEvent.image_b64 as string | undefined;
+                    // A valid MCP image envelope wins; an invalid marker falls
+                    // through so a sandbox __IMAGES__ suffix still renders and
+                    // legit text round-trips unchanged.
+                    let mcpImages: McpImageToolResult | null = null;
+                    if (mcpImgIdx !== -1) {
+                      try {
+                        const images = JSON.parse(
+                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
+                        );
+                        const candidate = {
+                          text: rawResult.slice(0, mcpImgIdx),
+                          images,
+                        };
+                        if (isMcpImageToolResult(candidate)) mcpImages = candidate;
+                      } catch {
+                        // Not a valid envelope; fall through below.
+                      }
+                    }
                     if (
                       toolCallParts[idx].toolName === "image_generation" &&
                       typeof imageB64 === "string" &&
@@ -3338,6 +3394,8 @@ export function createOpenAIStreamAdapter(
                         background: toolEvent.background as string | undefined,
                         prompt: toolEvent.prompt as string | undefined,
                       };
+                    } else if (mcpImages !== null) {
+                      parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
                       // Fall back to "_default" to match the backend sandbox
