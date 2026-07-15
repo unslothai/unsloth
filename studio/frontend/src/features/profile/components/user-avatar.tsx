@@ -47,7 +47,7 @@ export function UserAvatar({ name, imageUrl, size, className, shape }: UserAvata
     <span
       style={avatarBgStyle()}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center font-semibold text-white",
+        "inline-flex shrink-0 items-center justify-center font-semibold",
         shapeClass,
         SIZE[size],
         className,

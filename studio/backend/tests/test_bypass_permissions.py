@@ -257,6 +257,7 @@ def test_loop_forwards_disable_sandbox_and_does_not_gate():
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):
@@ -290,6 +291,7 @@ def test_loop_bypass_overrides_confirm_for_direct_callers():
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):

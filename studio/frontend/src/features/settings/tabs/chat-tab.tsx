@@ -24,7 +24,10 @@ import { Columns2Icon, PlusIcon } from "lucide-react";
 import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
-import { SettingsSection } from "../components/settings-section";
+import {
+  SettingsGroupDivider,
+  SettingsSection,
+} from "../components/settings-section";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -122,6 +125,8 @@ export function ChatTab() {
   const t = useT();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
+  const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
+  const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,
   );
@@ -269,6 +274,7 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
+        <SettingsGroupDivider />
         <SettingsRow
           label={t("settings.chat.modelDisclaimer")}
           description={t("settings.chat.modelDisclaimerDescription")}
@@ -286,6 +292,15 @@ export function ChatTab() {
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
           />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.chatDefaults")}>
+        <SettingsRow
+          label={t("settings.general.autoTitleNewChats")}
+          description={t("settings.general.autoTitleNewChatsDescription")}
+        >
+          <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
 
@@ -313,7 +328,6 @@ export function ChatTab() {
           />
         </SettingsRow>
       </SettingsSection>
-
     </div>
   );
 }

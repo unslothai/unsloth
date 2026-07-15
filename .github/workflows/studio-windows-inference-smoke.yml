@@ -634,6 +634,8 @@ jobs:
           python - <<'PY'
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
 
           BASE = os.environ["BASE_URL"]
@@ -656,8 +658,24 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           def post_sse(path, body, *, timeout = 600):
               body = {**body, "stream": True}
@@ -1063,6 +1081,8 @@ jobs:
           import base64
           import json
           import os
+          import time
+          import urllib.error
           import urllib.request
           from openai import OpenAI
           from anthropic import Anthropic
@@ -1082,8 +1102,24 @@ jobs:
                       "Content-Type":  "application/json",
                   },
               )
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  return resp.status, json.loads(resp.read().decode())
+              # Shared CI runners stall sporadically, so retry transport-level
+              # failures only; HTTP status errors surface immediately. Bounded
+              # to fit the job's timeout-minutes: short probes get 3 full
+              # attempts, long probes one retry capped at 300s (a healthy
+              # server answers a retry quickly; a stalled one never does).
+              attempts = 3 if timeout <= 300 else 2
+              for attempt in range(attempts):
+                  try:
+                      t = timeout if attempt == 0 else min(timeout, 300)
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          return resp.status, json.loads(resp.read().decode())
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      if attempt == attempts - 1:
+                          raise
+                      print(f"[retry] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           # ── 1. response_format = json_object (JSON mode) ─────────────
           status, data = post("/v1/chat/completions", {
