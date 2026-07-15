@@ -485,7 +485,7 @@ jobs:
                       print(f"[retry] {path}: {exc!r}", flush = True)
                       time.sleep(15)
 
-          def post_sse(path, body, *, timeout = 600):
+          def post_sse(path, body, *, timeout = 600, retries = 1):
               """POST a streaming request and accumulate the assistant
               text deltas. The server-side agentic loop ALWAYS returns
               SSE regardless of the request's `stream` field, so any
@@ -501,6 +501,15 @@ jobs:
                                  invocation markers / tool output, since
                                  `delta.content` alone is not evidence
                                  that the tool path executed.
+
+              A shared CI runner can stall the stream transport (the
+              connection opening, or a mid-stream read) even when Studio
+              is healthy, so retry a stall once with a fresh request
+              capped at 300s, and return whatever events already streamed
+              before a stall rather than discarding them. HTTP status
+              errors surface immediately; a stall that yields nothing
+              across all attempts re-raises so the caller can rotate to
+              the next seed.
               """
               body = {**body, "stream": True}
               data = json.dumps(body).encode()
@@ -513,26 +522,41 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              parts = []
-              events = []
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  for raw in resp:
-                      line = raw.decode().strip()
-                      if not line.startswith("data: "):
-                          continue
-                      payload = line[6:]
-                      if payload == "[DONE]":
-                          break
-                      events.append(payload)
-                      try:
-                          chunk = json.loads(payload)
-                      except json.JSONDecodeError:
-                          continue
-                      for choice in chunk.get("choices", []):
-                          delta = choice.get("delta", {}) or {}
-                          if delta.get("content"):
-                              parts.append(delta["content"])
-              return "".join(parts), events
+              for attempt in range(retries + 1):
+                  parts = []
+                  events = []
+                  t = timeout if attempt == 0 else min(timeout, 300)
+                  try:
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          for raw in resp:
+                              line = raw.decode().strip()
+                              if not line.startswith("data: "):
+                                  continue
+                              payload = line[6:]
+                              if payload == "[DONE]":
+                                  break
+                              events.append(payload)
+                              try:
+                                  chunk = json.loads(payload)
+                              except json.JSONDecodeError:
+                                  continue
+                              for choice in chunk.get("choices", []):
+                                  delta = choice.get("delta", {}) or {}
+                                  if delta.get("content"):
+                                      parts.append(delta["content"])
+                      return "".join(parts), events
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      # Events already streamed are valid signal -- keep
+                      # them rather than re-running a heavy generation.
+                      if events:
+                          print(f"[retry-sse] {path}: {exc!r}; keeping {len(events)} partial events", flush = True)
+                          return "".join(parts), events
+                      if attempt == retries:
+                          raise
+                      print(f"[retry-sse] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           _STUDIO_TOOL_TYPES = {
               "tool_start", "tool_end", "tool_use", "tool_result",
@@ -671,15 +695,26 @@ jobs:
               best = None
               for attempt_i in range(max_attempts):
                   attempt_seed = SEED + attempt_i
-                  content, events = post_sse("/v1/chat/completions", {
-                      "messages":      [{"role": "user", "content": prompt}],
-                      "enable_tools":  True,
-                      "enabled_tools": enabled,
-                      "session_id":    f"{session}-att{attempt_i}",
-                      "temperature":   TOOL_PROBE_TEMP,
-                      "seed":          attempt_seed,
-                      "max_tokens":    600,
-                  })
+                  try:
+                      content, events = post_sse("/v1/chat/completions", {
+                          "messages":      [{"role": "user", "content": prompt}],
+                          "enable_tools":  True,
+                          "enabled_tools": enabled,
+                          "session_id":    f"{session}-att{attempt_i}",
+                          "temperature":   TOOL_PROBE_TEMP,
+                          "seed":          attempt_seed,
+                          "max_tokens":    600,
+                      })
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      # A transport stall that outlived post_sse's own retry:
+                      # log it as a failed attempt and rotate to the next seed
+                      # rather than sinking the whole probe on one bad stream.
+                      attempts_log.append({
+                          "attempt": attempt_i, "seed": attempt_seed,
+                          "transport_error": repr(exc),
+                      })
+                      print(f"[tools] retry {label} attempt {attempt_i}: transport {exc!r}", flush = True)
+                      continue
                   invoked  = _tool_invoked(events)
                   produced = _tool_output_contains(events, *needles)
                   attempts_log.append({
