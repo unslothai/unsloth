@@ -5,6 +5,7 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import codecs
 import http.client
 import os
 import signal
@@ -1520,28 +1521,47 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
-# Bare application/* subtypes that are text (the leading x- and the +json/+xml
-# structured-syntax suffixes are handled in the check).
-_TEXT_APPLICATION_SUBTYPES = frozenset(
-    {"json", "xml", "javascript", "ecmascript", "csv", "yaml", "ndjson", "jsonl"}
+# Known binary application subtypes are rejected by MIME type. Unknown
+# application types are sniffed so textual artifacts such as SQL remain usable.
+_BINARY_APPLICATION_SUBTYPES = frozenset(
+    {
+        "epub+zip",
+        "gzip",
+        "java-archive",
+        "msword",
+        "pdf",
+        "vnd.apple.installer+xml",
+        "vnd.ms-excel",
+        "vnd.ms-powerpoint",
+        "wasm",
+        "x-7z-compressed",
+        "x-bzip2",
+        "x-gzip",
+        "x-rar-compressed",
+        "x-tar",
+        "x-xz",
+        "zip",
+        "zstd",
+    }
+)
+_BINARY_APPLICATION_PREFIXES = (
+    "vnd.oasis.opendocument.",
+    "vnd.openxmlformats-officedocument.",
 )
 
 
 def _is_text_candidate_content_type(content_type: str | None) -> bool:
     """Whether a MIME type is textual or ambiguous enough for byte sniffing."""
-    ct = (content_type or "").partition(";")[0].strip().lower()
-    if not ct:
+    match = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+    if not match:
         return True
+    ct = match.group(0).lower()
     if ct.startswith("text/"):
         return True
     if ct.startswith("application/"):
-        # Exact matches avoid treating "openxmlformats" as XML. Structured
-        # +json/+xml suffixes remain valid text candidates.
-        subtype = ct[len("application/") :].removeprefix("x-")
-        return (
-            subtype == "octet-stream"
-            or subtype in _TEXT_APPLICATION_SUBTYPES
-            or subtype.endswith(("+json", "+xml"))
+        subtype = ct[len("application/") :]
+        return subtype not in _BINARY_APPLICATION_SUBTYPES and not subtype.startswith(
+            _BINARY_APPLICATION_PREFIXES
         )
     return False
 
@@ -1639,6 +1659,7 @@ def _fetch_page_text(
             return f"(binary content, {len(raw_bytes)} bytes; not readable as text)"
 
         declared = resp.headers.get_content_charset()
+        declared_codec = codecs.lookup(declared).name if declared else None
         raw_html = raw_bytes.decode(declared or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
@@ -1646,7 +1667,8 @@ def _fetch_page_text(
             # Rescue undeclared cp1252 only when the bytes have text structure.
             alt = (
                 raw_bytes.decode("cp1252", "replace")
-                if declared is None and _has_single_byte_text_evidence(raw_bytes)
+                if declared_codec in (None, "iso8859-1")
+                and _has_single_byte_text_evidence(raw_bytes)
                 else None
             )
             if alt is not None and not _looks_binary(alt):

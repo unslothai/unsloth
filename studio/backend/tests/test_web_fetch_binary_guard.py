@@ -68,6 +68,8 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         ("application/x-yaml", True),
         ("application/x-ndjson", True),
         ("application/ndjson", True),
+        ("application/sql", True),
+        ("application/x-www-form-urlencoded", True),
         ("application/pdf", False),
         ("image/png", False),
         ("image/svg+xml", False),
@@ -95,11 +97,21 @@ def test_text_octet_stream_kept_after_sniffing(monkeypatch):
     assert "non-text content" not in out and "binary content" not in out
 
 
-@pytest.mark.parametrize("content_type", ["application/octet-stream", "text/plain", None])
+@pytest.mark.parametrize(
+    "content_type",
+    ["application/octet-stream", "application/x-custom-binary", "text/plain", None],
+)
 def test_binary_candidates_rejected_after_sniffing(monkeypatch, content_type):
     out = _fetch_with(monkeypatch, bytes(range(256)) * 20, content_type)
     assert "�" not in out
     assert "binary content" in out
+
+
+@pytest.mark.parametrize("content_type", ["application/sql", "application/x-www-form-urlencoded"])
+def test_unknown_application_text_kept_after_sniffing(monkeypatch, content_type):
+    out = _fetch_with(monkeypatch, b"select readable_text from artifacts;\n" * 100, content_type)
+    assert "readable_text" in out
+    assert "non-text content" not in out and "binary content" not in out
 
 
 def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
@@ -127,6 +139,14 @@ def test_latin1_text_without_charset_kept(monkeypatch):
     out = _fetch_with(monkeypatch, body.encode("cp1252"), "text/plain")
     assert "binary content" not in out
     assert "MARKERWORD" in out
+
+
+@pytest.mark.parametrize("charset", ["iso-8859-1", "latin-1", "latin1"])
+def test_declared_latin1_cp1252_punctuation_kept(monkeypatch, charset):
+    body = ("“quoted” " * 100).encode("cp1252")
+    out = _fetch_with(monkeypatch, body, f"text/plain; charset={charset}")
+    assert "quoted" in out
+    assert "binary content" not in out
 
 
 def test_high_byte_binary_not_rescued_as_cp1252(monkeypatch):
