@@ -86,9 +86,19 @@ def test_reverse_proxy_forwarded_headers_are_remote():
 def test_malformed_or_absent_host_is_remote():
     """A malformed/absent/scope-id Host must not fall back to the loopback server address."""
     from main import _is_local_bootstrap_request
+
     # incl. bracket smuggling: [::1]evil / unclosed [::1 must not reduce to ::1
-    for host in ("e_vil", "[malformed", "", None, "[::1%25eth0]:8888",
-                 "[::1]attacker", "[::1]evil.com", "[::1", "[::1]x"):
+    for host in (
+        "e_vil",
+        "[malformed",
+        "",
+        None,
+        "[::1%25eth0]:8888",
+        "[::1]attacker",
+        "[::1]evil.com",
+        "[::1",
+        "[::1]x",
+    ):
         assert _is_local_bootstrap_request(_request("127.0.0.1", host)) is False, host
 
 
