@@ -768,3 +768,52 @@ def test_chat_returns_503_when_model_busy(tmp_path, monkeypatch, slot_state):
     assert r.status_code == 503
     assert r.headers.get("retry-after")
     assert not preview._preview_lock.locked()
+
+
+def test_preview_load_refused_during_sidecar_swap(fake_slot, monkeypatch):
+    # Preview loads bypass load_model(), so they must re-apply its sidecar-install
+    # guard: a public preview must not complete a load mid transformers install.
+    import utils.transformers_version as tv
+
+    monkeypatch.setattr(tv, "sidecar_swap_in_progress", lambda: True)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None, scope = {"path": "/p/run/v1/chat/completions"}),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 409
+    assert fake_slot["loads"] == []  # never touched the backend
+
+
+def test_preview_refusal_untracks_and_balances_counters(fake_slot):
+    # A refused preview never touches the model, so it must untrack itself (no
+    # keep-warm activity stamp) and balance BOTH in-flight counters -- otherwise
+    # public /p spam could pin an idle Studio model and skew the busy guard.
+    fake_slot["ident"] = "owner-model"  # a different model is resident -> refuse
+    llama_keepwarm._inflight = 1
+    llama_keepwarm._preview_inflight = 1
+    scope = {"type": "http", "path": "/p/run/v1/chat/completions"}
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None, scope = scope),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert scope.get(llama_keepwarm._UNTRACKED_SCOPE_KEY) is True
+    assert llama_keepwarm._inflight == 0
+    assert llama_keepwarm._preview_inflight == 0
+    assert fake_slot["loads"] == []
+    llama_keepwarm._inflight = 0
+    llama_keepwarm._preview_inflight = 0

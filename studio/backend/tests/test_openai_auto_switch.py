@@ -1459,6 +1459,44 @@ def test_external_untrack_decrements_inflight_and_is_idempotent():
     kw._inflight = 0
 
 
+def test_untrack_preview_request_balances_both_counters():
+    # A /p/ request untracking itself must drop from BOTH _inflight and the preview
+    # subset, or the preview busy guard would see phantom foreign traffic.
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 1
+    kw._preview_inflight = 1
+    scope = {"type": "http", "path": "/p/demorun/v1/chat/completions"}
+    kw.untrack_current_request(scope)
+    assert kw._inflight == 0
+    assert kw._preview_inflight == 0
+    assert scope.get(kw._UNTRACKED_SCOPE_KEY) is True
+    kw.untrack_current_request(scope)  # idempotent
+    assert kw._inflight == 0 and kw._preview_inflight == 0
+
+
+def test_already_serving_clears_preview_marker(monkeypatch):
+    # A non-preview auto-switch that adopts a preview-owned model (already serving,
+    # no reload) must claim it for Studio, else a later preview could swap it out
+    # from under the active OpenAI caller.
+    path = "/cache/models--org--Repo-GGUF/snapshots/abc"
+    backend = _FakeBackend(path, hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, "Q4_K_M", "org/Repo-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    inference_route._set_preview_resident(path)
+    assert inference_route._is_preview_resident(path)
+    _run_hook("org/Repo-GGUF:Q4_K_M")
+    assert rec.calls == []  # already serving -> no reload
+    assert not inference_route._is_preview_resident(path)  # claimed for Studio
+    inference_route._set_preview_resident(None)  # cleanup
+
+
 def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
     # A manual /unload is a deliberate action: it tears down immediately even with
     # a request in flight (only the automatic idle loop defers). No 409.

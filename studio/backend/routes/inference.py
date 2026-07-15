@@ -3538,6 +3538,9 @@ async def _maybe_auto_switch_model(
                 b._openai_advertised_id = override_id
 
         if _already_serving():
+            # A non-preview request adopting this model claims it for Studio, so a
+            # later preview can't swap it out from under an active OpenAI caller.
+            _set_preview_resident(None)
             _record_serving_alias()
             return
         # An image/audio request naming a different text-only GGUF would load it
@@ -3572,6 +3575,7 @@ async def _maybe_auto_switch_model(
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
                         if _already_serving():
+                            _set_preview_resident(None)
                             _record_serving_alias()
                             return
                         # Single slot: refuse a cross-model swap while another inference
@@ -3680,15 +3684,33 @@ async def load_model_for_preview(
         inference_lifecycle_gate,
         other_inference_request_count,
         other_preview_inflight_count,
+        untrack_current_request,
     )
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    # A refused preview never touches the model, so it must not stamp keep-warm
+    # activity (public /p spam could otherwise pin an idle Studio model in VRAM);
+    # untrack also balances the preview in-flight counter for the dropped request.
+    scope = getattr(fastapi_request, "scope", None)
     async with _auto_switch_lock():
         await _acquire_swap_gate()
         try:
             async with inference_lifecycle_gate():
+                # Preview loads bypass load_model(), so re-apply its sidecar guard:
+                # a public preview must not complete a load while a transformers
+                # install has reserved the swap, or the installer later aborts.
+                if sidecar_swap_in_progress():
+                    untrack_current_request(scope)
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = "A transformers installation is in progress. Retry when it completes.",
+                        headers = {"Retry-After": "10"},
+                    )
                 loaded = _loaded_slot_ident()
                 same_target = loaded is not None and loaded.lower() == request.model_path.lower()
                 preview_resident = loaded is not None and _is_preview_resident(loaded)
                 if loaded is not None and not same_target and not preview_resident:
+                    untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
@@ -3702,6 +3724,7 @@ async def load_model_for_preview(
                     )
                     > other_preview_inflight_count()
                 ):
+                    untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
                         detail = "The preview model is busy. Please try again shortly.",

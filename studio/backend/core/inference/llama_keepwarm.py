@@ -174,7 +174,9 @@ def untrack_current_request(scope) -> None:
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
-    _note_untracked_end()
+    # Keep the preview subset aligned with _inflight: a /p/ request untracking
+    # itself must drop from both counters, or the busy guard sees phantom traffic.
+    _note_untracked_end(_is_preview_path(scope.get("path") or ""))
 
 
 def inference_lifecycle_gate():

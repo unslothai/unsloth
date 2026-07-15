@@ -343,7 +343,13 @@
         let message = "Something went wrong. Please try again.";
         try {
           const parsed = JSON.parse(body);
-          message = parsed.detail || parsed.error?.message || message;
+          // FastAPI wraps errors as {detail: ...}; detail may be a string or a
+          // structured {error: {message}} envelope, so read the string form.
+          const detail = parsed.detail;
+          message =
+            (typeof detail === "string" ? detail : detail?.error?.message) ||
+            parsed.error?.message ||
+            message;
         } catch (_) {
           if (body) message = body.slice(0, 300);
         }
