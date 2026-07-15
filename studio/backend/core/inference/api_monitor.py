@@ -105,7 +105,12 @@ class ApiMonitorEntry:
 
 
 class ApiMonitor:
-    def __init__(self, max_entries: int = _MAX_ENTRIES, *, enabled: bool = True):
+    def __init__(
+        self,
+        max_entries: int = _MAX_ENTRIES,
+        *,
+        enabled: bool = True,
+    ):
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()

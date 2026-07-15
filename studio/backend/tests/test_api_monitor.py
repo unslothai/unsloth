@@ -300,7 +300,6 @@ def test_api_monitor_disabled_is_noop():
 
 def test_api_monitor_disable_env_var_truthy(monkeypatch):
     import core.inference.api_monitor as m
-
     for value in ("1", "true", "yes", "on", "TRUE", "On", " yes "):
         monkeypatch.setenv(m._DISABLE_ENV, value)
         assert m._api_monitor_disabled() is True, value
@@ -308,7 +307,6 @@ def test_api_monitor_disable_env_var_truthy(monkeypatch):
 
 def test_api_monitor_disable_env_var_falsy(monkeypatch):
     import core.inference.api_monitor as m
-
     for value in ("", "0", "false", "no", "off", "disabled"):
         monkeypatch.setenv(m._DISABLE_ENV, value)
         assert m._api_monitor_disabled() is False, value
@@ -316,6 +314,5 @@ def test_api_monitor_disable_env_var_falsy(monkeypatch):
 
 def test_api_monitor_disable_env_var_unset(monkeypatch):
     import core.inference.api_monitor as m
-
     monkeypatch.delenv(m._DISABLE_ENV, raising = False)
     assert m._api_monitor_disabled() is False
