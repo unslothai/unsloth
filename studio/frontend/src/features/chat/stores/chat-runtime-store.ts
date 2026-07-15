@@ -3,7 +3,10 @@
 
 import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { cancelStagedModelDownload } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndices,
+  ensureGpuDeviceCache,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -611,22 +614,26 @@ export function loadedGpuMemoryFields(resp: {
 
 /** loadedGpuMemoryFields (plus any seedExtras), unless a staged pick is open.
  *
- * With a staged pick open (the load fired mid-staging), the editable GPU knobs
- * and seedExtras carry the user's staged edits: hold them like the status
- * reseed does, and leave the baseline unseeded (loadedGpuMemoryMode: null) so
- * the post-staging refresh reseeds from status. Deliberately narrower than the
- * status reseed's gates: the KV/TP/spec fields have carried this staleness on
- * every load path since before the GPU knobs existed, so they keep their
- * unconditional seeding here.
+ * With a staged pick open (the load fired mid-staging), preserve its editable
+ * GPU knobs and seedExtras, but still advance every loaded baseline. Otherwise
+ * cancelling the stage restores its edits onto the newly loaded model. The
+ * status reseed cannot repair that while pendingSelection holds it off.
  */
 export function loadedGpuMemoryFieldsUnlessStaged<T extends object>(
   resp: Parameters<typeof loadedGpuMemoryFields>[0],
   seedExtras?: T,
 ) {
+  const fields = loadedGpuMemoryFields(resp);
   if (useChatRuntimeStore.getState().pendingSelection != null) {
-    return { loadedGpuMemoryMode: null };
+    return {
+      loadedGpuMemoryMode: fields.loadedGpuMemoryMode,
+      loadedGpuLayers: fields.loadedGpuLayers,
+      loadedNCpuMoe: fields.loadedNCpuMoe,
+      loadedSplitRatio: fields.loadedSplitRatio,
+      loadedGpuIds: fields.loadedGpuIds,
+    };
   }
-  return { ...loadedGpuMemoryFields(resp), ...seedExtras };
+  return { ...fields, ...seedExtras };
 }
 
 function notifyHfTokenChanged(value: string): void {
@@ -1876,7 +1883,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSplitRatio: (splitRatio) => set({ splitRatio }),
   setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
-  applyRememberedLoadSettings: (settings) =>
+  applyRememberedLoadSettings: (settings) => {
+    const gpuCacheWasCold = cachedPinnableGpuIndices() === null;
+    const restoredGpuIds =
+      settings.selectedGpuIds !== undefined
+        ? reconcilePersistedGpuIds(settings.selectedGpuIds)
+        : undefined;
     // Coalesce every field: a blob persisted by an older/newer build can omit
     // keys, and a raw spread would push `undefined` into fields typed non-null.
     // The GPU knobs are spread only when present, but first reset the per-model
@@ -1902,13 +1914,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }),
       ...(settings.gpuLayers != null && { gpuLayers: settings.gpuLayers }),
       ...(settings.nCpuMoe != null && { nCpuMoe: settings.nCpuMoe }),
-      ...(settings.selectedGpuIds !== undefined && {
+      ...(restoredGpuIds !== undefined && {
         // Reconcile against the GPUs present now (see reconcilePersistedGpuIds):
         // a saved [1] on a 1-GPU host (or under relative/UUID visibility) would
         // hide the picker yet still send gpu_ids, which the backend rejects.
-        selectedGpuIds: reconcilePersistedGpuIds(settings.selectedGpuIds),
+        selectedGpuIds: restoredGpuIds,
       }),
-    }),
+    });
+    // A cold cache makes the synchronous restore provisional. Reconcile again
+    // when the shared fetch completes, but only if this exact restored array is
+    // still current so a user edit, stage change, or load cannot be overwritten.
+    if (gpuCacheWasCold && restoredGpuIds != null) {
+      void ensureGpuDeviceCache().then(() => {
+        set((state) => {
+          if (state.selectedGpuIds !== restoredGpuIds) return state;
+          const reconciled = reconcilePersistedGpuIds(restoredGpuIds);
+          return reconciled === restoredGpuIds
+            ? state
+            : { selectedGpuIds: reconciled };
+        });
+      });
+    }
+  },
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
     set({ loadOnSelection });

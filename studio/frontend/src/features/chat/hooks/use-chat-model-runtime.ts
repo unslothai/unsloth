@@ -1050,6 +1050,13 @@ export function useChatModelRuntime() {
                   // Resend the previous model's pinned approval so restoring it is not re-blocked.
                   approved_remote_code_fingerprint:
                     approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
+                  chat_template_override:
+                    stateBeforeUnload.loadedChatTemplateOverride,
+                  cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
+                  speculative_type:
+                    stateBeforeUnload.loadedSpeculativeType,
+                  spec_draft_n_max:
+                    stateBeforeUnload.loadedSpecDraftNMax,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
@@ -1059,10 +1066,17 @@ export function useChatModelRuntime() {
                   tensor_split: stateBeforeUnload.loadedSplitRatio ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
+                const rollbackSpeculativeType = normalizeSpeculativeType(
+                  rollbackResponse.speculative_type,
+                );
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,
-                  loadedSpeculativeType: null,
-                  loadedSpecDraftNMax: null,
+                  loadedSpeculativeType: rollbackSpeculativeType,
+                  loadedSpecDraftNMax:
+                    rollbackResponse.spec_draft_n_max ?? null,
+                  loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
+                  loadedChatTemplateOverride:
+                    stateBeforeUnload.loadedChatTemplateOverride,
                   // Re-baseline the GPU knobs from the rolled-back load's own
                   // response (the shared seeding every load path uses): the
                   // refresh() below can't do it, since the status reseed is
@@ -1077,6 +1091,8 @@ export function useChatModelRuntime() {
                     customContextLength:
                       stateBeforeUnload.loadedCustomContextLength,
                   }),
+                  loadedTensorParallel:
+                    rollbackResponse.tensor_parallel ?? false,
                   loadedCustomContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                 });

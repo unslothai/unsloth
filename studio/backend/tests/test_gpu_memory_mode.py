@@ -283,6 +283,17 @@ def test_load_request_manual_defaults():
     assert req.tensor_split is None
 
 
+def test_route_normalizes_explicit_extras_before_reload_dedupe():
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    load_impl = route_src[route_src.index("async def _load_model_impl") :]
+    strip = load_impl.index("_stripped_explicit = strip_shadowing_flags")
+    normalize = load_impl.index(
+        'request = request.model_copy(update = {"llama_extra_args": extra_llama_args})'
+    )
+    dedupe = load_impl.index("and _request_matches_loaded_settings(")
+    assert strip < normalize < dedupe
+
+
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_manual_fields(model_cls):
     if model_cls is LoadResponse:

@@ -4083,6 +4083,11 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 )
                 extra_llama_args = _stripped_explicit
 
+        # Keep every downstream consumer on the normalized explicit list. In
+        # particular, the already-loaded comparator must not compare the raw
+        # request's managed offload flags against the stripped launch state.
+        request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
+
         model_identifier, model_log_label, native_grant_backed = (
             _resolve_model_identifier_for_request(request, operation = "load-model")
         )
