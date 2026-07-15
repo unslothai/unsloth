@@ -260,13 +260,17 @@ export function ExportPage() {
   }, []);
   // Drop any already-selected format that the gate just removed (e.g. torchao once win32Rocm
   // resolves after /api/system/hardware lands), so a stale pick isn't summarized or exported.
+  // Gate on hardware.loaded: before the authoritative response hasNvidia is false, so the
+  // NVIDIA-only compressed formats are transiently absent and pruning here would permanently
+  // drop a running FP8/NVFP4 selection that the later response cannot restore.
   useEffect(() => {
+    if (!hardware.loaded) return;
     const allowed = new Set(availableFormats.map((f) => f.value));
     setSelectedFormats((prev) => {
       const next = prev.filter((v) => allowed.has(v));
       return next.length === prev.length ? prev : next;
     });
-  }, [availableFormats]);
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
