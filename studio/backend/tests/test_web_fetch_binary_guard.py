@@ -22,12 +22,17 @@ from core.inference import tools
 class _FakeResp:
     def __init__(self, body: bytes, content_type: str | None):
         self._body = body
+        self._pos = 0
         self.headers = Message()
         if content_type is not None:
             self.headers["Content-Type"] = content_type
 
     def read(self, n: int | None = None) -> bytes:
-        return self._body if n is None else self._body[:n]
+        # Advance a cursor like a real stream so the chunked reader in
+        # _read_capped_body reaches EOF instead of re-reading the head.
+        chunk = self._body[self._pos :] if n is None else self._body[self._pos : self._pos + n]
+        self._pos += len(chunk)
+        return chunk
 
 
 class _FakeOpener:

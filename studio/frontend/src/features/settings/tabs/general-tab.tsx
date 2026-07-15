@@ -114,6 +114,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  // Voice settings
+  "unsloth_voice_settings",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the

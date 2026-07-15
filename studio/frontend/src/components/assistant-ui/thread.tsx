@@ -97,9 +97,11 @@ import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-b
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -150,6 +152,8 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Volume2Icon,
+  VolumeXIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -2118,19 +2122,6 @@ function useImeComposerInputHandlers({
   };
 }
 
-// Phosphor microphone. Inlined to avoid a new icon dependency.
-const MicIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 256 256"
-    fill="currentColor"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
-  </svg>
-);
-
 // HugeIcons arrow-down-01 (stroke-standard): straight-line chevron.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
@@ -3453,8 +3444,18 @@ const ComposerRightControls: FC<{
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
+        {/* Recovery path for interrupted/failed turns: regenerate in place. */}
+        <ActionBarPrimitive.Reload asChild={true}>
+          <button
+            type="button"
+            className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+          >
+            <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+            Retry
+          </button>
+        </ActionBarPrimitive.Reload>
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );
@@ -3797,8 +3798,33 @@ const DeleteMessageButton: FC = () => {
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
 
   const handleDelete = async () => {
-    const remoteId = aui.threadListItem().getState().remoteId;
     const thread = aui.thread();
+    // Deleting a message, and for a user prompt its cascaded assistant replies,
+    // unmounts their only Stop reading control. Stop read-aloud first when the
+    // spoken message is among those removed. Read speech state at click time and
+    // guard the call, which throws if playback already ended.
+    const speakingId = thread.getState().speech?.messageId;
+    if (speakingId) {
+      const { messages } = thread.export();
+      const target = messages.find(({ message }) => message.id === messageId);
+      const removed = new Set<string>([messageId]);
+      if (target?.message.role === "user") {
+        for (const { parentId, message } of messages) {
+          if (parentId === messageId && message.role === "assistant") {
+            removed.add(message.id);
+          }
+        }
+      }
+      if (removed.has(speakingId)) {
+        try {
+          thread.stopSpeaking();
+        } catch {
+          // Playback ended between reading the state and stopping it.
+        }
+      }
+    }
+
+    const remoteId = aui.threadListItem().getState().remoteId;
     try {
       await deleteThreadMessage({
         thread: {
@@ -3883,11 +3909,15 @@ const EditAssistantMessageButton: FC = () => {
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
+  // hideWhenRunning is thread-level, so a new run would hide this bar and its
+  // only Stop reading control while read-aloud keeps playing; keep it shown.
+  const speaking = useAuiState(({ message }) => message.speech != null);
 
   return (
     <>
       <ActionBarPrimitive.Root
-        hideWhenRunning={true}
+        hideWhenRunning={!speaking}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
@@ -3899,6 +3929,28 @@ const AssistantActionBar: FC = () => {
         </ActionBarPrimitive.Reload>
         <ForkCountBadge />
         <DeleteMessageButton />
+        {ttsEnabled && (
+          <MessagePrimitive.If speaking={false}>
+            <ActionBarPrimitive.Speak asChild={true}>
+              <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
+                <Volume2Icon strokeWidth={1.75} className="size-icon" />
+              </TooltipIconButton>
+            </ActionBarPrimitive.Speak>
+          </MessagePrimitive.If>
+        )}
+        {/* Not gated on ttsEnabled: turning the setting off while a message
+            is being read aloud must not remove the only stop control. */}
+        <MessagePrimitive.If speaking={true}>
+          <ActionBarPrimitive.StopSpeaking asChild={true}>
+            <TooltipIconButton
+              tooltip="Stop reading"
+              aria-label="Stop reading"
+              className="text-destructive"
+            >
+              <VolumeXIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.StopSpeaking>
+        </MessagePrimitive.If>
         <ActionBarMorePrimitive.Root>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
