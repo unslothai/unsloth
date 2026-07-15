@@ -1686,9 +1686,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # merely passed or printed (print(getattr(o, 'name'))).
         if isinstance(arg, ast.Name):
             return (
-                arg.id in open_aliases
-                or arg.id in writer_aliases
-                or arg.id in archive_ctor_aliases
+                arg.id in open_aliases or arg.id in writer_aliases or arg.id in archive_ctor_aliases
             )
         if isinstance(arg, ast.Attribute):
             return (
