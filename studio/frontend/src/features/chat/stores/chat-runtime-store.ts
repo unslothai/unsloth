@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
-import { cancelStagedModelDownload } from "@/features/hub";
+import { cancelStagedModelDownload, useHfTokenStore } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -1106,7 +1106,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
-  hfToken: loadString(HF_TOKEN_KEY, ""),
+  hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
@@ -1751,6 +1751,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+// Mirror token edits made through the shared store (e.g. Studio's field).
+const unsubscribeHfTokenMirror = useHfTokenStore.subscribe((state) => {
+  if (useChatRuntimeStore.getState().hfToken !== state.token) {
+    useChatRuntimeStore.setState({ hfToken: state.token });
+  }
+});
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
 
 export function resolveSpeculativeSettingsForLoad({
   usePersistedPreference = false,
