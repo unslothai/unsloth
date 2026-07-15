@@ -80,7 +80,7 @@ function UsageBar({ value }: { value?: number | null }): ReactElement | null {
   return (
     <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
       <div
-        className="h-full rounded-full bg-primary"
+        className="h-full rounded-full bg-control-accent"
         style={{ width: `${pct}%` }}
       />
     </div>

@@ -12,6 +12,13 @@ import { en } from "./locales/en.ts";
 import { zhCN } from "./locales/zh-CN.ts";
 import { ptBR } from "./locales/pt-br.ts";
 import { ja } from "./locales/ja.ts";
+import { es } from "./locales/es.ts";
+import { hi } from "./locales/hi.ts";
+import { ar } from "./locales/ar.ts";
+import { fr } from "./locales/fr.ts";
+import { ru } from "./locales/ru.ts";
+import { de } from "./locales/de.ts";
+import { ko } from "./locales/ko.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -89,10 +96,17 @@ function checkExtras(
   }
 }
 
-const overlays: Record<string, Tree> = { 
+const overlays: Record<string, Tree> = {
   "zh-CN": zhCN as unknown as Tree,
   "pt-BR": ptBR as unknown as Tree,
   "ja": ja as unknown as Tree,
+  es: es as unknown as Tree,
+  hi: hi as unknown as Tree,
+  ar: ar as unknown as Tree,
+  fr: fr as unknown as Tree,
+  ru: ru as unknown as Tree,
+  de: de as unknown as Tree,
+  ko: ko as unknown as Tree,
 };
 let anyError = false;
 
