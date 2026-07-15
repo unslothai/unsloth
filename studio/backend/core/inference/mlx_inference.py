@@ -19,11 +19,13 @@ logger = get_logger(__name__)
 def _mlx_vlm_model_config(model):
     """Return the loaded MLX model config and its type, preferring whichever of
     config / _config actually carries a model_type."""
+
     def _model_type(cfg):
         return cfg.get("model_type") if isinstance(cfg, dict) else getattr(cfg, "model_type", None)
 
     configs = [
-        cfg for cfg in (getattr(model, "config", None), getattr(model, "_config", None))
+        cfg
+        for cfg in (getattr(model, "config", None), getattr(model, "_config", None))
         if cfg is not None
     ]
     for cfg in configs:

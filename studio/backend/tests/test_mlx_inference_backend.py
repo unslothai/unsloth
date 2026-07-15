@@ -440,7 +440,8 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     assert _mlx_vlm_model_config(m)[1] == "qwen2_vl"
     # a config that already carries a model_type is preferred and returned unchanged
     assert _mlx_vlm_model_config(SimpleNamespace(config = {"model_type": "gemma3"})) == (
-        {"model_type": "gemma3"}, "gemma3"
+        {"model_type": "gemma3"},
+        "gemma3",
     )
 
 
