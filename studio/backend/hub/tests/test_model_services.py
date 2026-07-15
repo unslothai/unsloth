@@ -532,6 +532,45 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
+def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
+    monkeypatch, tmp_path
+):
+    # A custom embedder with a generic basename ("org/model") must be hidden by
+    # EXACT repo-id match only. An unrelated cached chat model whose id merely
+    # contains "model" (e.g. "user/model-chat") must stay on device: substring
+    # basename matching used to drop real chat models from the inventory.
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/model-GGUF")
+
+    def _model_repo(repo_id: str):
+        path = tmp_path / "hub" / f"models--{repo_id.replace('/', '--')}"
+        path.mkdir(parents = True)
+        return _repo(
+            repo_id,
+            [_file("config.json", 12), _file("model.safetensors", 100)],
+            path,
+        )
+
+    embedder = _model_repo("org/model")
+    chat = _model_repo("user/model-chat")
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [embedder, chat])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    result = {"cached": cache_inventory._scan_cached_models()}
+
+    assert [row["repo_id"] for row in result["cached"]] == ["user/model-chat"]
+
+
 def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
     requirements = gguf_variants._build_gguf_variant_requirements(
         [

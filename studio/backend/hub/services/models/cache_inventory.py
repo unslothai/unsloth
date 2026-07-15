@@ -37,6 +37,13 @@ from hub.services.models.common import (
     _runtime_for_format,
 )
 
+# Imported at module scope (not inside the per-repo scan loop) so a broken
+# import surfaces at startup instead of silently emptying the inventory: the
+# scan loop swallows per-repo exceptions and would drop every repo. Lives under
+# ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
+# imports in ``utils/models/__init__.py``.
+from utils.hidden_models import is_hidden_model
+
 logger = get_logger(__name__)
 
 _repo_size_cache: "OrderedDict[tuple[str, str, str], tuple[int, frozenset[str], float]]" = (
@@ -247,7 +254,6 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     """True for infra-only repos (the RAG embedder and the llama.cpp install
     validation probe) that are cached as a side effect of Studio itself and are
     not usable chat models."""
-    from utils.models.hidden_models import is_hidden_model
     return is_hidden_model(*values)
 
 

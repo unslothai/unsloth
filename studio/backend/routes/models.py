@@ -61,8 +61,7 @@ def _safe_is_dir(path) -> bool:
 
 # Shared with the hub inventory scans; keep the private aliases so existing
 # importers (core.inference.local_model_resolver, tests) stay valid.
-from utils.models.hidden_models import (
-    _HF_REPO_ID_RE,
+from utils.hidden_models import (
     _safe_resolve,
     is_hidden_model as _is_hidden_model,
 )
