@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import codecs
 import sys
 from email.message import Message
 from pathlib import Path
@@ -122,6 +123,23 @@ def test_excel_labeled_csv_kept_after_sniffing(monkeypatch):
     assert "binary content" not in out
 
 
+@pytest.mark.parametrize(
+    "bom,encoding",
+    [
+        (codecs.BOM_UTF16_LE, "utf-16-le"),
+        (codecs.BOM_UTF16_BE, "utf-16-be"),
+        (codecs.BOM_UTF32_LE, "utf-32-le"),
+        (codecs.BOM_UTF32_BE, "utf-32-be"),
+    ],
+)
+@pytest.mark.parametrize("content_type", ["text/plain", "application/vnd.ms-excel"])
+def test_bom_unicode_text_without_charset_kept(monkeypatch, bom, encoding, content_type):
+    body = bom + ("name,value\nreadable,42\n" * 100).encode(encoding)
+    out = _fetch_with(monkeypatch, body, content_type)
+    assert "readable" in out
+    assert "binary content" not in out
+
+
 def test_valid_utf8_binary_caught_by_control_chars(monkeypatch):
     # These controls are valid UTF-8 and therefore produce no replacement chars.
     body = bytes([0, 1, 2, 3, 4, 5, 6, 7]) * 400
@@ -146,7 +164,18 @@ def test_text_labeled_binary_caught_by_magic(monkeypatch, magic):
     assert "binary content" in out
 
 
-@pytest.mark.parametrize("prefix", [b"\xef\xbb\xbf", b" \r\n", b"\t\xef\xbb\xbf "])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        codecs.BOM_UTF8,
+        codecs.BOM_UTF16_LE,
+        codecs.BOM_UTF16_BE,
+        codecs.BOM_UTF32_LE,
+        codecs.BOM_UTF32_BE,
+        b" \r\n",
+        b"\t\xef\xbb\xbf ",
+    ],
+)
 def test_pdf_magic_after_harmless_prefix(monkeypatch, prefix):
     body = prefix + b"%PDF-1.7\n" + b"1 0 obj<</Type/Catalog>>endobj\n" * 100
     out = _fetch_with(monkeypatch, body, "text/plain")

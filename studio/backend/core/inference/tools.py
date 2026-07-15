@@ -3602,6 +3602,15 @@ _BINARY_MAGIC = (
     b"\x28\xb5\x2f\xfd",  # zstd
 )
 
+# Check UTF-32 first because its little-endian BOM starts with the UTF-16 BOM.
+_UNICODE_BOM_CODECS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+)
+
 # A cp1252 retry needs 75% ASCII structure so it cannot rescue high-byte binary.
 _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
@@ -3616,7 +3625,11 @@ def _looks_binary(text: str) -> bool:
 
 def _has_binary_magic(data: bytes) -> bool:
     """Whether a common binary signature follows optional BOM or whitespace."""
-    head = data[:1024].lstrip().removeprefix(b"\xef\xbb\xbf").lstrip()
+    head = data[:1024].lstrip()
+    for bom, _codec in _UNICODE_BOM_CODECS:
+        if head.startswith(bom):
+            head = head.removeprefix(bom).lstrip()
+            break
     return head.startswith(_BINARY_MAGIC)
 
 
@@ -3858,7 +3871,11 @@ def _fetch_page_text(
 
         declared = resp.headers.get_content_charset()
         declared_codec = codecs.lookup(declared).name if declared else None
-        raw_html = raw_bytes.decode(declared or "utf-8", errors = "replace")
+        bom_codec = next(
+            (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
+            None,
+        )
+        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
 
         # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
         if _looks_binary(raw_html):
