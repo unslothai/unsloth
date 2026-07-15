@@ -577,7 +577,8 @@ export function LocalRecipeModelSelector({
   );
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    // modal keeps the list wheel-scrollable inside dialog scroll locks
+    <Popover open={open} onOpenChange={handleOpenChange} modal={true}>
       <PopoverTrigger asChild={true}>
         <SelectorTrigger
           value={value}

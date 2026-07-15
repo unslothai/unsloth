@@ -97,10 +97,10 @@ export function ModelTypeStep(): ReactElement {
                   "relative shadow-primary/30 transition-all duration-150 ease-out",
                   isDisabled && "opacity-50 bg-muted/50",
                   !isDisabled &&
-                    "hover:ring-primary/40 hover:-translate-y-0.5 hover:shadow-sm",
+                    "hover:ring-ring hover:-translate-y-0.5 hover:shadow-sm",
                   isSelected &&
                     !isDisabled &&
-                    "ring-2 ring-primary -translate-y-0.5 shadow-sm",
+                    "ring-1 ring-ring-strong -translate-y-0.5 shadow-sm",
                 )}
               >
                 {isDisabled && (
@@ -187,8 +187,8 @@ export function ModelTypeStep(): ReactElement {
             size="sm"
             className={cn(
               "relative shadow-primary/30 transition-all duration-150 ease-out",
-              "hover:ring-primary/40 hover:-translate-y-0.5 hover:shadow-sm",
-              chatOnlySelected && "ring-2 ring-primary -translate-y-0.5 shadow-sm",
+              "hover:ring-ring hover:-translate-y-0.5 hover:shadow-sm",
+              chatOnlySelected && "ring-1 ring-ring-strong -translate-y-0.5 shadow-sm",
             )}
           >
             <CardContent className="flex items-center gap-4 py-4">
