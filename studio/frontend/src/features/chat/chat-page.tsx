@@ -6,6 +6,7 @@ import {
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
+  type ModelSelectorChangeMeta,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import {
@@ -418,6 +419,7 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   externalModels,
+  onCheckpointChange,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -428,6 +430,7 @@ const CompareContent = memo(function CompareContent({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  onCheckpointChange?: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -440,6 +443,13 @@ const CompareContent = memo(function CompareContent({
       pairId={pairId}
       onExitCompare={onExitCompare}
       projectId={projectId}
+      models={models}
+      loraModels={loraModels}
+      externalModels={externalModels}
+      onCheckpointChange={onCheckpointChange}
+      onFoldersChange={onFoldersChange}
+      onModelsChange={onModelsChange}
+      deleteDisabled={deleteDisabled}
     />
   ) : (
     <GeneralCompareContent
@@ -553,15 +563,41 @@ const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
   onExitCompare,
   projectId,
+  models,
+  loraModels,
+  externalModels,
+  onCheckpointChange,
+  onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
 }: {
   pairId: string;
   onExitCompare?: () => void;
   projectId?: string | null;
+  models: ModelOption[];
+  loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
+  onCheckpointChange?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
   const active = useChatActive();
+  const { pinned } = useSidebar();
+  // Controlled so the body-portaled popover can't linger over another tab off-route.
+  const [selectorOpen, setSelectorOpen] = useState(false);
+
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const activeAdapter = useChatRuntimeStore((s) =>
+    s.loras.find((lora) => lora.id === s.params.checkpoint),
+  );
+  const baseModelName = activeAdapter
+    ? (models.find((model) => model.id === activeAdapter.baseModel)?.name ??
+      activeAdapter.baseModel)
+    : null;
 
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
@@ -610,10 +646,24 @@ const LoraCompareContent = memo(function LoraCompareContent({
           initialThreadId={baseThreadId}
           handleName="base"
           header={
-            <div className="shrink-0 px-3 py-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Base Model
-              </span>
+            <div
+              className={cn(
+                "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+                pinned
+                  ? "pl-12 pr-3 md:pl-4"
+                  : "pl-12 pr-3 md:pl-[calc(1rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+              )}
+            >
+              <div className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-2">
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Base Model
+                </span>
+                {baseModelName ? (
+                  <span className="min-w-0 truncate text-[13px] text-muted-foreground">
+                    {baseModelName}
+                  </span>
+                ) : null}
+              </div>
             </div>
           }
         />
@@ -625,10 +675,24 @@ const LoraCompareContent = memo(function LoraCompareContent({
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+            <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pl-4 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
+              <span className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                externalModels={externalModels}
+                value={checkpoint}
+                onValueChange={onCheckpointChange}
+                onFoldersChange={onFoldersChange}
+                onModelsChange={onModelsChange}
+                deleteDisabled={deleteDisabled}
+                variant="ghost"
+                className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
+                open={active && selectorOpen}
+                onOpenChange={(open) => setSelectorOpen(active && open)}
+              />
             </div>
           }
         />
@@ -2649,6 +2713,7 @@ export function ChatPage({
             models={models}
             loraModels={loraModels}
             externalModels={externalModels}
+            onCheckpointChange={handleCheckpointChange}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
