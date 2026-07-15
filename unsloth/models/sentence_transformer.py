@@ -188,16 +188,28 @@ def _save_pretrained_gguf(
 
     # 4. Patch environment so Unsloth treats this embedding model correctly
     @contextlib.contextmanager
-    def patch_unsloth_gguf_save():
-        # Prevent deletion of the directory self.save_pretrained just created
+    def patch_unsloth_gguf_save(protected_directory):
+        # Prevent deletion of the directory self.save_pretrained just created (and
+        # anything inside it), while still allowing unrelated temporary directories to
+        # be cleaned up. The previous version saved and restored shutil.rmtree without
+        # ever replacing it, so the guard never actually protected anything.
+        protected = os.path.abspath(protected_directory)
         original_rmtree = shutil.rmtree
+
+        def guarded_rmtree(path, *args, **kwargs):
+            target = os.path.abspath(os.fspath(path))
+            if target == protected or target.startswith(protected + os.sep):
+                return
+            return original_rmtree(path, *args, **kwargs)
+
+        shutil.rmtree = guarded_rmtree
         try:
             yield
         finally:
             shutil.rmtree = original_rmtree
 
     # 5. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
-    with patch_unsloth_gguf_save():
+    with patch_unsloth_gguf_save(save_directory):
         result = unsloth_save_pretrained_gguf(
             inner_model,
             save_directory = transformer_dir,
