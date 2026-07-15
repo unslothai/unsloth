@@ -134,6 +134,10 @@ with sync_playwright() as p:
                 pass
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
+            # Served page no longer autofills the seed; fill Current password when shown.
+            cur_pw = page.locator("#current-password")
+            if cur_pw.count():
+                cur_pw.fill(OLD, timeout = 60_000)
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             # Click submit AND wait for the POST response together so a server-side reject

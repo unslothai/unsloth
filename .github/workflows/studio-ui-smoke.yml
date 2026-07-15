@@ -255,17 +255,21 @@ jobs:
           jq -e '.status == "healthy"' /tmp/health3.json
 
       - name: Pass bootstrap pw for IME / i18n test
-        # IME smoke does the change-password against the bootstrap that
-        # Studio's frontend injects into the page, so it only needs the
-        # NEW password.
+        # IME smoke does its own change-password through the UI. The page no
+        # longer autofills the seed, so the test needs the current (bootstrap)
+        # password to fill the Current password field plus the NEW password.
         run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIIme-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
           echo "::add-mask::$NEW"
+          echo "STUDIO_IME_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_IME_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive IME + multilingual paste regression with Playwright
         env:
           BASE_URL: http://127.0.0.1:18896
+          STUDIO_OLD_PW: ${{ env.STUDIO_IME_OLD_PW }}
           STUDIO_NEW_PW: ${{ env.STUDIO_IME_NEW_PW }}
           PW_ART_DIR: logs/playwright_ime
           STUDIO_UI_STRICT: '1'
