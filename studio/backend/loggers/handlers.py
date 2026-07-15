@@ -110,11 +110,7 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
         return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path.startswith(_QUIET_SUCCESS_PREFIXES)
-    return (
-        pre_auth
-        and status_code == 401
-        and path.startswith(_QUIET_SUCCESS_PREFIXES)
-    )
+    return pre_auth and status_code == 401 and path.startswith(_QUIET_SUCCESS_PREFIXES)
 
 
 class LoggingMiddleware:
