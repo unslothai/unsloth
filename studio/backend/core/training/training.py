@@ -48,9 +48,9 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Stop-watchdog escalation timeouts. Primary trigger is a short grace once "complete"
-# (save done) is seen. The absolute cap is a backstop: long for save=True so a slow
-# save is never killed mid-write, shorter for a cancel that has nothing to save.
+# Stop-watchdog escalation timeouts. Primary trigger: a short grace once "complete"
+# (save done). Absolute cap is a backstop: long for save=True so a slow save is never
+# killed mid-write, shorter for a cancel that has nothing to save.
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
@@ -1021,8 +1021,8 @@ class TrainingBackend:
         while True:
             with self._lock:
                 superseded = self._proc is not target_proc
-                # A cancel has nothing to save, so honor a later cancel (save=False)
-                # by tightening an in-flight save watchdog to the shorter cancel cap.
+                # A later cancel has nothing to save, so tighten an in-flight save
+                # watchdog to the shorter cancel cap.
                 cancelling = cancel or self._cancel_requested
             if superseded or not target_proc.is_alive():
                 return
@@ -1067,30 +1067,25 @@ class TrainingBackend:
         watched_job_id: Optional[str] = None,
     ) -> None:
         """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
-        even if the worker is wedged in driver teardown. No-ops if a new run has already
-        replaced the worker we watched, so a stale watchdog never marks a fresh run
-        stopped or drops its handle. Preserves output_dir so a saved checkpoint is kept.
+        even if the worker is wedged in driver teardown; preserves output_dir so a saved
+        checkpoint is kept. No-ops if a new run already replaced the watched worker, so a
+        stale watchdog never marks a fresh run stopped or drops its handle.
 
-        Supersession is checked on both the watched proc and the watched job id:
-        start_training updates current_job_id before it installs the new _proc, so a
-        stale watchdog entering during that startup window still sees the old (dead)
-        handle and is caught by the job-id guard.
-
-        Once the guards pass, current_job_id is guaranteed to be the watched run, so the
-        run is finalized by that captured id (not the mutable current_job_id). Clearing
-        _proc exposes the backend as idle; a new run starting in that gap gets its own
-        fresh state and is never finalized here, and the old run is still recorded stopped
-        because finish_run targets the captured id."""
+        Supersession is checked on both the watched proc and job id: start_training sets
+        current_job_id before it installs the new _proc, so a stale watchdog entering that
+        startup window still sees the old (dead) handle and is caught by the job-id guard.
+        Past the guards current_job_id is the watched run, so it is finalized by that
+        captured id; clearing _proc exposes idle, and a new run starting in that gap gets
+        fresh state (never finalized here) while the old run is still recorded stopped."""
         with self._lock:
             if target_proc is not None and self._proc is not target_proc:
                 return  # a new run replaced the worker; never touch its state
             if watched_job_id is not None and self.current_job_id != watched_job_id:
                 return  # a new run is already starting up; leave its state alone
             run_id = self.current_job_id  # == watched_job_id; capture before exposing idle
-            # Only claim the finalize when the row already exists. If creation is still in
-            # progress (an early create failed and the pump is retrying it), claiming here
-            # would make the pump's later finalize no-op and strand the row as running, so
-            # leave the finalize to that create-then-finalize path.
+            # Only claim the finalize once the row exists. If creation is still retrying
+            # (an early create failed), claiming here would no-op the pump's later finalize
+            # and strand the row as running, so leave it to that create-then-finalize path.
             do_finalize = bool(run_id) and self._db_run_created and not self._run_finalized
             batch: list = []
             final_step = final_loss = duration = None
@@ -1124,13 +1119,12 @@ class TrainingBackend:
         duration: Optional[float],
         loss_history: list,
     ) -> None:
-        """Record a force-stopped run as finished by its captured id, using state
-        snapshotted under the lock. The stop watchdog uses this so a run whose id is no
-        longer current (a new run started in the gap after the backend went idle) is still
-        finalized. insert_metrics_batch upserts and finish_run is an idempotent UPDATE, so
-        a concurrent pump finalize of the same run is harmless and a different current run
-        is never touched. On a DB error (e.g. a transient SQLite lock), the finalize is
-        unclaimed and the metrics re-queued when the run is still current, so the pump or a
+        """Record a force-stopped run as finished by its captured id, from state snapshotted
+        under the lock, so a run whose id is no longer current (a new run started in the gap
+        after the backend went idle) is still finalized. insert_metrics_batch upserts and
+        finish_run is an idempotent UPDATE, so a concurrent pump finalize of the same run is
+        harmless and a different current run is never touched. On a DB error, the finalize is
+        unclaimed and metrics re-queued only when the run is still current, so the pump or a
         later retry can still record it stopped instead of stranding the row as running."""
         try:
             from storage.studio_db import finish_run, insert_metrics_batch
@@ -1742,11 +1736,10 @@ class TrainingBackend:
             self._finalize_run_in_db(**db_action_kwargs)
 
     def _ensure_db_run_created(self) -> None:
-        """Create the DB row if it doesn't exist yet. A dedicated in-progress flag lets
-        only one caller create at a time, and ``_db_run_created`` is published only after
-        ``create_run`` commits, so a concurrent finalize never runs ``finish_run`` against
-        a not-yet-inserted row (an UPDATE that would touch zero rows and leave the run
-        stuck as running)."""
+        """Create the DB row if it doesn't exist yet. An in-progress flag lets only one
+        caller create at a time, and ``_db_run_created`` is published only after
+        ``create_run`` commits, so a concurrent finalize never runs ``finish_run`` against a
+        not-yet-inserted row (a zero-row UPDATE that would leave the run stuck as running)."""
         with self._lock:
             if (
                 self._db_run_created
@@ -1794,18 +1787,18 @@ class TrainingBackend:
         output_dir: Optional[str] = None,
         expected_job_id: Optional[str] = None,
     ) -> None:
-        """Flush remaining metrics and mark a run as finished in the DB. Claims the
-        finalize under the lock so the watchdog and pump can't double-finalize, and
-        no-ops when ``expected_job_id`` no longer matches (a new run took over). The run
-        id and the final-progress fields are snapshotted under the lock and threaded
-        through the flush/finish calls, so a racing new run started between this claim and
-        the DB writes can't be flushed or marked stopped under the old run's finalize."""
+        """Flush remaining metrics and mark a run finished in the DB. Claims the finalize
+        under the lock so the watchdog and pump can't double-finalize, and no-ops when
+        ``expected_job_id`` no longer matches (a new run took over). The run id and final
+        progress are snapshotted under the lock and threaded through the flush/finish calls,
+        so a new run racing between this claim and the DB writes can't be flushed or marked
+        stopped under the old run's finalize."""
         with self._lock:
             if expected_job_id is not None and self.current_job_id != expected_job_id:
                 return
             if not self.current_job_id or not self._db_run_created or self._run_finalized:
                 return
-            self._run_finalized = True  # claim so only one caller finalizes
+            self._run_finalized = True
             run_id = self.current_job_id
             final_step = self._progress.step
             final_loss = self._progress.loss
@@ -1836,11 +1829,10 @@ class TrainingBackend:
             logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
 
     def _flush_metrics_to_db(self, run_id: Optional[str] = None) -> None:
-        """Flush buffered metrics to the database and update live progress. The target run
-        id, the metric batch, and the progress snapshot are all taken under the lock, so a
-        concurrent flush can't double-remove metrics and a racing new run can't redirect
-        the write to a different job. A finalizer passes ``run_id`` to pin the target to
-        the run it captured."""
+        """Flush buffered metrics to the DB and update live progress. The target run id,
+        metric batch, and progress snapshot are all taken under the lock, so a concurrent
+        flush can't double-remove metrics and a racing new run can't redirect the write to
+        a different job. A finalizer passes ``run_id`` to pin the target to its captured run."""
         with self._lock:
             target = run_id if run_id is not None else self.current_job_id
             if not self._metric_buffer or not target or not self._db_run_created:

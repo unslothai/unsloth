@@ -3,13 +3,12 @@
 
 """Stop-watchdog escalation for a stuck training stop.
 
-A save-stop only signals the worker and waits for it to save and exit. On some
-platforms the worker saves successfully but then wedges in post-save GPU/driver
-teardown and never exits, leaving the run stuck in "Stopping..." forever. These
-tests pin the bounded recovery: the watchdog escalates to force_terminate() a
-short grace after "complete" (save done) or after an absolute timeout (hang during
-save), and never force-kills a worker that exits cleanly on its own. Fakes only;
-no GPU, network, or subprocess.
+A save-stop signals the worker and waits for it to save and exit. On some platforms the
+worker saves but then wedges in post-save GPU/driver teardown and never exits, leaving the
+run stuck in "Stopping..." forever. These tests pin the bounded recovery: the watchdog
+escalates to force_terminate() a short grace after "complete" (save done) or after an
+absolute timeout (hang during save), and never force-kills a worker that exits cleanly.
+Fakes only; no GPU, network, or subprocess.
 """
 
 from __future__ import annotations
@@ -160,8 +159,8 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
 
 
 def test_watchdog_does_not_kill_save_still_saving_within_window(monkeypatch):
-    # save=True, no "complete" yet: a large/slow save is in progress. It must not be
-    # force-killed while inside the (long) absolute window.
+    # save=True, no "complete" yet: a slow save in progress must not be force-killed
+    # inside the (long) absolute window.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
@@ -195,8 +194,8 @@ def test_watchdog_backstop_fires_for_save_after_absolute_timeout(monkeypatch):
 
 
 def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
-    # A cancel has nothing to save, so it escalates on the shorter cancel cap even
-    # when the long save cap has not elapsed.
+    # A cancel has nothing to save, so it escalates on the shorter cancel cap even before
+    # the long save cap elapses.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
     monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
@@ -237,8 +236,8 @@ def test_watchdog_no_op_on_clean_quick_exit(monkeypatch):
 
 
 def test_watchdog_no_op_when_worker_superseded(monkeypatch):
-    # A stale watchdog from a prior run must never kill the worker of a new run:
-    # once self._proc is replaced, it exits silently.
+    # A stale watchdog from a prior run must never kill a new run's worker: once
+    # self._proc is replaced, it exits silently.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 0.05)
     b = TrainingBackend()
@@ -257,8 +256,8 @@ def test_watchdog_no_op_when_worker_superseded(monkeypatch):
 
 
 def test_new_run_gets_its_own_watchdog(monkeypatch):
-    # A stale watchdog still sleeping on an old proc must not stop a new run's stop
-    # from creating its own watcher.
+    # A stale watchdog sleeping on an old proc must not stop a new run's stop from
+    # creating its own watcher.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
@@ -393,10 +392,9 @@ def test_stop_training_starts_watchdog_only_when_worker_alive(monkeypatch):
 
 
 def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
-    # A /start can slip in while the watchdog is force-terminating the old worker
-    # (is_training_active() is False once _should_stop is set and the old proc is
-    # dead). The escalation finalize must then leave the NEW run untouched instead
-    # of dropping its handle and marking it stopped.
+    # A /start can slip in while the watchdog force-terminates the old worker
+    # (is_training_active() is False once _should_stop is set and the old proc is dead).
+    # The escalation finalize must then leave the NEW run untouched, not drop its handle.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a: finstop.append(a))
@@ -416,8 +414,8 @@ def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
 
 
 def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
-    # The common case: the worker we watched is still current, so finalize proceeds
-    # and finalizes the captured run by id.
+    # Common case: the watched worker is still current, so finalize proceeds and
+    # finalizes the captured run by id.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a: finstop.append(a))
@@ -673,9 +671,9 @@ def test_ensure_db_run_created_stays_unpublished_on_failure(monkeypatch):
 
 
 def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
-    # Item A: exercise the real _finish_stopped_run against a fake DB. The watched run is
-    # finalized by its captured id with its buffered metrics, so a new run that starts in
-    # the gap after the backend goes idle can never leave the stopped run recorded running.
+    # Exercise the real _finish_stopped_run against a fake DB. The watched run is finalized
+    # by its captured id with its buffered metrics, so a new run that starts in the gap
+    # after the backend goes idle can never leave the stopped run recorded running.
     recs = _install_fake_db(monkeypatch)
     b = TrainingBackend()
     b.current_job_id = "job_old"
@@ -694,9 +692,9 @@ def test_escalation_finalizes_watched_run_by_id_end_to_end(monkeypatch):
 
 
 def test_escalation_does_not_claim_finalize_before_row_exists(monkeypatch):
-    # Item A (round 4): if the DB row is not created yet (an early create failed and the
-    # pump is retrying it), the escalation must not claim _run_finalized or call
-    # _finish_stopped_run, so the pump's later create-then-finalize still records the run.
+    # If the DB row is not created yet (an early create failed and the pump is retrying),
+    # the escalation must not claim _run_finalized or call _finish_stopped_run, so the
+    # pump's later create-then-finalize still records the run.
     b = TrainingBackend()
     called: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a: called.append(a))
@@ -716,8 +714,8 @@ def test_escalation_does_not_claim_finalize_before_row_exists(monkeypatch):
 
 
 def test_finish_stopped_run_requeues_on_db_error(monkeypatch):
-    # Item B (round 4): a transient DB error must unclaim the finalize and requeue the
-    # drained metrics (when the run is still current) so a later retry can record it stopped.
+    # A transient DB error must unclaim the finalize and requeue the drained metrics
+    # (when the run is still current) so a later retry can record it stopped.
     _install_fake_db(monkeypatch)
     sys.modules["storage.studio_db"].finish_run = lambda **kw: (_ for _ in ()).throw(
         RuntimeError("database is locked")
