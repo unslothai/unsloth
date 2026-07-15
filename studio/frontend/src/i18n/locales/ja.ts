@@ -92,6 +92,8 @@ export const ja = {
       title: "設定",
       description: "Unsloth の環境設定を管理します。",
       closeAriaLabel: "設定を閉じる",
+      searchPlaceholder: "設定を検索…",
+      searchNoResults: "設定が見つかりません。",
     },
     tabs: {
       general: "一般",
@@ -113,7 +115,7 @@ export const ja = {
       showToken: "トークンを表示",
       tokenSaved: "トークンを保存しました",
       password: "パスワード",
-      passwordDescription: "この Studio アカウントのパスワードを変更します。",
+      passwordDescription: "この Unsloth アカウントのパスワードを変更します。",
       passwordDialog: {
         trigger: "パスワード変更",
         title: "パスワード変更",
@@ -226,7 +228,11 @@ export const ja = {
       avatarShape: "プロフィール写真の形状",
       avatarShapeCircle: "円形",
       avatarShapeRounded: "角丸",
-      chooseSloth: "またはナマケモノを選択",
+      greetingSloth: "挨拶にナマケモノを表示",
+      greetingSlothDescription: "チャットの挨拶にナマケモノを表示します。",
+      chooseSloth: "またはナマケモノのプロフィール画像を選択",
+      noPicture: "プロフィール画像なし",
+      noneLabel: "なし",
       nameSaved: "プロフィール名を保存しました",
       namePersistErrorTitle: "プロフィール名を永続化できませんでした",
       namePersistErrorDescription: "名前はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
@@ -247,6 +253,95 @@ export const ja = {
         light: "ライト",
         dark: "ダーク",
       },
+      palette: {
+        label: "カラーパレット",
+        description: "Unsloth 全体で使用される配色。ライト・ダーク両対応。",
+        standard: "スタンダード",
+        classic: "クラシック",
+        minimal: "ミニマル",
+      },
+      custom: {
+        reset: "リセット",
+        resetAll: "カスタマイズをリセット",
+        preferencesTitle: "環境設定",
+        colors: {
+          lightGroup: "ライトテーマ",
+          darkGroup: "ダークテーマ",
+          accent: "アクセント",
+          background: "背景",
+          foreground: "文字色",
+        },
+        fontDefault: "デフォルト",
+        fontBundledGroup: "内蔵",
+        fontImportedGroup: "インポート済み",
+        fontDeviceGroup: "このデバイス",
+        fontFolderGroup: "フォルダから",
+        fontDeviceLoading: "デバイスのフォントを検索中…",
+        fontSearch: "フォントを検索…",
+        fontNoResults: "フォントが見つかりません。",
+        colorPicker: {
+          hue: "色相",
+          hex: "16進カラー",
+          eyedropper: "画面から色を選択",
+        },
+        uiFont: {
+          label: "UI フォント",
+        },
+        headingFont: {
+          label: "見出しフォント",
+        },
+        chatFont: {
+          label: "チャットフォント",
+        },
+        codeFont: {
+          label: "コードフォント",
+        },
+        importFont: {
+          upload: "アップロード",
+          scanFolder: "フォルダを選択",
+          alreadyAvailable: "このフォントは既に利用可能なため、既存のものを使用します。",
+          folderNoFonts: "そのフォルダにフォントファイルが見つかりませんでした。",
+          remove: "削除",
+          errorInvalidType:
+            "サポートされていないファイル形式です。.woff2、.woff、.ttf、.otf を使用してください。",
+          errorTooLarge: "フォントファイルが大きすぎます（最大 1.5 MB）。",
+          errorLimit: "インポートできるフォントは最大 3 つです。",
+          errorStorageFull: "ローカルストレージの空き容量が足りません。先にインポート済みフォントを削除してください。",
+          errorFailed: "このフォントファイルを読み込めませんでした。",
+        },
+        uiFontSize: {
+          label: "UI フォントサイズ",
+          description: "Unsloth UI の基本サイズを調整します。",
+        },
+        codeFontSize: {
+          label: "コードフォントサイズ",
+          description: "コードの基本サイズを調整します。",
+        },
+        fontSmoothing: {
+          label: "フォントスムージング",
+          description: "滑らかなアンチエイリアスを使用します。",
+        },
+        edgeFades: {
+          label: "エッジのフェード",
+          description: "パネル端でコンテンツをフェードします。オフにすると細い区切り線を表示します。",
+        },
+        contrast: {
+          label: "コントラスト",
+          description: "枠線と補助テキストの強さ。",
+        },
+        reduceMotion: {
+          label: "モーションを減らす",
+          description: "アニメーションを減らすか、システム設定に従います。",
+          system: "システム",
+          on: "オン",
+          off: "オフ",
+        },
+        pointerCursors: {
+          label: "ポインターカーソルを使用",
+          description:
+            "操作可能な要素にカーソルを合わせたときにポインターに変更します。",
+        },
+      },
       language: {
         title: "言語",
         label: "表示言語",
@@ -257,6 +352,13 @@ export const ja = {
         title: "レイアウト",
         compactSidebar: "デフォルトでサイドバーを固定",
         compactSidebarDescription: "サイドバーをアイコンに折りたたまず、展開したままにします。",
+      },
+      sidebarMenu: {
+        title: "サイドバーメニュー",
+        description:
+          "サイドバーのプロフィールメニュー項目の表示と並び順を変更します。設定、ヘルプ、ログアウト、シャットダウンは固定です。",
+        darkModeToggle: "ダークモード切り替え",
+        dragToReorder: "ドラッグして並べ替え",
       },
     },
     resources: {
