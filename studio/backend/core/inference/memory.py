@@ -158,7 +158,7 @@ _COMMAND_RE = re.compile(
     re.I,
 )
 _FORGET_RE = re.compile(
-    _POLITE_COMMAND_PREFIX + r"forget(?:\s+that)?\s+(.+?)(?:\s*,?\s+please)?[?.]?\s*$",
+    _POLITE_COMMAND_PREFIX + r"forget(?:\s+(?:that|about))?\s+(.+?)(?:\s*,?\s+please)?[?.]?\s*$",
     re.I,
 )
 _MEMORY_DELETE_RE = re.compile(
@@ -177,7 +177,6 @@ _MEMORY_DELETE_INTENT_RE = re.compile(
     _POLITE_COMMAND_PREFIX + r"(?:remove|delete)\b[^\n]*\bmemor(?:y|ies)\b[^\n]*$",
     re.I,
 )
-_FORGET_INTENT_RE = re.compile(r"\bforget\b", re.I)
 _DIRECT_RE = re.compile(
     r"^\s*(?:i (?:prefer|like|use)|i work (?:as|at|with|on)|my preference|"
     r"we (?:use|prefer)|this (?:project|repo|app) (?:uses|is))\b(.+)",
@@ -705,9 +704,7 @@ def _is_forget_intent(text: str) -> bool:
         "\n" not in text
         and "```" not in text
         and (
-            _forget_target(text) is not None
-            or _FORGET_INTENT_RE.search(text) is not None
-            or _MEMORY_DELETE_INTENT_RE.fullmatch(text) is not None
+            _forget_target(text) is not None or _MEMORY_DELETE_INTENT_RE.fullmatch(text) is not None
         )
     )
 

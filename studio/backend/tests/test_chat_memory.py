@@ -256,6 +256,7 @@ def test_explicit_commands_accept_optional_please(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "command",
     (
+        "forget about my phone number",
         "forget my phone number",
         "Can you forget my phone number?",
         "Can you please forget my phone number?",
@@ -390,6 +391,30 @@ def test_forget_command_skips_recall(tmp_path, monkeypatch):
     )
 
     assert memory.recall_context("thread", "message") is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "I forget how to configure dark mode",
+        "don't forget to use dark mode",
+    ),
+)
+def test_non_command_forget_wording_keeps_recall(tmp_path, monkeypatch, message):
+    _setup_source(tmp_path, monkeypatch)
+    saved = memory.create_memory(content = "Use dark mode", scope = "global")
+    monkeypatch.setattr(
+        memory,
+        "get_chat_message",
+        lambda *_: {
+            "threadId": "thread",
+            "role": "user",
+            "content": [{"type": "text", "text": message}],
+        },
+    )
+
+    context = memory.recall_context("thread", "message")
+    assert context is not None and saved["content"] in context
 
 
 def test_remember_command_skips_recall(tmp_path, monkeypatch):

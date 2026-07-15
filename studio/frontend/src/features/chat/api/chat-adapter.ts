@@ -2569,13 +2569,11 @@ export function createOpenAIStreamAdapter(
         : "";
       await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
       const memoryRuntime = useChatRuntimeStore.getState();
+      const memoryThreadId = memoryRuntime.activeThreadId || undefined;
       const memoryScope =
-        !options.pairId &&
-        resolvedThreadId &&
-        memoryRuntime.activeThreadId === resolvedThreadId &&
-        ownsThread(resolvedThreadId)
+        !options.pairId && memoryThreadId && ownsThread(memoryThreadId)
           ? await resolveForegroundMemoryScope({
-              threadId: resolvedThreadId,
+              threadId: memoryThreadId,
               sourceMessageId: latestUserMessage?.id,
               referenceMemories: memoryRuntime.referenceMemories,
               autoSaveMemories: memoryRuntime.autoSaveMemories,
