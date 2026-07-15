@@ -1405,6 +1405,13 @@ _BINARY_MAGIC = (
     b"\x28\xb5\x2f\xfd",  # zstd
 )
 
+# Undeclared legacy Western text should have substantial ASCII structure even
+# when its non-ASCII bytes are cp1252. Requiring at least 75% ASCII text bytes
+# prevents arbitrary high-byte binary from becoming printable-looking gibberish
+# merely because cp1252 defines a character for nearly every byte.
+_MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
+_ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
+
 
 def _looks_binary(text: str) -> bool:
     """True when more than 1/_BINARY_CHAR_DIVISOR of ``text`` is binary chars
@@ -1412,6 +1419,13 @@ def _looks_binary(text: str) -> bool:
     return len(_BINARY_CHAR_RE.findall(text)) > max(
         _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
     )
+
+def _has_single_byte_text_evidence(data: bytes) -> bool:
+    """True when *data* has enough ASCII structure for a cp1252 text retry."""
+    if not data:
+        return True
+    ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
+    return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
 
 
 _USER_AGENTS = (
@@ -1522,15 +1536,18 @@ _TEXT_APPLICATION_SUBTYPES = frozenset(
 
 
 def _is_texty_content_type(content_type: str | None) -> bool:
-    """True for MIME types safe to decode as text (HTML pages, plain text,
-    JSON/XML/YAML feeds). Binary types (PDF, images, archives, Office/ZIP,
-    octet-stream) return False so the fetcher never decodes them into a flood of
-    replacement chars that poison the model context (unslothai/unsloth#7084).
+    """True for MIME types safe to decode or inspect as possible text.
+
+    This includes HTML, plain text, JSON/XML/YAML feeds, and generic
+    ``application/octet-stream`` downloads whose bytes must be sniffed. Known
+    binary types (PDF, images, archives, Office/ZIP) return False so the fetcher
+    never decodes them into replacement chars that poison the model context
+    (unslothai/unsloth#7084).
 
     A missing Content-Type coerces to ``text/plain`` upstream, so unlabeled
     bodies pass here and are caught instead by the binary-char fallback.
     """
-    ct = (content_type or "").lower()
+    ct = (content_type or "").partition(";")[0].strip().lower()
     if not ct:
         return True  # unlabeled: let the binary-char fallback decide
     if ct.startswith("text/"):
@@ -1540,7 +1557,11 @@ def _is_texty_content_type(content_type: str | None) -> bool:
         # application/vnd.openxmlformats-... isn't read as xml. RFC 6839
         # +json/+xml suffixes (ld+json, xhtml+xml, ...) pass too.
         subtype = ct[len("application/") :].removeprefix("x-")
-        return subtype in _TEXT_APPLICATION_SUBTYPES or subtype.endswith(("+json", "+xml"))
+        return (
+            subtype == "octet-stream"
+            or subtype in _TEXT_APPLICATION_SUBTYPES
+            or subtype.endswith(("+json", "+xml"))
+        )
     return False
 
 
@@ -1648,9 +1669,14 @@ def _fetch_page_text(
         # without replacement chars: a real text page has few binary chars.
         if _looks_binary(raw_html):
             # An undeclared non-UTF-8 page (latin-1/cp1252) also decodes to many
-            # U+FFFD. Retry as cp1252 (maps almost every byte to a printable
-            # char): if that reads as text it was a charset mismatch, not binary.
-            alt = raw_bytes.decode("cp1252", "replace") if declared is None else None
+            # U+FFFD. Retry as cp1252 only when the bytes have substantial ASCII
+            # text structure; otherwise high-byte binary would become printable
+            # looking gibberish because cp1252 maps nearly every byte.
+            alt = (
+                raw_bytes.decode("cp1252", "replace")
+                if declared is None and _has_single_byte_text_evidence(raw_bytes)
+                else None
+            )
             if alt is not None and not _looks_binary(alt):
                 raw_html = alt
             else:

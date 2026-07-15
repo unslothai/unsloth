@@ -2,10 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Regression for unslothai/unsloth#7084: the web_search fetcher must not decode
-a binary body (PDF, image, octet-stream) into a flood of U+FFFD replacement
-chars that poison the model context. It rejects non-text Content-Types up front
-and, for binary mislabeled as text/* or sent unlabeled, falls back to a
-replacement-char ratio check. Real HTML pages are unaffected.
+a binary body into control characters or a flood of U+FFFD replacement chars
+that poison the model context. It rejects known binary Content-Types up front
+and sniffs generic, mislabeled, or unlabeled bodies. Real text is unaffected.
 """
 
 from __future__ import annotations
@@ -68,6 +67,7 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         ("text/html", True),
         ("text/plain; charset=utf-8", True),
         ("application/json", True),
+        ("application/json; charset=utf-8", True),
         ("application/xml", True),
         ("application/xhtml+xml", True),
         ("application/ld+json", True),
@@ -78,7 +78,8 @@ def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
         ("application/pdf", False),
         ("image/png", False),
         ("image/svg+xml", False),  # SVG source isn't extracted downstream; reject
-        ("application/octet-stream", False),
+        # Generic downloads need byte sniffing because they can contain text.
+        ("application/octet-stream", True),
         ("application/zip", False),
         # A .docx ZIP must not pass just because "xml" is inside "openxmlformats".
         ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", False),
@@ -103,6 +104,18 @@ def test_image_rejected_by_content_type(monkeypatch):
     out = _fetch_with(monkeypatch, b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4, "image/png")
     assert "�" not in out
     assert "non-text content" in out and "image/png" in out
+
+
+def test_text_octet_stream_kept_after_sniffing(monkeypatch):
+    body = b"level=info\nmessage=plain text artifact\n" * 100
+    out = _fetch_with(monkeypatch, body, "application/octet-stream")
+    assert "plain text artifact" in out
+    assert "non-text content" not in out and "binary content" not in out
+
+
+def test_binary_octet_stream_rejected_after_sniffing(monkeypatch):
+    out = _fetch_with(monkeypatch, bytes(range(256)) * 20, "application/octet-stream")
+    assert "binary content" in out
 
 
 def test_binary_mislabeled_as_text_caught_by_fallback(monkeypatch):
@@ -164,6 +177,14 @@ def test_control_heavy_binary_survives_cp1252_retry(monkeypatch):
     assert "binary content" in out
 
 
+def test_high_byte_binary_not_rescued_as_cp1252(monkeypatch):
+    # cp1252 maps almost every high byte to a printable character. Without the
+    # ASCII-structure requirement, this binary payload would be returned as text.
+    body = bytes(range(0xA0, 0x100)) * 40
+    out = _fetch_with(monkeypatch, body, "text/plain")
+    assert "binary content" in out
+
+
 def test_ansi_colored_text_log_kept(monkeypatch):
     # A text log with per-token ANSI color codes is text; ESC is excluded from
     # the binary-char set so it isn't dropped as binary.
@@ -189,12 +210,10 @@ def test_html_page_unaffected(monkeypatch):
 def test_content_type_sanitized_in_message(monkeypatch):
     # An obs-folded Content-Type can smuggle control chars into get_content_type();
     # the returned message must be trimmed to a clean MIME token.
-    out = _fetch_with(
-        monkeypatch, b"\x00\x01\x02" * 500, "application/octet-stream\r\n data: injected"
-    )
+    out = _fetch_with(monkeypatch, b"\x00\x01\x02" * 500, "application/pdf\r\n data: injected")
     assert "\n" not in out and "\r" not in out
     assert "injected" not in out
-    assert "application/octet-stream" in out
+    assert "application/pdf" in out
 
 
 @pytest.mark.parametrize(
@@ -206,7 +225,7 @@ def test_content_type_sanitized_in_message(monkeypatch):
         (130, 1000, True),  # 130 >  1000//8 (125) -> binary
     ],
 )
-def test_replacement_ratio_boundary(monkeypatch, n_bad, n_total, expect_binary):
+def test_binary_char_ratio_boundary(monkeypatch, n_bad, n_total, expect_binary):
     # Body of n_total chars: n_bad NUL control bytes + ASCII filler. NUL stays
     # binary through the cp1252 retry, so only the ratio threshold decides here.
     body = b"\x00" * n_bad + b"a" * (n_total - n_bad)
