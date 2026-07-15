@@ -8,14 +8,20 @@ import type { InterpolationValues } from "./types";
 import type { TranslationKey } from "./messages";
 
 export {
+  AUTO_LOCALE,
   DEFAULT_LOCALE,
+  DEFAULT_LOCALE_PREFERENCE,
   LOCALE_STORAGE_KEY,
   getLocale,
+  getLocalePreference,
   initializeLocale,
+  isLocalePreference,
   setLocale,
   subscribeLocale,
   useLocale,
+  useLocalePreference,
 } from "./locale-store";
+export type { LocalePreference } from "./locale-store";
 export {
   LOCALES,
   isSupportedLocale,

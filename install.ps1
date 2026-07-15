@@ -91,6 +91,7 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
+        throw $Message
     }
 
     # ── Parse flags ──

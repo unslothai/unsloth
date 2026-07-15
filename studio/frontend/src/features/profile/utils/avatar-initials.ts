@@ -8,18 +8,16 @@ export function initialsFromName(name: string): string {
 }
 
 /**
- * Default Unsloth-brand background for the avatar fallback (readable white text).
+ * Accent background for the avatar fallback with a readable foreground.
  *
- * Uses the shared `--primary` design token instead of a one-off hardcoded
- * shade, so the avatar always matches the app's general brand green (send
- * button, primary buttons, etc.). It previously hardcoded a slightly different
- * `#14b789`, which looked inconsistent next to primary-colored UI such as the
- * artifact preview/code panel.
- *
- * The literal fallback (the current `--primary` value) only applies if this
- * reusable avatar is ever rendered outside the theme root, where `--primary`
- * is undefined -- it keeps the avatar branded instead of transparent.
+ * Uses `--control-accent`, the token behind toggles and badges, so the
+ * avatar follows the palette accent (green in standard, blue in classic)
+ * and any custom accent the user picks in Appearance. The literals only
+ * apply outside the theme root, keeping the avatar branded there.
  */
-export function avatarBgStyle(): { backgroundColor: string } {
-  return { backgroundColor: "var(--primary, #17b88b)" };
+export function avatarBgStyle(): { backgroundColor: string; color: string } {
+  return {
+    backgroundColor: "var(--control-accent, #17b88b)",
+    color: "var(--control-accent-foreground, #ffffff)",
+  };
 }
