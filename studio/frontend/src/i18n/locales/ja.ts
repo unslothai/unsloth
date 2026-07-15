@@ -321,10 +321,6 @@ export const ja = {
           label: "フォントスムージング",
           description: "滑らかなアンチエイリアスを使用します。",
         },
-        edgeFades: {
-          label: "エッジのフェード",
-          description: "パネル端でコンテンツをフェードします。オフにすると細い区切り線を表示します。",
-        },
         contrast: {
           label: "コントラスト",
           description: "枠線と補助テキストの強さ。",
