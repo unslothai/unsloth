@@ -3867,6 +3867,17 @@ _NOT_SUPPORTED_HINTS = (
     "does not support",
 )
 
+_NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
+    "We are working on supporting NVFP4 inference. For now it is not supported"
+)
+
+
+def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
+    """Whether ``msg`` is the verbose MLX per-module metadata error emitted
+    while loading an NVFP4 checkpoint."""
+    lower_msg = msg.lower()
+    return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
+
 
 def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
@@ -4557,8 +4568,17 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Lost the spawn-time race to a sidecar install/repair: retryable 409.
             raise HTTPException(status_code = 409, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
+        redacted_msg = redact_native_paths(str(e))
+        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+            logger.warning(
+                "NVFP4 inference is not supported yet while loading '%s'",
+                model_log_label,
+            )
+            raise HTTPException(
+                status_code = 500,
+                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+            )
         if native_grant_backed:
-            redacted_msg = redact_native_paths(str(e))
             logger.error(
                 "Error loading native model %s: %s",
                 model_log_label,
@@ -4570,7 +4590,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 detail = f"Failed to load native model {model_log_label}: {msg}",
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = _maybe_unsupported_message(redact_native_paths(str(e)))
+        msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
