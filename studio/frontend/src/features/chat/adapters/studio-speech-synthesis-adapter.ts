@@ -206,6 +206,11 @@ function speakWithStudioModel(
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
+      // Some browsers reset playbackRate to 1 once the source loads; reapply
+      // it on loadedmetadata so the speed setting reliably takes effect.
+      audio.addEventListener("loadedmetadata", () => {
+        if (audio) audio.playbackRate = ttsRate;
+      });
       audio.addEventListener("ended", () => {
         cleanup();
         handleEnd("finished");
