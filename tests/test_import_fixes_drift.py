@@ -786,6 +786,15 @@ def _live_c10d_functional_ops():
     return sorted({n.split("::", 1)[1] for n in get_ops() if n.startswith("_c10d_functional::")})
 
 
+def _live_dtensor_ops():
+    import torch
+
+    get_ops = getattr(torch._C, "_dispatch_get_all_op_names", None)
+    if not callable(get_ops):
+        pytest.skip("dispatcher op enumeration unavailable")
+    return sorted({n.split("::", 1)[1] for n in get_ops() if n.startswith("_dtensor::")})
+
+
 def test_torchao_rocm_shim_schema_table_matches_installed_torch():
     """The `_c10d_functional` schema table must exactly match the ops the installed
     torch registers (op set + canonical schema strings). A minor with no row means the
@@ -826,6 +835,50 @@ def test_torchao_rocm_shim_schema_table_matches_installed_torch():
         name = _schema_op_name(s)
         assert str(parsed) == real[name], (
             f"DRIFT DETECTED: torchao shim schema for _c10d_functional::{name}\n"
+            f"  shim:  {parsed}\n  torch: {real[name]}"
+        )
+
+
+def test_torchao_rocm_shim_dtensor_schema_matches_installed_torch():
+    """The `_dtensor` schema table must exactly match the ops the installed torch registers.
+    torchao's `from torch.distributed._tensor import DTensor` runs
+    `register_fake("_dtensor::shard_dim_alltoall")` at import, which raises unless the op is
+    defined, so the shim must define this namespace too (not only _c10d_functional)."""
+    from unsloth.import_fixes import _DTENSOR_SCHEMAS, _schema_op_name
+
+    import torch
+
+    native = _live_dtensor_ops()
+    if not native:
+        pytest.skip("no native _dtensor ops (distributed-less torch build).")
+
+    minor = _torch_minor_tuple()
+    schemas = _DTENSOR_SCHEMAS.get(minor)
+    if schemas is None:
+        pytest.skip(
+            f"no shim _dtensor row for torch {minor}; fix_torchao_windows_rocm_import "
+            f"fail-closes here (safe). Add a reviewed tuple to enable it (ops: {native})."
+        )
+
+    table_ops = sorted(_schema_op_name(s) for s in schemas)
+    assert table_ops == native, (
+        f"DRIFT DETECTED: torchao shim _dtensor table for torch {minor} lists {table_ops} "
+        f"but the installed torch registers {native}. Update _DTENSOR_SCHEMAS."
+    )
+
+    parse = getattr(torch._C, "parse_schema", None)
+    if not callable(parse):
+        return
+    real = {}
+    for op in native:
+        packet = getattr(torch.ops._dtensor, op)
+        overload = packet.overloads()[0]
+        real[op] = str(getattr(packet, overload)._schema)
+    for s in schemas:
+        parsed = parse(f"_dtensor::{s}")  # must not raise
+        name = _schema_op_name(s)
+        assert str(parsed) == real[name], (
+            f"DRIFT DETECTED: torchao shim schema for _dtensor::{name}\n"
             f"  shim:  {parsed}\n  torch: {real[name]}"
         )
 
@@ -929,9 +982,15 @@ def test_torchao_rocm_shim_source_has_guards_fragment_and_rollback():
     src = inspect.getsource(import_fixes.fix_torchao_windows_rocm_import)
     assert "win32" in src, "missing win32 guard"
     assert "hip" in src, "missing torch.version.hip guard"
+    assert '"rocm" in' in src, (
+        "shim ROCm detection must also accept a 'rocm'-tagged __version__ wheel (parity with "
+        "the Studio is_win32_rocm() helper), not gate on torch.version.hip alone"
+    )
     assert "is_available()" in src, "missing is_available() guard"
     assert '"FRAGMENT"' in src, "shim must register with FRAGMENT, not DEF"
     assert '"_c10d_functional", "DEF"' not in src, "shim must never DEF _c10d_functional"
+    assert '"_dtensor", "DEF"' not in src, "shim must never DEF _dtensor"
+    assert '"_dtensor"' in src, "shim must also register the _dtensor namespace"
     assert "_destroy" in src, "missing rollback via Library._destroy"
 
 
