@@ -120,6 +120,11 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
     assert models_route._is_hidden_model(
         None, "/hf/models--ggml-org--models/snapshots/abc/tinyllamas/stories260K.gguf"
     )
+    # A Windows-style snapshot path must match too, even on a POSIX interpreter
+    # (the filename check splits on both separators).
+    assert models_route._is_hidden_model(
+        r"C:\Users\u\.cache\huggingface\hub\models--ggml-org--models\snapshots\abc\tinyllamas\stories260K.gguf"
+    )
     assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")
     # The exact-filename needle must not hide a real repo that merely
     # references stories260K in its name.

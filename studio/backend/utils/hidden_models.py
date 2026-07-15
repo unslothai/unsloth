@@ -71,8 +71,10 @@ def is_hidden_model(*values: str | None) -> bool:
             continue
         # Anything else is treated as a filesystem path (the cached snapshot
         # path, or a local model id). Match the probe by its exact filename and
-        # any configured local-path embedder by exact resolved path.
-        if Path(low).name == _PROBE_FILENAME:
+        # any configured local-path embedder by exact resolved path. Split on
+        # both separators so a Windows-style path ("...\\stories260K.gguf") is
+        # matched even when this runs on a POSIX interpreter (and vice versa).
+        if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
             return True
         if exact_paths:
             resolved = _safe_resolve(Path(v).expanduser())
