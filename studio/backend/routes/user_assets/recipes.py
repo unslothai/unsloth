@@ -35,6 +35,7 @@ def _recipe_input(payload: RecipeCreateRequest | RecipeUpdateRequest) -> dict:
     return payload.model_dump(
         exclude = {"revision", "createdAt", "updatedAt"},
         exclude_none = False,
+        exclude_unset = isinstance(payload, RecipeUpdateRequest),
     )
 
 

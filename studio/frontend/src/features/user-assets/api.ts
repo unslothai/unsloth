@@ -140,9 +140,13 @@ export async function listServerRecipes<TPayload>(): Promise<
   return response.recipes;
 }
 
-export function getServerRecipe<TPayload>(id: string) {
+export function getServerRecipe<TPayload>(
+  id: string,
+  options: { signal?: AbortSignal } = {},
+) {
   return requestJson<RecipeAssetRecord<TPayload>>(
     `/recipes/${assetPathSegment(id)}`,
+    { signal: options.signal },
   );
 }
 

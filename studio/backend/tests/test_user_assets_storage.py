@@ -4,6 +4,8 @@
 import pytest
 
 from core.user_assets_validation import UserAssetValidationError
+from models.user_assets import RecipeUpdateRequest
+from routes.user_assets.recipes import _recipe_input
 from storage import studio_db, user_assets_db
 from utils.paths import studio_db_path
 
@@ -64,6 +66,87 @@ def test_execution_timestamps_remain_monotonic_across_clock_rollback(monkeypatch
         user_assets_db.upsert_recipe_execution(
             "owner", "r1", "bad", execution("bad", createdAt = 100, finishedAt = 99)
         )
+
+
+def test_recipe_update_preserves_omitted_learning_linkage_and_can_clear_it():
+    inserted = user_assets_db.create_recipe(
+        "owner",
+        {
+            **recipe(),
+            "learningRecipeId": "learning-1",
+            "learningRecipeTitle": "Learning Recipe",
+        },
+    )
+
+    updated = user_assets_db.update_recipe(
+        "owner",
+        "r1",
+        {"name": "Edited", "payload": {"nodes": [{"id": "node-1"}]}},
+        inserted["revision"],
+    )
+    assert updated["learningRecipeId"] == "learning-1"
+    assert updated["learningRecipeTitle"] == "Learning Recipe"
+
+    cleared = user_assets_db.update_recipe(
+        "owner",
+        "r1",
+        {
+            "name": "Unlinked",
+            "payload": updated["payload"],
+            "learningRecipeId": None,
+            "learningRecipeTitle": None,
+        },
+        updated["revision"],
+    )
+    assert cleared["learningRecipeId"] is None
+    assert cleared["learningRecipeTitle"] is None
+
+
+def test_recipe_update_request_distinguishes_omitted_links_from_explicit_nulls():
+    common = {"name": "Edited", "payload": {"nodes": []}, "revision": 1}
+    omitted = _recipe_input(RecipeUpdateRequest(**common))
+    cleared = _recipe_input(
+        RecipeUpdateRequest(
+            **common,
+            learningRecipeId = None,
+            learningRecipeTitle = None,
+        )
+    )
+
+    assert "learningRecipeId" not in omitted
+    assert "learningRecipeTitle" not in omitted
+    assert cleared["learningRecipeId"] is None
+    assert cleared["learningRecipeTitle"] is None
+
+
+def test_legacy_recipe_updated_at_is_validated_preserved_and_ordered():
+    imported = user_assets_db.import_legacy_assets(
+        "owner",
+        "recipe-indexeddb-v1",
+        [
+            {**recipe("exact"), "createdAt": 100, "updatedAt": 200},
+            {**recipe("before-created"), "createdAt": 300, "updatedAt": 200},
+            {**recipe("fallback"), "createdAt": 400},
+            {**recipe("invalid"), "createdAt": 100, "updatedAt": "200"},
+        ],
+        [],
+    )
+
+    assert [result["outcome"] for result in imported["recipes"]] == [
+        "imported",
+        "imported",
+        "imported",
+        "rejected",
+    ]
+    assert imported["recipes"][-1]["reason"] == "invalid_timestamp"
+    assert user_assets_db.get_recipe("owner", "exact")["updatedAt"] == 200
+    assert user_assets_db.get_recipe("owner", "before-created")["updatedAt"] == 300
+    assert user_assets_db.get_recipe("owner", "fallback")["updatedAt"] == 1_800_000_000_000
+    assert [record["id"] for record in user_assets_db.list_recipes("owner")] == [
+        "fallback",
+        "before-created",
+        "exact",
+    ]
 
 
 def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):

@@ -28,6 +28,22 @@ def test_exact_private_and_access_key_names_are_rejected_and_redacted(key):
     assert paths == [f"$.credentials.{key}"]
 
 
+@pytest.mark.parametrize("key", ["secret_key", "secretKey"])
+def test_normalized_secret_key_aliases_are_rejected_and_redacted(key):
+    payload = {"credentials": {key: "secret"}}
+    with pytest.raises(UserAssetValidationError, match = "secret fields"):
+        validate_recipe_payload(payload)
+    clean, paths = validate_recipe_payload(payload, legacy = True)
+    assert clean == {"credentials": {}}
+    assert paths == [f"$.credentials.{key}"]
+
+
+def test_explicitly_safe_secret_looking_key_still_round_trips():
+    payload = {"provider": {"api_key_env": "PROVIDER_API_KEY"}}
+    assert validate_recipe_payload(payload) == payload
+    assert validate_recipe_payload(payload, legacy = True) == (payload, [])
+
+
 @pytest.mark.parametrize(
     "credential_key",
     [

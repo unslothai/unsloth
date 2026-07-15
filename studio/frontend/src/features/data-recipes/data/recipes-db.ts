@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthSubjectKey } from "@/features/auth";
+import {
+  getAuthSubjectKey,
+  subscribeAuthSubject,
+} from "@/features/auth";
 import { createEmptyRecipePayload } from "@/features/recipe-studio";
 import {
   createServerRecipe,
@@ -20,7 +23,12 @@ import {
   SAFE_SECRET_LOOKING_KEYS,
 } from "@/features/user-assets/persistence-policy";
 import { normalizeNonEmptyName } from "@/utils";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { RecipeRecord, SaveRecipeInput } from "../types";
 
 const recentRecipeCache = new Map<string, RecipeRecord>();
@@ -160,10 +168,13 @@ export async function listRecipes(): Promise<RecipeRecord[]> {
   return records;
 }
 
-export async function getRecipe(id: string): Promise<RecipeRecord | undefined> {
+export async function getRecipe(
+  id: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<RecipeRecord | undefined> {
   const subject = getAuthSubjectKey();
   try {
-    const record = await getServerRecipe<RecipeRecord["payload"]>(id);
+    const record = await getServerRecipe<RecipeRecord["payload"]>(id, options);
     assertSubjectUnchanged(subject);
     primeRecipeCacheForSubject(subject, record);
     return record;
@@ -258,14 +269,27 @@ export function useRecipes(): {
   error: Error | null;
   refresh: () => void;
 } {
-  const [recipes, setRecipes] = useState<RecipeRecord[]>([]);
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const refresh = useCallback(
-    () => setRefreshVersion((value) => value + 1),
-    [],
+  const subject = useSyncExternalStore(
+    subscribeAuthSubject,
+    getAuthSubjectKey,
+    getAuthSubjectKey,
   );
+  const [loadState, setLoadState] = useState<{
+    subject: string;
+    recipes: RecipeRecord[];
+    ready: boolean;
+    error: Error | null;
+  }>(() => ({ subject, recipes: [], ready: false, error: null }));
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const refresh = useCallback(() => {
+    const currentSubject = getAuthSubjectKey();
+    setLoadState((current) =>
+      current.subject === currentSubject
+        ? { ...current, ready: false, error: null }
+        : current,
+    );
+    setRefreshVersion((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     repositoryListeners.add(refresh);
@@ -274,11 +298,12 @@ export function useRecipes(): {
     };
   }, [refresh]);
 
-  // refreshVersion is intentionally an imperative reload trigger.
+  // refreshVersion is intentionally an imperative reload trigger. The auth
+  // subject is also a dependency so data from one account can never satisfy a
+  // different account's view.
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     let active = true;
-    const subject = getAuthSubjectKey();
     listRecipes()
       .then((records) => {
         if (!active || getAuthSubjectKey() !== subject) {
@@ -287,26 +312,29 @@ export function useRecipes(): {
         for (const recipe of records) {
           primeRecipeCacheForSubject(subject, recipe);
         }
-        setRecipes(records);
-        setError(null);
-        setReady(true);
+        setLoadState({ subject, recipes: records, error: null, ready: true });
       })
       .catch((caught: unknown) => {
         if (!active || getAuthSubjectKey() !== subject) {
           return;
         }
-        setRecipes([]);
-        setError(
-          caught instanceof Error
-            ? caught
-            : new Error("Failed to load recipes."),
-        );
-        setReady(true);
+        setLoadState({
+          subject,
+          recipes: [],
+          error:
+            caught instanceof Error
+              ? caught
+              : new Error("Failed to load recipes."),
+          ready: true,
+        });
       });
     return () => {
       active = false;
     };
-  }, [refreshVersion]);
+  }, [refreshVersion, subject]);
 
-  return { recipes, ready, error, refresh };
+  if (loadState.subject !== subject) {
+    return { recipes: [], ready: false, error: null, refresh };
+  }
+  return { ...loadState, refresh };
 }

@@ -12,6 +12,7 @@
     "set_cookie",
     "password",
     "secret",
+    "secret_key",
     "private_key",
     "access_key",
     "access_key_id",

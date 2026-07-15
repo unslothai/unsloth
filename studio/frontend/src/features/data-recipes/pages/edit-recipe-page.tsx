@@ -3,6 +3,10 @@
 
 import { Button } from "@/components/ui/button";
 import {
+  getAuthSubjectKey,
+  subscribeAuthSubject,
+} from "@/features/auth";
+import {
   RecipeStudioPage,
   readLegacyRecipeExecutions,
   type RecipePayload,
@@ -10,7 +14,12 @@ import {
 import { importLegacyUserAssetsFromIndexedDb } from "@/features/user-assets";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { readLegacyRecipes } from "../data/legacy-recipes-db";
 import {
   getCachedRecipe,
@@ -24,19 +33,28 @@ type EditRecipePageProps = {
   recipeId: string;
 };
 
-type LoadState =
-  | { status: "loading" }
-  | { status: "missing" }
-  | { status: "ready"; record: RecipeRecord };
+type LoadState = {
+  subject: string;
+  recipeId: string;
+  reloadVersion: number;
+} &
+  (
+    | { status: "loading" }
+    | { status: "missing" }
+    | { status: "error"; error: Error }
+    | { status: "ready"; record: RecipeRecord }
+  );
 
 function RecipeLoadState({
   title,
   description,
   onBack,
+  onRetry,
 }: {
   title: string;
   description: string;
   onBack: () => void;
+  onRetry?: () => void;
 }): ReactElement {
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
@@ -44,9 +62,16 @@ function RecipeLoadState({
         <div className="w-full rounded-2xl border bg-card p-8 text-center">
           <h1 className="text-lg font-semibold">{title}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{description}</p>
-          <Button type="button" variant="outline" className="mt-5" onClick={onBack}>
-            Back to Recipes
-          </Button>
+          <div className="mt-5 flex justify-center gap-2">
+            {onRetry ? (
+              <Button type="button" onClick={onRetry}>
+                Try Again
+              </Button>
+            ) : null}
+            <Button type="button" variant="outline" onClick={onBack}>
+              Back to Recipes
+            </Button>
+          </div>
         </div>
       </main>
     </div>
@@ -55,55 +80,85 @@ function RecipeLoadState({
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
   const navigate = useNavigate();
+  const subject = useSyncExternalStore(
+    subscribeAuthSubject,
+    getAuthSubjectKey,
+    getAuthSubjectKey,
+  );
+  const [reloadVersion, setReloadVersion] = useState(0);
   const [loadState, setLoadState] = useState<LoadState>(() => {
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
-      return { status: "ready", record: cachedRecipe };
+      return {
+        status: "ready",
+        subject,
+        recipeId,
+        reloadVersion,
+        record: cachedRecipe,
+      };
     }
-    return { status: "loading" };
+    return { status: "loading", subject, recipeId, reloadVersion };
   });
 
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
-    const cachedRecipe = getCachedRecipe(recipeId);
-    if (cachedRecipe) {
-      setLoadState({ status: "ready", record: cachedRecipe });
-    } else {
-      setLoadState({ status: "loading" });
-    }
 
-    void getRecipe(recipeId).then(async (serverRecord) => {
-      let record = serverRecord;
-      if (!record) {
-        try {
-          await importLegacyUserAssetsFromIndexedDb({
-            readRecipes: readLegacyRecipes,
-            readExecutions: readLegacyRecipeExecutions,
-            signal: controller.signal,
-          });
-        } catch (error) {
+    void (async () => {
+      try {
+        let record = await getRecipe(recipeId, {
+          signal: controller.signal,
+        });
+        if (!record) {
+          try {
+            await importLegacyUserAssetsFromIndexedDb({
+              readRecipes: readLegacyRecipes,
+              readExecutions: readLegacyRecipeExecutions,
+              signal: controller.signal,
+            });
+          } catch (error) {
+            if (!controller.signal.aborted) {
+              console.warn("Legacy recipe import failed:", error);
+            }
+          }
           if (!controller.signal.aborted) {
-            console.warn("Legacy recipe import failed:", error);
+            record = await getRecipe(recipeId, {
+              signal: controller.signal,
+            });
           }
         }
-        if (!controller.signal.aborted) {
-          record = await getRecipe(recipeId);
+        if (!active || controller.signal.aborted) return;
+        if (!record) {
+          setLoadState({ status: "missing", subject, recipeId, reloadVersion });
+          return;
         }
+        primeRecipeCache(record);
+        setLoadState({
+          status: "ready",
+          subject,
+          recipeId,
+          reloadVersion,
+          record,
+        });
+      } catch (error) {
+        if (!active || controller.signal.aborted) return;
+        setLoadState({
+          status: "error",
+          subject,
+          recipeId,
+          reloadVersion,
+          error:
+            error instanceof Error
+              ? error
+              : new Error("Failed to load this recipe."),
+        });
       }
-      if (!active) return;
-      if (!record) {
-        setLoadState({ status: "missing" });
-        return;
-      }
-      primeRecipeCache(record);
-      setLoadState({ status: "ready", record });
-    });
+    })();
     return () => {
       active = false;
       controller.abort();
     };
-  }, [recipeId]);
+  }, [recipeId, reloadVersion, subject]);
 
   const handlePersist = useCallback(
     async (input: {
@@ -112,13 +167,30 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       payload: RecipePayload;
       revision?: number;
     }) => {
+      if (
+        loadState.status !== "ready" ||
+        loadState.subject !== subject ||
+        loadState.recipeId !== recipeId ||
+        loadState.reloadVersion !== reloadVersion
+      ) {
+        throw new Error("Recipe persistence account changed. Please try again.");
+      }
       const record = await saveRecipe({
         id: input.id ?? recipeId,
         name: input.name,
         payload: input.payload,
         revision: input.revision,
+        learningRecipeId: loadState.record.learningRecipeId,
+        learningRecipeTitle: loadState.record.learningRecipeTitle,
       });
       primeRecipeCache(record);
+      setLoadState({
+        status: "ready",
+        subject,
+        recipeId,
+        reloadVersion,
+        record,
+      });
       return {
         id: record.id,
         updatedAt: record.updatedAt,
@@ -127,10 +199,17 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         removedCredentialPaths: record.removedCredentialPaths ?? [],
       };
     },
-    [recipeId],
+    [loadState, recipeId, reloadVersion, subject],
   );
 
-  if (loadState.status === "loading") {
+  const currentLoadState: LoadState =
+    loadState.subject === subject &&
+    loadState.recipeId === recipeId &&
+    loadState.reloadVersion === reloadVersion
+      ? loadState
+      : { status: "loading", subject, recipeId, reloadVersion };
+
+  if (currentLoadState.status === "loading") {
     return (
       <RecipeLoadState
         title="Loading recipe..."
@@ -140,7 +219,7 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     );
   }
 
-  if (loadState.status === "missing") {
+  if (currentLoadState.status === "missing") {
     return (
       <RecipeLoadState
         title="Recipe not found"
@@ -150,14 +229,25 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     );
   }
 
+  if (currentLoadState.status === "error") {
+    return (
+      <RecipeLoadState
+        title="Couldn't load recipe"
+        description={currentLoadState.error.message}
+        onRetry={() => setReloadVersion((value) => value + 1)}
+        onBack={() => void navigate({ to: "/data-recipes" })}
+      />
+    );
+  }
+
   return (
     <RecipeStudioPage
-      key={loadState.record.id}
-      recipeId={loadState.record.id}
-      initialRecipeName={loadState.record.name}
-      initialPayload={loadState.record.payload}
-      initialSavedAt={loadState.record.updatedAt}
-      initialRevision={loadState.record.revision}
+      key={`${currentLoadState.subject}:${currentLoadState.record.id}`}
+      recipeId={currentLoadState.record.id}
+      initialRecipeName={currentLoadState.record.name}
+      initialPayload={currentLoadState.record.payload}
+      initialSavedAt={currentLoadState.record.updatedAt}
+      initialRevision={currentLoadState.record.revision}
       onPersistRecipe={handlePersist}
     />
   );

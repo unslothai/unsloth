@@ -243,6 +243,8 @@ def update_recipe(
     name = validate_name(value.get("name"), "recipe name")
     payload = validate_recipe_payload(value.get("payload"))
     learning_id, learning_title = _validate_recipe_links(value)
+    has_learning_id = "learningRecipeId" in value
+    has_learning_title = "learningRecipeTitle" in value
     payload_json = canonical_json(payload, MAX_RECIPE_JSON_BYTES, "recipe payload")
     expected_revision = _validate_expected_revision(expected_revision)
     now = _now_ms()
@@ -252,15 +254,19 @@ def update_recipe(
         changed = conn.execute(
             """
             UPDATE data_recipes
-            SET name = ?, payload_json = ?, learning_recipe_id = ?,
-                learning_recipe_title = ?, revision = revision + 1,
+            SET name = ?, payload_json = ?,
+                learning_recipe_id = CASE WHEN ? THEN ? ELSE learning_recipe_id END,
+                learning_recipe_title = CASE WHEN ? THEN ? ELSE learning_recipe_title END,
+                revision = revision + 1,
                 updated_at = MAX(updated_at + 1, created_at, ?)
             WHERE owner_subject = ? AND id = ? AND deleted_at IS NULL AND revision = ?
             """,
             (
                 name,
                 payload_json,
+                has_learning_id,
                 learning_id,
+                has_learning_title,
                 learning_title,
                 now,
                 owner,
@@ -697,6 +703,11 @@ def import_legacy_assets(
                 )
                 created_at = item.get("createdAt", now)
                 created_at = validate_timestamp(created_at, "createdAt")
+                if "updatedAt" in item:
+                    updated_at = validate_timestamp(item["updatedAt"], "updatedAt")
+                    updated_at = max(created_at, updated_at)
+                else:
+                    updated_at = max(now, created_at)
                 outcome = "redacted" if paths else "imported"
                 conn.execute(
                     """
@@ -713,7 +724,7 @@ def import_legacy_assets(
                         learning_id,
                         learning_title,
                         created_at,
-                        max(now, created_at),
+                        updated_at,
                     ),
                 )
                 _ledger_outcome(conn, owner, source, "recipe", asset_id, outcome, None, now)

@@ -317,23 +317,22 @@ function LearningRecipeCards({
 
 export function DataRecipesPage(): ReactElement {
   const navigate = useNavigate();
-  const { recipes, ready, refresh } = useRecipes();
+  const { recipes, ready, error, refresh } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
-  const [learningDialogOpen, setLearningDialogOpen] = useState(false);
+  const [learningDialogOpen, setLearningDialogOpen] = useState(
+    () =>
+      sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) === "1",
+  );
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
 
   useEffect(() => {
-    if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {
-      return;
-    }
     sessionStorage.removeItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY);
-    setLearningDialogOpen(true);
   }, []);
 
   async function openNewRecipe(): Promise<void> {
-    if (creatingRecipe || loadingTemplateId) {
+    if (!ready || error || creatingRecipe || loadingTemplateId) {
       return;
     }
     setCreatingRecipe(true);
@@ -344,13 +343,18 @@ export function DataRecipesPage(): ReactElement {
         to: "/data-recipes/$recipeId",
         params: { recipeId: recipe.id },
       });
+    } catch (caught) {
+      toastError(
+        "Failed to create recipe.",
+        caught instanceof Error ? caught.message : undefined,
+      );
     } finally {
       setCreatingRecipe(false);
     }
   }
 
   async function openLearningRecipe(template: TemplateCard): Promise<void> {
-    if (creatingRecipe || loadingTemplateId) {
+    if (!ready || error || creatingRecipe || loadingTemplateId) {
       return;
     }
     if (!template.learningRecipeId) {
@@ -401,7 +405,8 @@ export function DataRecipesPage(): ReactElement {
     await deleteRecipe(recipe.id, recipe.revision);
   }
 
-  const isBusy = creatingRecipe || Boolean(loadingTemplateId);
+  const isBusy =
+    !ready || error !== null || creatingRecipe || Boolean(loadingTemplateId);
 
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
@@ -447,7 +452,27 @@ export function DataRecipesPage(): ReactElement {
           </DropdownMenu>
         </div>
 
-        {ready ? (
+        {error ? (
+          <div
+            className="mt-8 rounded-2xl border border-destructive/30 bg-card px-6 py-10 text-center"
+            role="alert"
+          >
+            <p className="text-sm font-medium text-foreground">
+              Couldn't load recipes
+            </p>
+            <p className="mx-auto mt-1 max-w-xl text-xs text-muted-foreground">
+              {error.message}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-5"
+              onClick={refresh}
+            >
+              Try Again
+            </Button>
+          </div>
+        ) : ready ? (
           recipes.length === 0 ? (
             <Empty className="mt-8 border border-dashed border-border/70 dark:border-none">
               <EmptyHeader>
