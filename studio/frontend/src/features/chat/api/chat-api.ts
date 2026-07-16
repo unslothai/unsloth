@@ -290,9 +290,8 @@ export interface LocalModelInfo {
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
   updated_at?: number | null;
-  // HF pipeline task inferred from the GGUF architecture, so the Images picker
-  // can filter local models to diffusion ("text-to-image"). Optional for
-  // older-backend compatibility.
+  // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter local
+  // models to diffusion ("text-to-image"). Optional for older-backend compatibility.
   task?: string | null;
 }
 

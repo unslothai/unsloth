@@ -12,10 +12,9 @@ import {
   importDiffusionDatasetExample,
 } from "../api";
 
-// Best-effort preview thumbnails from the public HF datasets-server. Cached per repo
-// (module-level) so re-renders/re-mounts don't refetch. A repo the server can't serve (e.g.
-// diffusers/dog-example) resolves to an empty list and the card renders without previews -- the
-// import still works.
+// Best-effort preview thumbnails from the public HF datasets-server. Cached per repo (module-level)
+// so re-renders/re-mounts don't refetch. A repo the server can't serve (e.g. diffusers/dog-example)
+// resolves to an empty list and the card renders without previews -- the import still works.
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {

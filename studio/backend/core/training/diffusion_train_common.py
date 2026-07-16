@@ -283,9 +283,8 @@ _FAMILY_VRAM_NOTES = {
 }
 
 # The flow-matching DiT families (run by diffusion_dit_trainer). They expose the base_precision /
-# compile levers and require bf16 compute on CUDA; SDXL is absent (it uses its own
-# mixed_precision path). A set so the UI gate, the bf16 preflight, and any future dispatch stay
-# in sync.
+# compile levers and require bf16 compute on CUDA; SDXL is absent (it uses its own mixed_precision
+# path). A set so the UI gate, the bf16 preflight, and any future dispatch stay in sync.
 _DIT_TRAIN_FAMILIES = frozenset({"flux.1", "qwen-image", "z-image", "krea-2"})
 
 
@@ -787,12 +786,11 @@ def _plan_cache_variants(
 
 
 # Host-memory budget for the AUTOMATIC latent cache. The cache holds two fp32 posterior tensors
-# (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA host. At
-# 1024px an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times that, so a few
-# thousand images x cache_variants can exhaust host or pinned RAM. Over budget the default falls
-# back to per-step VAE encoding. A fixed constant (not a psutil RAM fraction) keeps the gate
-# dependency-free and identical across hosts; deliberately conservative, well under a typical
-# host's RAM.
+# (mean/std, VAE scale folded in) per crop/flip variant per image, pinned on a CUDA host. At 1024px
+# an SDXL variant is ~0.5 MiB and a 16-channel DiT variant several times that, so a few thousand
+# images x cache_variants can exhaust host or pinned RAM. Over budget the default falls back to
+# per-step VAE encoding. A fixed constant (not a psutil RAM fraction) keeps the gate dependency-free
+# and identical across hosts; deliberately conservative, well under a typical host's RAM.
 _LATENT_CACHE_BUDGET_BYTES = 4 * 1024**3  # 4 GiB
 
 # Returned by the cache builders when the estimate exceeds budget: the caller keeps the VAE

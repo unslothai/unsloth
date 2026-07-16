@@ -39,8 +39,7 @@ from core.training.diffusion_train_common import (
 
 def test_specs_cover_the_dit_families():
     assert set(_SPECS) == {"flux.1", "qwen-image", "z-image", "krea-2"}
-    # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are
-    # single-stream.
+    # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are single-stream.
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
     assert "add_q_proj" in _SPECS["qwen-image"].lora_targets
     assert "add_q_proj" not in _SPECS["z-image"].lora_targets
@@ -218,9 +217,8 @@ def test_should_compile_auto_mxfp8_on_cuda():
 
 
 def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
-    # An unavailable torchao MX path must never be fatal: force both API revisions'
-    # imports to raise, then assert the helper returns False and emits exactly one
-    # warning naming mxfp8.
+    # An unavailable torchao MX path must never be fatal: force both API revisions' imports to
+    # raise, then assert the helper returns False and emits exactly one warning naming mxfp8.
     monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", None)
     monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", None)
     events = []
@@ -233,9 +231,8 @@ def test_apply_mxfp8_training_failure_falls_back_with_warning(monkeypatch):
 
 def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
     # torchao 0.17 removed prototype.mx_formats.MXLinearConfig in favour of the
-    # MXFP8TrainingOpConfig recipe API; the config helper must fall back to it so the
-    # advertised mxfp8 mode keeps engaging on those installs instead of silently
-    # training dense bf16.
+    # MXFP8TrainingOpConfig recipe API; the config helper must fall back to it so the advertised
+    # mxfp8 mode keeps engaging on those installs instead of silently training dense bf16.
     from types import SimpleNamespace
 
     from core.training.diffusion_dit_trainer import _mxfp8_training_config

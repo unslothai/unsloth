@@ -673,10 +673,10 @@ def _stub_inductor_config(
 
 
 def test_regional_compile_enables_emulate_precision_casts(monkeypatch):
-    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds
-    # to bf16 between ops; over a multi-step denoise that compounds to a visible drift.
-    # emulate_precision_casts restores eager's rounding at zero measured speed cost, so
-    # the regional compile path must switch it on.
+    # Inductor's fused pointwise kernels keep intermediates in fp32 where eager rounds to bf16
+    # between ops; over a multi-step denoise that compounds to a visible drift (LPIPS 0.221 vs
+    # bit-exact on HunyuanVideo-1.5-720p). emulate_precision_casts restores eager's rounding at zero
+    # measured speed cost (LPIPS 0.052), so the regional compile path must switch it on.
     torch = _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     cfg = _stub_inductor_config(monkeypatch, torch, emulate = False)
@@ -718,7 +718,7 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
     # The production load order engages the step cache BEFORE compile, so the regional
     # compile pass must re-arm the already-installed cache hooks with compiled inner
     # forwards (otherwise every computed step runs eager under the hook's
-    # torch.compiler.disable and forfeits the regional compile).
+    # torch.compiler.disable; measured 1.69 vs 1.09 s/step on HunyuanVideo-1.5-720p).
     _stub_torch(monkeypatch)
     _stub_gguf_accel(monkeypatch)
     from core.inference import diffusion_cache as dc_mod

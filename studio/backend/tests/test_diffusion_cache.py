@@ -143,6 +143,35 @@ def test_explicit_threshold_overrides_quant(monkeypatch):
     assert t.enabled_with.threshold == 0.2
 
 
+def test_a14b_balanced_pins_quant_threshold(monkeypatch):
+    # Wan2.2-A14B's effective default is quant-active (unset precision auto-promotes to fp8), and
+    # the generic 0.08 -> 0.12 promotion violates its <= 0.08 gate (fb@0.12 LPIPS 0.128), so
+    # balanced pins 0.08 even with quant active. Other families keep the table.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(_pipe(t), mode = "fbcache", quant_active = True, family = "wan2.2-t2v-a14b")
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+    other = _MixinTransformer()
+    apply_step_cache(_pipe(other), mode = "fbcache", quant_active = True, family = "ltx-2")
+    assert other.enabled_with.threshold == QUANT_FBCACHE_THRESHOLD
+
+
+def test_a14b_pin_scope_is_balanced_only(monkeypatch):
+    # The pin is (family, balanced)-scoped: an explicit threshold still wins, and the "fast"
+    # preset keeps the generic quant table.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t), mode = "fbcache", threshold = 0.12, quant_active = True, family = "wan2.2-t2v-a14b"
+    )
+    assert t.enabled_with.threshold == 0.12
+    fast = _MixinTransformer()
+    apply_step_cache(
+        _pipe(fast), mode = "fbcache", quality = "fast", quant_active = True, family = "wan2.2-t2v-a14b"
+    )
+    assert fast.enabled_with.threshold == 0.15
+
+
 def test_non_cachemixin_runs_uncached(monkeypatch):
     # A transformer without enable_cache (e.g. Z-Image) must NOT install the standalone hook
     # -- its pipeline opens no cache_context, so it runs uncached instead of crashing at gen.
@@ -155,9 +184,8 @@ def test_non_cachemixin_runs_uncached(monkeypatch):
 
 def test_pipeline_without_cache_context_runs_uncached(monkeypatch):
     # A CacheMixin transformer whose PIPELINE never opens a cache_context (Flux Kontext /
-    # img2img / inpaint / controlnet reuse the CacheMixin FluxTransformer2DModel) must run
-    # uncached -- otherwise the First-Block-Cache hook raises "No context is set" on the
-    # first forward, crashing every default generation.
+    # img2img / inpaint / controlnet) must run uncached, else the hook raises "No context is
+    # set" on the first forward.
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     assert apply_step_cache(_NoCtxPipe(t), mode = "fbcache") is None
@@ -201,9 +229,8 @@ def test_missing_transformer_is_none(monkeypatch):
 
 
 def test_diffusers_unavailable_runs_uncached(monkeypatch):
-    # no diffusers import -> best-effort returns None, load proceeds uncached. Block the
-    # hooks module too: the config import falls back to diffusers.hooks, which a REAL
-    # earlier import in the test session may have left cached in sys.modules.
+    # no diffusers import -> best-effort returns None, uncached. Block the hooks module too:
+    # the config import falls back to diffusers.hooks, which an earlier test may have cached.
     monkeypatch.setitem(sys.modules, "diffusers", None)
     monkeypatch.setitem(sys.modules, "diffusers.hooks", None)
     t = _MixinTransformer()
@@ -228,9 +255,8 @@ def test_effective_steps_txt2img_is_full_count():
 
 
 def test_effective_steps_low_strength_shrinks_below_the_bar():
-    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps (diffusers get_timesteps
-    # floors the product), which is below FBCACHE_MIN_STEPS -> the auto policy must NOT engage
-    # FBCache there.
+    # A 28-step upscale at strength 0.35 denoises int(9.8) = 9 steps, below FBCACHE_MIN_STEPS
+    # -> auto must NOT engage FBCache.
     eff = effective_denoise_steps(28, 0.35)
     assert eff == 9
     assert eff < FBCACHE_MIN_STEPS
@@ -244,9 +270,8 @@ def test_effective_request_strength_uses_pipe_default_when_omitted():
     assert effective_request_strength(0.5, True, False, None) is None
     # img2img with an explicit strength -> that value.
     assert effective_request_strength(0.2, True, True, 0.6) == 0.2
-    # img2img with an OMITTED strength -> the pipe's own signature default (< 1), so the auto
-    # policy keys on the real (short) trajectory, not the full step count. This is the fix:
-    # int(28 * 0.6) = 16 real steps, not 28.
+    # img2img with an OMITTED strength -> the pipe's signature default (< 1), so auto keys on the
+    # real short trajectory (int(28 * 0.6) = 16 steps), not the full 28.
     s = effective_request_strength(None, True, True, 0.6)
     assert s == 0.6
     assert effective_denoise_steps(28, s) == 16
@@ -347,6 +372,49 @@ def test_toggle_reengages_after_a_disable(monkeypatch):
     assert mode == TC_FBCACHE and t.enables == 2
 
 
+def test_toggle_magcache_step_change_hard_errors_when_disable_fails(monkeypatch):
+    # A failed removal during a magcache step-count change used to fall through and report
+    # "magcache" while the OLD #sN curve stayed armed (wrong ratio schedule). Fail closed.
+    import core.inference.diffusion_cache as dc_mod
+
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    t._unsloth_step_cache = "magcache@0.06#s50"
+    monkeypatch.setattr(dc_mod, "_disengage_step_cache", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match = "reload the video model"):
+        maybe_toggle_step_cache(
+            _pipe(t), steps = 30, mode = dc_mod.TC_MAGCACHE, family = "hunyuanvideo-1.5"
+        )
+
+
+def test_toggle_below_bar_hard_errors_when_disable_fails(monkeypatch):
+    # Below the cache threshold we want uncached; a failed disable used to report the stale
+    # mode instead of surfacing that the (wrong-step) cache is still armed.
+    import core.inference.diffusion_cache as dc_mod
+
+    _stub_diffusers(monkeypatch)
+    t = _ToggleTransformer()
+    t._unsloth_step_cache = "magcache@0.06#s50"
+    monkeypatch.setattr(dc_mod, "_disengage_step_cache", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match = "reload the video model"):
+        maybe_toggle_step_cache(
+            _pipe(t),
+            steps = FBCACHE_MIN_STEPS - 1,
+            mode = dc_mod.TC_MAGCACHE,
+            family = "hunyuanvideo-1.5",
+        )
+
+
+def test_apply_step_cache_enable_and_cleanup_failure_requires_reload(monkeypatch):
+    # enable_cache fails AFTER partially hooking and the cleanup disable_cache ALSO fails:
+    # the transformer may keep partial hooks, so surface it instead of a clean uncached None.
+    _stub_diffusers(monkeypatch)
+    t = _MixinTransformer(fail = True)
+    t.disable_cache = lambda: (_ for _ in ()).throw(RuntimeError("cleanup failed"))
+    with pytest.raises(RuntimeError, match = "partially cached and must be reloaded"):
+        apply_step_cache(_pipe(t), mode = "fbcache")
+
+
 def test_toggle_noop_without_cache_support(monkeypatch):
     _stub_diffusers(monkeypatch)
     t = _NonCacheMixinTransformer()
@@ -358,14 +426,514 @@ def test_toggle_noop_without_transformer():
     assert maybe_toggle_step_cache(types.SimpleNamespace(), steps = 28) is None
 
 
+# ── FBCache block-metadata registration (HunyuanVideo-1.5) ─────────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    _ensure_block_metadata_registered,
+    _invalidate_child_registry_cache,
+)
+
+
+def _stub_hunyuan15_registry(monkeypatch):
+    """Stub the two diffusers modules the registration helper imports: the FBCache
+    metadata registry (diffusers.hooks._helpers) and the HunyuanVideo-1.5 transformer
+    module carrying the block class. Returns (registry_cls, block_cls)."""
+
+    class _Metadata:
+        def __init__(
+            self,
+            return_hidden_states_index = None,
+            return_encoder_hidden_states_index = None,
+        ):
+            self.return_hidden_states_index = return_hidden_states_index
+            self.return_encoder_hidden_states_index = return_encoder_hidden_states_index
+
+    class _Registry:
+        registry: dict = {}
+
+        @classmethod
+        def get(cls, model_class):
+            if model_class not in cls.registry:
+                raise ValueError(f"Model class {model_class} not registered.")
+            return cls.registry[model_class]
+
+        @classmethod
+        def register(cls, model_class, metadata):
+            cls.registry[model_class] = metadata
+
+    class HunyuanVideo15TransformerBlock:  # the sentinel block class
+        pass
+
+    helpers = types.ModuleType("diffusers.hooks._helpers")
+    helpers.TransformerBlockMetadata = _Metadata
+    helpers.TransformerBlockRegistry = _Registry
+    monkeypatch.setitem(sys.modules, "diffusers.hooks._helpers", helpers)
+
+    blocks = types.ModuleType("diffusers.models.transformers.transformer_hunyuan_video15")
+    blocks.HunyuanVideo15TransformerBlock = HunyuanVideo15TransformerBlock
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers.models.transformers.transformer_hunyuan_video15",
+        blocks,
+    )
+    return _Registry, HunyuanVideo15TransformerBlock
+
+
+class HunyuanVideo15Transformer3DModel(_MixinTransformer):
+    """A CacheMixin-style fake whose CLASS NAME keys the extra-metadata table."""
+
+
+def test_hunyuan15_block_metadata_is_registered(monkeypatch):
+    registry, block_cls = _stub_hunyuan15_registry(monkeypatch)
+    _ensure_block_metadata_registered(HunyuanVideo15Transformer3DModel())
+    meta = registry.registry[block_cls]
+    # The 1.5 dual-stream block returns (hidden_states, encoder_hidden_states) -- the
+    # same layout as the natively registered HunyuanVideo 1.0 block.
+    assert meta.return_hidden_states_index == 0
+    assert meta.return_encoder_hidden_states_index == 1
+
+
+def test_hunyuan15_registration_defers_to_a_native_one(monkeypatch):
+    # A diffusers release that ships the registration natively must win: the helper
+    # probes TransformerBlockRegistry.get first and never overwrites.
+    registry, block_cls = _stub_hunyuan15_registry(monkeypatch)
+    native = object()
+    registry.registry[block_cls] = native
+    _ensure_block_metadata_registered(HunyuanVideo15Transformer3DModel())
+    assert registry.registry[block_cls] is native
+
+
+def test_registration_noop_for_other_families(monkeypatch):
+    registry, _ = _stub_hunyuan15_registry(monkeypatch)
+    _ensure_block_metadata_registered(_MixinTransformer())
+    assert registry.registry == {}
+
+
+def test_registration_failure_is_swallowed(monkeypatch):
+    # diffusers internals moved / import fails -> best-effort no-op; enable_cache then
+    # surfaces its own error and the load runs uncached, exactly as before the patch.
+    monkeypatch.setitem(sys.modules, "diffusers.hooks._helpers", None)
+    _ensure_block_metadata_registered(HunyuanVideo15Transformer3DModel())  # no raise
+
+
+# ── stale child-registry invalidation after enable_cache ───────────────────────────
+def test_invalidate_child_registry_cache_clears_stale_list():
+    # An UNCACHED generation froze an EMPTY child list on the HookRegistry; enable_cache then
+    # installs hooks _set_context never reaches ("No context is set"). The helper drops the stale
+    # cache so the next cache_context rebuilds it.
+    t = _MixinTransformer()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = [])
+    _invalidate_child_registry_cache(t)
+    assert t._diffusers_hook._child_registries_cache is None
+
+
+def test_invalidate_child_registry_cache_noops():
+    _invalidate_child_registry_cache(_MixinTransformer())  # no _diffusers_hook
+    t = _MixinTransformer()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = None)
+    _invalidate_child_registry_cache(t)  # nothing cached yet
+    assert t._diffusers_hook._child_registries_cache is None
+
+
+def test_apply_step_cache_registers_and_invalidates_for_hunyuan15(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    registry, block_cls = _stub_hunyuan15_registry(monkeypatch)
+    t = HunyuanVideo15Transformer3DModel()
+    t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = [])
+    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
+    assert engaged == TC_FBCACHE
+    assert t.enabled_with.threshold == DEFAULT_FBCACHE_THRESHOLD
+    assert block_cls in registry.registry  # metadata registered before enable_cache
+    assert t._diffusers_hook._child_registries_cache is None  # stale cache dropped
+
+
+# ── magcache mode (per-family auto cache) ──────────────────────────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    DEFAULT_MAGCACHE_THRESHOLD,
+    MAGCACHE_MAX_SKIP_STEPS,
+    MAGCACHE_RETENTION_RATIO,
+    TC_MAGCACHE,
+    _MAGCACHE_FAMILY_RATIOS,
+    auto_cache_mode,
+)
+
+
+class _MagConfig:
+    def __init__(self, threshold, max_skip_steps, retention_ratio, num_inference_steps, mag_ratios):
+        self.threshold = threshold
+        self.max_skip_steps = max_skip_steps
+        self.retention_ratio = retention_ratio
+        self.num_inference_steps = num_inference_steps
+        self.mag_ratios = mag_ratios
+
+
+def _stub_diffusers_with_magcache(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    hooks = sys.modules["diffusers.hooks"]
+    hooks.MagCacheConfig = _MagConfig
+
+
+def test_normalize_accepts_magcache():
+    assert normalize_transformer_cache("magcache") == TC_MAGCACHE
+    assert normalize_transformer_cache("MagCache") == TC_MAGCACHE
+
+
+def test_auto_cache_mode_per_family():
+    # HunyuanVideo-1.5: FBCache derails the trajectory (LPIPS 0.54), so auto engages MagCache.
+    # Wan2.2-TI2V-5B: both hold composition but MagCache dominates (1.65x/0.034 vs FBCache
+    # 1.49x/0.031; 1.73x/0.044 vs 1.71x/0.083 at fast). Wan2.2-A14B measured the OTHER way
+    # (FBCache 0.12 at 2.88x/0.128 dominates MagCache 1.80x/0.145; the 16-step high-noise expert
+    # starves MagCache's budget), so the MoE stays on FBCache. Others keep FBCache.
+    assert auto_cache_mode("hunyuanvideo-1.5") == TC_MAGCACHE
+    assert auto_cache_mode("hunyuanvideo-1.5-720p") == TC_MAGCACHE
+    assert auto_cache_mode("HunyuanVideo-1.5-720p") == TC_MAGCACHE
+    assert auto_cache_mode("wan2.2-ti2v-5b") == TC_MAGCACHE
+    for other in (None, "", "flux", "wan2.2-t2v-a14b", "ltx-2", "z-image"):
+        assert auto_cache_mode(other) == TC_FBCACHE
+
+
+def test_magcache_families_have_calibrated_ratios():
+    # Every family the auto policy routes to magcache must ship a calibrated curve, or
+    # the auto default silently runs uncached (apply_step_cache checks the table).
+    from core.inference.diffusion_cache import _FAMILY_AUTO_CACHE_MODE
+    for fam, mode in _FAMILY_AUTO_CACHE_MODE.items():
+        if mode == TC_MAGCACHE:
+            ratios = _MAGCACHE_FAMILY_RATIOS[fam]
+            assert len(ratios) == 50  # the default 50-step schedule they were calibrated on
+            assert all(0.5 < r < 1.5 for r in ratios)
+
+
+def test_magcache_engages_with_family_curve(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    engaged = apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50)
+    assert engaged == TC_MAGCACHE
+    cfg = t.enabled_with
+    assert cfg.threshold == DEFAULT_MAGCACHE_THRESHOLD
+    assert cfg.max_skip_steps == MAGCACHE_MAX_SKIP_STEPS
+    assert cfg.retention_ratio == MAGCACHE_RETENTION_RATIO
+    assert cfg.num_inference_steps == 50
+    assert cfg.mag_ratios == list(_MAGCACHE_FAMILY_RATIOS["hunyuanvideo-1.5-720p"])
+    # The marker carries the step count so the auto toggle re-engages on a change.
+    assert t._unsloth_step_cache == f"magcache@{DEFAULT_MAGCACHE_THRESHOLD}#s50"
+
+
+def test_magcache_without_calibration_runs_uncached(monkeypatch):
+    # No silent FBCache fallback: the family was routed to magcache exactly because
+    # FBCache derails it, so an uncalibrated family must run uncached instead.
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "magcache", family = "flux", steps = 50) is None
+    assert t.enabled_with is None
+
+
+def test_magcache_without_steps_runs_uncached(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    assert apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p") is None
+    assert t.enabled_with is None
+
+
+def test_magcache_explicit_threshold_wins(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t),
+        mode = "magcache",
+        family = "hunyuanvideo-1.5-720p",
+        steps = 30,
+        threshold = 0.24,
+    )
+    assert t.enabled_with.threshold == 0.24
+
+
+def test_toggle_engages_family_magcache(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert mode == TC_MAGCACHE and t.enables == 1
+    assert t.enabled_with.num_inference_steps == 30
+
+
+def test_toggle_magcache_reengages_on_step_change(monkeypatch):
+    # MagCache interpolates its calibrated curve over the CONFIGURED step count, so a
+    # step-count change must disable + re-enable; the same count stays idempotent.
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p")
+    maybe_toggle_step_cache(_pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p")
+    assert t.enables == 1 and t.disables == 0  # idempotent at the same count
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 50, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert mode == TC_MAGCACHE and t.disables == 1 and t.enables == 2
+    assert t.enabled_with.num_inference_steps == 50
+
+
+def test_toggle_magcache_disengages_below_bar(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(_pipe(t), steps = 30, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p")
+    mode = maybe_toggle_step_cache(
+        _pipe(t), steps = 8, mode = TC_MAGCACHE, family = "hunyuanvideo-1.5-720p"
+    )
+    assert mode is None and t.disables == 1
+
+
+# ── per-expert magcache curves (dual-expert MoE, Wan2.2-A14B) ───────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    _MAGCACHE_CALIBRATION_STEPS,
+    _magcache_ratio_key,
+)
+
+
+def test_magcache_ratio_key_primary_and_expert():
+    # The primary transformer resolves the bare family key (back-compat with every
+    # single-DiT family); a second expert resolves "family::expert".
+    assert _magcache_ratio_key("wan2.2-t2v-a14b", None) == "wan2.2-t2v-a14b"
+    assert _magcache_ratio_key("wan2.2-t2v-a14b", "transformer") == "wan2.2-t2v-a14b"
+    assert (
+        _magcache_ratio_key("Wan2.2-T2V-A14B", "transformer_2") == "wan2.2-t2v-a14b::transformer_2"
+    )
+
+
+def test_magcache_expert_resolves_its_own_curve(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    primary_curve = tuple([1.0] * 15)
+    expert_curve = tuple([0.99] * 35)
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe", primary_curve)
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve)
+    t = _MixinTransformer()
+    engaged = apply_step_cache(
+        _pipe(t),
+        mode = "magcache",
+        family = "fam-moe",
+        steps = 50,
+        expert = "transformer_2",
+    )
+    assert engaged == TC_MAGCACHE
+    assert t.enabled_with.mag_ratios == list(expert_curve)
+
+
+def test_magcache_expert_subcurve_scales_step_count(monkeypatch):
+    # An expert sub-curve covers only that expert's slice, so the configured step count scales
+    # by steps / calibration-steps: a 35-of-50 sub-curve at 30 steps configures round(35*30/50)
+    # = 21, NOT the full 30.
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    expert_curve = tuple([0.99] * 35)
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t),
+        mode = "magcache",
+        family = "fam-moe",
+        steps = 30,
+        expert = "transformer_2",
+    )
+    assert t.enabled_with.num_inference_steps == round(35 * 30 / _MAGCACHE_CALIBRATION_STEPS)
+    # At the calibration step count itself the sub-curve maps 1:1.
+    t2 = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t2),
+        mode = "magcache",
+        family = "fam-moe",
+        steps = _MAGCACHE_CALIBRATION_STEPS,
+        expert = "transformer_2",
+    )
+    assert t2.enabled_with.num_inference_steps == 35
+
+
+def test_magcache_full_curve_keeps_requested_steps(monkeypatch):
+    # A full 50-entry curve interpolates to the requested count directly (the
+    # single-DiT behaviour is unchanged by the expert plumbing).
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t),
+        mode = "magcache",
+        family = "wan2.2-ti2v-5b",
+        steps = 30,
+        expert = "transformer",
+    )
+    assert t.enabled_with.num_inference_steps == 30
+    assert len(t.enabled_with.mag_ratios) == _MAGCACHE_CALIBRATION_STEPS
+
+
+def test_magcache_expert_without_curve_runs_uncached(monkeypatch):
+    # A second expert with no calibrated sub-curve must run uncached, NOT silently
+    # reuse the primary's curve (the experts split the schedule; the curves differ).
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe", tuple([1.0] * 15))
+    t = _MixinTransformer()
+    assert (
+        apply_step_cache(
+            _pipe(t),
+            mode = "magcache",
+            family = "fam-moe",
+            steps = 50,
+            expert = "transformer_2",
+        )
+        is None
+    )
+    assert t.enabled_with is None
+
+
+def test_toggle_threads_expert_through(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    from core.inference import diffusion_cache as dc_mod
+
+    expert_curve = tuple([0.98] * 35)
+    monkeypatch.setitem(dc_mod._MAGCACHE_FAMILY_RATIOS, "fam-moe::transformer_2", expert_curve)
+    t = _ToggleTransformer()
+    mode = maybe_toggle_step_cache(
+        _pipe(t),
+        steps = 50,
+        mode = TC_MAGCACHE,
+        family = "fam-moe",
+        expert = "transformer_2",
+    )
+    assert mode == TC_MAGCACHE
+    assert t.enabled_with.mag_ratios == list(expert_curve)
+
+
+# ── cache quality presets (speed/accuracy knob) ────────────────────────────────────
+from core.inference.diffusion_cache import (  # noqa: E402
+    CACHE_QUALITY_LEVELS,
+    CQ_BALANCED,
+    CQ_FAST,
+    CQ_QUALITY,
+    _FBCACHE_QUALITY_THRESHOLDS,
+    _MAGCACHE_QUALITY_PRESETS,
+    normalize_cache_quality,
+)
+
+
+def test_normalize_cache_quality_unset_and_auto_are_none():
+    for value in (None, "", "  ", "auto", "AUTO"):
+        assert normalize_cache_quality(value) is None
+
+
+def test_normalize_cache_quality_levels_and_casing():
+    assert normalize_cache_quality("quality") == CQ_QUALITY
+    assert normalize_cache_quality("  Balanced ") == CQ_BALANCED
+    assert normalize_cache_quality("FAST") == CQ_FAST
+
+
+def test_normalize_cache_quality_rejects_unknown():
+    with pytest.raises(ValueError):
+        normalize_cache_quality("ultra")
+
+
+def test_quality_preset_tables_cover_every_level():
+    # A missing preset row would KeyError at engage time; the tables and the public
+    # levels tuple must stay in lockstep.
+    assert set(_MAGCACHE_QUALITY_PRESETS) == set(CACHE_QUALITY_LEVELS)
+    assert set(_FBCACHE_QUALITY_THRESHOLDS) == set(CACHE_QUALITY_LEVELS)
+
+
+def test_balanced_presets_match_the_preknob_defaults():
+    # "balanced" IS the pre-knob shipped behaviour: a load without the knob must be
+    # byte-identical to the round-1 defaults.
+    assert _MAGCACHE_QUALITY_PRESETS[CQ_BALANCED] == (
+        DEFAULT_MAGCACHE_THRESHOLD,
+        MAGCACHE_MAX_SKIP_STEPS,
+        MAGCACHE_RETENTION_RATIO,
+    )
+    assert _FBCACHE_QUALITY_THRESHOLDS[CQ_BALANCED] == (
+        DEFAULT_FBCACHE_THRESHOLD,
+        QUANT_FBCACHE_THRESHOLD,
+    )
+
+
+def test_magcache_quality_preset_engages_conservative_params(monkeypatch):
+    # Calibrated on HunyuanVideo-1.5-720p (50 steps): thr 0.06 / cap 2 / retention 0.3 =
+    # 1.11x at pairwise LPIPS 0.057 vs balanced's 1.49x at 0.126.
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    engaged = apply_step_cache(
+        _pipe(t),
+        mode = "magcache",
+        family = "hunyuanvideo-1.5-720p",
+        steps = 50,
+        quality = "quality",
+    )
+    assert engaged == TC_MAGCACHE
+    thr, cap, retention = _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY]
+    assert t.enabled_with.threshold == thr
+    assert t.enabled_with.max_skip_steps == cap
+    assert t.enabled_with.retention_ratio == retention
+
+
+def test_magcache_explicit_threshold_beats_the_preset(monkeypatch):
+    # The preset still supplies the skip cap / retention window, but a pinned threshold
+    # wins (the documented contract of transformer_cache_threshold).
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _MixinTransformer()
+    apply_step_cache(
+        _pipe(t),
+        mode = "magcache",
+        family = "hunyuanvideo-1.5-720p",
+        steps = 50,
+        quality = "fast",
+        threshold = 0.05,
+    )
+    assert t.enabled_with.threshold == 0.05
+    assert t.enabled_with.max_skip_steps == _MAGCACHE_QUALITY_PRESETS[CQ_FAST][1]
+
+
+def test_fbcache_quality_preset_thresholds(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    dense_thr, quant_thr = _FBCACHE_QUALITY_THRESHOLDS[CQ_QUALITY]
+    t = _MixinTransformer()
+    apply_step_cache(_pipe(t), mode = "fbcache", quality = "quality")
+    assert t.enabled_with.threshold == dense_thr
+    t2 = _MixinTransformer()
+    apply_step_cache(_pipe(t2), mode = "fbcache", quality = "quality", quant_active = True)
+    assert t2.enabled_with.threshold == quant_thr
+
+
+def test_apply_step_cache_rejects_bad_quality(monkeypatch):
+    _stub_diffusers(monkeypatch)
+    with pytest.raises(ValueError):
+        apply_step_cache(_pipe(_MixinTransformer()), mode = "fbcache", quality = "bogus")
+
+
+def test_toggle_threads_quality_through(monkeypatch):
+    _stub_diffusers_with_magcache(monkeypatch)
+    t = _ToggleTransformer()
+    maybe_toggle_step_cache(
+        _pipe(t),
+        steps = 30,
+        mode = TC_MAGCACHE,
+        family = "hunyuanvideo-1.5-720p",
+        quality = "quality",
+    )
+    assert t.enabled_with.threshold == _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY][0]
+    assert t.enabled_with.max_skip_steps == _MAGCACHE_QUALITY_PRESETS[CQ_QUALITY][1]
+
+
 # ── compiled cache-hook inners (regional compile x step cache composition) ──────────
 import functools  # noqa: E402
 
 from core.inference.diffusion_cache import (  # noqa: E402
     _compile_hooked_block_inners,
-    _invalidate_child_registry_cache,
     _restore_hooked_block_inners,
+    auto_cache_quality,
 )
+
+
+def test_auto_cache_quality_per_family():
+    assert auto_cache_quality("hunyuanvideo-1.5") == CQ_QUALITY
+    assert auto_cache_quality("HunyuanVideo-1.5-720p") == CQ_QUALITY
+    for other in (None, "", "flux", "wan2.2-ti2v-5b", "ltx-2"):
+        assert auto_cache_quality(other) == CQ_BALANCED
 
 
 class _BoundInner:
@@ -378,7 +946,7 @@ class _BoundInner:
 def _hooked_block(
     *,
     compiled = True,
-    hook_name = "fbc_block_hook",
+    hook_name = "mag_cache_block_hook",
     bound = True,
 ):
     inner = _BoundInner()
@@ -477,10 +1045,31 @@ def test_restore_tolerates_fakes_without_modules():
     _restore_hooked_block_inners(_MixinTransformer())  # no .modules(): no-op
 
 
+def test_disengage_restores_inners_before_disable(monkeypatch):
+    # remove_hook splices fn_ref.original_forward back into module.forward, so the
+    # compiled wrapper must be swapped out BEFORE disable_cache runs.
+    from core.inference import diffusion_cache as dc_mod
+
+    order = []
+
+    class _T(_MixinTransformer):
+        def disable_cache(self):
+            order.append("disable")
+
+        def modules(self):
+            order.append("restore-walk")
+            return []
+
+    t = _T()
+    t._unsloth_step_cache = "magcache@0.12#s50"
+    assert dc_mod._disengage_step_cache(t, reason = "test") is True
+    assert order == ["restore-walk", "disable"]
+
+
 def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
     # The generation-time toggle engages the cache AFTER the load already compiled the
     # blocks; apply_step_cache must arm the fresh hooks itself.
-    _stub_diffusers(monkeypatch)
+    _stub_diffusers_with_magcache(monkeypatch)
     _stub_torch_compile(monkeypatch)
     block, hook, orig = _hooked_block()
 
@@ -489,8 +1078,8 @@ def test_apply_step_cache_arms_compiled_blocks_on_toggle(monkeypatch):
             return [block]
 
     t = _T()
-    engaged = apply_step_cache(_pipe(t), mode = "fbcache")
-    assert engaged == TC_FBCACHE
+    engaged = apply_step_cache(_pipe(t), mode = "magcache", family = "hunyuanvideo-1.5-720p", steps = 50)
+    assert engaged == TC_MAGCACHE
     assert hook.fn_ref.original_forward is not orig
     assert hook._unsloth_orig_inner is orig
 
@@ -544,9 +1133,9 @@ def test_enable_failure_restores_inners_before_partial_disable(monkeypatch):
 
 
 def test_enable_invalidates_stale_child_registry_cache(monkeypatch):
-    # diffusers 0.39 caches the child-registry list on first cache_context use; an
-    # UNCACHED generation already populates it (empty), so a later toggle-time
-    # enable_cache would install hooks the context never reaches ("No context is set").
+    # diffusers 0.39 caches the child-registry list on first cache_context use; an UNCACHED
+    # generation populates it (empty), so a later enable_cache installs hooks the context never
+    # reaches ("No context is set").
     _stub_diffusers(monkeypatch)
     t = _MixinTransformer()
     t._diffusers_hook = types.SimpleNamespace(_child_registries_cache = ["stale"])

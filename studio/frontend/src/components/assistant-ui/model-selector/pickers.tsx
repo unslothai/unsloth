@@ -2039,10 +2039,9 @@ export function HubModelPicker({
   // picker (task set) curates them; already-downloaded ones show under Downloaded instead.
   const curatedSafetensorsRows = useMemo(() => {
     if (!task) return [];
-    // Always list the curated safetensors (bnb-4bit / fp8) diffusion models. They
-    // render with a "downloaded" badge when cached (like GGUF Recommended rows), so
-    // they must not be hidden once on disk -- otherwise they vanish from the picker
-    // entirely after the first load.
+    // Always list the curated safetensors (bnb-4bit / fp8) diffusion models. They render with a
+    // "downloaded" badge when cached (like GGUF Recommended rows), so they must not be hidden once
+    // on disk -- otherwise they vanish from the picker entirely after the first load.
     return models.filter((m) => m.isGguf === false);
   }, [models, task]);
 
@@ -2291,9 +2290,8 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
-  // The Images page wants diffusion GGUFs only; chat wants everything but those.
-  // passesTaskGate handles both directions off the GGUF architecture the backend
-  // reports as each model's task.
+  // The Images page wants diffusion GGUFs only; chat wants everything but those. passesTaskGate
+  // handles both directions off the GGUF architecture the backend reports as each model's task.
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
@@ -2358,8 +2356,7 @@ export function HubModelPicker({
   );
 
   // Fine-tuned models for the On Device "Fine-tuned" section: flat, query-
-  // filtered, newest first. Hidden under a task filter (no fine-tuning of e.g.
-  // image models).
+  // filtered, newest first. Hidden under a task filter (no fine-tuning of e.g. image models).
   const fineTunedRows = useMemo(() => {
     if (task) return [];
     const needle = normalizeForSearch(debouncedQuery.trim());
@@ -2442,10 +2439,9 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // The fit-on-device toggle hides a catalog group with nothing runnable here,
-  // exactly as it hides an over-budget Recommended row -- otherwise a bare click
-  // on a fit-filtered list could still start a 90-114 GB OOM load (LTX-2 base,
-  // Wan2.2-A14B). Off = every group passes.
+  // The fit-on-device toggle hides a catalog group with nothing runnable here, exactly as it hides
+  // an over-budget Recommended row -- otherwise a bare click on a fit-filtered list could still
+  // start a 90-114 GB OOM load (LTX-2 base, Wan2.2-A14B). Off = every group passes.
   const catalogGroupPassesFit = useCallback(
     (g: CatalogGroup) =>
       !fitOnDeviceOnly ||
@@ -2534,10 +2530,9 @@ export function HubModelPicker({
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      // Images (task set) loads single-file GGUF only, so don't surface non-GGUF
-      // text-to-image rows the page can't load (mirrors the Recommended view).
-      // Otherwise chat-only keeps runnable formats: GGUF anywhere, plus MLX/
-      // safetensors on Mac.
+      // Images (task set) loads single-file GGUF only, so don't surface non-GGUF text-to-image rows
+      // the page can't load (mirrors the Recommended view). Otherwise chat-only keeps runnable
+      // formats: GGUF anywhere, plus MLX/ safetensors on Mac.
       .filter((id) =>
         task
           ? isKnownGgufRepo(id)
@@ -3223,10 +3218,9 @@ export function HubModelPicker({
     );
   };
 
-  // On Device sections: collapse cached member repos of a catalog group under
-  // one canonical row (click = load the best on-disk artifact, chevron = show
-  // the per-repo rows with their usual quant expanders / delete actions).
-  // Unknown repos render exactly as before.
+  // On Device sections: collapse cached member repos of a catalog group under one canonical row
+  // (click = load the best on-disk artifact, chevron = show the per-repo rows with their usual
+  // quant expanders / delete actions). Unknown repos render exactly as before.
   const renderCachedRows = (
     ggufRows: typeof visibleCachedGguf,
     modelRows: typeof visibleCachedModelRows,

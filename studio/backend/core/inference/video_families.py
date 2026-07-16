@@ -66,7 +66,13 @@ class VideoFamily:
     bf16_components_gb: Optional[tuple[float, float, float]] = None
     # True when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks).
     supports_torch_compile: bool = True
-    # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
+    # True when the post-load compile prewarm (a tiny throwaway generation absorbing the
+    # first-generation compile hitch) may run for this family. Only consulted when the
+    # load engaged the regional compile.
+    supports_compile_prewarm: bool = True
+    # Families whose activations overflow float16 -> the loader promotes fp16 to
+    # float32. Video DiTs are bf16-native, so this defaults True (fp16 is never
+    # the right resolution for them; bf16 or float32 only).
     fp16_incompatible: bool = True
     # Wan's VAE decodes in float32 (loading it bf16 causes banding / black frames), so when True
     # the loader pins it back to fp32. Its bf16_components_gb term is already the fp32 size.

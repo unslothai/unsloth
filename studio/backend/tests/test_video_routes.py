@@ -103,6 +103,9 @@ class _FakeBackend(video_module.VideoBackend):
         model_kind = None,
         transformer_quant = None,
         text_encoder_quant = None,
+        vae_quant = None,
+        transformer_cache_quality = None,
+        cfg_parallel = None,
     ):
         # Mirror the real backend's cheap validation so the route's
         # validate-before-evict ordering is exercised.
@@ -205,9 +208,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.VIDEO, lambda: None)
 
-    # Pin the resolved device to cpu so the load route deterministically follows the
-    # non-GPU branch on any host; GPU-arbiter gating is asserted in its own tests by
-    # forcing the device to cuda.
+    # Pin the resolved device to cpu so the load route deterministically follows the non-GPU branch
+    # on any host; GPU-arbiter gating is asserted in its own tests by forcing the device to cuda.
     import types
 
     import core.inference.diffusion_device as devmod

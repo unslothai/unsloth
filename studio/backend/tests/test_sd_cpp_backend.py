@@ -381,6 +381,23 @@ def test_begin_load_resolves_family_from_filename_only(monkeypatch):
     assert b._loading is not None and b._loading.repo_id == "/models/gguf-store"
 
 
+def test_begin_load_accepts_diffusers_only_vae_quant(monkeypatch):
+    # The image load route calls engine.begin_load(..., vae_quant=...) uniformly for both
+    # engines, so the native backend must accept (and ignore) vae_quant like the other
+    # diffusers-only knobs; otherwise a native (CPU / MPS / forced) image load raises
+    # TypeError on every request, since vae_quant is always passed (defaults to None).
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)  # skip the download thread
+    b.begin_load(
+        "/models/gguf-store",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        text_encoder_quant = "auto",
+        vae_quant = "auto",
+        transformer_quant = "fp8",
+    )
+    assert b._loading is not None and b._loading.repo_id == "/models/gguf-store"
+
+
 def test_ensure_binary_returns_found(monkeypatch):
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/usr/bin/sd-cli")
     assert ensure_sd_cpp_binary() == "/usr/bin/sd-cli"

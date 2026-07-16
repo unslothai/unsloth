@@ -143,6 +143,16 @@ def test_flash3_dropped_on_blackwell(monkeypatch):
     assert select_attention_backend(_target(), "flash3", speed_active = False) == "_flash_3_hub"
 
 
+def test_flash2_dropped_below_ampere(monkeypatch):
+    # Dao-AILab FlashAttention 2 needs Ampere (SM80)+; on Turing (SM75) diffusers accepts the
+    # backend then crashes at generation, so the arch gate must drop it like cuDNN/FA3/FA4.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (7, 5))
+    assert select_attention_backend(_target(), "flash", speed_active = False) is None
+    # Ampere+ still honors it.
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (8, 0))
+    assert select_attention_backend(_target(), "flash", speed_active = False) == "flash"
+
+
 def test_explicit_cudnn_dropped_below_sm80(monkeypatch):
     # An explicit cuDNN request on pre-Ampere (T4 SM75 / V100 SM70) must drop to native,
     # not set fine and crash at first generation -- the same gate the auto path applies.
@@ -263,9 +273,8 @@ def test_active_attention_backend_reads_tuple_return():
 # ── on-demand wheel-only install of optional kernels ─────────────────────────────
 @pytest.fixture(autouse = True)
 def _no_real_installs(monkeypatch):
-    # Unit tests must never shell out to pip: the apply path probes installable
-    # backends (sage/flash*), so hard-disable the gate; install tests re-enable it
-    # with a stubbed subprocess.
+    # Unit tests must never shell out to pip: the apply path probes installable backends
+    # (sage/flash*), so hard-disable the gate; install tests re-enable it with a stubbed subprocess.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
     # The install once-per-process memo is module state; clear it so each test starts
     # with a fresh "not yet attempted" set (otherwise an earlier test's attempt would
@@ -449,3 +458,123 @@ def test_install_failure_falls_back_to_native(monkeypatch):
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     t = _FakeTransformer(fail = True)
     assert apply_attention_backend(_pipe(t), "sage") is None
+
+
+# ── kernels-package install gate (huggingface_hub compatibility) ─────────────────
+
+
+def test_kernels_install_skipped_on_pre_1x_hub(monkeypatch):
+    # Every current `kernels` release needs huggingface_hub >= 1.0, and with an older
+    # hub the damage is NOT contained: `import kernels` raises at module scope and
+    # diffusers imports kernels whenever it is installed, so a single auto-install
+    # would brick every later pipeline import (measured: hub 0.36 + kernels 0.13/0.16
+    # both break the HunyuanVideo-1.5 pipeline import). The installer must refuse.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda logger = None: False)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("flash_4_hub")
+    assert run.calls == []
+    # The refusal is a policy decision, not a failed attempt: nothing memoised, so a
+    # later request on a fixed environment can still install.
+    assert "kernels" not in att._INSTALL_ATTEMPTED
+
+
+def test_kernels_install_allowed_on_hub_1x(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda logger = None: True)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("flash_4_hub")
+    assert len(run.calls) == 1 and "kernels" in run.calls[0]
+
+
+def test_kernels_gate_only_applies_to_kernels_package(monkeypatch):
+    # sage/xformers/flash-attn wheels do not import huggingface_hub at module scope,
+    # so the hub gate must not block them.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda logger = None: False)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert len(run.calls) == 1 and "sageattention" in run.calls[0]
+
+
+def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.36.2")
+    assert att._kernels_hub_compatible() is False
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.23.0")
+    assert att._kernels_hub_compatible() is True
+
+    def _boom(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    # Undeterminable hub -> keep the previous (permissive) behaviour.
+    monkeypatch.setattr(importlib.metadata, "version", _boom)
+    assert att._kernels_hub_compatible() is True
+
+
+# ── per-device backend guard (CFG-parallel heterogeneous replica) ─────────────────
+def _stub_cuda_capability(monkeypatch, caps):
+    """Stub torch.cuda.get_device_capability(idx) from a {idx: (major, minor)} map."""
+    torch = types.ModuleType("torch")
+    torch.cuda = types.SimpleNamespace(
+        get_device_capability = lambda idx: caps[idx],
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", torch)
+
+
+def test_backend_supported_on_device_none_is_always_ok(monkeypatch):
+    # None = native: nothing to arch-gate, so any device is fine (even unqueryable).
+    assert att.attention_backend_supported_on_device(None, 0) is True
+
+
+def test_backend_supported_on_device_flash3_hopper_only(monkeypatch):
+    # FA3 is SM90 (Hopper) only: supported on the Hopper primary, NOT on a Blackwell replica.
+    _stub_cuda_capability(monkeypatch, {0: (9, 0), 1: (10, 0)})
+    assert att.attention_backend_supported_on_device("_flash_3_hub", 0) is True
+    assert att.attention_backend_supported_on_device("_flash_3_hub", 1) is False
+
+
+def test_backend_supported_on_device_flash4_blackwell_only(monkeypatch):
+    # FA4 needs SM100 (Blackwell): rejected on a Hopper replica.
+    _stub_cuda_capability(monkeypatch, {0: (10, 0), 1: (9, 0)})
+    assert att.attention_backend_supported_on_device("flash_4_hub", 0) is True
+    assert att.attention_backend_supported_on_device("flash_4_hub", 1) is False
+
+
+def test_backend_supported_on_device_cudnn_needs_ampere(monkeypatch):
+    # cuDNN fused SDPA needs Ampere+ (SM80): rejected on a pre-Ampere (T4/SM75) replica.
+    _stub_cuda_capability(monkeypatch, {0: (9, 0), 1: (7, 5)})
+    assert att.attention_backend_supported_on_device("_native_cudnn", 0) is True
+    assert att.attention_backend_supported_on_device("_native_cudnn", 1) is False
+
+
+def test_backend_supported_on_device_flash2_needs_ampere(monkeypatch):
+    # FlashAttention 2 needs Ampere+ (SM80): rejected on a pre-Ampere (T4/SM75) replica.
+    _stub_cuda_capability(monkeypatch, {0: (8, 0), 1: (7, 0)})
+    assert att.attention_backend_supported_on_device("flash", 0) is True
+    assert att.attention_backend_supported_on_device("flash", 1) is False
+
+
+def test_backend_supported_on_device_unqueryable_is_permissive(monkeypatch):
+    # An unqueryable device must not block on a guess (best-effort, like _backend_arch_supported).
+    torch = types.ModuleType("torch")
+
+    def _boom(_idx):
+        raise RuntimeError("no device props")
+
+    torch.cuda = types.SimpleNamespace(get_device_capability = _boom)
+    monkeypatch.setitem(__import__("sys").modules, "torch", torch)
+    assert att.attention_backend_supported_on_device("_flash_3_hub", 3) is True

@@ -18,9 +18,13 @@ This shrinks it in place, with four backends:
   nvfp4       - torchao NVFP4 weight-only: 4-bit float, two-level microscaling, Blackwell
                 sm_100+ FP4 cores. ~4x smaller (lowest VRAM) but a steeper quality cost.
 
-All keep norms / embeddings full precision, are a memory-vs-quality tradeoff (off by default),
-and pair well with streamed (group) offload where the text encoder stays resident. Quantify
-the quality cost with scripts/diffusion_quality.py. torch / diffusers / torchao imported lazily.
+All keep normalisations / embeddings full precision and are a memory-vs-quality tradeoff.
+``auto`` (the loader default) walks ``select_te_quant_scheme``'s per-GPU ladder for the best
+accurate scheme (fp8_dynamic / int8 / layerwise fp8), falling back to dense; ``none``/``off``
+stays dense, an explicit scheme forces it. They pair well with streamed (group) offload, where
+the resident text encoder dominates the companion footprint. Quantify the quality cost per model
+with scripts/diffusion_quality.py and scripts/diffusion_quant_builder.py. torch / diffusers /
+torchao imported lazily.
 """
 
 from __future__ import annotations
@@ -31,6 +35,8 @@ TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
 TE_QUANT_INT8 = "int8"
 TE_QUANT_FP8_DYNAMIC = "fp8_dynamic"
+TE_QUANT_AUTO = "auto"
+# Concrete schemes (excludes "auto") the casters dispatch on.
 TE_QUANT_MODES = (TE_QUANT_FP8, TE_QUANT_NVFP4, TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC)
 
 # Pipeline attributes that hold a text encoder, in order.
@@ -51,17 +57,19 @@ _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
 
 
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested text-encoder quant; None / "" / "none" -> None.
-
-    Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
+    """Lower/strip a requested text-encoder quant; None / "" / "none" / "off" -> None, "auto" ->
+    "auto" (resolved later by select_te_quant_scheme). Raises ValueError for an unsupported value."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")
-    if not normalized or normalized == "none":
+    if not normalized or normalized in ("none", "off"):
         return None
+    if normalized == TE_QUANT_AUTO:
+        return TE_QUANT_AUTO
     if normalized not in TE_QUANT_MODES:
         raise ValueError(
-            f"Unsupported text_encoder_quant '{value}'. Use one of: {', '.join(TE_QUANT_MODES)}."
+            f"Unsupported text_encoder_quant '{value}'. Use one of: "
+            f"{', '.join((TE_QUANT_AUTO,) + TE_QUANT_MODES)}, none/off."
         )
     return normalized
 
@@ -91,6 +99,163 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     return False
 
 
+# Per-arch preference order for text-encoder ``auto`` (best-first), mirroring the transformer's
+# ``_AUTO_LADDER``. fp8_dynamic (compute fp8) leads on fp8-GEMM silicon; int8 sits second but only
+# engages for a family with a measured keep-bf16 schedule; layerwise ``fp8`` (storage cast) is the
+# universal fallback and the only scheme that survives group offload. nvfp4 stays explicit-only.
+_TE_AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
+    ((8, 9), (TE_QUANT_FP8_DYNAMIC, TE_QUANT_INT8, TE_QUANT_FP8)),  # Ada sm_89 / Hopper / Blackwell
+    (
+        (8, 0),
+        (TE_QUANT_INT8, TE_QUANT_FP8),
+    ),  # Ampere sm_80/86: no fp8 GEMM -> int8 or layerwise fp8
+)
+
+# Text encoders whose activation ranges break a scheme at the MODEL level (measured hidden-state
+# cosine vs bf16). A denied scheme is skipped by ``auto`` and refused when requested explicitly.
+# int8 already gates on a per-family keep-bf16 schedule (``_TE_INT8_SKIP``), so this covers the
+# rarer case where a scheme breaks the encoder outright.
+#   ltx-2 / fp8_dynamic: compute-fp8 on the Gemma3-27B encoder BLACK-FRAMES the whole clip (B200,
+#   pairwise vs the dense encoder: mean luma 137.9 -> 0.0, LPIPS 0.78). Layerwise fp8 on the same
+#   encoder is near-lossless (LPIPS 0.0043) at the same ~2x shrink, so auto falls through to it.
+_TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
+    "ltx-2": frozenset({TE_QUANT_FP8_DYNAMIC}),
+}
+
+# Families whose AUTO text-encoder quant resolves dense: measured out-of-bar trajectory drift for
+# zero speed win. Unlike the deny table this only steers the AUTO default; an explicit scheme is
+# still honored.
+#   wan2.2-t2v-a14b: TE fp8_dynamic ALONE moves the clip to pairwise LPIPS 0.1195 vs the dense-TE
+#   stack (B200, 1280x720/33f/50 steps) for 146.7 -> 142.7 s e2e -- the UMT5 encoder runs once per
+#   generation, so the 1.03x is noise next to being the dominant accuracy cost. The MoE trajectory
+#   amplifies the perturbation ~3x harder than on wan2.2-ti2v-5b (0.0396, kept quantized there for
+#   a real 1.09x on its faster DiT).
+_TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset(
+    {"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-t2v-a14b"}
+)
+
+# Map a TE torchao scheme to the transformer smoke-probe scheme (same GEMM), so ``auto`` degrades
+# gracefully when a build lacks a kernel. Layerwise fp8 has no torchao GEMM to probe.
+_TE_SMOKE_SCHEME = {TE_QUANT_FP8_DYNAMIC: "fp8", TE_QUANT_INT8: "int8", TE_QUANT_NVFP4: "nvfp4"}
+
+
+def _te_family_denied(family: Optional[str], scheme: str) -> bool:
+    return scheme in _TE_FAMILY_SCHEME_DENY.get((family or "").strip().lower(), frozenset())
+
+
+# nvfp4 TE casts WEIGHT-ONLY (see _cast_nvfp4), a different kernel from the transformer's
+# dynamic-activation NVFP4 GEMM, so it gets its own cached smoke probe.
+_TE_NVFP4_PROBE_CACHE: dict[str, bool] = {}
+
+
+def _te_nvfp4_weightonly_probe(device: str) -> bool:
+    """True iff weight-only NVFP4 (the ``_cast_nvfp4`` config) runs one forward on this build. The
+    transformer ``_smoke_probe`` tests the DYNAMIC-activation NVFP4 GEMM, a different kernel: a
+    Blackwell build can carry the weight-only path without the dynamic one, so an explicit TE
+    ``nvfp4`` needs this dedicated probe. Cached per device."""
+    if device in _TE_NVFP4_PROBE_CACHE:
+        return _TE_NVFP4_PROBE_CACHE[device]
+    ok = False
+    try:
+        import torch
+        from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+        from torchao.quantization import quantize_
+
+        from .diffusion_transformer_quant import make_filter_fn
+
+        lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
+        quantize_(lin, NVFP4WeightOnlyConfig(), filter_fn = make_filter_fn(0))
+        x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
+        with torch.no_grad():
+            lin(x)
+        torch.cuda.synchronize()
+        ok = True
+    except Exception:  # noqa: BLE001 -- an unavailable kernel just means stay dense
+        ok = False
+    _TE_NVFP4_PROBE_CACHE[device] = ok
+    return ok
+
+
+def _te_scheme_probe(scheme: str, device: str) -> bool:
+    """True iff ``scheme`` runs on this build. Layerwise fp8 (no torchao GEMM) always passes; nvfp4
+    probes its weight-only kernel; the other torchao modes reuse the transformer's cached smoke
+    test."""
+    tq = _TE_SMOKE_SCHEME.get(scheme)
+    if tq is None:
+        return True
+    # nvfp4 casts weight-only, so probe that kernel rather than the transformer's dynamic GEMM.
+    if scheme == TE_QUANT_NVFP4:
+        return _te_nvfp4_weightonly_probe(device)
+    try:
+        from .diffusion_transformer_quant import _smoke_probe
+        return _smoke_probe(tq, device)
+    except Exception:
+        return False
+
+
+def select_te_quant_scheme(
+    target: Any,
+    requested: Optional[str],
+    *,
+    family: Optional[str] = None,
+    offload_active: bool = False,
+) -> Optional[str]:
+    """Resolve the concrete text-encoder scheme to apply, or None to stay dense bf16.
+
+    An explicit scheme is returned as-is. ``auto`` walks ``_TE_AUTO_LADDER`` for this GPU and
+    returns the first scheme that survives offload (torchao needs pinned residency -> only fp8),
+    has a keep-bf16 schedule if int8, is not family-denied, is hardware-supported, and passes a
+    kernel smoke test. Returns None when nothing qualifies."""
+    requested = normalize_te_quant(requested)
+    if requested is None or requested != TE_QUANT_AUTO:
+        return requested
+    # AUTO resolves dense for these families regardless of hardware. TE quant perturbs the
+    # CONDITIONING and a multi-step video trajectory amplifies that chaotically: on
+    # HunyuanVideo-1.5-720p (B200, 720p/33f/30 steps) TE fp8_dynamic ALONE moves the clip to LPIPS
+    # 0.236 vs the bit-exact reference while the rest of the stack sits at 0.052-0.053, for ZERO
+    # speed win (35.48 vs 35.36 s e2e). The ~6.7 GB saved isn't worth being the dominant accuracy
+    # cost. (VAE fp8 stays in auto: 0.053, decode-only, no trajectory to amplify.)
+    if (family or "").strip().lower() in _TE_AUTO_DENSE_FAMILIES:
+        return None
+    from .diffusion_transformer_quant import _capability, _is_consumer_gpu
+
+    cap = _capability()
+    if cap is None:
+        return None
+    device = str(getattr(target, "device", "cuda"))
+    for floor, schemes in _TE_AUTO_LADDER:
+        if cap >= floor:
+            # Consumer GDDR parts run int8 full-rate but halve fp8 FP32-accumulate: prefer int8.
+            ordered = (
+                (TE_QUANT_INT8,) + tuple(s for s in schemes if s != TE_QUANT_INT8)
+                if TE_QUANT_INT8 in schemes
+                and schemes[0] != TE_QUANT_INT8
+                and _is_consumer_gpu(device)
+                else schemes
+            )
+            for scheme in ordered:
+                # torchao tensors reject Module.to(); only layerwise fp8 streams, so skip the
+                # torchao modes under offload.
+                if offload_active and scheme in (
+                    TE_QUANT_INT8,
+                    TE_QUANT_FP8_DYNAMIC,
+                    TE_QUANT_NVFP4,
+                ):
+                    continue
+                # int8 only clears the bar on a family with a measured keep-bf16 schedule.
+                if scheme == TE_QUANT_INT8 and (family or "").lower() not in _TE_INT8_SKIP:
+                    continue
+                if _te_family_denied(family, scheme):
+                    continue
+                if not te_quant_supported(target, scheme):
+                    continue
+                if not _te_scheme_probe(scheme, device):
+                    continue
+                return scheme
+            return None
+    return None
+
+
 def quantize_text_encoders(
     pipe: Any,
     target: Any,
@@ -100,22 +265,37 @@ def quantize_text_encoders(
     offload_active: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """Quantise each present text encoder in place with ``mode``. Returns the mode applied, or
-    None when disabled, unsupported, or nothing was cast. ``int8`` needs a per-family schedule
-    (``_TE_INT8_SKIP``); without one it falls back to ``fp8``. Under ``offload_active`` the torchao
-    modes are skipped (their subclasses reject ``Module.to()``); layerwise ``fp8`` still engages.
-    Best-effort: any failure leaves the encoder dense."""
+    """Quantise each present text encoder in place with ``mode`` (auto / fp8 / fp8_dynamic / int8 /
+    nvfp4). Returns the applied mode, or None when disabled, unsupported, or nothing was cast.
+    ``auto`` resolves via ``select_te_quant_scheme``. ``int8`` needs a per-family keep-bf16 schedule
+    (``_TE_INT8_SKIP``); a family without one falls back to ``fp8``. Under offload the torchao modes
+    are skipped (their tensors reject Module.to()); layerwise ``fp8`` still engages. Best-effort:
+    any failure leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
         return None
+    if mode == TE_QUANT_AUTO:
+        mode = select_te_quant_scheme(
+            target, TE_QUANT_AUTO, family = family, offload_active = offload_active
+        )
+        if mode is None:
+            return None
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
         skip = _TE_INT8_SKIP.get((family or "").lower())
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
-    # torchao modes produce subclasses that reject Module.to(), which an offload placement uses
-    # (the DiT path skips torchao under offload for the same reason). Layerwise fp8 streams fine.
+    # A denied scheme is refused even when requested explicitly. Gate the FINAL concrete mode so
+    # an int8 -> fp8 fallback is re-checked too (auto already filtered in select_te_quant_scheme).
+    if _te_family_denied(family, mode):
+        _note(
+            logger,
+            f"text-encoder '{mode}' denied for family '{family}' (out-of-bar; staying dense)",
+        )
+        return None
+    # The torchao modes (int8, fp8_dynamic, nvfp4) produce tensors that reject Module.to(), which
+    # an offload placement crashes on; layerwise fp8 streams fine. Skip the torchao modes here.
     if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
         _note(
             logger,
@@ -124,6 +304,14 @@ def quantize_text_encoders(
         )
         return None
     if not te_quant_supported(target, mode):
+        return None
+    # An EXPLICIT torchao mode can clear the capability gate yet fail the real GEMM on a build
+    # where quantize_ wraps the encoder but the kernel is broken (the caster's try/except catches
+    # the cast, not the first forward). Run the auto ladder's kernel smoke test so a failing kernel
+    # falls back to dense here instead of crashing at generation. No-op for layerwise fp8.
+    device = str(getattr(target, "device", "cuda"))
+    if not _te_scheme_probe(mode, device):
+        _note(logger, f"text-encoder '{mode}' failed the kernel smoke test; staying dense")
         return None
     if mode == TE_QUANT_INT8:
         first, last = skip  # type: ignore[misc]
@@ -145,6 +333,21 @@ def quantize_text_encoders(
             caster(encoder, target)
             cast.append(attr)
         except Exception as exc:  # noqa: BLE001 — leave this encoder dense
+            # A mid-pass caster failure may have left the encoder PARTIALLY quantized (can't
+            # run as dense), so fail the load for that; a clean miss stays best-effort dense.
+            # raise_if_partially_quantized only recognises torchao parameter subclasses, so it
+            # cannot see a partial layerwise fp8 mutation (diffusers apply_layerwise_casting installs
+            # upcast hooks + fp8 storage in place, leaving no torchao params). Detect a leftover
+            # layerwise hook directly and fail closed there too; a clean failure stays dense.
+            from .diffusion_transformer_quant import raise_if_partially_quantized
+
+            if mode == TE_QUANT_FP8 and _has_layerwise_casting(encoder):
+                raise RuntimeError(
+                    f"text_encoder_quant fp8:{attr} failed after partially installing layerwise "
+                    "casting (leftover fp8 hooks); reload the model instead of a dense fallback "
+                    f"(original error: {exc})"
+                ) from exc
+            raise_if_partially_quantized(encoder, what = f"text_encoder_quant {mode}:{attr}", exc = exc)
             _warn(logger, f"{mode}:{attr}", exc)
     return mode if cast else None
 
@@ -296,6 +499,29 @@ def _cast_nvfp4(encoder: Any, target: Any) -> None:
         DEFAULT_MIN_LINEAR_FEATURES, _te_exclude_tokens(encoder), require_bf16 = True
     )
     quantize_(encoder, NVFP4WeightOnlyConfig(), filter_fn = filter_fn)
+
+
+def _has_layerwise_casting(module: Any) -> bool:
+    """True when any submodule still carries a diffusers layerwise-casting hook -- i.e. an
+    ``apply_layerwise_casting`` pass installed an fp8-storage upcast hook before failing. torchao's
+    partial-quant detector cannot see these, so a mid-pass layerwise failure would otherwise report
+    a dense fallback over a half-cast encoder. Best-effort: a module without ``.modules()`` or a
+    moved diffusers internal returns False (defer to the torchao check)."""
+    try:
+        hook_name = "layerwise_casting"
+        try:
+            from diffusers.hooks.layerwise_casting import _LAYERWISE_CASTING_HOOK
+            hook_name = _LAYERWISE_CASTING_HOOK
+        except Exception:  # noqa: BLE001 -- const moved: fall back to the stable literal
+            pass
+        for sub in module.modules():
+            registry = getattr(sub, "_diffusers_hook", None)
+            get_hook = getattr(registry, "get_hook", None)
+            if callable(get_hook) and get_hook(hook_name) is not None:
+                return True
+    except Exception:  # noqa: BLE001 -- unqueryable module: defer to the torchao check
+        return False
+    return False
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

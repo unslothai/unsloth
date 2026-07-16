@@ -1808,13 +1808,28 @@ class DiffusionLoadRequest(BaseModel):
         "default (also regional torch.compile where eligible), "
         "max (also TF32 + fused QKV).",
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
-        description = "Quantise the companion text encoder(s): fp8 (layerwise cast, ~2x smaller, "
-        "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
-        "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
-        "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
-        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode.",
+        description = "Quantise the companion text encoder(s). auto (the default when unset) picks "
+        "the fastest accurate scheme for this GPU + model family (fp8_dynamic on fp8-GEMM silicon, "
+        "int8 where a keep-bf16 schedule exists, else layerwise fp8), or stays dense when none "
+        "qualifies. Explicit schemes: fp8 (layerwise cast, ~2x smaller, CUDA cc>=8.9), fp8_dynamic "
+        "(torchao compute fp8 on the tensor cores, ~2x + faster, cc>=8.9), int8 (torchao compute "
+        "int8 with per-family keep-bf16 layers; falls back to fp8 where no schedule exists; "
+        "cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). none/off keeps it dense bf16. A "
+        "memory-vs-quality tradeoff (shifts fine detail); pairs well with balanced mode.",
+    )
+    vae_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic"]] = Field(
+        None,
+        description = "Quantise the VAE (image decoder). auto (the default when unset) engages "
+        "layerwise fp8 (diffusers 8-bit storage, cc >= 8.9, survives offload) where the family "
+        "qualifies, else stays dense; fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE on the conv "
+        "tensor cores, cc >= 8.9, resident only, conv-probe gated) is an EXPLICIT opt-in, never "
+        "picked by auto. The 3-channel RGB head + output norms always stay dense. There is no "
+        "int8 (no Conv3d int8 kernel). none/off keeps the VAE dense bf16; an explicit scheme "
+        "forces it.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2193,6 +2208,9 @@ class DiffusionStatusResponse(BaseModel):
     text_encoder_quant: Optional[str] = Field(
         None, description = "Text-encoder quantisation engaged: fp8 | nvfp4 | null"
     )
+    vae_quant: Optional[str] = Field(
+        None, description = "VAE quantisation engaged: fp8 | fp8_dynamic | null"
+    )
     transformer_quant: Optional[str] = Field(
         None,
         description = "Transformer quant engaged on the dense fast path: int8 | fp8 | "
@@ -2398,19 +2416,43 @@ class VideoLoadRequest(BaseModel):
         "attention; xformers/aiter are memory-efficient (NVIDIA) / AMD ROCm. An unavailable "
         "kernel falls back to the default.",
     )
-    transformer_cache: Optional[Literal["off", "fbcache"]] = Field(
+    transformer_cache: Optional[Literal["off", "auto", "fbcache", "magcache"]] = Field(
         None,
-        description = "Opt-in step caching (off by default). fbcache = First-Block-Cache: "
-        "reuse the transformer tail across denoise steps when the first block's residual "
-        "barely changes. Engages on many-step schedules only; incompatible models run "
-        "uncached.",
+        description = "Step caching (null/auto: the family's measured mode engages on "
+        "many-step schedules, re-checked per generation). fbcache = First-Block-Cache: reuse "
+        "the transformer tail across denoise steps when the first block's residual barely "
+        "changes. magcache = MagCache: skip whole steps from a per-family calibrated "
+        "magnitude curve with a bounded error budget (the auto mode for HunyuanVideo-1.5, "
+        "where FBCache derails the trajectory; needs a calibrated family curve, else runs "
+        "uncached). Incompatible models run uncached.",
     )
     transformer_cache_threshold: Optional[float] = Field(
         None,
         ge = 0.0,
         le = 1.0,
-        description = "FBCache residual threshold (higher = skips more steps = faster, lower "
-        "quality). null auto-picks the family default.",
+        description = "Step-cache residual threshold (higher = skips more steps = faster, "
+        "lower quality). null auto-picks the engaged mode's family default.",
+    )
+    transformer_cache_quality: Optional[Literal["auto", "quality", "balanced", "fast"]] = Field(
+        None,
+        description = "Step-cache speed/accuracy preset. quality = near-lossless (lower "
+        "threshold + tighter skip budget, smaller speedup); balanced = the measured family "
+        "defaults; fast = more skipping for more speed at a visible quality cost. null/auto "
+        "picks the family's measured default: quality for HunyuanVideo-1.5 (1.6x at half the "
+        "drift of balanced), balanced elsewhere. An explicit transformer_cache_threshold "
+        "overrides the preset's threshold; the preset still sets the MagCache skip cap / "
+        "retention window.",
+    )
+    cfg_parallel: Optional[Literal["off", "auto", "on"]] = Field(
+        None,
+        description = "Dual-GPU CFG branch parallelism: run the two guidance branches "
+        "concurrently, one on a DiT replica on a second CUDA device (~1.7x end-to-end on "
+        "HunyuanVideo-1.5, replica ~20 GB VRAM). null/auto engages only where the output is "
+        "bit-identical to single-GPU: the measured families on an EAGER speed tier (each "
+        "compiled stack's per-device inductor artifacts drift ~1 ulp/step, which a clip "
+        "trajectory amplifies). on = engage wherever mechanically possible, including the "
+        "compiled stack, accepting that fp-noise divergence (composition/brightness "
+        "preserved). off = never.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2425,15 +2467,29 @@ class VideoLoadRequest(BaseModel):
             "backend's transformer_quant field.",
         )
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
         description = "Quantise the dense companion text encoder (Gemma3 / UMT5 / Qwen2.5-VL), "
         "which loads bf16 from the base repo regardless of how the DiT was sourced and is often "
-        "the largest resident component. fp8 = diffusers layerwise casting (memory only, cc >= "
+        "the largest resident component. auto (the default when unset) picks the fastest accurate "
+        "scheme for this GPU + family (fp8_dynamic / int8 / layerwise fp8), or stays dense when "
+        "none qualifies. fp8 = diffusers layerwise casting (memory only, cc >= "
         "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
-        "sm_100+). null keeps the encoder dense. Mirrors the image backend's field.",
+        "sm_100+). none/off keeps the encoder dense. Mirrors the image backend's field.",
+    )
+    vae_quant: Optional[Literal["auto", "none", "off", "fp8", "fp8_dynamic"]] = Field(
+        None,
+        description = "Quantise the VAE (video decoder). auto (the default when unset) engages "
+        "layerwise fp8 (diffusers 8-bit storage, cc >= 8.9, survives offload) where the family "
+        "qualifies, else stays dense; fp8_dynamic (torchao PER-TENSOR fp8 COMPUTE on the "
+        "Conv2d/Conv3d tensor cores, cc >= 8.9, resident only, conv-probe gated) is an EXPLICIT "
+        "opt-in, never picked by auto. The fp32-VAE families (Wan) always stay dense. No int8 "
+        "(no Conv3d int8 kernel). none/off keeps it dense; an explicit scheme forces it. Mirrors "
+        "the image backend's field.",
     )
 
     @field_validator("attention_backend", mode = "before")
@@ -2615,7 +2671,15 @@ class VideoStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
-    transformer_cache: Optional[str] = Field(None, description = "Step cache engaged: fbcache | null")
+    transformer_cache: Optional[str] = Field(
+        None, description = "Step cache engaged: fbcache | magcache | null"
+    )
+    cfg_parallel: Optional[str] = Field(
+        None,
+        description = "Dual-GPU CFG branch parallelism engaged: 'on' (DiT replica on a second "
+        "CUDA device runs one guidance branch) | null (single-device). The resolved record "
+        "carries the gate reason.",
+    )
     transformer_quant: Optional[str] = Field(
         None,
         description = "Dense transformer quant engaged on a pipeline load: int8 | fp8 | nvfp4 | "
@@ -2627,6 +2691,11 @@ class VideoStatusResponse(BaseModel):
         description = "Text-encoder quant engaged: fp8 | fp8_dynamic | int8 | nvfp4 | null "
         "(null = the dense bf16 encoder is loaded). An int8 request without a per-family "
         "keep-bf16 schedule is reported as the fp8 it fell back to.",
+    )
+    vae_quant: Optional[str] = Field(
+        None,
+        description = "VAE quant engaged: fp8 | fp8_dynamic | null (null = the dense VAE is "
+        "loaded; the fp32-VAE families always report null).",
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"

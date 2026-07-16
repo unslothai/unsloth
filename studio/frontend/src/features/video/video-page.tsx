@@ -520,7 +520,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
-  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "magcache">(
+    "auto",
+  );
+  const [cacheQuality, setCacheQuality] = useState<"auto" | "quality" | "balanced" | "fast">(
+    "auto",
+  );
+  const [cfgParallel, setCfgParallel] = useState<"auto" | "off" | "on">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
@@ -1060,7 +1066,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           speed_mode: speedMode === "auto" ? undefined : speedMode,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+          transformer_cache_quality: cacheQuality === "auto" ? undefined : cacheQuality,
           transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+          cfg_parallel: cfgParallel === "auto" ? undefined : cfgParallel,
         });
       } catch (err) {
         lastLoad.current = prevLastLoad;
@@ -1084,7 +1092,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       speedMode,
       attentionBackend,
       transformerCache,
+      cacheQuality,
       transformerQuant,
+      cfgParallel,
     ],
   );
 
@@ -1359,7 +1369,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       />
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models. Auto turns it on at 20+ steps and off for few-step distilled models, re-checked per clip."
+        hint="Reuses transformer work across denoise steps for many-step models. Auto picks the family's measured mode (MagCache on HunyuanVideo-1.5, First-Block-Cache elsewhere) at 20+ steps and turns it off for few-step distilled models, re-checked per clip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -1367,6 +1377,32 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           ["auto", "Auto"],
           ["off", "Off"],
           ["fbcache", "First-Block-Cache"],
+          ["magcache", "MagCache"],
+        ]}
+      />
+      <AdvancedSelect
+        label="Cache quality"
+        hint="Speed/accuracy preset for the step cache. Quality skips conservatively (near-lossless, smaller speedup); Balanced skips more for more speed; Fast is the most aggressive. Auto picks the family's measured default (Quality on HunyuanVideo-1.5, Balanced elsewhere)."
+        badge={<ResolvedBadge status={status} controlKey="transformer_cache_quality" />}
+        value={cacheQuality}
+        onValueChange={(v) => setCacheQuality(v as typeof cacheQuality)}
+        options={[
+          ["auto", "Auto"],
+          ["quality", "Quality"],
+          ["balanced", "Balanced"],
+          ["fast", "Fast"],
+        ]}
+      />
+      <AdvancedSelect
+        label="Dual-GPU CFG"
+        hint="Runs the two guidance branches concurrently, one on a DiT replica on a second GPU (~1.7x on HunyuanVideo-1.5; the replica takes ~20 GB VRAM there). Auto engages only where the output is bit-identical to single-GPU (the Eager speed tier); On also parallelizes the compiled stack, accepting fp-noise-level divergence."
+        badge={<ResolvedBadge status={status} controlKey="cfg_parallel" />}
+        value={cfgParallel}
+        onValueChange={(v) => setCfgParallel(v as typeof cfgParallel)}
+        options={[
+          ["auto", "Auto"],
+          ["off", "Off"],
+          ["on", "On"],
         ]}
       />
       {status?.loaded && canReapply && (

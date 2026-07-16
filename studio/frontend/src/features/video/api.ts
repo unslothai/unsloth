@@ -106,11 +106,30 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "auto" | "fbcache" | "magcache";
   transformer_cache_threshold?: number;
-  // Dense DiT precision on full-pipeline loads (omit for the hardware-ladder auto;
-  // "none" pins plain bf16). GGUF / single-file checkpoints carry their own precision.
-  transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
+  // Step-cache speed/accuracy preset (omit/"auto" for the family's measured default).
+  transformer_cache_quality?: "auto" | "quality" | "balanced" | "fast";
+  // Dual-GPU CFG branch parallelism (omit for auto: engages on measured families when a
+  // second GPU with enough free VRAM is available; bit-identical with the step cache on).
+  cfg_parallel?: "off" | "auto" | "on";
+  // Dense DiT precision on full-pipeline loads (omit/"auto" for the hardware-ladder auto;
+  // "none"/"off" pins plain bf16). GGUF / single-file checkpoints carry their own precision.
+  transformer_quant?: "auto" | "none" | "off" | "fp8" | "int8" | "nvfp4" | "mxfp8";
+  // Companion text-encoder precision (Gemma3 / UMT5 / Qwen2.5-VL), loaded bf16 from the base
+  // repo regardless of how the DiT was sourced. Omit/"auto" for the measured scheme;
+  // "none"/"off" keeps it dense.
+  text_encoder_quant?:
+    | "auto"
+    | "none"
+    | "off"
+    | "fp8"
+    | "fp8_dynamic"
+    | "int8"
+    | "nvfp4";
+  // VAE (video decoder) precision. Omit/"auto" engages layerwise fp8 where the family
+  // qualifies; fp8_dynamic is an explicit opt-in (never auto); "none"/"off" keeps it dense.
+  vae_quant?: "auto" | "none" | "off" | "fp8" | "fp8_dynamic";
 }
 
 export interface VideoGenerateRequest {

@@ -348,6 +348,26 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
 
 
+def test_load_fp8_family_exclude_match_ok(monkeypatch, tmp_path):
+    # A Wan fp8 checkpoint keeps condition_embedder bf16 (the zero-padded-text divide-by-zero
+    # origin); the validator derives the expected set from scheme AND the recorded family, so a
+    # checkpoint baked with that exclude validates and loads.
+    ckpt = _good_ckpt(scheme = "fp8")
+    ckpt["metadata"]["family"] = "wan2.2-ti2v-5b"
+    ckpt["metadata"]["exclude_name_tokens"] = ["condition_embedder"]
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is not None
+
+
+def test_load_fp8_family_exclude_stale_is_none(monkeypatch, tmp_path):
+    # An OLD Wan fp8 checkpoint baked before the condition_embedder exclude (empty token list) would
+    # quantise condition_embedder and render black frames; the family-aware validator rejects it so
+    # the loader re-quantises dense with the correct exclude instead of loading the stale artifact.
+    ckpt = _good_ckpt(scheme = "fp8")
+    ckpt["metadata"]["family"] = "wan2.2-ti2v-5b"
+    ckpt["metadata"]["exclude_name_tokens"] = []
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+
+
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
     # An fp8 (scaled_mm) checkpoint built WITHOUT the bf16 gate quantised a different layer set
     # than the runtime filter now produces, so it must be rejected rather than loaded.

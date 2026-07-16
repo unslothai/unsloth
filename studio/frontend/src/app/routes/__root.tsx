@@ -65,9 +65,8 @@ const ImagesPage = lazy(() =>
   import("@/features/images").then((m) => ({ default: m.ImagesPage })),
 );
 
-// VideoPage gets the same persistent-mount treatment as ImagesPage so an in-flight
-// generation survives leaving the tab. Kept lazy so its bundle loads only on the first
-// /video visit.
+// VideoPage gets the same persistent-mount treatment as ImagesPage so an in-flight generation
+// survives leaving the tab. Kept lazy so its bundle loads only on the first /video visit.
 const VideoPage = lazy(() =>
   import("@/features/video").then((m) => ({ default: m.VideoPage })),
 );

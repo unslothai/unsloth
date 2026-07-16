@@ -241,9 +241,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("krea/Krea-2-Turbo", 18)],
   },
   {
-    // No bf16 repo exists for Ideogram 4: -fp8 stores its two DiTs as raw
-    // float8 (~46 GB resident after the bf16 cast); -nf4-diffusers is the
-    // bnb-4bit export (~11 GB).
+    // No bf16 repo exists for Ideogram 4: -fp8 stores its two DiTs as raw float8 (~46 GB resident
+    // after the bf16 cast); -nf4-diffusers is the bnb-4bit export (~11 GB).
     canonicalId: "ideogram-ai/ideogram-4",
     displayName: "Ideogram 4",
     description: "Text-to-image",

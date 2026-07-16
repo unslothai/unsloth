@@ -106,6 +106,9 @@ async def load_video_model(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
+            vae_quant = request.vae_quant,
+            transformer_cache_quality = request.transformer_cache_quality,
+            cfg_parallel = request.cfg_parallel,
         )
         # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
         _guard_video_load_against_training()
@@ -127,8 +130,11 @@ async def load_video_model(
                 attention_backend = request.attention_backend,
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
+                transformer_cache_quality = request.transformer_cache_quality,
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
+                vae_quant = request.vae_quant,
+                cfg_parallel = request.cfg_parallel,
                 model_kind = kind,
             )
 

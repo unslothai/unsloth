@@ -92,14 +92,14 @@ def _allow(monkeypatch, allowed):
 
 def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
     _stub_torch(monkeypatch, cc = (10, 0))
-    # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200
-    # (torch 2.11 + torchao CUTLASS FP4), fp8 is both faster and more accurate than nvfp4
-    # for the DiT's shapes -- nvfp4's FP4 GEMM only wins on very large GEMMs, not here.
+    # Even with every scheme available, auto picks fp8 on Blackwell: on a B200 fp8 is faster and
+    # more accurate than nvfp4 for the DiT's shapes (nvfp4 only wins on very large GEMMs).
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
-    # fp8 unavailable: nvfp4 is the next pick (above mxfp8 / int8).
+    # fp8 unavailable: nvfp4 is DISABLED in the auto ladder (explicit opt-in only), so even
+    # though the hardware supports nvfp4 here, auto skips it and picks mxfp8 next.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_NVFP4
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
     # Only mxfp8 + int8 left -> mxfp8 (still above int8).
     _allow(monkeypatch, {TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
@@ -326,9 +326,8 @@ def test_make_filter_fn(monkeypatch):
 
 
 def test_require_bf16_schemes_excludes_nvfp4():
-    # fp8 and mxfp8 assert a bf16 weight (torchao 0.17 / B200: "PerRow quantization only works for
-    # bfloat16 ..." and "Only supporting bf16 out dtype ..."), so they gate on it; nvfp4 quantises an
-    # fp32 weight fine, so it is NOT gated (leaving its large fp32 projections quantised, not dense).
+    # fp8 and mxfp8 assert a bf16 weight, so they gate on it; nvfp4 handles fp32 fine, so it is NOT
+    # gated (leaving its large fp32 projections quantised, not dense).
     from core.inference.diffusion_transformer_quant import (
         _REQUIRE_BF16_SCHEMES,
         TQ_FP8,
@@ -345,8 +344,8 @@ def test_require_bf16_schemes_excludes_nvfp4():
 
 def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
     # fp8 / mxfp8 assert a bf16 weight, so require_bf16 must skip a fp32 Linear (which Wan / Hunyuan
-    # video DiTs keep) while keeping the bf16 ones -- otherwise a single fp32 layer raises inside
-    # quantize_ and no-ops the whole pass. int8 and nvfp4 leave it off (they quantise fp32 fine).
+    # keep) while keeping the bf16 ones, else a single fp32 layer raises inside quantize_. int8 and
+    # nvfp4 leave it off (they handle fp32).
     torch = types.ModuleType("torch")
     torch.bfloat16, torch.float32 = "bf16", "fp32"
 
@@ -367,9 +366,8 @@ def test_make_filter_fn_require_bf16_skips_non_bf16(monkeypatch):
 
 
 def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
-    # The int8 path skips the large M=1 AdaLN modulation / conditioning-embedder projections
-    # (they crash torch._int_mm's M>16), while keeping the attention / FFN compute layers and
-    # the sequence embedders. fp8 (no exclusion) keeps everything.
+    # int8 skips the M=1 AdaLN modulation / conditioning-embedder projections (they crash
+    # torch._int_mm's M>16), keeping the attention / FFN layers. fp8 keeps everything.
     from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
 
     class _Lin:
@@ -415,9 +413,10 @@ def test_make_filter_fn_int8_excludes_modulation_and_embedders(monkeypatch):
 
 
 def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
-    # The runtime quantiser and the offline prequant builder must apply the SAME int8
-    # exclusion, or an int8 prequant artifact quantises the M=1 modulation/embedder linears
-    # and reintroduces the torch._int_mm crash. int8 gets the exclusion; others get none.
+    # Runtime and offline prequant must apply the SAME exclusion, or an artifact quantises a layer
+    # runtime skips (int8's M=1 linears -> _int_mm crash; fp8's padded-conditioning embedder ->
+    # black frames). int8 gets the family-independent exclusion; scaled_mm excludes nothing
+    # WITHOUT a family.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -428,10 +427,9 @@ def test_exclude_tokens_for_scheme_shared_by_runtime_and_builder():
 
 
 def test_exclude_tokens_for_scheme():
-    # The shared scheme->exclusion decision used by BOTH the runtime quantise path and the offline
-    # prequant-checkpoint builder, so an int8 checkpoint built ahead of time skips exactly the
-    # layers the runtime path skips (offline == runtime). int8 excludes the M=1 modulation /
-    # embedder tokens; every scaled_mm scheme excludes nothing.
+    # The shared scheme->exclusion decision used by BOTH the runtime path and the offline builder,
+    # so an offline checkpoint skips exactly the runtime layers. int8 excludes the M=1 modulation /
+    # embedder tokens on every family; scaled_mm excludes nothing by default.
     from core.inference.diffusion_transformer_quant import (
         _INT8_EXCLUDE_NAME_TOKENS,
         exclude_tokens_for_scheme,
@@ -441,6 +439,38 @@ def test_exclude_tokens_for_scheme():
     assert exclude_tokens_for_scheme(TQ_FP8) == ()
     assert exclude_tokens_for_scheme(TQ_NVFP4) == ()
     assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
+
+
+def test_exclude_tokens_for_scheme_family():
+    # Per-family fp8 exclusion: on Wan the per-row fp8 scale divides by a zero padding row in
+    # condition_embedder.text_embedder (-> inf -> black frames), so fp8 keeps condition_embedder
+    # bf16 while the 30-block stack stays fp8. int8 tolerates zero rows; unknown/Hunyuan get no
+    # fp8 exclusion.
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_EXCLUDE_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+    )
+
+    assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-ti2v-5b") == ("condition_embedder",)
+    assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-t2v-a14b") == ("condition_embedder",)
+    assert exclude_tokens_for_scheme(TQ_MXFP8, "wan2.2-ti2v-5b") == ("condition_embedder",)
+    # Hunyuan is not localisable (fp8 stays denied), and an unknown family gets nothing.
+    assert exclude_tokens_for_scheme(TQ_FP8, "hunyuanvideo-1.5") == ()
+    assert exclude_tokens_for_scheme(TQ_FP8, "z-image") == ()
+    # int8 tolerates zero ROWS (per-token; no divide), so most families need no extra skip...
+    assert exclude_tokens_for_scheme(TQ_INT8, "wan2.2-ti2v-5b") == _INT8_EXCLUDE_NAME_TOKENS
+    # ...but the trim shrinks HunyuanVideo-1.5's text streams to their VALID token counts, where
+    # int8 fails two ways: M=0 passes through UNPROJECTED (byt5/image embedders -> cond-type add
+    # crash), and torch._int_mm needs M > 16 (the ~6-token empty negative prompt). All text-stream
+    # linears stay bf16; the M ~ 32k video-stream linears keep int8 coverage.
+    from core.inference.diffusion_transformer_quant import _HUNYUAN15_INT8_EXCLUDES
+
+    for fam in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        assert (
+            exclude_tokens_for_scheme(TQ_INT8, fam)
+            == _INT8_EXCLUDE_NAME_TOKENS + _HUNYUAN15_INT8_EXCLUDES
+        )
+        assert "context_embedder" in _HUNYUAN15_INT8_EXCLUDES  # covers context_embedder_2 too
 
 
 # ── apply ───────────────────────────────────────────────────────────────────────
@@ -533,9 +563,8 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
 
 
 def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
-    # B200 with every scheme available: auto must NOT pick fp8 / nvfp4 / mxfp8 for the
-    # Qwen DiT (per-row fp8 renders black frames on it; see _FAMILY_SCHEME_DENY) and
-    # falls through the ladder to int8, which measures excellent on Qwen.
+    # B200, all schemes: auto must NOT pick fp8 / nvfp4 / mxfp8 for the Qwen DiT (per-row fp8 is
+    # black there) and falls through to int8, excellent on Qwen.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
@@ -543,14 +572,50 @@ def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
 
 
 def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
-    # An explicit fp8 request on qwen-image returns None (same contract as an
-    # unsupported scheme: the caller builds the GGUF pipeline instead). int8 stays
-    # honored on qwen, and fp8 stays honored on families outside the deny table.
+    # An explicit fp8 request on qwen-image returns None (same as an unsupported scheme: build
+    # GGUF instead). int8 stays honored on qwen; fp8 stays honored outside the deny table.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "fp8", family = "qwen-image") is None
     assert select_transformer_quant_scheme(_target(), "int8", family = "qwen-image") == TQ_INT8
     assert select_transformer_quant_scheme(_target(), "fp8", family = "z-image") == TQ_FP8
+
+
+def test_family_allows_fp8_for_wan(monkeypatch):
+    # The Wan fp8 black frame was a single input embedder dividing by a zero padding row (fixed by
+    # the condition_embedder exclude, not a deny), so auto now picks fp8 for both 5B TI2V and A14B.
+    # mxfp8 / nvfp4 stay denied, so with only those + int8 auto still lands on int8.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") == TQ_FP8
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})  # fp8 unavailable -> denied mx/nvfp4 skipped
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_INT8
+
+
+def test_family_deny_wan_fp8_allowed_mxfp8_nvfp4_refused(monkeypatch):
+    # An explicit fp8 request on a Wan family is now honored (safe via the condition_embedder
+    # exclude); int8 stays honored; mxfp8 / nvfp4 stay refused (None -> GGUF) until validated.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_NVFP4, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "fp8", family = "wan2.2-ti2v-5b") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "int8", family = "wan2.2-ti2v-5b") == TQ_INT8
+    assert select_transformer_quant_scheme(_target(), "mxfp8", family = "wan2.2-ti2v-5b") is None
+    assert select_transformer_quant_scheme(_target(), "nvfp4", family = "wan2.2-ti2v-5b") is None
+
+
+def test_family_deny_auto_skips_fp8_for_hunyuan(monkeypatch):
+    # HunyuanVideo-1.5 DiT renders black on fp8 (LPIPS 0.82); both repacks deny fp8/mxfp8/nvfp4
+    # and fall to int8. ltx-2 is NOT denied (its fp8 is clean), so the deny is per family.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5") == TQ_INT8
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "hunyuanvideo-1.5-720p")
+        == TQ_INT8
+    )
+    # ltx-2 keeps the ladder head (fp8) -- it is not a black-frame family.
+    assert select_transformer_quant_scheme(_target(), "auto", family = "ltx-2") == TQ_FP8
 
 
 def test_family_deny_no_family_keeps_ladder(monkeypatch):
@@ -559,6 +624,34 @@ def test_family_deny_no_family_keeps_ladder(monkeypatch):
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
     assert select_transformer_quant_scheme(_target(), "auto", family = "sdxl") == TQ_FP8
+
+
+def test_is_int8_memory_fallback(monkeypatch):
+    # True only where AUTO lands on int8 as a denied FALLBACK on a data-center fp8-capable GPU
+    # (Hunyuan: fp8 denied -> int8), where dense+compile beats int8, so the loader prefers dense.
+    # False where int8 is a real accelerator: fp8 families, consumer GPUs, pre-Ada parts.
+    from core.inference.diffusion_transformer_quant import is_int8_memory_fallback
+
+    # data-center Blackwell, all schemes available: Hunyuan denies fp8/mx/nvfp4 -> auto int8 -> True.
+    _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA B200")
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5") is True
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5-720p") is True
+    # Wan / LTX resolve to fp8 (a speed win), not int8 -> False (keep quantising).
+    assert is_int8_memory_fallback(_target(), "wan2.2-ti2v-5b") is False
+    assert is_int8_memory_fallback(_target(), "wan2.2-t2v-a14b") is False
+    assert is_int8_memory_fallback(_target(), "ltx-2") is False
+    assert is_int8_memory_fallback(_target(), None) is False
+
+    # Consumer GPU (fp8 accumulate halved -> int8 can be a speed win): never prefer dense.
+    _stub_torch(monkeypatch, cc = (10, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5") is False
+
+    # Ampere data-center (sm_80, no fp8 tensor cores): int8 is the genuine accelerator -> False.
+    _stub_torch(monkeypatch, cc = (8, 0), device_name = "NVIDIA A100")
+    _allow(monkeypatch, {TQ_INT8})
+    assert is_int8_memory_fallback(_target(), "hunyuanvideo-1.5") is False
 
 
 def test_quantize_transformer_threads_family(monkeypatch):
@@ -584,3 +677,123 @@ def test_quantize_transformer_threads_family(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
     assert quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
     assert called == {}
+
+
+def test_quantize_transformer_fp8_wan_excludes_condition_embedder(monkeypatch):
+    # The Wan fp8 fix is a FILTER exclusion, not a deny: quantize_transformer threads the family
+    # into the filter so condition_embedder stays bf16 while the 30-block stack is fp8. Capture the
+    # filter that reaches torchao and check it on representative FQNs.
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+
+    # torch stub with a real nn.Linear class so the captured filter's isinstance + bf16 gate runs.
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+
+    class _Linear:
+        def __init__(
+            self,
+            inf,
+            outf,
+            dtype = "bfloat16",
+        ):
+            self.in_features, self.out_features = inf, outf
+            self.weight = types.SimpleNamespace(dtype = dtype)
+
+    torch.nn = types.SimpleNamespace(Linear = _Linear)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    captured: dict = {}
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: captured.update(fn = filter_fn)
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "fp8", family = "wan2.2-ti2v-5b") == TQ_FP8
+    filt = captured["fn"]
+    big = _Linear(4096, 5120)  # a FLOP-heavy bf16 linear (passes min_features + bf16 gate)
+    # condition_embedder.* is kept bf16 (the divide-by-zero origin); the block stack is fp8.
+    assert filt(big, "condition_embedder.text_embedder.linear_1") is False
+    assert filt(big, "condition_embedder.time_embedder.linear_1") is False
+    assert filt(big, "blocks.0.attn1.to_q") is True
+    assert filt(big, "blocks.0.ffn.net.0.proj") is True
+    assert (
+        filt(big, "blocks.0.attn2.to_k") is True
+    )  # cross-attn K/V stay fp8 (embedder bias rescues rows)
+
+
+# ── partial in-place quant detection (torchao_quantized_param_fqns) ────────────────
+class _TorchaoLikeTensor:
+    """Stands in for a torchao tensor subclass: detection keys on the class's module
+    path, so the fake just claims a torchao __module__."""
+
+
+_TorchaoLikeTensor.__module__ = "torchao.dtypes.affine_quantized_tensor"
+
+
+class _MutableDiT:
+    """A fake transformer whose quantize_ pass 'swapped' one weight before failing."""
+
+    def __init__(self):
+        self._swapped = False
+
+    def named_parameters(self):
+        if self._swapped:
+            yield ("blocks.0.attn.to_q.weight", _TorchaoLikeTensor())
+        yield ("blocks.1.attn.to_q.weight", types.SimpleNamespace())
+
+
+def test_torchao_param_scan_detects_swapped_weights():
+    dit = _MutableDiT()
+    assert tq.torchao_quantized_param_fqns(dit) == []
+    dit._swapped = True
+    assert tq.torchao_quantized_param_fqns(dit) == ["blocks.0.attn.to_q.weight"]
+    # Unscannable object -> no leftovers reported (best-effort, the pre-check path).
+    assert tq.torchao_quantized_param_fqns(object()) == []
+
+
+def test_quantize_transformer_partial_failure_raises(monkeypatch):
+    # A mid-pass quantize_ exception can leave earlier layers quantized. That module can't run as
+    # dense, so the load must FAIL with a clear error instead of reporting a dense fallback.
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    tqz = types.ModuleType("torchao.quantization")
+
+    def _convert_one_then_boom(
+        module,
+        config,
+        filter_fn = None,
+    ):
+        module._swapped = True  # the in-place swap of the first submodule
+        raise RuntimeError("OOM mid-conversion")
+
+    tqz.quantize_ = _convert_one_then_boom
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    pipe = types.SimpleNamespace(transformer = _MutableDiT())
+    with pytest.raises(RuntimeError, match = "partially quantized"):
+        quantize_transformer(pipe, _target(), mode = "fp8")
+
+
+def test_quantize_transformer_clean_failure_still_falls_back_dense(monkeypatch):
+    # A failure that swapped NOTHING keeps the best-effort contract: dense fallback.
+    monkeypatch.setattr(
+        tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8
+    )
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    tqz = types.ModuleType("torchao.quantization")
+
+    def _boom(
+        module,
+        config,
+        filter_fn = None,
+    ):
+        raise RuntimeError("failed before any swap")
+
+    tqz.quantize_ = _boom
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    pipe = types.SimpleNamespace(transformer = _MutableDiT())
+    assert quantize_transformer(pipe, _target(), mode = "fp8") is None

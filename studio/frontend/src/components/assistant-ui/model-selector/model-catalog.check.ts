@@ -38,8 +38,7 @@ assert.equal(
 );
 assert.equal(canonicalKeyFor("Wan-AI/Wan2.2-TI2V-5B-Diffusers"), "wan-ai/wan2.2-ti2v-5b");
 assert.equal(canonicalKeyFor("lightricks/ltx-2.3-fp8"), "lightricks/ltx-2.3");
-// Prequant suffixes strip regardless of case: -GGUF/-FP8/-int8/-nvfp4 all route
-// to the base name.
+// Prequant suffixes strip regardless of case: -GGUF/-FP8/-int8/-nvfp4 all route to the base name.
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-int8"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-INT8"), "unsloth/qwen-image-2512");
 assert.equal(canonicalKeyFor("unsloth/Qwen-Image-2512-nvfp4"), "unsloth/qwen-image-2512");

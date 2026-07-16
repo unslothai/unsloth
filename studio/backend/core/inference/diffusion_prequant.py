@@ -198,9 +198,8 @@ def load_prequantized_transformer(
 
         with init_empty_weights():
             transformer = transformer_cls.from_config(config)
-        # assign=True swaps in the loaded tensors rather than copying into meta (a copy into
-        # meta is a no-op); strict=True since the saved dict is the full state dict of the
-        # same class.
+        # assign=True swaps in the loaded tensors rather than copying into meta (a copy into meta is
+        # a no-op); strict=True since the saved dict is the full state dict of the same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on
@@ -322,7 +321,11 @@ def _validate_checkpoint(
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
-        expected = tuple(exclude_tokens_for_scheme(scheme))
+
+        # The exclude set derives from scheme AND family; use the recorded family so an artifact
+        # baked under an older token list (e.g. a Wan fp8 checkpoint from before the
+        # condition_embedder exclude) is rejected and re-quantised, not loaded black-framing.
+        expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if tuple(ckpt_excludes) != expected:
             _warn(
                 logger,

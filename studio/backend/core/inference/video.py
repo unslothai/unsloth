@@ -42,14 +42,27 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
-from .diffusion_attention import apply_attention_backend, select_attention_backend
+from .diffusion_attention import (
+    apply_attention_backend,
+    install_hunyuan_attention_trim,
+    select_attention_backend,
+)
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
-    TC_FBCACHE,
+    TC_MAGCACHE,
     apply_step_cache,
+    auto_cache_mode,
+    auto_cache_quality,
     maybe_toggle_step_cache,
+    normalize_cache_quality,
     normalize_transformer_cache,
+)
+from .diffusion_cache import _disengage_step_cache
+from .diffusion_cfg_parallel import (
+    maybe_enable_cfg_parallel,
+    normalize_cfg_parallel,
+    teardown_cfg_parallel,
 )
 from .diffusion_device import resolve_diffusion_device_target
 from .diffusion_memory import (
@@ -62,10 +75,14 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     snapshot_device_memory,
 )
+from . import diffusion_compile_cache as compile_cache
 from .diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    compile_eligible,
+    compiled_shapes_are_static,
     resolve_speed_mode,
     restore_backend_flags,
     snapshot_backend_flags,
@@ -74,11 +91,13 @@ from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     dense_transformer_supported,
+    is_int8_memory_fallback,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders
+from .diffusion_precision import TE_QUANT_AUTO, normalize_te_quant, quantize_text_encoders
+from .diffusion_vae_quant import VAE_QUANT_AUTO, normalize_vae_quant, quantize_vae
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -212,6 +231,65 @@ def _scheduler_step_progress(pipe: Any, on_step: Any):
         scheduler.step = original
 
 
+# ── post-load compile prewarm ─────────────────────────────────────────────────
+# After a compiled-tier load commits, a background thread runs one tiny throwaway
+# generation so the first REAL request starts at steady state (the vLLM/SGLang
+# startup-warmup analogue). Measured (HunyuanVideo-1.5-480p, B200, 480x288/17f/30
+# steps): with a warm Mega-cache bundle the first-generation extra drops 11.3s ->
+# 2.1s (a 9.0s warmup absorbs the dynamo trace + cudnn autotune the bundle cannot
+# carry); cold, the full ~54s compile moves off the user's first request. Steady
+# state is untouched (residuals reset, real run re-seeds its generator). The tiny
+# shape suffices: the default tier compiles dynamic=True, so one trace serves all.
+_PREWARM_ENV = "UNSLOTH_DIFFUSION_COMPILE_PREWARM"
+_PREWARM_WIDTH = 192
+_PREWARM_HEIGHT = 128
+_PREWARM_FRAMES = 9
+_PREWARM_STEPS = 2
+
+
+def compile_prewarm_decision(
+    fam: VideoFamily,
+    *,
+    speed_mode: str,
+    speed_optims: tuple,
+    offload_policy: str,
+    cfg_parallel_active: bool,
+) -> tuple[bool, str]:
+    """Whether the post-load compile prewarm should run, with its resolved-record
+    reason. Pure so it unit-tests without the runtime."""
+    if (os.environ.get(_PREWARM_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False, f"disabled via {_PREWARM_ENV}"
+    if "compiled" not in speed_optims:
+        return False, "not applicable (no regional compile engaged; nothing to prewarm)"
+    if speed_mode != SPEED_DEFAULT:
+        # speed=max compiles dynamic=False (per-shape graph): a warmup shape would
+        # compile a graph the real request never runs, and the real shape still pays.
+        return (
+            False,
+            "skipped: speed=max compiles static per-shape graphs a warmup shape cannot serve",
+        )
+    if not bool(getattr(fam, "supports_compile_prewarm", True)):
+        return False, "family opted out (supports_compile_prewarm=False)"
+    if offload_policy != "none":
+        # Offload streams the full DiT over PCIe per forward: the warmup would be
+        # all transfer cost, none of the measured benefit.
+        return (
+            False,
+            "skipped: offload streams weights per forward; the warmup would only churn transfers",
+        )
+    if cfg_parallel_active:
+        # CFG-parallel serialises compile-sensitive runs through its own planner;
+        # an unplanned warmup would bypass it.
+        return (
+            False,
+            "skipped: CFG parallel plans compile-sensitive runs through its own dispatcher",
+        )
+    return True, (
+        "background warmup generation absorbs the first-generation compile hitch "
+        "(measured 11.3s -> 2.1s warm-cache, ~54s cold, HunyuanVideo-1.5-480p on B200)"
+    )
+
+
 def _detect_load_family(
     repo_id: str, gguf_filename: Optional[str], family_override: Optional[str]
 ) -> Optional[VideoFamily]:
@@ -271,12 +349,29 @@ class _VideoLoadState:
     # Inputs the generation-time toggle re-applies (quantised threshold + override).
     cache_quant_active: bool = False
     cache_threshold: Optional[float] = None
-    # Dense transformer quant engaged ("int8"|"fp8"|"nvfp4"|"mxfp8") or None (loaded bf16).
-    # Pipeline-kind only; torchao-quantised in place onto the low-precision tensor cores.
+    # Resolved cache quality preset ("quality" | "balanced" | "fast"); the toggle
+    # re-applies it so a mid-session re-engage keeps the requested preset.
+    cache_quality: Optional[str] = None
+    # Dense transformer quant engaged ("int8" | "fp8" | "nvfp4" | "mxfp8") or None
+    # (dense bf16). On a pipeline load the DiT(s) are torchao-quantised in place;
+    # mirrors the image backend's _LoadState.transformer_quant.
     transformer_quant: Optional[str] = None
-    # Text-encoder quant engaged ("fp8"|"fp8_dynamic"|"int8"|"nvfp4") or None. The companion
-    # encoder (UMT5/Gemma3/Qwen2.5-VL) is often the largest resident; shrunk in place.
+    # Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or None.
+    # The dense-bf16 companion TE (UMT5 / Gemma3 / Qwen2.5-VL), often the largest
+    # resident component, is shrunk in place; mirrors the image backend.
     text_encoder_quant: Optional[str] = None
+    # VAE quant engaged ("fp8" layerwise | "fp8_dynamic" torchao conv) or None. The
+    # conv decoder shrinks in place; vae_force_fp32 families (Wan) stay dense.
+    vae_quant: Optional[str] = None
+    # Dual-GPU CFG branch parallelism: "on" when a DiT replica on a second CUDA device runs the
+    # pred_cond branch (bit-identical under the family's auto step cache; ~1.7x e2e). The handle is
+    # the proxy -- generate() plans each run on it and _teardown_state frees the replica through it.
+    cfg_parallel: Optional[str] = None
+    cfg_parallel_handle: Any = None
+    # Pre-warmed torch.compile cache context (CacheContext) when a compiled tier ran
+    # begin(); generate() persists the bundle after the first compiled generation and
+    # _teardown_state restores the inductor dir.
+    compile_cache_ctx: Any = None
     resolved: Optional[dict] = None
 
 
@@ -293,17 +388,22 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 
 
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
-# The optimisation helpers and the quantiser all act on ``pipe.transformer`` -- fine for
-# single-DiT families. Wan2.2-A14B is a dual-expert MoE (transformer = high-noise steps,
-# transformer_2 = low-noise), so an optimisation on ``transformer`` alone leaves the second
-# expert unoptimised for half the schedule. Rather than fork each helper, present the second
-# DiT AS ``pipe.transformer`` via a thin proxy (built only for is_moe) and call the helper again.
+#
+# Wan2.2-A14B is a dual-expert MoE: ``transformer`` runs the high-noise steps and
+# ``transformer_2`` the low-noise steps (routed by boundary_ratio), so optimising only
+# ``transformer`` leaves the second expert unoptimised for half the schedule. Two
+# helper shapes:
+#   - apply_speed_optims / apply_attention_backend / install_hunyuan_attention_trim fan
+#     out over every denoiser DiT internally, so the loader calls them ONCE on the pipe.
+#   - apply_step_cache and the dense quantiser act on ``pipe.transformer`` only (the
+#     cache also needs a per-expert calibrated curve). Rather than fork them, present the
+#     second DiT AS ``pipe.transformer`` via a thin proxy view and call once per expert;
+#     single-DiT loads are bit-identical (proxy only built for is_moe families).
 
 
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
-    """Attribute names of the denoiser(s) on ``pipe`` to optimise. Just
-    ("transformer",) for a single-DiT family; also "transformer_2" for an MoE family
-    whose second expert is actually present (a checkpoint may ship only the first)."""
+    """Denoiser attribute name(s) to optimise: ("transformer",), plus "transformer_2"
+    for an MoE family whose second expert is present (a checkpoint may ship only one)."""
     names = ["transformer"]
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         names.append("transformer_2")
@@ -311,15 +411,13 @@ def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
 
 
 class _SecondDiTView:
-    """A thin proxy that makes ``pipe.transformer_2`` look like ``pipe.transformer`` to a
-    helper that hardcodes ``getattr(pipe, "transformer")``, while every other attribute
-    (vae, components, __call__, ...) reads through to the real pipe unchanged.
-
-    This lets the existing single-DiT helpers optimise the second expert without a fork:
-    ``apply_speed_optims(_SecondDiTView(pipe), ...)`` compiles / caches / sets attention on
-    ``transformer_2``. Only ever wrapped around an MoE pipe (guarded by fam.is_moe)."""
+    """Thin proxy exposing ``pipe.transformer_2`` as ``pipe.transformer`` to a helper that
+    hardcodes ``getattr(pipe, "transformer")``; every other attribute reads through to the
+    real pipe. Lets single-DiT helpers optimise the second expert without a fork. Only
+    wrapped around an MoE pipe (guarded by fam.is_moe)."""
 
     def __init__(self, pipe: Any) -> None:
+        # Store under a name __getattr__ never fires for.
         object.__setattr__(self, "_pipe", pipe)
 
     @property
@@ -327,24 +425,82 @@ class _SecondDiTView:
         return self._pipe.transformer_2
 
     def __getattr__(self, name: str) -> Any:
-        # Only reached for attrs not on the instance/class, so delegate to the real pipe.
+        # Only reached for attributes not on the instance/class, so delegate to the pipe.
         return getattr(object.__getattribute__(self, "_pipe"), name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # Writes land on the real pipe (else a helper's reassignment vanishes with the
-        # view); ``transformer`` mirrors onto the second expert.
+        # Writes must land on the real pipe or a helper's side effect would vanish with
+        # the view; ``transformer`` mirrors onto the second expert.
         pipe = object.__getattribute__(self, "_pipe")
         setattr(pipe, "transformer_2" if name == "transformer" else name, value)
 
 
 def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
-    """The pipe view(s) to pass through the ``getattr(pipe, "transformer")`` helpers so
-    they cover every denoiser: the real pipe (its ``transformer``), plus a
-    ``_SecondDiTView`` (its ``transformer_2``) for a dual-DiT MoE family. A single-DiT
-    load returns just ``(pipe,)``, so its behaviour is unchanged."""
+    """Pipe view(s) covering every denoiser: the real pipe, plus a ``_SecondDiTView``
+    for a dual-DiT MoE family. Single-DiT returns just ``(pipe,)``."""
     if fam.is_moe and getattr(pipe, "transformer_2", None) is not None:
         return (pipe, _SecondDiTView(pipe))
     return (pipe,)
+
+
+def _step_cache_all_or_none(
+    pipe: Any, fam: VideoFamily, engage_fn: Any, *, logger: Any
+) -> tuple[Optional[str], Optional[str]]:
+    """Run ``engage_fn(view, expert_name)`` over every expert and enforce ALL-OR-NONE
+    (mirroring the transactional quant loop): on a mixed outcome, disengage the engaged
+    expert(s) and report the cache off. Otherwise the whole MoE reports cached while
+    half the schedule runs uncached. Returns (mode-or-None, failure-reason-or-None); a
+    single-DiT family can never see a mixed outcome."""
+    pairs = list(zip(_views_for(pipe, fam), _transformer_names(pipe, fam)))
+    results: list[tuple[Any, str, Optional[str]]] = []
+    try:
+        for view, expert_name in pairs:
+            results.append((view, expert_name, engage_fn(view, expert_name)))
+    except BaseException as exc:
+        # A later expert raising mid-loop leaves earlier experts cached (an all-or-none
+        # violation), so tear down every marked expert then re-raise, or raise reload-required
+        # if rollback itself fails.
+        rollback_failed: list[str] = []
+        for view, name in pairs:
+            transformer = getattr(view, "transformer", None)
+            if getattr(transformer, "_unsloth_step_cache", None) is None:
+                continue
+            if not _disengage_step_cache(
+                transformer, reason = "all-or-none transaction aborted", logger = logger
+            ):
+                rollback_failed.append(name)
+        if rollback_failed:
+            raise RuntimeError(
+                "step-cache transaction raised and rollback failed for "
+                + ", ".join(rollback_failed)
+                + "; reload the video model before generating"
+            ) from exc
+        raise
+    engaged = [(view, name, mode) for view, name, mode in results if mode is not None]
+    if engaged and len(engaged) < len(results):
+        missing = ", ".join(name for _, name, mode in results if mode is None)
+        # Roll the engaged expert(s) back; a rollback that ALSO fails leaves one expert cached
+        # while state/status would report the whole pipeline uncached -- a silent inconsistency,
+        # so surface it as a hard reload-required error instead of returning a false "uncached".
+        rollback_failed: list[str] = []
+        for view, name, _mode in engaged:
+            if not _disengage_step_cache(
+                getattr(view, "transformer", None),
+                reason = f"all-or-none rollback: cache did not engage on {missing}",
+                logger = logger,
+            ):
+                rollback_failed.append(name)
+        if rollback_failed:
+            raise RuntimeError(
+                "step cache engagement was partial and rollback failed for "
+                + ", ".join(rollback_failed)
+                + "; reload the video model before generating"
+            )
+        return None, (
+            f"step cache engaged on only {len(engaged)}/{len(results)} experts "
+            f"({missing} failed); disengaged all experts and running uncached"
+        )
+    return (engaged[0][2] if engaged else None), None
 
 
 class VideoBackend:
@@ -363,6 +519,13 @@ class VideoBackend:
         # True from begin_generate() until its worker records a terminal state, so a second
         # begin_generate() is refused while the first still runs.
         self._generate_job_active = False
+        # Post-load compile prewarm thread (None until a compiled load spawns one);
+        # kept for tests/diagnostics, never joined on the hot path.
+        self._prewarm_thread: Optional[threading.Thread] = None
+        # The prewarm's cancel event, set only while the prewarm runs. Real generations signal it on
+        # entry so they preempt the warmup at its next step boundary instead of queueing behind it;
+        # unlike _active_generate_cancel it can never point at a real job.
+        self._prewarm_cancel: Optional[threading.Event] = None
 
     # ── validation ───────────────────────────────────────────────────────────
 
@@ -376,6 +539,9 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
+        transformer_cache_quality: Optional[str] = None,
+        cfg_parallel: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -476,6 +642,12 @@ class VideoBackend:
         normalize_transformer_quant(transformer_quant)
         # Reject a malformed text_encoder_quant the same way (any kind: the encoder is always dense).
         normalize_te_quant(text_encoder_quant)
+        # Same for vae_quant (the dense VAE is resident for every load kind).
+        normalize_vae_quant(vae_quant)
+        # Reject malformed cache-quality / cfg-parallel here too: a direct backend caller
+        # (bench, plugin, test) would otherwise do checkpoint/download work before failing deep.
+        normalize_cache_quality(transformer_cache_quality)
+        normalize_cfg_parallel(cfg_parallel)
         _ensure_mp4_encoder_available()
         return fam
 
@@ -494,8 +666,11 @@ class VideoBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        transformer_cache_quality: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
+        cfg_parallel: Optional[str] = None,
         model_kind: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -508,6 +683,9 @@ class VideoBackend:
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            vae_quant = vae_quant,
+            transformer_cache_quality = transformer_cache_quality,
+            cfg_parallel = cfg_parallel,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -530,8 +708,11 @@ class VideoBackend:
                 attention_backend = attention_backend,
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
+                transformer_cache_quality = transformer_cache_quality,
                 transformer_quant = transformer_quant,
                 text_encoder_quant = text_encoder_quant,
+                vae_quant = vae_quant,
+                cfg_parallel = cfg_parallel,
                 model_kind = model_kind,
                 _load_token = token,
             ),
@@ -620,6 +801,8 @@ class VideoBackend:
             # A failed/cancelled load never commits _VideoLoadState, so roll back the
             # process-wide speed globals here (token-scoped, so a superseded load can't clobber a newer one's).
             self._rollback_precommit_globals(token)
+            self._rollback_precommit_cfg_parallel(token)
+            self._rollback_precommit_compile_cache(token)
             if self._load_token != token:
                 return
             logger.error("video.load_failed: %s", exc)
@@ -655,8 +838,36 @@ class VideoBackend:
 
         diffusion_gguf_compile.uninstall_all()
 
-    # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the
-    # 2.0 base's scheduler / text encoder / tokenizer are pulled.
+    def _rollback_precommit_cfg_parallel(self, token: Optional[int]) -> None:
+        """Tear down a CFG-parallel proxy from a load that died BEFORE committing
+        _VideoLoadState. The proxy owns a daemon worker, the DiT replica's VRAM, and
+        possibly the process-global cuDNN attention patch, none of which _teardown_state
+        would reach. Token-scoped like _rollback_precommit_globals."""
+        stored = getattr(self, "_precommit_cfg_parallel", None)
+        if stored is None:
+            return
+        stored_token, pipe, proxy = stored
+        if token is not None and stored_token is not None and stored_token != token:
+            return
+        self._precommit_cfg_parallel = None
+        teardown_cfg_parallel(pipe, proxy, logger = logger)
+
+    def _rollback_precommit_compile_cache(self, token: Optional[int]) -> None:
+        """Restore TORCHINDUCTOR_CACHE_DIR for a load that ran ``compile_cache.begin``
+        but died BEFORE committing _VideoLoadState (committed loads restore via
+        _teardown_state). Token-scoped like _rollback_precommit_globals."""
+        stored = getattr(self, "_precommit_compile_cache", None)
+        if stored is None:
+            return
+        stored_token, ctx = stored
+        if token is not None and stored_token is not None and stored_token != token:
+            return
+        self._precommit_compile_cache = None
+        compile_cache.restore(ctx)
+
+    # Base-repo subfolders an LTX-2.3 assembly reads: the checkpoint (plus the GGUF
+    # repo's extras files) supplies the DiT, connectors, both VAEs and the vocoder,
+    # so only the 2.0 base's scheduler / text encoder / tokenizer are pulled.
     _LTX23_BASE_PREFIXES = ("scheduler/", "text_encoder/", "tokenizer/")
 
     @staticmethod
@@ -837,8 +1048,11 @@ class VideoBackend:
         attention_backend: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
+        transformer_cache_quality: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        vae_quant: Optional[str] = None,
+        cfg_parallel: Optional[str] = None,
         model_kind: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
@@ -854,8 +1068,25 @@ class VideoBackend:
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            vae_quant = vae_quant,
+            transformer_cache_quality = transformer_cache_quality,
+            cfg_parallel = cfg_parallel,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        # An explicit Speed="off" (bit-exact) load pins the companions dense too: promoting
+        # an UNSET TE/VAE to auto-quant would silently fp8/int8 them and break the request.
+        # Only an EXPLICIT off suppresses; an unset speed still auto-quantises, and an
+        # explicit companion scheme still forces it.
+        speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+        # text_encoder_quant tri-state (mirrors transformer_quant): UNSET ("" / None) or
+        # "auto" -> auto; explicit "none"/"off" -> dense; a concrete scheme forces it. auto
+        # is backend-owned, so "auto" also goes dense under Speed="off".
+        if text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto"):
+            text_encoder_quant = "off" if speed_off else TE_QUANT_AUTO
+        # vae_quant tri-state, same contract. vae_force_fp32 families (Wan) stay dense
+        # regardless, so auto is safe as the default.
+        if vae_quant is None or str(vae_quant).strip().lower() in ("", "auto"):
+            vae_quant = "off" if speed_off else VAE_QUANT_AUTO
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 
         with self._lock:
@@ -892,10 +1123,13 @@ class VideoBackend:
             "",
             "auto",
         ):
-            # An explicit Speed="off" (bit-exact) load must stay dense bf16: auto-quant would
-            # engage int8/fp8 + regional compile and break the bit-exact request. Suppress the
-            # auto default when speed was pinned off (mirrors diffusion.py); else auto applies.
-            speed_off = speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
+            # An explicit Speed="off" (bit-exact) load must stay dense bf16: promoting the unset
+            # precision to auto-quant here would engage int8/fp8 + regional compile and silently
+            # break the user's bit-exact request (an auto DEFAULT overriding an EXPLICIT control),
+            # and the quant path below would then also force effective_speed back to default.
+            # Suppress the auto default when speed was explicitly pinned off (speed_off, computed
+            # above with the companions), mirroring the image backend (diffusion.py); otherwise auto
+            # (the dense-capable default) applies. "off" normalizes to None (no dense quant).
             transformer_quant = "off" if speed_off else TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
@@ -1046,7 +1280,28 @@ class VideoBackend:
         # bf16 only; best-effort. Quant must precede compile (eager dynamic quant is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
         quant_skipped_for_offload = False
-        if (
+        # Auto-quant lands on int8 for fp8-denied families (HunyuanVideo-1.5), but on a B200
+        # int8 is ~7% slower AND less accurate than dense bf16 + regional compile (fp8, the
+        # only quant that also speeds up, is black-framed there). int8's sole benefit is
+        # memory, so when the DENSE DiT already fits resident (bf16_plan has no offload)
+        # prefer dense and skip auto-quant. Only for AUTO (explicit int8/fp8 honored), only
+        # where int8 is a denied fallback on an fp8-capable GPU (is_int8_memory_fallback
+        # excludes consumer / Ampere / fp8 families), only when dense provably fits -- so no
+        # new OOM risk and fp8 families (Wan / LTX) still quantise for their speed win.
+        quant_skipped_for_dense = (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) == TQ_AUTO
+            and dense_transformer_supported(target)
+            and bf16_plan.offload_policy == "none"
+            and is_int8_memory_fallback(target, fam.name)
+        )
+        if quant_skipped_for_dense:
+            logger.info(
+                "video.transformer_quant: skipped -- dense DiT fits resident and int8 (the fp8-denied "
+                "fallback for '%s') is slower + less accurate than dense+compile here; run dense",
+                fam.name,
+            )
+        elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
@@ -1107,6 +1362,19 @@ class VideoBackend:
             offload_active = plan.offload_policy != "none",
             logger = logger,
         )
+        # Quantise the dense conv VAE (opt-in fp8 layerwise / fp8_dynamic torchao conv).
+        # vae_force_fp32 families (Wan) run fp32 for stability, so force_fp32 pins them
+        # dense (quantising bands the decode); auto skips torchao under offload.
+        # Best-effort: a failure leaves the VAE dense.
+        vae_quant_engaged = quantize_vae(
+            pipe,
+            target,
+            mode = vae_quant,
+            family = fam.name,
+            offload_active = plan.offload_policy != "none",
+            force_fp32 = getattr(fam, "vae_force_fp32", False),
+            logger = logger,
+        )
 
         # ── optimisation layers in the image backend's order: step cache FIRST (compile keys
         # its fullgraph decision off an active cache; FBCache hooks graph-break), then attention,
@@ -1132,30 +1400,59 @@ class VideoBackend:
         # Run per expert so both denoisers cache.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
-        # GGUF and torchao-quantised DiTs need the higher threshold to trigger over quant noise.
+        # Cache quality preset tri-state: unset / "auto" -> the family's measured default
+        # (near-lossless "quality" for HunyuanVideo-1.5, "balanced" -- the pre-knob
+        # behaviour -- elsewhere); explicit presets honored verbatim. Resolved here so
+        # the generation-time toggle re-applies it.
+        cache_quality_requested = normalize_cache_quality(transformer_cache_quality)
+        cache_quality = cache_quality_requested or auto_cache_quality(fam.name)
+        # Validate the dual-GPU CFG request cheaply here; the gate itself must run
+        # after placement (it keys on the post-plan device layout + free VRAM).
+        normalize_cfg_parallel(cfg_parallel)
+        # GGUF checkpoints and torchao-quantised DiTs both need the higher quantised
+        # threshold for the cache to still trigger over the quant noise.
         cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
-        default_cache_steps: Optional[int] = None
+        # Computed for every request: the auto step-count policy and an explicit magcache
+        # request both key on it (the ratio curve interpolates over the step count).
+        default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
         if cache_auto:
-            default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
-            cache_request = TC_FBCACHE if default_cache_steps >= FBCACHE_MIN_STEPS else None
-        cache_engaged = None
-        for view in views:
-            engaged = apply_step_cache(
+            # The engaged CACHE MODE is per-family: MagCache where FBCache's uncapped
+            # skipping derails the trajectory (HunyuanVideo-1.5), FBCache elsewhere.
+            cache_request = (
+                auto_cache_mode(fam.name) if default_cache_steps >= FBCACHE_MIN_STEPS else None
+            )
+
+        # Each expert view passes expert="transformer_2" (for the second) so MagCache
+        # resolves THAT expert's calibrated curve -- the experts split the schedule at the
+        # boundary timestep, so their curves differ. All-or-none across experts (like the
+        # quant loop): a mixed outcome is rolled back and reported uncached.
+        def _engage_load_cache(view: Any, expert_name: str) -> Optional[str]:
+            return apply_step_cache(
                 view,
                 mode = cache_request,
                 threshold = transformer_cache_threshold,
-                # A quantized transformer's residuals are larger, needing the higher FBCache
-                # threshold; both engaged quant and GGUF count as quant-active (cache_quant_active).
+                # A quantized transformer's larger block residuals need the higher FBCache
+                # threshold to cache at all; both an engaged quant AND a GGUF checkpoint
+                # count as quant-active (cache_quant_active), mirroring diffusion.py.
                 quant_active = cache_quant_active,
+                family = fam.name,
+                steps = default_cache_steps,
+                quality = cache_quality,
+                expert = expert_name,
                 logger = logger,
             )
-            if view is pipe:
-                cache_engaged = engaged
-        # The auto decision can flip at generation time, but only on a cache-capable DiT.
+
+        cache_engaged, cache_partial_reason = _step_cache_all_or_none(
+            pipe, fam, _engage_load_cache, logger = logger
+        )
+        # The auto decision can flip at generation time, but only on a DiT that
+        # supports caching at all (a non-CacheMixin transformer can never engage).
         cache_may_toggle = cache_auto and callable(
             getattr(getattr(pipe, "transformer", None), "enable_cache", None)
         )
-        if cache_auto:
+        if cache_partial_reason:
+            cache_reason = cache_partial_reason
+        elif cache_auto:
             if cache_engaged:
                 cache_reason = (
                     f"auto: {default_cache_steps}-step default schedule reaches "
@@ -1170,34 +1467,78 @@ class VideoBackend:
                 )
         else:
             cache_reason = "requested"
-        attention_engaged = None
-        speed_optims: tuple = ()
-        for view in views:
-            # Both helpers act on ``view.transformer``; call once per view to set the kernel and
-            # compile each expert (engaged values match, so record the first). is_gguf keys off
-            # kind==gguf AND no quant having engaged (a dense torchao DiT is not a GGUF one).
-            gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
-            engaged = apply_attention_backend(
-                view,
-                select_attention_backend(
-                    target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                ),
+        # A dense torchao transformer on the pipeline path is not a GGUF one, so is_gguf
+        # keys off the load kind (gguf) AND no quant having engaged.
+        gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+        # install_hunyuan_attention_trim and apply_attention_backend fan out over every
+        # denoiser DiT internally, so ONE pipe-level call covers a dual-expert MoE.
+        # Trim is HunyuanVideo-1.5 only: drop the ~99% zero-padded text tokens from joint
+        # attention so it runs the fused (cuDNN/flash) SDPA kernel instead of the dense-mask
+        # fallback (~18x/DiT-forward at 121 frames, cosine ~1.0). Must precede the backend
+        # set so the kernel pins onto the new processors. No-op for other families. A speed
+        # lever, so honor Speed="off" (the bit-exact path keeps stock dense-mask attention).
+        attention_trim_engaged = (
+            install_hunyuan_attention_trim(pipe, fam, logger = logger)
+            if effective_speed != SPEED_OFF
+            else False
+        )
+        attention_engaged = apply_attention_backend(
+            pipe,
+            select_attention_backend(
+                target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            ),
+            logger = logger,
+        )
+        # Pre-warmed torch.compile cache (Mega-cache): when a compiled tier will run, point
+        # inductor at a per-fingerprint dir and load a matching bundle BEFORE the first
+        # compiled forward. Measured (HunyuanVideo-1.5-480p, B200): first-generation compile
+        # extra drops 107.5s -> 13.8s from a 12.8 MB bundle, and the persistent per-key dir
+        # alone recovers a restart to 11.7s (vs ~100s repaid every reboot with stock /tmp).
+        # A miss is silent -> local compile. Must run AFTER the attention backend set (the
+        # fingerprint keys on the engaged kernel) and BEFORE apply_speed_optims.
+        compile_ctx = None
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
+            target, is_gguf = gguf_transformer, family = fam
+        ):
+            compile_ctx = compile_cache.begin(
+                family = fam.name,
+                transformer = getattr(pipe, "transformer", None),
+                dtype = getattr(target, "dtype", None),
+                quant = transformer_quant_engaged,
+                attention_backend = attention_engaged,
+                compile_kwargs = {
+                    # Mirrors apply_speed_optims' fullgraph decision (an active/toggleable
+                    # cache or a planned offload graph-breaks), so the bundle keys on it.
+                    "fullgraph": cache_engaged is None
+                    and not cache_may_toggle
+                    and plan.offload_policy == "none",
+                    "dynamic": effective_speed != SPEED_MAX,
+                    "mode": "max-autotune-no-cudagraphs"
+                    if effective_speed == SPEED_MAX
+                    else "default",
+                },
                 logger = logger,
             )
-            applied = apply_speed_optims(
-                view,
-                target,
-                is_gguf = gguf_transformer,
-                family = fam,
-                speed_mode = effective_speed,
-                # An auto cache that could still engage also drops fullgraph (FBCache under a
-                # fullgraph-compiled DiT crashes the first cached generation).
-                cache_active = cache_engaged is not None or cache_may_toggle,
-                offload_active = plan.offload_policy != "none",
-            )
-            if view is pipe:
-                attention_engaged = engaged
-                speed_optims = tuple(k for k, v in applied.items() if v)
+            # Until the state commit transfers ownership to _teardown_state, a failed
+            # or cancelled load restores TORCHINDUCTOR_CACHE_DIR itself (_run_load's
+            # error handler, token-scoped like the globals).
+            self._precommit_compile_cache = (_load_token, compile_ctx)
+        # apply_speed_optims fans out over every denoiser DiT internally, so one
+        # pipe-level call covers a dual-expert MoE.
+        applied = apply_speed_optims(
+            pipe,
+            target,
+            is_gguf = gguf_transformer,
+            family = fam,
+            speed_mode = effective_speed,
+            # An auto cache that could still engage mid-session also drops fullgraph: enabling
+            # FBCache under a fullgraph-compiled DiT would crash the first cached generation.
+            cache_active = cache_engaged is not None or cache_may_toggle,
+            offload_active = plan.offload_policy != "none",
+        )
+        speed_optims = tuple(k for k, v in applied.items() if v) + (
+            ("hunyuan_attn_trim",) if attention_trim_engaged else ()
+        )
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have
             # reassigned; recheck right before placement (the commit below does the final check).
@@ -1216,6 +1557,65 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
 
+            # ── dual-GPU CFG branch parallelism (auto on measured families, else opt-in).
+            # AFTER placement so the memory plan stays single-device: the DiT replica lives
+            # entirely on a SECOND CUDA device, gated on that device's free VRAM. A
+            # single-GPU host, an offload plan, or a quantised DiT all fall through to the
+            # single-device path with the reason in the resolved record.
+            cfg_parallel_proxy, cfg_parallel_reason = maybe_enable_cfg_parallel(
+                pipe,
+                fam,
+                requested = cfg_parallel,
+                kind = kind,
+                transformer_source = _base_local_dir or base,
+                hf_token = hf_token,
+                dtype = dtype,
+                quant_engaged = transformer_quant_engaged,
+                offload_active = offload_policy != "none",
+                compiled = "compiled" in speed_optims,
+                attention_backend = attention_engaged,
+                speed_active = effective_speed != SPEED_OFF,
+                speed_mode = effective_speed,
+                logger = logger,
+            )
+            if cfg_parallel_proxy is not None:
+                # Until the _VideoLoadState commit, the proxy (daemon worker, replica
+                # VRAM, cuDNN patch) is owned by this stash; a cancel/failure before
+                # commit is torn down via _rollback_precommit_cfg_parallel, token-scoped.
+                self._precommit_cfg_parallel = (_load_token, pipe, cfg_parallel_proxy)
+            if cfg_parallel_proxy is not None and cache_engaged:
+                # The cache engaged on the primary BEFORE the proxy existed; re-engage
+                # THROUGH the proxy so the replica carries the same hooks and each branch's
+                # cache state matches the single-GPU run (the bit-identity precondition).
+                # If the primary-only cache cannot be removed, reapplying through the proxy
+                # double-hooks the primary and desyncs the branches, so fail the load.
+                if not _disengage_step_cache(
+                    cfg_parallel_proxy._primary,
+                    reason = "re-engaging through the cfg-parallel proxy",
+                    logger = logger,
+                ):
+                    raise RuntimeError(
+                        "could not disable the primary-only step cache before installing "
+                        "CFG-parallel cache hooks; reload the video model before generating"
+                    )
+                cache_engaged = apply_step_cache(
+                    pipe,
+                    mode = cache_request,
+                    threshold = transformer_cache_threshold,
+                    quant_active = cache_quant_active,
+                    family = fam.name,
+                    steps = default_cache_steps,
+                    quality = cache_quality,
+                    logger = logger,
+                )
+
+            prewarm_on, prewarm_reason = compile_prewarm_decision(
+                fam,
+                speed_mode = effective_speed,
+                speed_optims = speed_optims,
+                offload_policy = offload_policy,
+                cfg_parallel_active = cfg_parallel_proxy is not None,
+            )
             resolved = build_resolved_record(
                 {
                     "memory_mode": (
@@ -1237,10 +1637,31 @@ class VideoBackend:
                         attention_engaged or "native",
                         "cuDNN fused attention on NVIDIA when a speed profile is active",
                     ),
+                    "attention_trim": (
+                        None,
+                        "on" if attention_trim_engaged else "off",
+                        "HunyuanVideo-1.5: padded text tokens dropped so joint attention runs "
+                        "the fused SDPA kernel (~18x per DiT forward, cosine ~1.0)"
+                        if attention_trim_engaged
+                        else "not applicable (non-Hunyuan family)",
+                    ),
                     "transformer_cache": (
                         None if cache_auto else transformer_cache,
                         cache_engaged or "off",
                         cache_reason,
+                    ),
+                    "transformer_cache_quality": (
+                        transformer_cache_quality,
+                        cache_quality,
+                        "requested speed/accuracy preset (threshold + skip budget)"
+                        if cache_quality_requested is not None
+                        else "auto: the family's measured preset (near-lossless "
+                        "'quality' for HunyuanVideo-1.5, 'balanced' elsewhere)",
+                    ),
+                    "cfg_parallel": (
+                        cfg_parallel,
+                        "on" if cfg_parallel_proxy is not None else "off",
+                        cfg_parallel_reason,
                     ),
                     "transformer_quant": (
                         transformer_quant,
@@ -1251,6 +1672,9 @@ class VideoBackend:
                             "skipped: offload moves the DiT, unsupported for torchao "
                             "tensors; pin a resident memory mode to combine them"
                             if quant_skipped_for_offload
+                            else "skipped: dense DiT fits resident and int8 (fp8-denied fallback) "
+                            "is slower + less accurate than dense+compile here"
+                            if quant_skipped_for_dense
                             else "not engaged (dense bf16 DiT loaded)"
                         ),
                     ),
@@ -1261,11 +1685,28 @@ class VideoBackend:
                         if text_encoder_quant_engaged is not None
                         else "not engaged (dense bf16 text encoder loaded)",
                     ),
+                    "vae_quant": (
+                        vae_quant,
+                        vae_quant_engaged or "off",
+                        "dense VAE quantised in place"
+                        if vae_quant_engaged is not None
+                        else "not engaged (fp32 VAE family / offload / disabled -> dense)"
+                        if getattr(fam, "vae_force_fp32", False)
+                        else "not engaged (dense VAE loaded)",
+                    ),
+                    "compile_prewarm": (
+                        None,
+                        "on" if prewarm_on else "off",
+                        prewarm_reason,
+                    ),
                 }
             )
 
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
+                    # The pre-commit CFG-parallel stash still references the pipe, so
+                    # _run_load's error handler rolls back the proxy, its worker, the
+                    # replica VRAM, and the cuDNN patch even though nothing was committed.
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
@@ -1282,7 +1723,7 @@ class VideoBackend:
                     vae_tiling = vae_tiling,
                     memory_mode = plan.requested_mode,
                     speed_mode = effective_speed,
-                    # Already filtered to the engaged optimisations (True names only).
+                    # Already filtered to just the engaged optimisations.
                     speed_optims = speed_optims,
                     backend_flags = backend_flags,
                     attention_backend = attention_engaged,
@@ -1290,12 +1731,20 @@ class VideoBackend:
                     cache_auto = cache_may_toggle,
                     cache_quant_active = cache_quant_active,
                     cache_threshold = transformer_cache_threshold,
+                    cache_quality = cache_quality,
                     transformer_quant = transformer_quant_engaged,
                     text_encoder_quant = text_encoder_quant_engaged,
+                    vae_quant = vae_quant_engaged,
+                    cfg_parallel = "on" if cfg_parallel_proxy is not None else None,
+                    cfg_parallel_handle = cfg_parallel_proxy,
+                    compile_cache_ctx = compile_ctx,
                     resolved = resolved,
                 )
-                # Ownership of the globals transferred to _state / _teardown_state.
+                # Ownership of the globals, the CFG-parallel proxy, and the compile
+                # cache context transferred to _state / _teardown_state.
                 self._precommit_globals = None
+                self._precommit_cfg_parallel = None
+                self._precommit_compile_cache = None
         logger.info(
             "video.loaded: %s (%s, %s, offload=%s, speed=%s, quant=%s)",
             repo_id,
@@ -1305,6 +1754,17 @@ class VideoBackend:
             effective_speed,
             transformer_quant_engaged or "off",
         )
+        if prewarm_on:
+            # Post-commit so a real request is never blocked behind an uncommitted load;
+            # the thread re-checks the token and yields to any generation that arrived
+            # first (which then absorbs the warmup itself, the pre-prewarm behaviour).
+            self._prewarm_thread = threading.Thread(
+                target = self._compile_prewarm,
+                args = (_load_token,),
+                daemon = True,
+                name = "video-compile-prewarm",
+            )
+            self._prewarm_thread.start()
         return self.status()
 
     @staticmethod
@@ -1322,6 +1782,103 @@ class VideoBackend:
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
+
+    # ── post-load compile prewarm ─────────────────────────────────────────────
+
+    def _compile_prewarm(self, token: Optional[int]) -> None:
+        """Run one tiny throwaway generation so the first REAL request skips the
+        compile/trace warmup (see the module-level prewarm constants for the numbers).
+        Runs on a daemon thread under ``_generate_lock`` and registers as the active
+        cancellable job (so unload / new load / cancel_generate abort it at a step
+        boundary), never touching ``_gen`` progress. On failure or cancellation the
+        load keeps the pre-prewarm behaviour: the first real generation pays."""
+        import torch
+
+        cancel = threading.Event()
+        with self._generate_lock:
+            with self._lock:
+                state = self._state
+                if state is None or (token is not None and token != self._load_token):
+                    return  # superseded/unloaded before the warmup could start
+                if self._generate_job_active or self._gen.get("active"):
+                    return  # a real request beat us; it absorbs the warmup itself
+                self._active_generate_cancel = cancel
+                self._prewarm_cancel = cancel
+            started = time.monotonic()
+            try:
+                pipe = state.pipe
+                fam = state.family
+                width, height = snap_video_size(fam, _PREWARM_WIDTH, _PREWARM_HEIGHT)
+                frames = snap_num_frames(fam, _PREWARM_FRAMES)
+                call_params = inspect.signature(pipe.__call__).parameters
+                kwargs: dict[str, Any] = {
+                    "prompt": "warmup",
+                    "num_inference_steps": _PREWARM_STEPS,
+                    "width": width,
+                    "height": height,
+                    "num_frames": frames,
+                    "generator": torch.Generator(device = state.device).manual_seed(0),
+                }
+                # Default guidance keeps a real run's CFG branch structure (both
+                # guider branches trace), mirroring generate().
+                if fam.guidance_via_guider:
+                    pipe.guider.guidance_scale = float(fam.default_guidance)
+                else:
+                    kwargs[fam.cfg_kwarg] = float(fam.default_guidance)
+                if "frame_rate" in call_params:
+                    kwargs["frame_rate"] = float(fam.default_fps)
+
+                def _on_step(p, step_index, timestep, callback_kwargs):
+                    if cancel.is_set():
+                        p._interrupt = True
+                    return callback_kwargs
+
+                def _on_scheduler_step(done: int) -> None:
+                    if cancel.is_set():
+                        raise _VideoGenerationCancelled()
+
+                if "callback_on_step_end" in call_params:
+                    kwargs["callback_on_step_end"] = _on_step
+                    progress_ctx = contextlib.nullcontext()
+                else:
+                    progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
+                with torch.inference_mode(), progress_ctx:
+                    pipe(**kwargs)
+                if cancel.is_set():
+                    raise _VideoGenerationCancelled()
+                # Drop the warmup's step-cache residuals so the next real generation
+                # starts like an unwarmed load (generate() also resets; defence in depth).
+                if state.transformer_cache:
+                    self._reset_step_cache(pipe)
+                # The warmup just paid the compile: persist the Mega-cache bundle now
+                # (env-gated, idempotent) instead of at the first real generation.
+                try:
+                    compile_cache.save(state.compile_cache_ctx, logger = logger)
+                except Exception:  # noqa: BLE001 -- cache persistence is best-effort
+                    pass
+                logger.info(
+                    "video.compile_prewarm: warmup absorbed the compile hitch in %.1fs "
+                    "(%dx%d, %d frames, %d steps)",
+                    time.monotonic() - started,
+                    width,
+                    height,
+                    frames,
+                    _PREWARM_STEPS,
+                )
+            except _VideoGenerationCancelled:
+                logger.info("video.compile_prewarm: cancelled (unload / new load / user cancel)")
+            except Exception as exc:  # noqa: BLE001 -- warmup is best-effort, never fatal
+                logger.warning(
+                    "video.compile_prewarm: failed (%s); the first generation pays the "
+                    "compile warmup instead",
+                    exc,
+                )
+            finally:
+                with self._lock:
+                    if self._active_generate_cancel is cancel:
+                        self._active_generate_cancel = None
+                    if self._prewarm_cancel is cancel:
+                        self._prewarm_cancel = None
 
     # ── generation ───────────────────────────────────────────────────────────
 
@@ -1377,6 +1934,12 @@ class VideoBackend:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
             if self._generate_job_active:
                 raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            # A background compile prewarm may hold _generate_lock. Signal its dedicated
+            # cancel handle BEFORE registering ours so the real job preempts the warmup at
+            # its next step boundary instead of queueing behind it (and so unload/cancel
+            # don't point at the wrong event once _active_generate_cancel is overwritten).
+            if self._prewarm_cancel is not None:
+                self._prewarm_cancel.set()
             self._generate_job_active = True
             # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
             self._active_generate_cancel = cancel
@@ -1517,6 +2080,12 @@ class VideoBackend:
 
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
+        if cancel_event is None:
+            # Direct callers skip begin_generate's preemption, so signal a
+            # running compile prewarm here too rather than queueing behind it.
+            with self._lock:
+                if self._prewarm_cancel is not None:
+                    self._prewarm_cancel.set()
         with self._generate_lock:
             with self._lock:
                 state = self._state
@@ -1613,31 +2182,108 @@ class VideoBackend:
                     # step, so wrap it for progress + cancel and restore afterwards.
                     progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
 
-                # Re-check an AUTO cache decision against the ACTUAL step count (a many-step
-                # request gains FBCache, a few-step drops it); explicit choices never toggle. Per view.
+                # An AUTO cache decision is re-checked against the ACTUAL step count: a
+                # many-step request gains FBCache even when the load's default kept it off,
+                # a few-step request drops it. Explicit choices never toggle.
                 if state.cache_auto:
-                    toggled = state.transformer_cache
-                    for view in _views_for(pipe, fam):
-                        toggled = maybe_toggle_step_cache(
+                    # All-or-none across MoE experts, like the load path: a mixed toggle
+                    # is rolled back and reported uncached.
+                    def _toggle_cache(view: Any, expert_name: str) -> Optional[str]:
+                        return maybe_toggle_step_cache(
                             view,
                             steps = steps,
                             quant_active = state.cache_quant_active,
                             threshold = state.cache_threshold,
+                            mode = auto_cache_mode(fam.name),
+                            family = fam.name,
+                            quality = state.cache_quality,
+                            expert = expert_name,
                             logger = logger,
                         )
+
+                    toggled, toggle_partial_reason = _step_cache_all_or_none(
+                        pipe, fam, _toggle_cache, logger = logger
+                    )
                     if toggled != state.transformer_cache:
-                        # _VideoLoadState is frozen; record the pipe-level toggle so status() is truthful.
+                        # _VideoLoadState is frozen; track the toggle that already
+                        # happened so status() reports the true cache state.
                         object.__setattr__(state, "transformer_cache", toggled)
                         entry = (state.resolved or {}).get("transformer_cache")
                         if isinstance(entry, dict):
                             entry["value"] = toggled or "off"
-                            entry["reason"] = (
+                            entry["reason"] = toggle_partial_reason or (
                                 f"auto: {steps}-step generation "
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
+                elif state.transformer_cache == TC_MAGCACHE:
+                    # An EXPLICIT magcache never toggles off, but its ratio curve, retention window,
+                    # and skip budget are interpolated over the CONFIGURED step count: a clip at a
+                    # different step count re-engages (marker carries "#s{steps}") to keep skips
+                    # aligned. This only re-sizes the already-engaged cache; the on choice is
+                    # preserved. Transactional across MoE experts (like the load / AUTO paths):
+                    # refuse to stack a fresh cache over one whose removal failed, and roll back a
+                    # mixed resize so status never reports MagCache over an asymmetric pair.
+                    def _resize_explicit_magcache(view: Any, expert_name: str) -> Optional[str]:
+                        transformer = getattr(view, "transformer", None)
+                        marker = getattr(transformer, "_unsloth_step_cache", None)
+                        # endswith, not substring: "#s5" would match inside "#s50".
+                        if not marker or str(marker).endswith(f"#s{int(steps)}"):
+                            return TC_MAGCACHE  # already sized for these steps
+                        if not _disengage_step_cache(
+                            transformer,
+                            reason = f"explicit magcache re-interpolating for {steps} steps",
+                            logger = logger,
+                        ):
+                            raise RuntimeError(
+                                "could not disable the existing MagCache before resizing it "
+                                f"for {steps} steps; reload the video model before generating"
+                            )
+                        return apply_step_cache(
+                            view,
+                            mode = TC_MAGCACHE,
+                            threshold = state.cache_threshold,
+                            quant_active = state.cache_quant_active,
+                            family = fam.name,
+                            steps = steps,
+                            quality = state.cache_quality,
+                            expert = expert_name,
+                            logger = logger,
+                        )
+
+                    resized, resize_reason = _step_cache_all_or_none(
+                        pipe, fam, _resize_explicit_magcache, logger = logger
+                    )
+                    object.__setattr__(state, "transformer_cache", resized)
+                    entry = (state.resolved or {}).get("transformer_cache")
+                    if isinstance(entry, dict):
+                        entry["value"] = resized or "off"
+                        entry["reason"] = resize_reason or (
+                            f"explicit MagCache resized for {steps} steps"
+                            if resized
+                            else f"MagCache could not be resized for {steps} steps"
+                        )
                 if state.transformer_cache:
                     self._reset_step_cache(pipe)
+                # Dual-GPU CFG parallelism: resolve this generation's routing AFTER the
+                # cache toggle (the plan keys on the engaged cache state -- parallel is
+                # bit-identical only with the cache on or an uncompiled stack). Planning
+                # must never fail a generation: a planner error pins the sequential path.
+                cfg_proxy = state.cfg_parallel_handle
+                if cfg_proxy is not None:
+                    try:
+                        cfg_proxy.plan_generation(
+                            cache_engaged = bool(state.transformer_cache),
+                            steps = steps,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                        )
+                    except Exception:  # noqa: BLE001 -- fall back to single-device
+                        try:
+                            cfg_proxy.enabled = False
+                        except Exception:  # noqa: BLE001
+                            pass
                 try:
                     with torch.inference_mode(), progress_ctx:
                         output = pipe(**kwargs)
@@ -1653,6 +2299,30 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if cfg_proxy is not None:
+                    # The (shape, steps, cache) key settles only on a COMPLETED run, so
+                    # a cancelled/failed one keeps the next dispatch compile-safe.
+                    try:
+                        cfg_proxy.note_generation_done()
+                    except Exception:  # noqa: BLE001
+                        pass
+                # The first compiled generation just paid the compile cost; persist the
+                # warm bundle when saving is enabled. Idempotent + best-effort.
+                try:
+                    # A STATIC compile (speed=max) makes new inductor artifacts per
+                    # (width, height, frames), so register this shape first: an uncovered
+                    # shape re-dirties the context so the save rewrites the enriched bundle,
+                    # otherwise a post-hit ctx.saved stays true and later resolutions/frame
+                    # counts silently recompile every restart (mirrors the image backend).
+                    compile_cache.register_shape(
+                        state.compile_cache_ctx,
+                        (width, height, frames),
+                        static = "compiled" in (state.speed_optims or ())
+                        and compiled_shapes_are_static(pipe, state.speed_mode),
+                    )
+                    compile_cache.save(state.compile_cache_ctx, logger = logger)
+                except Exception:  # noqa: BLE001 -- cache persistence is best-effort
+                    pass
 
                 self._gen.update(phase = "export", eta_seconds = None)
                 video_frames = output.frames[0]
@@ -1743,11 +2413,19 @@ class VideoBackend:
             state, self._state = self._state, None
         if state is not None:
             restore_backend_flags(state.backend_flags)
-            # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock
-            # kernels so a later speed=off load gets the bit-identical path (mirrors image unload).
+            # Restore TORCHINDUCTOR_CACHE_DIR so a later load (or the image backend)
+            # does not inherit this load's per-fingerprint inductor dir. Idempotent.
+            compile_cache.restore(state.compile_cache_ctx)
+            # A GGUF video load may have installed the process-wide compiled GGUF
+            # dequantizer; restore the stock kernels so a later load that asked for
+            # speed_mode=off gets the bit-identical path (mirrors the image unload).
             from . import diffusion_gguf_compile
 
             diffusion_gguf_compile.uninstall_all()
+            # Free the CFG-parallel replica on its device and restore the pipe's
+            # single-device shape before the pipe is dropped.
+            if state.cfg_parallel_handle is not None:
+                teardown_cfg_parallel(state.pipe, state.cfg_parallel_handle, logger = logger)
             del state
             clear_gpu_cache()
 
@@ -1786,6 +2464,8 @@ class VideoBackend:
                 "transformer_cache": None,
                 "transformer_quant": None,
                 "text_encoder_quant": None,
+                "vae_quant": None,
+                "cfg_parallel": None,
                 "has_audio": False,
                 "defaults": None,
                 "resolved": None,
@@ -1814,6 +2494,8 @@ class VideoBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_quant": state.transformer_quant,
             "text_encoder_quant": state.text_encoder_quant,
+            "vae_quant": state.vae_quant,
+            "cfg_parallel": state.cfg_parallel,
             "has_audio": fam.has_audio,
             "defaults": {
                 "steps": default_steps,

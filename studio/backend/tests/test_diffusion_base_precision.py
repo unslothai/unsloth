@@ -480,8 +480,7 @@ def test_fp8_module_filter():
 
 # ── _should_compile fp8 branch ────────────────────────────────────────────────
 def test_should_compile_fp8_branch():
-    # fp8 is only competitive compiled, so auto arms compile for it on a dense (non-bnb)
-    # cuda base.
+    # fp8 is only competitive compiled, so auto arms compile for it on a dense (non-bnb) cuda base.
     cfg = _cfg(compile_transformer = "auto")
     assert dit._should_compile(cfg, False, "cuda", "fp8") is True
     # fp8 forces compile under auto even when the base is (hypothetically) reported as bnb.
