@@ -323,15 +323,30 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # fast accumulate (fp8 only) is chosen by GPU class unless forced: consumer cards run fp8
         # ~2x faster with FP16 accumulate than FP32 (~838 vs ~419 TFLOPS on RTX 50xx); data-center
         # keeps precise accumulate.
+        #
+        # activation_value_lb floors the dynamic per-row activation scale: an ALL-ZERO token row
+        # otherwise yields scale 0 -> NaN qdata -> black frames on torchao's plain-torch kernel
+        # path (fused fbgemm/mslk quantize kernels clamp internally, which masks the bug on boxes
+        # that have them). Zero rows are real: Wan 2.2 zero-pads its text conditioning and
+        # Hunyuan-1.5 / Qwen-Image regenerate zero rows inside their blocks. Weight scales are
+        # untouched (weights are never all-zero rows in practice and the floor is 1e-12), so
+        # pre-quantized fp8 checkpoints stay valid. The knob exists since the Float8Tensor rework
+        # (torchao >= 0.13); older versions keep today's behaviour via the signature check.
+        import inspect
         from torchao.quantization import PerRow
+        fp8_kwargs: dict = {"granularity": PerRow()}
+        if "activation_value_lb" in inspect.signature(
+            Float8DynamicActivationFloat8WeightConfig
+        ).parameters:
+            fp8_kwargs["activation_value_lb"] = 1e-12
         try:
             from torchao.float8 import Float8MMConfig
             return Float8DynamicActivationFloat8WeightConfig(
-                granularity = PerRow(),
                 mm_config = Float8MMConfig(use_fast_accum = _resolve_fast_accum(fast_accum)),
+                **fp8_kwargs,
             )
         except Exception:  # noqa: BLE001 — older torchao without the explicit mm knob
-            return Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
+            return Float8DynamicActivationFloat8WeightConfig(**fp8_kwargs)
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
