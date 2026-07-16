@@ -375,14 +375,14 @@ def get_lora_parameters_bias(proj):
         if W_quant is None:
             W_quant = getattr(base_layer, "weight_scale", None)
 
-    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
-    if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, W_quant, None, None, None, base_layer.bias
-
     if getattr(base_layer, "quant_method", None) == "fp8":
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, "block_size", [128, 128])
         W_quant.block_size = W.block_size
+
+    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    if getattr(proj, "disable_adapters", True) or proj.merged:
+        return W, W_quant, None, None, None, base_layer.bias
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
