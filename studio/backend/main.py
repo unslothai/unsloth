@@ -234,14 +234,12 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 import hashlib
-import ipaddress
 import mimetypes
 import re as _re
 import shutil
 import warnings
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version as package_version
-from urllib.parse import urlparse
 
 
 _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
@@ -573,12 +571,16 @@ async def lifespan(app: FastAPI):
         print("DEFAULT ADMIN ACCOUNT CREATED")
         print(f"    username: {storage.DEFAULT_ADMIN_USERNAME}")
         print(f"    password saved to: {bootstrap_path}")
-        print("    Open the Studio UI to sign in and change it.")
+        print("    open that file to read the password, then sign in and change it.")
         print("=" * 60 + "\n")
     else:
-        app.state.bootstrap_password = (
-            None if _suppress_bootstrap else storage.get_bootstrap_password()
-        )
+        bootstrap_pw = None if _suppress_bootstrap else storage.get_bootstrap_password()
+        app.state.bootstrap_password = bootstrap_pw
+        # A restart before first login skips the creation banner above; still
+        # point the operator to the seed file while the bootstrap pw is unrotated.
+        if bootstrap_pw:
+            bootstrap_path = storage.DB_PATH.parent / ".bootstrap_password"
+            print(f"\nAdmin password change still required. Read it from: {bootstrap_path}\n")
 
     _lifespan_log.info(
         "lifespan startup completed in %.1fms",
@@ -1297,180 +1299,6 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
-def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
-    """Inject bootstrap credentials when password change is pending.
-    Returns ``(html_bytes, script_nonce_or_None)``; callers forward the nonce
-    via ``_CSP_SCRIPT_NONCE_HEADER`` so CSP allows the inline script.
-    """
-    import json as _json
-    import secrets as _secrets
-
-    if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
-        return html_bytes, None
-
-    bootstrap_pw = getattr(app.state, "bootstrap_password", None)
-    if not bootstrap_pw:
-        return html_bytes, None
-
-    payload = _json.dumps(
-        {
-            "username": storage.DEFAULT_ADMIN_USERNAME,
-            "password": bootstrap_pw,
-        }
-    )
-    nonce = _secrets.token_urlsafe(16)
-    tag = f'<script nonce="{nonce}">window.__UNSLOTH_BOOTSTRAP__={payload}</script>'
-    html = html_bytes.decode("utf-8")
-    html = html.replace("</head>", f"{tag}</head>", 1)
-    return html.encode("utf-8"), nonce
-
-
-_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
-
-
-def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to ``(scheme, host, port)`` for equality.
-    Browsers strip default ports (RFC 6454 sec 6.1) and scheme/host are
-    case-insensitive (RFC 3986), so a bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable input
-    so callers fall to the safer cross-origin default.
-    """
-    scheme = (scheme or "").strip().lower()
-    if not scheme or not netloc:
-        return None
-    # Strip userinfo (RFC 3986); Origin never carries credentials.
-    if "@" in netloc:
-        netloc = netloc.rsplit("@", 1)[1]
-    # IPv6 hosts use brackets (RFC 3986 sec 3.2.2): ``[::1]:8902``. Bare
-    # ``partition(":")`` mis-parses these, breaking ``unsloth studio -H ::1``.
-    if netloc.startswith("["):
-        close = netloc.find("]")
-        if close == -1:
-            return None
-        host = netloc[1:close]
-        rest = netloc[close + 1 :]
-        if rest.startswith(":"):
-            port_str = rest[1:]
-        elif rest == "":
-            port_str = ""
-        else:
-            return None
-    else:
-        host, _, port_str = netloc.partition(":")
-    host = host.strip().lower()
-    if not host:
-        return None
-    if port_str:
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-    else:
-        port = _DEFAULT_PORTS.get(scheme, 0)
-    return (scheme, host, port)
-
-
-def _is_loopback_ip(host: Optional[str]) -> bool:
-    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
-    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except (TypeError, ValueError):
-        return False
-    mapped = getattr(ip, "ipv4_mapped", None)
-    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
-
-
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote
-# client, so the peer is the proxy, not the caller: cloudflared sets
-# cf-connecting-ip, reverse proxies set the rest (uvicorn only consumes
-# x-forwarded-for, so the others survive to here).
-_PROXIED_CLIENT_HEADERS = (
-    "cf-connecting-ip",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
-)
-
-
-def _host_header_is_loopback(host_header: Optional[str]) -> bool:
-    """Loopback/localhost check on the raw Host header.
-
-    Reads the header directly so a malformed or absent Host cannot fall back to
-    ``request.url.hostname``'s (loopback) ASGI server address.
-    """
-    if not host_header:
-        return False
-    host = host_header.strip()
-    if host.startswith("["):  # [IPv6] or [IPv6]:port
-        end = host.find("]")
-        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
-        host = host[1:end]
-    elif host.count(":") == 1:  # host:port
-        host = host.split(":", 1)[0]
-    host = host.lower().rstrip(".")
-    return host == "localhost" or _is_loopback_ip(host)
-
-
-def _is_local_bootstrap_request(request: Request) -> bool:
-    """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
-
-
-def _is_same_origin_request(request: Request) -> bool:
-    """True when Origin is missing or matches request's scheme://host:port.
-
-    Missing Origin counts as same-origin (top-level GETs omit it). Both sides
-    are canonicalised via :func:`_canonical_origin`; callers must emit
-    ``Vary: Origin``.
-    """
-    origin = request.headers.get("origin")
-    if origin is None:
-        # Missing header: top-level same-document GETs omit Origin.
-        return True
-    # Empty string is not a valid serialised origin (RFC 6454 sec 6.1).
-    if not origin:
-        return False
-    # "null" token (sandboxed iframes, file:// pages) is never same-origin.
-    if origin == "null":
-        return False
-    # ``urlparse`` raises ``ValueError`` on malformed IPv6 brackets; swallow
-    # so a garbage Origin doesn't 500 the SPA handler.
-    try:
-        parsed = urlparse(origin)
-    except ValueError:
-        return False
-    origin_canon = _canonical_origin(parsed.scheme, parsed.netloc)
-    if origin_canon is None:
-        return False
-    try:
-        self_canon = _canonical_origin(request.url.scheme, request.url.netloc)
-    except ValueError:
-        return False
-    if self_canon is None:
-        return False
-    return origin_canon == self_canon
-
-
-def _should_inject_bootstrap(request: Request) -> bool:
-    """Whether to embed the seeded bootstrap password in index.html."""
-    if not _is_same_origin_request(request):
-        return False
-    if _IS_COLAB:
-        # Single-user notebook proxy: allow autofill, but never a public
-        # shareable tunnel (a Colab Cloudflare link sets cf-connecting-ip).
-        return request.headers.get("cf-connecting-ip") is None
-    return _is_local_bootstrap_request(request)
-
-
 def setup_frontend(app: FastAPI, build_path: Path):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
@@ -1481,25 +1309,15 @@ def setup_frontend(app: FastAPI, build_path: Path):
         app.mount("/assets", StaticFiles(directory = assets_dir), name = "assets")
 
     def _build_index_response(request: Request) -> Response:
-        content = (build_path / "index.html").read_bytes()
-        content = _strip_crossorigin(content)
-        # Bootstrap pw goes only to a same-origin, direct-loopback client (or
-        # Colab's single-user notebook proxy): a wildcard bind must not serve it
-        # in-page to a LAN or proxied peer. Vary: Origin keeps caches honest.
-        if _should_inject_bootstrap(request):
-            content, nonce = _inject_bootstrap(content, app)
-        else:
-            nonce = None
-        headers = {
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Vary": "Origin",
-        }
-        if nonce:
-            headers[_CSP_SCRIPT_NONCE_HEADER] = nonce
+        # The seeded bootstrap password is never embedded in the served page: a
+        # loopback reverse proxy is indistinguishable from a genuine local client,
+        # so it cannot be scoped safely. It is saved to .bootstrap_password (0600);
+        # the operator reads it from there on first login.
+        content = _strip_crossorigin((build_path / "index.html").read_bytes())
         return Response(
             content = content,
             media_type = "text/html",
-            headers = headers,
+            headers = {"Cache-Control": "no-cache, no-store, must-revalidate"},
         )
 
     @app.get("/")

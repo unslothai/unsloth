@@ -236,6 +236,10 @@ with sync_playwright() as p:
                 pass  # best-effort -- proceed even if network never idles
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
+            # Served page no longer autofills the seed; fill Current password when shown.
+            cur_pw = page.locator("#current-password")
+            if cur_pw.count():
+                cur_pw.fill(OLD, timeout = 60_000)
             # Do NOT shoot() between wait_for and fill -- the screenshot's
             # font-load wait can let a background poll detach the form.
             pw_field.fill(NEW, timeout = 60_000)
