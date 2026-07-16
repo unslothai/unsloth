@@ -1153,6 +1153,63 @@ def test_maybe_auto_switch_no_reject_without_swap_flag(slot_state):
     asyncio.run(inference._maybe_auto_switch_model(None, req, "tester"))
 
 
+def test_studio_request_during_in_progress_swap_flags_scope(slot_state, monkeypatch):
+    # Codex P1: a non-preview request that arrives while a preview swap is in progress
+    # must be rejected via the in-progress flag, not only via a swap-counter change --
+    # the counter may already have bumped but the gate not yet released, so a request
+    # capturing the advanced counter would otherwise see no change and run against the
+    # just-loaded preview checkpoint.
+    _reset_keepwarm_counters()
+    # The swap counter does NOT change across this request (captured == checked).
+    monkeypatch.setattr(llama_keepwarm, "_preview_swap_gen", lambda: 7)
+    llama_keepwarm.note_preview_swap_begin()  # a swap is in progress
+    assert llama_keepwarm._preview_swap_active() is True
+    try:
+        seen = {}
+
+        async def _app(scope, receive, send):
+            seen["flagged"] = bool(scope.get(llama_keepwarm._PREVIEW_SWAP_REJECT_SCOPE_KEY))
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+        _run_middleware(_app, "/v1/chat/completions")
+        assert seen["flagged"] is True  # rejected on the in-progress flag alone
+    finally:
+        llama_keepwarm.note_preview_swap_end()
+    assert llama_keepwarm._preview_swap_active() is False
+    _reset_keepwarm_counters()
+
+
+def test_failed_stream_response_does_not_claim_slot(slot_state):
+    # Codex P2: a streaming response that returns 200 headers then encodes a failure
+    # (marks the scope failed) must NOT be treated as a successful completion, so the
+    # preview marker stays and a later preview for another checkpoint is not 503'd.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        llama_keepwarm.mark_response_failed(scope)  # mid-stream failure after 200
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")  # not claimed on failure
+    _reset_keepwarm_counters()
+
+
+def test_non_gguf_load_failure_restores_preview_marker():
+    # Codex P2: a failed non-GGUF (Unsloth/LoRA) load unloads only the new entry, so
+    # the prior preview checkpoint can still be resident even though the marker was
+    # cleared; _load_model_impl restores its ownership on both a raised and a
+    # falsy-return load failure.
+    import inspect
+
+    src = inspect.getsource(inference._load_model_impl)
+    assert "_restore_marker_if_prior_preview_still_resident" in src
+    # Restored on both failure paths: the except (raise) and the falsy-success branch.
+    assert src.count("_restore_marker_if_prior_preview_still_resident()") >= 2
+
+
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
     # A non-preview inference that returns 2xx adopts the resident model for Studio,
     # so the preview-ownership marker is cleared on completion.

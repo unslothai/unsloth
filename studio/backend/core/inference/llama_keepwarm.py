@@ -37,6 +37,12 @@ _preview_pending = 0
 # while it waited, so the request must be rejected instead of silently running against
 # the preview's checkpoint (see the middleware).
 _preview_swap_generation = 0
+# Non-zero while a preview swap is loading a checkpoint (from before it takes the
+# lifecycle gate until after it releases it). The generation counter alone can't reject
+# a request that captures it AFTER the swap bumped it but BEFORE the gate releases, so
+# the middleware also captures this flag at entry: if a swap was in progress when the
+# request arrived, reject it rather than let it run against the swapped-in checkpoint.
+_preview_swap_inflight = 0
 _last_active = time.monotonic()
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
@@ -198,6 +204,27 @@ def _preview_swap_gen() -> int:
         return _preview_swap_generation
 
 
+def note_preview_swap_begin() -> None:
+    """Mark a preview swap in progress. Call before taking the lifecycle gate to load,
+    and pair with note_preview_swap_end() after the gate is released, so a non-preview
+    request that arrives at any point during the swap (including the window after the
+    generation counter is bumped but before the gate releases) is rejected."""
+    global _preview_swap_inflight
+    with _lock:
+        _preview_swap_inflight += 1
+
+
+def note_preview_swap_end() -> None:
+    global _preview_swap_inflight
+    with _lock:
+        _preview_swap_inflight = max(0, _preview_swap_inflight - 1)
+
+
+def _preview_swap_active() -> bool:
+    with _lock:
+        return _preview_swap_inflight > 0
+
+
 def _claim_non_preview_slot() -> None:
     """A non-preview inference request that actually ran against the local model (a
     2xx response) adopts it for Studio, so clear preview ownership -- a later preview
@@ -224,6 +251,22 @@ _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 # 503 -- so an external-provider request, which untracks itself and returns before
 # reaching that check, is never rejected for a swap it never touches.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
+
+# Set on the ASGI scope by a streaming route that encoded a failure after its 200
+# headers were already sent (e.g. generate_stream yields an SSE error chunk, or a
+# llama-server passthrough relays a mid-stream error while the HTTP status stays 200).
+# The middleware's successful-response claim keys off the HTTP status alone, so without
+# this a failed stream would still adopt a preview-owned model for Studio and 503 later
+# previews for another checkpoint; the claim skips a response flagged here.
+_RESPONSE_FAILED_SCOPE_KEY = "_unsloth_keepwarm_response_failed"
+
+
+def mark_response_failed(scope) -> None:
+    """Flag a response that returned 2xx headers but then failed, so the keep-warm
+    middleware does not treat it as a successful non-preview completion and claim the
+    slot for Studio. Safe to call more than once; a no-op on a non-dict scope."""
+    if isinstance(scope, dict):
+        scope[_RESPONSE_FAILED_SCOPE_KEY] = True
 
 
 def untrack_current_request(scope) -> None:
@@ -295,10 +338,13 @@ class LlamaKeepWarmMiddleware:
         path = scope.get("path") or ""
         is_preview = _is_preview_path(path)
         _note_pending(is_preview)
-        # Capture the preview-swap counter before waiting on the gate: if a preview
-        # swap completes while this non-preview request is blocked, the counter
-        # advances and the request must be rejected (see below).
+        # Capture the preview-swap state before waiting on the gate: if a preview swap
+        # completes while this non-preview request is blocked, the counter advances; if
+        # one is already in progress when the request arrives (the counter may have
+        # already been bumped but the gate not yet released), the in-progress flag is
+        # set. Either way the request must be rejected (see below).
         swap_gen_at_entry = _preview_swap_gen()
+        swap_active_at_entry = _preview_swap_active()
         started = False
         try:
             async with _unload_gate():
@@ -312,7 +358,10 @@ class LlamaKeepWarmMiddleware:
                 # reaching that check -- is not rejected for a swap it never touches.
                 if (
                     not is_preview
-                    and _preview_swap_gen() != swap_gen_at_entry
+                    and (
+                        _preview_swap_gen() != swap_gen_at_entry
+                        or swap_active_at_entry
+                    )
                     and isinstance(scope, dict)
                 ):
                     scope[_PREVIEW_SWAP_REJECT_SCOPE_KEY] = True
@@ -361,6 +410,7 @@ class LlamaKeepWarmMiddleware:
                 and isinstance(code, int)
                 and 200 <= code < 300
                 and not path.endswith("/messages/count_tokens")
+                and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
             ):
                 _claim_non_preview_slot()
             _note_end(is_preview)

@@ -3797,6 +3797,8 @@ async def load_model_for_preview(
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
         note_preview_swap,
+        note_preview_swap_begin,
+        note_preview_swap_end,
         other_inference_request_count,
         other_non_preview_pending_count,
         other_preview_inflight_count,
@@ -3810,6 +3812,7 @@ async def load_model_for_preview(
     scope = getattr(fastapi_request, "scope", None)
     async with _auto_switch_lock():
         await _acquire_swap_gate()
+        _swap_begun = False
         try:
             async with inference_lifecycle_gate():
                 # Preview loads bypass load_model(), so re-apply its sidecar guard:
@@ -3861,6 +3864,12 @@ async def load_model_for_preview(
                     # #5401). Ownership is unchanged: Studio's model stays Studio's, a
                     # preview-owned one stays preview-owned.
                     return
+                # Mark the swap in progress before touching the model, so a non-preview
+                # request arriving during the load -- including the window after the
+                # swap counter bumps but before the gate below is released -- is
+                # rejected. Cleared in the finally, after the gate has been released.
+                note_preview_swap_begin()
+                _swap_begun = True
                 # _load_model_impl clears the preview marker mid-load (it reclaims the
                 # slot for Studio). If the load then fails while the prior model is
                 # still resident (e.g. a GPU-selection or pre-spawn error), leaving the
@@ -3882,6 +3891,11 @@ async def load_model_for_preview(
                     # against the swapped-in preview checkpoint.
                     note_preview_swap()
         finally:
+            # Cleared only here, after the lifecycle gate above has been released, so a
+            # non-preview request that arrived in the post-bump/pre-release window still
+            # saw the swap in progress at entry and is rejected.
+            if _swap_begun:
+                note_preview_swap_end()
             _auto_switch_process_lock.release()
 
 
@@ -4704,21 +4718,38 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         # Resolved before the guard so both size the same load.
         load_in_4bit = effective_load_in_4bit
 
+        def _restore_marker_if_prior_preview_still_resident() -> None:
+            # A failed non-GGUF load unloads only the new entry (InferenceBackend
+            # cleans up the failed model), so the prior preview checkpoint can still be
+            # the resident slot even though the marker was cleared above. Restore its
+            # ownership so a later preview for another checkpoint is not 503'd against a
+            # model Studio never actually adopted.
+            if (
+                _prior_preview_marker is not None
+                and _loaded_slot_ident() == _prior_preview_marker
+            ):
+                _set_preview_resident(_prior_preview_marker)
+
         # Load in a thread so the event loop stays free for download progress
         # polling and other requests.
-        success = await asyncio.to_thread(
-            backend.load_model,
-            config = config,
-            max_seq_length = request.max_seq_length,
-            load_in_4bit = load_in_4bit,
-            hf_token = request.hf_token,
-            trust_remote_code = request.trust_remote_code,
-            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            gpu_ids = effective_gpu_ids,
-            subject = current_subject,
-        )
+        try:
+            success = await asyncio.to_thread(
+                backend.load_model,
+                config = config,
+                max_seq_length = request.max_seq_length,
+                load_in_4bit = load_in_4bit,
+                hf_token = request.hf_token,
+                trust_remote_code = request.trust_remote_code,
+                approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
+                gpu_ids = effective_gpu_ids,
+                subject = current_subject,
+            )
+        except Exception:
+            _restore_marker_if_prior_preview_still_resident()
+            raise
 
         if not success:
+            _restore_marker_if_prior_preview_still_resident()
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
@@ -5577,7 +5608,10 @@ async def generate_stream(
     # preview's model. The keep-warm middleware claims the slot on a successful 2xx, so
     # no direct claim is needed here (claiming before generation could strand a
     # preview-owned checkpoint as Studio-owned if generation then fails).
-    from core.inference.llama_keepwarm import _PREVIEW_SWAP_REJECT_SCOPE_KEY
+    from core.inference.llama_keepwarm import (
+        _PREVIEW_SWAP_REJECT_SCOPE_KEY,
+        mark_response_failed,
+    )
 
     _gs_scope = getattr(fastapi_request, "scope", None)
     if isinstance(_gs_scope, dict) and _gs_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
@@ -5637,6 +5671,10 @@ async def generate_stream(
             cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
+            # The stream already sent HTTP 200, so signal the failure out-of-band: the
+            # keep-warm middleware must not treat this errored stream as a successful
+            # completion and claim a preview-owned model for Studio.
+            mark_response_failed(_gs_scope)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -13274,6 +13312,12 @@ async def _anthropic_passthrough_stream(
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                # The stream already sent HTTP 200, so flag the failure: the keep-warm
+                # middleware must not claim a preview-owned model for Studio on a
+                # passthrough stream that errored mid-response.
+                from core.inference.llama_keepwarm import mark_response_failed
+
+                mark_response_failed(getattr(request, "scope", None))
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -14048,6 +14092,10 @@ async def _openai_passthrough_stream_admitted(
     _tracker = tracker
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
+    # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is
+    # seen: the keep-warm middleware must not claim a preview-owned model for Studio on
+    # a failed passthrough stream.
+    from core.inference.llama_keepwarm import mark_response_failed
 
     client = None
     resp = None
@@ -14511,6 +14559,7 @@ async def _openai_passthrough_stream_admitted(
                         # finish would fire after a failed stream.
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
+                            mark_response_failed(getattr(request, "scope", None))
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already
                     # normalized) line relays unchanged (monitored exactly as
@@ -14559,6 +14608,7 @@ async def _openai_passthrough_stream_admitted(
                         )
                         if monitor_event == "error":
                             saw_stream_error = True
+                            mark_response_failed(getattr(request, "scope", None))
                         # Relay to preserve llama-server's native id,
                         # finish_reason, delta.tool_calls, and usage chunks.
                         yield out_line + "\n\n"
