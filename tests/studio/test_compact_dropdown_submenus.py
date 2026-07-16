@@ -8,11 +8,15 @@ DROPDOWN_MENU = REPO / "studio/frontend/src/components/ui/dropdown-menu.tsx"
 FRONTEND_SRC = REPO / "studio/frontend/src"
 
 
-def test_shared_submenu_overlaps_its_parent_on_mobile():
+def test_shared_submenu_uses_its_rendered_width_on_mobile():
     source = DROPDOWN_MENU.read_text(encoding = "utf-8")
     assert 'import { useIsMobile } from "@/hooks/use-mobile";' in source
-    assert "const compactSideOffset = useIsMobile() ? -248 : sideOffset;" in source
+    assert "element.getBoundingClientRect().width" in source
+    assert "new ResizeObserver(updateContentWidth)" in source
+    assert "isMobile && contentWidth > 0 ? -contentWidth : sideOffset" in source
     assert "sideOffset={compactSideOffset}" in source
+    assert 'isMobile && contentWidth === 0 ? "hidden"' in source
+    assert "-248" not in source
 
 
 def test_shared_submenu_never_exceeds_the_compact_viewport():
