@@ -343,8 +343,7 @@ def test_cached_model_scan_hides_custom_whisper_repo(monkeypatch, tmp_path):
     snapshot = repo_path / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text(
-        '{"model_type": "whisper", '
-        '"architectures": ["WhisperForConditionalGeneration"]}'
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
     )
     repo = SimpleNamespace(
         repo_id = "Org/CustomWhisper",

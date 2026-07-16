@@ -190,7 +190,6 @@ def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) 
 
     try:
         from huggingface_hub import HfApi
-
         info = HfApi(token = hf_token or False).model_info(
             repo,
             expand = ["config"],
@@ -496,9 +495,7 @@ class WhisperSttSidecar:
         with self._lock:
             if self._engine is not None and self._model_id == model_id:
                 resident_model = (
-                    self._engine[0]
-                    if isinstance(self._engine, (tuple, list))
-                    else self._engine
+                    self._engine[0] if isinstance(self._engine, (tuple, list)) else self._engine
                 )
                 generation_config = getattr(resident_model, "generation_config", None)
                 is_multilingual = getattr(generation_config, "is_multilingual", None)

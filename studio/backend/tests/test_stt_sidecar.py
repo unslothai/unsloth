@@ -153,10 +153,7 @@ def test_remote_custom_model_validation_requires_whisper_config(monkeypatch):
 
     result = validate_remote_model("owner/custom-whisper", "hf_private")
 
-    assert result == {
-        "model": "owner/custom-whisper",
-        "repo": "owner/custom-whisper",
-    }
+    assert result == {"model": "owner/custom-whisper", "repo": "owner/custom-whisper"}
     assert calls == [
         ("token", "hf_private"),
         (

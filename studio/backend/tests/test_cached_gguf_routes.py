@@ -141,8 +141,7 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
     custom = tmp_path / "custom-whisper"
     custom.mkdir()
     (custom / "config.json").write_text(
-        '{"model_type": "whisper", '
-        '"architectures": ["WhisperForConditionalGeneration"]}'
+        '{"model_type": "whisper", "architectures": ["WhisperForConditionalGeneration"]}'
     )
     (custom / "model.safetensors").write_bytes(b"weights")
     assert models_route._is_hidden_model(
@@ -152,10 +151,7 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
     named_only = tmp_path / "whisper-finetune"
     named_only.mkdir()
     (named_only / "config.json").write_text('{"model_type": "llama"}')
-    assert not models_route._is_hidden_model(
-        "user/whisper-finetune",
-        str(named_only),
-    )
+    assert not models_route._is_hidden_model("user/whisper-finetune", str(named_only))
 
 
 def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
