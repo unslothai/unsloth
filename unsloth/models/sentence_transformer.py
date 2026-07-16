@@ -188,17 +188,33 @@ def _save_pretrained_gguf(
 
     # 4. Patch environment so Unsloth treats this embedding model correctly
     @contextlib.contextmanager
-    def patch_unsloth_gguf_save(protected_directory):
+    def patch_unsloth_gguf_save(protected_directory, temporary_location = None):
         # Prevent deletion of the directory self.save_pretrained just created (and
-        # anything inside it), while still allowing unrelated temporary directories to
-        # be cleaned up. The previous version saved and restored shutil.rmtree without
-        # ever replacing it, so the guard never actually protected anything.
-        protected = os.path.abspath(protected_directory)
+        # anything inside it), while still allowing temporary directories to be cleaned
+        # up. The previous version saved and restored shutil.rmtree without ever
+        # replacing it, so the guard never actually protected anything.
+        def normalize(path):
+            # normcase so the comparison holds on case-insensitive filesystems.
+            return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+        def is_within(target, directory):
+            return target == directory or target.startswith(directory + os.sep)
+
+        protected = normalize(protected_directory)
+        # temporary_location defaults to a relative path, so it can resolve to a
+        # directory inside the protected tree (for example when saving to "."). Its
+        # cleanup must still run, otherwise scratch buffers are left in the saved
+        # model and get uploaded by the push_to_hub path.
+        temporary = normalize(temporary_location) if temporary_location is not None else None
         original_rmtree = shutil.rmtree
 
         def guarded_rmtree(path, *args, **kwargs):
-            target = os.path.abspath(os.fspath(path))
-            if target == protected or target.startswith(protected + os.sep):
+            target = normalize(path)
+            if target == protected:
+                return
+            if temporary is not None and is_within(target, temporary):
+                return original_rmtree(path, *args, **kwargs)
+            if is_within(target, protected):
                 return
             return original_rmtree(path, *args, **kwargs)
 
@@ -209,7 +225,7 @@ def _save_pretrained_gguf(
             shutil.rmtree = original_rmtree
 
     # 5. Call Unsloth's GGUF saver on the inner model targeting the transformer subdirectory
-    with patch_unsloth_gguf_save(save_directory):
+    with patch_unsloth_gguf_save(save_directory, temporary_location):
         result = unsloth_save_pretrained_gguf(
             inner_model,
             save_directory = transformer_dir,

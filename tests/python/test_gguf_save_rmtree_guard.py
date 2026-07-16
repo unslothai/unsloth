@@ -40,7 +40,7 @@ def test_patch_unsloth_gguf_save_protects_only_the_save_directory(tmp_path):
     (unrelated / "scratch.bin").write_text("temp")
 
     original_rmtree = shutil.rmtree
-    with patch_unsloth_gguf_save(str(save_dir)):
+    with patch_unsloth_gguf_save(str(save_dir), str(unrelated)):
         shutil.rmtree(str(save_dir))  # protected: no-op
         shutil.rmtree(str(subdir))  # inside the protected tree: no-op
         shutil.rmtree(str(unrelated))  # unrelated temp dir: still deleted
@@ -50,3 +50,25 @@ def test_patch_unsloth_gguf_save_protects_only_the_save_directory(tmp_path):
         assert not unrelated.exists(), "unrelated temp directories must still be cleaned up"
 
     assert shutil.rmtree is original_rmtree, "shutil.rmtree must be restored on exit"
+
+
+def test_patch_unsloth_gguf_save_still_cleans_a_temporary_dir_inside_the_save_directory(tmp_path):
+    # temporary_location defaults to the relative "_unsloth_temporary_saved_buffers",
+    # so it resolves inside the save directory whenever the model is saved to the
+    # current directory. Those scratch buffers must still be cleaned up, otherwise
+    # they are left behind in the saved model and uploaded by the push_to_hub path.
+    patch_unsloth_gguf_save = _load_patch_unsloth_gguf_save()
+
+    save_dir = tmp_path / "saved_model"
+    save_dir.mkdir()
+    (save_dir / "model.safetensors").write_text("weights")
+    nested_temp = save_dir / "_unsloth_temporary_saved_buffers"
+    nested_temp.mkdir()
+    (nested_temp / "scratch.bin").write_text("temp")
+
+    with patch_unsloth_gguf_save(str(save_dir), str(nested_temp)):
+        shutil.rmtree(str(nested_temp))  # configured temp location: still deleted
+        shutil.rmtree(str(save_dir))  # protected: no-op
+
+        assert not nested_temp.exists(), "the configured temporary location must be cleaned up"
+        assert save_dir.exists(), "the save directory itself must still survive"
