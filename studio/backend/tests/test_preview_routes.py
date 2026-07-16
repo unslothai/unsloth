@@ -1526,7 +1526,6 @@ def test_anthropic_stream_cancel_marks_response_failed():
     # cancel_event / disconnect with a 200 and no completion, so they must flag the
     # response failed or the middleware claims a preview-owned model for a cancelled stream.
     import inspect
-
     for fn in (inference._anthropic_tool_stream, inference._anthropic_plain_stream):
         src = inspect.getsource(fn)
         idx = src.index("cancel_event.is_set() or await request.is_disconnected()")
