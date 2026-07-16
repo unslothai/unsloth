@@ -1326,7 +1326,9 @@ const ThreadWelcome: FC<{
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
-    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    // Cap very long names so the greeting stays on one line.
+    const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
 
