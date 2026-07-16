@@ -619,7 +619,7 @@ if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
 
     from mcp_server import BearerTokenMiddleware, create_studio_mcp
 
-    _studio_mcp_app = create_studio_mcp().http_app(path="/")
+    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
     _studio_mcp_lifespan = _studio_mcp_app.lifespan
     _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
     if not _mcp_token:
