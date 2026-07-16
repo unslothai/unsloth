@@ -2897,14 +2897,7 @@ def test_hermes_resume_oneshot_uses_session_aware_chat(fake_studio, monkeypatch)
         monkeypatch,
         ["hermes", "--persist", "--resume", "session-id", "-z", "follow up"],
     )
-    assert captured["command"][1:] == [
-        "chat",
-        "-Q",
-        "--resume",
-        "session-id",
-        "-q",
-        "follow up",
-    ]
+    assert captured["command"][1:] == ["chat", "-Q", "--resume", "session-id", "-q", "follow up"]
 
 
 def test_hermes_resume_oneshot_forwards_only_explicit_approvals(fake_studio, monkeypatch):
