@@ -8,7 +8,7 @@ import {
   listServerRecipeExecutions,
   upsertServerRecipeExecution,
 } from "@/features/user-assets";
-// Shared persistence policy is infrastructure, not a feature UI dependency.
+// Persistence policy is infrastructure, not a feature UI dependency.
 // eslint-disable-next-line no-restricted-imports
 import { MAX_EXECUTION_JSON_BYTES } from "@/features/user-assets/persistence-policy";
 import type {
@@ -151,7 +151,7 @@ function fitCompletedColumns(
   };
 }
 
-/** The only projection allowed to cross the persistence boundary. */
+/** Only this projection crosses the persistence boundary. */
 export function serializeExecutionMetadata(
   record: RecipeExecutionRecord,
 ): RecipeExecutionMetadata {
@@ -192,15 +192,12 @@ export function serializeExecutionMetadata(
         : null,
   };
 
-  // Scalars and completed-column names are the durable resume envelope. If a
-  // future field expansion ever pushes that envelope over budget, keep the
-  // largest deterministic prefix rather than emitting a request the backend
-  // must reject.
+  // Keep durable resume fields first.
+  // If they exceed the cap, persist the largest deterministic
+  // completed-column prefix instead of a rejected payload.
   metadata = fitCompletedColumns(metadata);
 
-  // Add structured snapshots in resume/display priority order. Each candidate
-  // is canonicalized independently, and is omitted wholesale if it would push
-  // the complete metadata projection above the backend's 256 KiB cap.
+  // Add snapshots in display priority; omit any that exceeds 256 KiB.
   const optionalObjects = [
     ["progress", boundedObject(record.progress, MAX_EXECUTION_JSON_BYTES)],
     [
@@ -346,19 +343,14 @@ function reconcileIncoming(
   const incomingTerminal = TERMINAL.has(incoming.status);
   const currentTerminal = TERMINAL.has(current.status);
   if (currentTerminal) {
-    // Once the server has reached a terminal state, a delayed non-terminal
-    // snapshot can never revive it.  A later terminal event may still carry a
-    // genuine progression (for example, a newer authoritative completion).
+    // Terminal state rejects stale nonterminal updates; only newer terminal events advance.
     if (!incomingTerminal) return null;
     if (incomingEvent !== currentEvent) {
       return incomingEvent > currentEvent ? incoming : null;
     }
     if (incoming.status !== current.status) return null;
 
-    // Terminal writes for the same tracker event can race: the later snapshot
-    // may add analysis, final progress, or other bounded resume metadata. Merge
-    // fields monotonically so accepting that enrichment cannot discard values
-    // already committed by another writer.
+    // Same-event terminal writers merge enrichment without dropping stored fields.
     return mergeSameTerminalSnapshot(incoming, current);
   }
   return incomingTerminal || incomingEvent > currentEvent ? incoming : null;
@@ -381,9 +373,7 @@ async function persistOnce(
   let lastConflict: UserAssetApiError | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      // A debounced write may wake after logout/account switch. Check the
-      // captured owner at the last possible point before authFetch reads the
-      // current token, and again before accepting the response.
+      // Debounced writes recheck ownership before sending and after receiving.
       assertOwnerCurrent(owner, record);
       const saved = await upsertServerRecipeExecution<PersistedRecipeExecution>(
         {

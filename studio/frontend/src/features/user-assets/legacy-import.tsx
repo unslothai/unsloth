@@ -249,8 +249,7 @@ async function importExecutionPages(
   return rejectedCount;
 }
 
-// Shared with the direct editor route so it can migrate before declaring a
-// legacy-only recipe missing.
+// The editor also imports before declaring a legacy recipe missing.
 // eslint-disable-next-line react-refresh/only-export-components
 export async function importLegacyUserAssetsFromIndexedDb({
   readRecipes,
@@ -265,9 +264,7 @@ export async function importLegacyUserAssetsFromIndexedDb({
     expectedSubjectKey: requestSubjectKey,
   });
   throwIfAborted(signal);
-  // Tauri may intentionally establish its account while an anonymous guarded
-  // bootstrap is in flight. authFetch only permits that specific transition;
-  // bind every subsequent import mutation to the newly established subject.
+  // Anonymous Tauri bootstrap may establish an account; bind later mutations to it.
   if (requestSubjectKey === "anonymous") {
     requestSubjectKey = getAuthSubjectKey();
   }

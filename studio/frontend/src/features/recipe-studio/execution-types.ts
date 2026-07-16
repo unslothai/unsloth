@@ -104,7 +104,7 @@ export type RecipeExecutionRecord = {
   // biome-ignore lint/style/useNamingConvention: api schema
   processor_artifacts: Record<string, unknown> | null;
   error: string | null;
-  /** Server CAS metadata. Large run data remains memory-only. */
+  /** CAS metadata only; large run data stays in memory. */
   revision?: number;
   updatedAt?: number;
 };

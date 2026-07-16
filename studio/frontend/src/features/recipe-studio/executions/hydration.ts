@@ -16,9 +16,7 @@ export async function hydrateCompletedFullExecutionDataset(
   record: RecipeExecutionRecord,
 ): Promise<RecipeExecutionRecord> {
   const execution = withExecutionDefaults(record);
-  // Preview rows are not durable and the dataset endpoint is not a supported
-  // recovery contract for historical previews.  Full runs retain a job-backed
-  // dataset, so recover exactly the first UI page and leave later pages lazy.
+  // Preview rows are not recoverable; restore only the first job-backed full-run page.
   if (
     execution.kind !== "full" ||
     execution.status !== "completed" ||

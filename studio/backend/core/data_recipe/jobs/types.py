@@ -68,8 +68,7 @@ class ModelUsage:
 @dataclass
 class Job:
     job_id: str
-    # A default keeps low-level event/parser fixtures source-compatible; jobs
-    # created through JobManager.start always receive an authenticated owner.
+    # Default preserves parser fixtures; JobManager.start always sets the owner.
     owner_subject: str = ""
     status: JobStatus = "created"
     stage: str | None = None

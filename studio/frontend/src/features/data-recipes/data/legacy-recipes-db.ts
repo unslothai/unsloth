@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// This low-level migration reader is intentionally not part of the feature UI API.
+// Low-level migration reader; intentionally outside the feature UI API.
 // eslint-disable-next-line no-restricted-imports
 import { readLegacyStorePage } from "@/features/user-assets/legacy-indexeddb";
 import type { RecipeRecord } from "../types";

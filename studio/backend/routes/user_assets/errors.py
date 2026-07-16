@@ -16,7 +16,7 @@ from storage.user_assets_db import UserAssetStorageError
 
 
 class UserAssetsRoute(APIRoute):
-    """Keep request-validation failures inside the documented safe envelope."""
+    """Map validation failures to the safe error envelope."""
 
     def get_route_handler(self):
         route_handler = super().get_route_handler()

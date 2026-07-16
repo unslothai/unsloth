@@ -740,8 +740,8 @@ export function useRecipeExecutions({
                 useRecipeExecutionsStore.getState().selectedExecutionId ===
                   initiallySelected.id
               ) {
-                // Dataset pages are memory-only and must not create a metadata
-                // CAS write simply because persisted history was opened.
+                // Hydrating memory-only pages
+                // must not persist metadata.
                 historyLifecycle.upsertExecution(hydrated);
               }
             })
@@ -779,9 +779,7 @@ export function useRecipeExecutions({
         });
       } catch (error) {
         if (!isActive()) return;
-        // The reset above already removed records from the previous owner. Mark
-        // that empty store as active so a transient history outage cannot hide
-        // runs created during this session or expose stale account data.
+        // Keep the cleared owner store active so outages neither hide new runs nor expose stale data.
         historyLifecycle.setExecutions([]);
         setExecutionHistory({ owner, cursor: null, loadingOlder: false });
         // biome-ignore lint/suspicious/noConsole: hydration failures are non-blocking diagnostics
@@ -1334,8 +1332,8 @@ export function useRecipeExecutions({
             getAuthSubjectKey() === owner.subjectKey &&
             useRecipeExecutionsStore.getState().selectedExecutionId === id;
           if (stillActive) {
-            // Dataset pages are intentionally memory-only; do not create an
-            // execution metadata CAS write just because history was viewed.
+            // Hydrating memory-only pages
+            // must not persist metadata.
             upsertExecution(hydrated);
           }
         })

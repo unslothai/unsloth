@@ -104,7 +104,7 @@ class Subscription:
         return self._closed.is_set()
 
     def close(self) -> None:
-        """Wake/retire this stream before another job generation can emit."""
+        """Close this stream before another generation emits."""
         self._closed.set()
 
     def put_event(self, event: dict) -> bool:
@@ -139,7 +139,7 @@ class Subscription:
 
 @dataclass(frozen = True)
 class JobGeneration:
-    """Immutable identity for one installed job generation."""
+    """Identity of one installed job generation."""
 
     job_id: str
     owner_subject: str
@@ -158,7 +158,7 @@ class JobManager:
         self._seq: int = 0
 
     def _has_blocking_job_locked(self) -> bool:
-        """Mirror the process-global admission check while ``_lock`` is held."""
+        """Check process-global admission while holding ``_lock``."""
         return self._proc is not None and self._proc.is_alive()
 
     def start(
@@ -194,9 +194,8 @@ class JobManager:
             if self._has_blocking_job_locked():
                 raise RuntimeError("job already running")
 
-            # A completed job's client may deliberately keep its SSE request
-            # open. Retire those streams before replacing the job generation;
-            # they must never observe a later owner's events.
+            # Retire old SSE streams before replacement;
+            # they cannot see another owner's events.
             for subscription in self._subs:
                 subscription.close()
             self._subs.clear()
@@ -345,13 +344,7 @@ class JobManager:
             }
 
     def get_current_status(self, owner_subject: str) -> dict | None:
-        """Return owner details, or only global busy state to another owner.
-
-        The runner is process-global and ``start`` rejects while its child is
-        alive. Other authenticated subjects therefore need that one bit to
-        avoid treating a predictable 409 as an idle backend, but must not learn
-        the current job id, status details, progress, or artifacts.
-        """
+        """Return owner details; other owners see only the busy bit used for 409 admission."""
         with self._lock:
             if self._job is None:
                 return None
@@ -522,11 +515,7 @@ class JobManager:
     def _prepare_event_locked(
         self, generation: JobGeneration, event: dict
     ) -> tuple[tuple[Subscription, ...], dict] | None:
-        """Record an event only while its immutable generation is installed.
-
-        This method is called with ``_lock`` held. It snapshots only matching
-        subscribers; queue writes intentionally happen after releasing the lock.
-        """
+        """Record events for the installed generation; enqueue after unlocking."""
         current = self._job
         if (
             current is None
@@ -557,7 +546,7 @@ class JobManager:
         return tuple(matching), published
 
     def _fanout_prepared(self, prepared: tuple[tuple[Subscription, ...], dict] | None) -> None:
-        """Deliver a prepared event without holding the manager lock."""
+        """Deliver a prepared event after unlocking."""
         if prepared is None:
             return
         subscriptions, event = prepared
@@ -570,7 +559,7 @@ class JobManager:
             self._subs = [subscription for subscription in self._subs if subscription not in failed]
 
     def _emit_for_generation(self, job: Job | JobGeneration, event: dict) -> bool:
-        """Publish only if ``job`` is still the installed owner generation."""
+        """Publish only for the installed generation."""
         generation = (
             job
             if isinstance(job, JobGeneration)
@@ -582,7 +571,7 @@ class JobManager:
         return prepared is not None
 
     def _emit(self, event: dict) -> None:
-        """Compatibility wrapper that binds an event to the current generation."""
+        """Bind compatibility events to the current generation."""
         with self._lock:
             current = self._job
             if current is None:
@@ -670,9 +659,7 @@ class JobManager:
                 for e in self._drain_queue(mp_q):
                     self._safe_handle_event(job, e)
 
-                # The dead process owns the captured generation, even if a new
-                # generation is installed before this finalizer reacquires the
-                # lock. Always retire that generation's workflow credential.
+                # Revoke the dead generation's credential even if replacement wins the lock.
                 retired_job: Job | None = job
                 prepared: tuple[tuple[Subscription, ...], dict] | None = None
                 with self._lock:

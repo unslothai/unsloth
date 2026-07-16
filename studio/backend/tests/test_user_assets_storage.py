@@ -158,7 +158,7 @@ def test_corrected_legacy_rejection_retries_after_restart(monkeypatch):
 
     assert user_assets_db.list_legacy_imports("owner", source)["recipes"] == []
 
-    # Older builds persisted validation failures as rejected ledger rows.
+    # Old builds persisted validation failures as rejected rows.
     conn = studio_db.get_connection()
     conn.execute(
         """

@@ -24,10 +24,7 @@ let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
 export type AuthFetchGuard = {
-  /**
-   * Reject the request if it would be sent or retried as another account.
-   * Token rotation is allowed as long as the authenticated subject is stable.
-   */
+  /** Reject sends or retries under another auth subject; allow token rotation. */
   expectedSubjectKey: string;
 };
 
@@ -147,9 +144,7 @@ async function retryWithTauriAutoAuth(
   clearAuthTokens();
   const { tauriAutoAuth } = await import("./tauri-auto-auth");
   if (await tauriAutoAuth()) {
-    // A tokenless Tauri launch is expected to establish its account here. Once
-    // established, bind the replay to that subject. Existing authenticated
-    // requests may only auto-auth back into the same account.
+    // Bind tokenless Tauri replay to its new account; authenticated requests cannot switch.
     const retryGuard = allowAnonymousBootstrap
       ? { expectedSubjectKey: getAuthSubjectKey() }
       : guard;
@@ -239,8 +234,8 @@ export async function authFetch(
     throw err;
   }
 
-  // A response from the captured account must not drive refresh, redirects, or
-  // application state after another account has become current.
+  // Ignore responses from a captured account
+  // after the active account changes.
   assertExpectedSubject(guard);
 
   if (await isPasswordChangeRequiredResponse(response)) {
@@ -259,9 +254,7 @@ export async function authFetch(
   assertExpectedSubject(guard);
   const refreshed = await refreshSession();
   if (!refreshed) {
-    // refreshSession may legitimately clear an expired session. A non-empty
-    // different session, however, belongs to a login that raced this request;
-    // never clear or redirect that newer account.
+    // An expired session may clear; never clear or redirect a newer account.
     if (
       guard &&
       getAuthSubjectKey() !== guard.expectedSubjectKey &&

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Canonical validation for account-scoped recipes and executions.
-
-This module is deliberately independent of FastAPI/Pydantic so storage, normal
-CRUD routes, and the legacy importer all pass through the same byte-counting
-and secret policy.  It never logs or includes a rejected value in an error.
-"""
+"""Canonical validation for account-scoped assets; errors never expose values."""
 
 from __future__ import annotations
 
@@ -74,7 +69,7 @@ T = TypeVar("T")
 
 @dataclass(frozen = True)
 class UserAssetValidationError(ValueError):
-    """Safe structured validation failure consumed by storage/API layers."""
+    """Structured, value-free validation error shared by storage and API layers."""
 
     code: str
     message: str
@@ -85,7 +80,7 @@ class UserAssetValidationError(ValueError):
 
     @property
     def field_paths(self) -> tuple[str, ...]:
-        """Compatibility spelling for API detail builders."""
+        """Alias used by API detail builders."""
 
         return self.paths
 
@@ -140,25 +135,14 @@ def _is_mcp_env(path: JsonPath) -> bool:
 
 
 def _is_seed_source(path: JsonPath) -> bool:
-    """True only for the recipe seed credential container.
-
-    Dataset columns and analysis objects may legitimately be named ``token``;
-    the HF/GitHub credential is the direct ``seed_config.source.token`` field.
-    """
+    """Match only ``seed_config.source.token``, not same-named data fields."""
 
     string_parts = [_normalize_key(part) for part in path if isinstance(part, str)]
     return len(string_parts) >= 2 and string_parts[-2:] == ["seed_config", "source"]
 
 
 def _is_structured_output_schema_property(path: JsonPath, value: Any) -> bool:
-    """Return whether ``value`` is a JSON Schema property definition.
-
-    Structured-output schemas legitimately use credential-looking field names
-    (for example, ``password``).  Only definitions nested below
-    ``output_format.properties`` receive this exception.  Requiring a mapping
-    or boolean schema keeps malformed scalar credential values covered by the
-    normal secret policy.
-    """
+    """Allow credential-like names only in valid ``output_format.properties`` schemas."""
 
     string_parts = [_normalize_key(part) for part in path if isinstance(part, str)]
     return bool(
@@ -181,21 +165,19 @@ def _is_secret_entry(path: JsonPath, key: str, value: Any) -> bool:
         return True
     if _looks_like_secret_key(normalized):
         return True
-    # MCP env blocks commonly use provider-specific variable names.  Keep the
-    # broader heuristic scoped to that typed container, not arbitrary payloads.
+    # Deny provider-specific secret names only inside typed MCP env blocks.
     if _is_mcp_env(path):
         return (
             normalized in _MCP_ENV_DENIED_EXACT_KEYS
             or normalized.endswith(_MCP_ENV_DENIED_KEY_SUFFIXES)
             or any(part in normalized for part in _MCP_ENV_DENIED_KEY_PARTS)
         )
-    # Header names normalize hyphens (Set-Cookie -> set_cookie), so the exact
-    # denylist above catches authorization/cookie without inspecting values.
+    # Hyphenated header names normalize into the exact denylist.
     return False
 
 
 def format_json_path(path: JsonPath) -> str:
-    """Render typed path parts without losing array indices or unusual keys."""
+    """Format JSON paths without losing indices or unusual keys."""
 
     rendered = "$"
     for part in path:
@@ -237,7 +219,7 @@ def _redact(value: Any, path: JsonPath = ()) -> tuple[Any, list[JsonPath]]:
         result: dict[str, Any] = {}
         for raw_key, child in value.items():
             if not isinstance(raw_key, str):
-                # Canonical validation will reject this safely later.
+                # Validation rejects non-string keys later.
                 result[raw_key] = child  # type: ignore[index]
                 continue
             child_path = (*path, raw_key)
@@ -259,7 +241,7 @@ def _redact(value: Any, path: JsonPath = ()) -> tuple[Any, list[JsonPath]]:
 
 
 def redact_secret_fields(value: T) -> tuple[T, list[str]]:
-    """Deep-copy ``value`` while removing secret entries and reporting paths."""
+    """Copy ``value``, remove secrets, and report their paths."""
 
     clean, paths = _redact(value)
     return clean, [format_json_path(path) for path in paths]
@@ -299,9 +281,8 @@ def _canonical_object(value: Any, max_bytes: int, field_name: str) -> dict[str, 
             f"{field_name} must be a JSON object",
         )
     encoded = canonical_json(value, max_bytes, field_name)
-    # Round-tripping creates a fresh tree made only from JSON-native values.
     result = json.loads(encoded)
-    if not isinstance(result, dict):  # defensive; Mapping check establishes this
+    if not isinstance(result, dict):
         raise UserAssetValidationError("invalid_json_object", f"{field_name} must be a JSON object")
     return result
 
@@ -421,16 +402,11 @@ def _require_object(
         return None
     if not isinstance(value, Mapping):
         raise UserAssetValidationError("invalid_execution_metadata", f"{field} must be an object")
-    # The final canonical round-trip supplies the fresh copy.
     return value
 
 
 def project_execution_metadata(value: Any) -> dict[str, Any]:
-    """Build a fresh, bounded allowlisted execution metadata object.
-
-    Dataset rows, log lines, raw/artifact paths, processor artifacts, and any
-    future UI-only fields are omitted regardless of caller input.
-    """
+    """Allowlist durable execution metadata and omit UI-only fields."""
 
     if not isinstance(value, Mapping):
         raise UserAssetValidationError(
@@ -501,7 +477,7 @@ def project_execution_metadata(value: Any) -> dict[str, Any]:
 
 
 def validate_legacy_batch_size(recipes: Any, executions: Any) -> None:
-    """Enforce count and aggregate canonical-byte limits before a transaction."""
+    """Enforce legacy batch count and byte limits."""
 
     if not isinstance(recipes, list) or not isinstance(executions, list):
         raise UserAssetValidationError(

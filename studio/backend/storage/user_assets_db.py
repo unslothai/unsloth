@@ -645,8 +645,7 @@ def _already_imported(
     if row["outcome"] == "missing_parent" or (
         row["outcome"] == "rejected" and row["reason"] not in {"already_exists", "parent_retired"}
     ):
-        # Older builds accidentally terminalized deferred and validation
-        # failures. Remove those rows so corrected input can be retried.
+        # Drop old validation rejections so corrected input can retry.
         conn.execute(
             """
             DELETE FROM user_asset_legacy_imports
@@ -661,7 +660,7 @@ def _already_imported(
 def import_legacy_assets(
     owner_subject: str, source: str, recipes: list[Any], executions: list[Any]
 ) -> dict[str, Any]:
-    """Atomically import a bounded batch, ledgering only terminal outcomes."""
+    """Import a bounded batch and ledger only terminal outcomes."""
 
     owner = _require_owner(owner_subject)
     if not isinstance(source, str) or not source:
@@ -843,6 +842,5 @@ def import_legacy_assets(
     }
 
 
-# Short aliases keep route call sites readable without duplicating behavior.
 list_executions = list_recipe_executions
 upsert_execution = upsert_recipe_execution

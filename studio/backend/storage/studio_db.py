@@ -372,9 +372,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
     )
-    # Account-scoped user assets live in the existing studio.db.  Keep this
-    # migration additive: tombstones and import-ledger rows must survive
-    # downgrades/restarts, and owner identity is never sourced from JSON.
+    # Account assets share studio.db.
+    # Migration stays additive so tombstones and import ledger survive restarts.
+    # Owner identity never comes from JSON.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS data_recipes (

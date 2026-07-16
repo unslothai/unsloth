@@ -13,7 +13,7 @@ import {
   listServerRecipes,
   updateServerRecipe,
 } from "@/features/user-assets";
-// Shared persistence policy is infrastructure, not a feature UI dependency.
+// Persistence policy is infrastructure, not a feature UI dependency.
 // eslint-disable-next-line no-restricted-imports
 import {
   DENIED_SECRET_KEYS,
@@ -86,11 +86,10 @@ function isSecretField(path: string[], key: string, value: unknown): boolean {
   if (SAFE_SECRET_LOOKING_KEYS.has(normalizedKey)) {
     return false;
   }
-  // A structured-output JSON Schema may intentionally define fields named
-  // `api_key`, `password`, and similar.  Those keys describe output data; they
-  // are not credential values.  Limit the exception to valid JSON Schema
-  // definitions beneath output_format.properties.  A scalar in the same
-  // position is not a schema definition and remains subject to secret removal.
+  // JSON Schema may define credential-like fields such as
+  // `api_key` or `password`;
+  // exempt only valid output_format.properties definitions.
+  // Scalars still undergo secret removal.
   const isStructuredOutputPropertyDefinition =
     path.at(-1) === "properties" &&
     path.includes("output_format") &&
@@ -311,9 +310,8 @@ export function useRecipes(): {
     };
   }, [refresh]);
 
-  // refreshVersion is intentionally an imperative reload trigger. The auth
-  // subject is also a dependency so data from one account can never satisfy a
-  // different account's view.
+  // refreshVersion reloads manually;
+  // the subject key prevents cross-account reuse.
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     let active = true;

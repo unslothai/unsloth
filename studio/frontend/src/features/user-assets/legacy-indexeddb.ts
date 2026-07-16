@@ -43,8 +43,7 @@ async function openKnownDatabase(name: string): Promise<IDBDatabase | null> {
 
     request.onupgradeneeded = (event) => {
       if ((event as IDBVersionChangeEvent).oldVersion === 0) {
-        // An unversioned open would create a missing database. Abort the
-        // creation transaction so capability fallback remains non-creating.
+        // Abort missing-database creation so capability probing stays read-only.
         probingMissingDatabase = true;
         request.transaction?.abort();
       }

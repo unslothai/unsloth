@@ -180,8 +180,7 @@ def test_current_status_exposes_only_global_busy_state_to_non_owner():
     assert owner_status is not None
     assert owner_status["job_id"] == "job-test"
 
-    # A different account gets only the bit needed to poll a globally blocking
-    # runner. Job identity/details and cancellation remain owner-private.
+    # Other accounts see only the global busy bit, never job details or controls.
     assert manager.get_current_status("owner-b") == {"busy": True}
     assert manager.get_status("job-test", "owner-b") is None
     assert manager.cancel("job-test", "owner-b") is False
