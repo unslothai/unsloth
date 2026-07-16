@@ -15,9 +15,10 @@
 # it work the same in a CPU-only or a --gpus container, unlike the host-probing
 # installer behind the in-app banner.
 #
-# Persistence: the swap lands in the container's writable layer (survives
-# docker restart). To keep it across a full recreate, mount the prebuilt dir on
-# a named volume: -v unsloth_llama:/opt/unsloth/llama.cpp
+# Persistence: unmounted, the swap lands in the container's writable layer
+# (survives docker restart). To keep it across a full recreate, mount the dir
+# on a named volume (-v unsloth_llama:/opt/unsloth/llama.cpp); the updater
+# detects the mount and swaps the bundle contents inside the volume.
 set -euo pipefail
 
 INSTALL_DIR="${UNSLOTH_LLAMA_CPP_PATH:-/opt/unsloth/llama.cpp}"
@@ -27,7 +28,7 @@ REPO="unslothai/llama.cpp"
 TAG="latest"
 CHECK_ONLY=0
 
-usage() { sed -n '2,24p' "$0"; }
+usage() { sed -n '2,21p' "$0"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -97,8 +98,31 @@ fi
 # Fetch into a sibling temp dir (same filesystem as INSTALL_DIR, so the swap is
 # an atomic rename), then swap. On any failure the existing install is untouched.
 parent="$(dirname "$INSTALL_DIR")"
-work="$(mktemp -d "$parent/.llamaupd.XXXXXX")"
-backup="${INSTALL_DIR}.old.$$"
+
+# The documented persistence recipe mounts a named volume AT the install dir
+# (-v unsloth_llama:/opt/unsloth/llama.cpp). A mount point cannot be renamed --
+# rename(2) fails EBUSY -- so the whole-dir swap below would always fail there.
+# Detect the mount and swap the CONTENTS inside the mounted tree instead, which
+# also keeps the update IN the volume (persistent across a recreate).
+# UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides the autodetection.
+IN_PLACE="${UNSLOTH_LLAMA_UPDATE_IN_PLACE:-}"
+if [ -z "$IN_PLACE" ]; then
+    IN_PLACE=0
+    if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$INSTALL_DIR" 2>/dev/null; then
+        IN_PLACE=1
+    elif [ "$(stat -c %d "$INSTALL_DIR" 2>/dev/null)" != "$(stat -c %d "$parent" 2>/dev/null)" ]; then
+        IN_PLACE=1   # filesystem boundary at the dir = a volume without mountpoint(1)
+    fi
+fi
+if [ "$IN_PLACE" = "1" ]; then
+    # Keep every move inside the mounted filesystem: work + backup live UNDER
+    # the install dir so each swap step is a same-fs rename within the volume.
+    work="$(mktemp -d "$INSTALL_DIR/.llamaupd.XXXXXX")"
+    backup="$INSTALL_DIR/.old.$$"
+else
+    work="$(mktemp -d "$parent/.llamaupd.XXXXXX")"
+    backup="${INSTALL_DIR}.old.$$"
+fi
 swap_done=0
 # The exit handler must never delete $backup while it is the ONLY copy of the
 # install (signal between the two renames, or a failed swap whose restore also
@@ -106,9 +130,32 @@ swap_done=0
 # is verifiably active. The signal traps make bash run the EXIT trap on
 # HUP/INT/TERM too.
 cleanup() {
-    if [ "$swap_done" -ne 1 ] && [ ! -e "$INSTALL_DIR" ] && [ -e "$backup" ]; then
-        if ! mv "$backup" "$INSTALL_DIR" 2>/dev/null; then
-            echo "[llama-update] CRITICAL: restore failed; previous install preserved at $backup" >&2
+    if [ "$swap_done" -ne 1 ]; then
+        if [ "$IN_PLACE" = "1" ]; then
+            # Contents-swap restore. Every old entry lives in exactly one of
+            # $backup / $INSTALL_DIR, so a same-named entry in the install dir
+            # can only be a half-moved NEW one: drop it, then move the old one
+            # back. Never deletes anything that is not shadowed by the backup.
+            if [ -d "$backup" ]; then
+                _restore_fail=0
+                for _e in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do
+                    { [ -e "$_e" ] || [ -L "$_e" ]; } || continue
+                    _b="$(basename "$_e")"
+                    if [ -e "$INSTALL_DIR/$_b" ] || [ -L "$INSTALL_DIR/$_b" ]; then
+                        rm -rf "${INSTALL_DIR:?}/$_b" 2>/dev/null || true
+                    fi
+                    mv "$_e" "$INSTALL_DIR/" 2>/dev/null || _restore_fail=1
+                done
+                if [ "$_restore_fail" -eq 0 ]; then
+                    rmdir "$backup" 2>/dev/null || true
+                else
+                    echo "[llama-update] CRITICAL: restore failed; previous install preserved at $backup" >&2
+                fi
+            fi
+        elif [ ! -e "$INSTALL_DIR" ] && [ -e "$backup" ]; then
+            if ! mv "$backup" "$INSTALL_DIR" 2>/dev/null; then
+                echo "[llama-update] CRITICAL: restore failed; previous install preserved at $backup" >&2
+            fi
         fi
     fi
     rm -rf "$work" 2>/dev/null || true
@@ -129,13 +176,27 @@ echo "[llama-update] fetching llama.cpp '$TAG' ($ARCH portable) ..."
 [ -e "$INSTALL_DIR/.unsloth-studio-owned" ] && touch "$new/.unsloth-studio-owned"
 
 echo "[llama-update] swapping into place ..."
-mv "$INSTALL_DIR" "$backup"
-if mv "$new" "$INSTALL_DIR"; then
-    swap_done=1
+if [ "$IN_PLACE" = "1" ]; then
+    # The install dir is a mount point: swap its CONTENTS (all same-fs renames
+    # inside the volume). The trap's contents-restore covers any mid-swap abort.
+    mkdir "$backup"
+    find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 \
+         ! -path "$work" ! -path "$backup" -exec mv -t "$backup" {} +
+    if find "$new" -mindepth 1 -maxdepth 1 -exec mv -t "$INSTALL_DIR" {} +; then
+        swap_done=1
+    else
+        echo "[llama-update] swap failed; restoring previous install" >&2
+        exit 1
+    fi
 else
-    echo "[llama-update] swap failed; restoring previous install" >&2
-    mv "$backup" "$INSTALL_DIR"
-    exit 1
+    mv "$INSTALL_DIR" "$backup"
+    if mv "$new" "$INSTALL_DIR"; then
+        swap_done=1
+    else
+        echo "[llama-update] swap failed; restoring previous install" >&2
+        mv "$backup" "$INSTALL_DIR"
+        exit 1
+    fi
 fi
 
 echo "[llama-update] installed now: $(installed_tag)"

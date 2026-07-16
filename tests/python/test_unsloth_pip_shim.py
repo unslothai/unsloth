@@ -656,3 +656,83 @@ def test_local_dir_without_metadata_passes_through(shim, tmp_path):
     plain.mkdir()
     execd, _ = _run(shim, "pip", [str(plain)])
     assert execd == [str(plain)], execd
+
+
+# --------------------------------------------------------------------------
+# Item 3592835033 -- every uv/pip value-taking flag must be in _VALUE_FLAGS.
+# `uv pip install --torch-backend cu128 torch` used to drop the protected
+# torch but keep the SEPARATED flag pair, exec'ing uv with no install target
+# at all (uv hard-errors) instead of no-oping like the attached `=` form; and
+# `--extra torch peft` misread the extra NAME "torch" as a protected target,
+# leaving a dangling `--extra` that swallowed peft.
+
+
+@pytest.mark.parametrize(
+    "tool, flag, value",
+    [
+        pytest.param("uv", "--torch-backend", "cu128", id="uv-torch-backend"),
+        pytest.param("uv", "--resolution", "lowest", id="uv-resolution"),
+        pytest.param("uv", "--default-index", "https://mirror/simple", id="uv-default-index"),
+        pytest.param("uv", "--exclude-newer", "2026-01-01", id="uv-exclude-newer"),
+        pytest.param("uv", "-b", "build-constraints.txt", id="uv-build-constraints-short"),
+        pytest.param("pip", "--proxy", "http://proxy:3128", id="pip-proxy"),
+        pytest.param("pip", "--retries", "3", id="pip-retries"),
+        pytest.param("pip", "--trusted-host", "mirror.internal", id="pip-trusted-host"),
+    ],
+)
+def test_value_flag_protected_only_noops(shim, tool, flag, value):
+    # The value must not be mistaken for an install target: with only a
+    # protected target the cell is a clean no-op, never a broken exec.
+    execd, _ = _run(shim, tool, [flag, value, "torch"])
+    assert execd is None, execd
+
+
+@pytest.mark.parametrize(
+    "tool, flag, value",
+    [
+        pytest.param("uv", "--torch-backend", "cu128", id="uv-torch-backend"),
+        pytest.param("uv", "--resolution", "lowest", id="uv-resolution"),
+        pytest.param("pip", "--proxy", "http://proxy:3128", id="pip-proxy"),
+    ],
+)
+def test_value_flag_pair_forwarded_with_kept_target(shim, tool, flag, value):
+    execd, _ = _run(shim, tool, [flag, value, "torch", "peft"])
+    assert execd == [flag, value, "peft"], execd
+
+
+def test_extra_value_is_not_a_protected_target(shim):
+    # `--extra torch` names an EXTRA, not the torch package: the pair stays and
+    # peft is not swallowed by a dangling --extra.
+    execd, _ = _run(shim, "uv", ["--extra", "torch", "peft"])
+    assert execd == ["--extra", "torch", "peft"], execd
+
+
+def _value_flags_from_help(cmd):
+    import re
+    import subprocess
+
+    out = subprocess.run(cmd, capture_output = True, text = True).stdout
+    flags = set()
+    for m in re.finditer(r"^\s+(-\w)?,?\s*(--[\w-]+)[= ]<", out, re.M):
+        if m.group(1):
+            flags.add(m.group(1))
+        flags.add(m.group(2))
+    for m in re.finditer(r"^\s+(-\w) <", out, re.M):
+        flags.add(m.group(1))
+    return flags
+
+
+def test_pip_help_value_flags_all_classified(shim):
+    # Drift guard: every value-taking flag `pip install --help` documents must
+    # be classified as value-taking by the shim, or its VALUE is misread as an
+    # install target (see --torch-backend above).
+    known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
+    missing = _value_flags_from_help([sys.executable, "-m", "pip", "install", "--help"]) - known
+    assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"
+
+
+@pytest.mark.skipif(not __import__("shutil").which("uv"), reason = "uv not installed")
+def test_uv_help_value_flags_all_classified(shim):
+    known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
+    missing = _value_flags_from_help(["uv", "pip", "install", "--help"]) - known
+    assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"

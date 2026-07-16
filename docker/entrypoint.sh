@@ -229,6 +229,18 @@ if major < 7 or (major == 7 and minor < 5):
 if major < 8:
     print(f"NOTE: {name} is Turing (sm_{major}{minor}) -- bfloat16 is not supported.")
     print("      Unsloth will fall back to fp16. Training works but is slightly slower.")
+
+# Secondary devices: the launcher exposes ALL GPUs by default, so on a mixed
+# rig an unsupported later device would only surface once a job pins to it or
+# a multi-GPU launch fans out. Device 0 stays fatal above; secondaries warn
+# now, at startup, while the fix (excluding the device) is still cheap.
+for d in range(1, n):
+    dmaj, dmin = torch.cuda.get_device_capability(d)
+    if dmaj < 7 or (dmaj == 7 and dmin < 5):
+        dname = torch.cuda.get_device_name(d)
+        print(f"WARNING: GPU {d} ({dname}, sm_{dmaj}{dmin}) is below this image's sm_75 floor.")
+        print("         Multi-GPU runs that include it, or jobs pinned to it, will fail;")
+        print("         exclude it with CUDA_VISIBLE_DEVICES or --gpus device=<supported>.")
 PY
 
 # --- arm64 note: baked llama.cpp is a CUDA 13 build -------------------------
