@@ -1,0 +1,35 @@
+# transitive dep of onnxruntime (via data-designer's pymupdf4llm)
+flatbuffers
+# Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt);
+# librosa pulls it in too, but is skipped in no-torch mode.
+scikit-learn==1.7.1
+
+# Additional extras
+jiwer                            # WER/CER metrics for vision OCR save-merge benchmarks
+omegaconf
+einx
+pyloudnorm
+openai-whisper
+uroman                           # 4.0 MB - used for Outetts.
+MeCab                            # 19.9 MB - used for Outetts.
+inflect                          # number-to-words, required by OuteTTS
+loguru
+flatten_dict
+ffmpy
+randomname
+argbind
+tiktoken
+ftfy
+importlib-resources
+librosa
+markdown2
+matplotlib==3.10.9
+pystoi
+soundfile
+tensorboard
+torch-stoi
+timm
+einops
+tabulate
+openai>=2.7.2
+websockets>=15.0.1

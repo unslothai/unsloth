@@ -1,4 +1,3 @@
-# train_and_merge.py
 from unsloth import FastLanguageModel
 from trl import SFTTrainer, SFTConfig
 from datasets import load_dataset
@@ -21,16 +20,14 @@ def safe_remove_directory(path):
         return False
 
 
-# This tokenizer will be used by the mapping function
+# Used by formatting_prompts_func below.
 tokenizer = None
 
 
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
-        tokenizer.apply_chat_template(
-            convo, tokenize = False, add_generation_prompt = False
-        )
+        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
         for convo in convos
     ]
     return {"text": texts}
@@ -84,9 +81,7 @@ print("Fine-tuning complete.")
 
 # --- Merge and Save ---
 print("\n💾 Merging and saving the 16-bit model to './gpt-oss-finetuned-merged'...")
-model.save_pretrained_merged(
-    save_directory = "./gpt-oss-finetuned-merged", tokenizer = tokenizer
-)
+model.save_pretrained_merged(save_directory = "./gpt-oss-finetuned-merged", tokenizer = tokenizer)
 print("✅ Model merged and saved.")
 
 # --- Cleanup ---
@@ -96,7 +91,5 @@ torch.cuda.empty_cache()
 gc.collect()
 
 safe_remove_directory("./outputs")
-safe_remove_directory(
-    "./unsloth_compiled_cache"
-)  # Clean up the cache created by this process
+safe_remove_directory("./unsloth_compiled_cache")  # cache created by this process
 print("✅ Cleanup complete. Exiting training script.")

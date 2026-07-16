@@ -1,0 +1,148 @@
+{
+  "recipe": {
+    "model_providers": [
+      {
+        "name": "openai_provider",
+        "endpoint": "",
+        "provider_type": "openai",
+        "extra_headers": {},
+        "extra_body": {}
+      }
+    ],
+    "mcp_providers": [],
+    "model_configs": [
+      {
+        "alias": "ministral",
+        "model": "",
+        "provider": "openai_provider",
+        "inference_parameters": {
+          "temperature": 0.7,
+          "max_tokens": 2048
+        }
+      }
+    ],
+    "seed_config": {
+      "source": {
+        "seed_type": "hf",
+        "path": "unsloth/alpaca-cleaned",
+        "endpoint": "https://huggingface.co"
+      },
+      "sampling_strategy": "ordered",
+      "selection_strategy": {
+        "start": 1,
+        "end": 100
+      }
+    },
+    "tool_configs": [],
+    "columns": [
+      {
+        "column_type": "llm-text",
+        "name": "generated_instruction",
+        "drop": false,
+        "model_alias": "ministral",
+        "prompt": "Based on this target answer:\n{{ output }}\n\nWrite one high-quality plain text short and brief user instruction that this answer would satisfy.\nReturn only the instruction.",
+        "with_trace": "none",
+        "extract_reasoning_content": false
+      }
+    ],
+    "processors": [
+      {
+        "processor_type": "drop_columns",
+        "name": "drop_seed_columns",
+        "column_names": [
+          "input",
+          "instruction"
+        ]
+      }
+    ]
+  },
+  "run": {
+    "rows": 5,
+    "preview": true,
+    "output_formats": [
+      "jsonl"
+    ]
+  },
+  "ui": {
+    "nodes": [
+      {
+        "id": "note_1",
+        "x": -567.3566303099885,
+        "y": 38.88875727651093,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_1",
+        "markdown": "#### Hugging Face seed block\nThis recipe uses a ** HuggingFace dataset ** as seed data.\nYou select a Hugging Face dataset, load columns, then generate new fields from seed columns. Each column in the Hugging Face dataset becomes a valid variable that you can reference eg. `{{ topic }}`\n\n##### Setup:\n\n1. Search for a dataset and select one in the dropdown (example: `unsloth/alpaca-cleaned`)\n2. Add token only if dataset is gated/private\n3. Load columns + preview rows so variables are available in prompts\n\n##### Why this matters:\n- Seed columns can drive generation quality\n- You can reference seed values directly in prompts (for example `{{ output }}`)",
+        "note_color": "#DCFCE7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "note_2",
+        "x": -74.04047072330651,
+        "y": -265.3540670633283,
+        "width": 400,
+        "node_type": "markdown_note",
+        "name": "note_2",
+        "markdown": "##### Drop columns behavior:\n\n- You can mark specific seed columns to **drop from final output**\n- Those columns are still used during generation\n- They are removed only from exported final dataset\n\n##### Example:\n- Keep `generated_instruction` from llm-text block\n- Drop original `instruction`, `input`, `output` from the hugginface dataset from final dataset\n- Result: clean training output while still using source columns as generation context\n",
+        "note_color": "#DCFCE7",
+        "note_opacity": "35"
+      },
+      {
+        "id": "seed",
+        "x": -76.07288662013991,
+        "y": 143.39449780463954,
+        "width": 400
+      },
+      {
+        "id": "openai_provider",
+        "x": 461.00000000000006,
+        "y": -489.8750000000001,
+        "width": 400
+      },
+      {
+        "id": "ministral",
+        "x": 463.272022949692,
+        "y": -191.13601147484601,
+        "width": 400
+      },
+      {
+        "id": "generated_instruction",
+        "x": 464,
+        "y": 109.00000000000003,
+        "width": 400
+      }
+    ],
+    "edges": [
+      {
+        "from": "seed",
+        "to": "generated_instruction",
+        "type": "canvas",
+        "source_handle": "data-out",
+        "target_handle": "data-in"
+      },
+      {
+        "from": "ministral",
+        "to": "generated_instruction",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "data-in-top"
+      },
+      {
+        "from": "openai_provider",
+        "to": "ministral",
+        "type": "semantic",
+        "source_handle": "semantic-out-bottom",
+        "target_handle": "semantic-in-top"
+      }
+    ],
+    "layout_direction": "LR",
+    "seed_source_type": "hf",
+    "seed_columns": [],
+    "seed_drop_columns": [],
+    "seed_preview_rows": [],
+    "local_file_name": "",
+    "unstructured_file_name": "",
+    "unstructured_chunk_size": "1200",
+    "unstructured_chunk_overlap": "200"
+  }
+}
