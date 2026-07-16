@@ -1556,7 +1556,6 @@ def test_native_chat_stream_cancels_mark_response_failed():
     # is_disconnected, so each cancel-break and disconnect-return must flag the response failed
     # or the middleware claims a preview-owned slot for a cancelled stream.
     import inspect
-
     src = inspect.getsource(inference.openai_chat_completions)
     for gen in ("gguf_tool_stream", "gguf_stream_chunks", "sf_tool_stream", "stream_chunks"):
         start = src.index(f"async def {gen}()")
