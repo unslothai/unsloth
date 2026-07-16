@@ -791,6 +791,7 @@ jobs:
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
+              "permission_mode": "full",
               "enabled_tools": ["python"],
               "session_id":    "ci-tool-calling-py",
               "temperature":   TEMP,
@@ -816,6 +817,7 @@ jobs:
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
               "enable_tools":  True,
+              "permission_mode": "full",
               "enabled_tools": ["terminal"],
               "session_id":    "ci-tool-calling-bash",
               "temperature":   TEMP,
@@ -840,6 +842,7 @@ jobs:
               content = post_sse("/v1/chat/completions", {
                   "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
                   "enable_tools":  True,
+                  "permission_mode": "full",
                   "enabled_tools": ["web_search"],
                   "session_id":    "ci-tool-calling-web",
                   "temperature":   TEMP,
