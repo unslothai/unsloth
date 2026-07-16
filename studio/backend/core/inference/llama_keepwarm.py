@@ -208,7 +208,6 @@ def _claim_non_preview_slot() -> None:
     imported: routes.inference imports this module."""
     try:
         from routes.inference import _set_preview_resident
-
         _set_preview_resident(None)
     except Exception as exc:  # never let ownership bookkeeping break a response
         logger.debug("preview-slot claim on completion failed: %s", exc)
