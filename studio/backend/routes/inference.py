@@ -424,7 +424,6 @@ def _openai_stream_error_sse(error: dict) -> str:
     # are already sent, so flag the response failed: the keep-warm middleware must not
     # claim a preview-owned model for Studio on a stream that errored.
     from core.inference.llama_keepwarm import mark_current_response_failed
-
     mark_current_response_failed()
     return f"data: {json.dumps(error)}\n\ndata: [DONE]\n\n"
 

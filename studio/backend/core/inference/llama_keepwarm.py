@@ -275,7 +275,7 @@ def mark_response_failed(scope) -> None:
 # The middleware runs in the same task as the (same-task) streaming body, so the
 # contextvar propagates to the generators that emit the error SSE.
 _current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
-    "_unsloth_current_response_scope", default=None
+    "_unsloth_current_response_scope", default = None
 )
 
 
