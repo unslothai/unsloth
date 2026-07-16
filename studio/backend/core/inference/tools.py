@@ -2426,15 +2426,27 @@ _RENDER_HTML_NETWORK_RE = re.compile(
 # an https:// URL and hide a real load.
 _JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _RENDER_HTML_GLOBAL_BRACKET_RE = re.compile(
-    r"\b(?:window|self|globalThis|top|parent|frames|this)\s*(?:\?\.\s*)?\[([^\]]*)\]",
+    r"\b(?:window|self|globalThis|top|parent|frames|this|navigator|"
+    r"document\s*\.\s*defaultView)\s*(?:\?\.\s*)?"
+    r"(?:\[\s*\d+\s*\]\s*(?:\?\.\s*)?)*\[([^\]]*)\]",
     re.IGNORECASE | re.DOTALL,
 )
 _RENDER_HTML_SET_ATTRIBUTE_START_RE = re.compile(
-    r"\.\s*setAttribute\s*(?:\?\.\s*)?\(",
+    r"\.\s*(?P<method>setAttribute(?:NS)?)\s*(?:\?\.\s*)?\(",
     re.IGNORECASE,
 )
 _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE = re.compile(
     r"\.\s*(?P<attr>src|href|srcset|action|formaction|poster|data|ping)\s*=(?!=)",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_ASSIGNMENT_START_RE = re.compile(
+    r"\.\s*(?:innerHTML|outerHTML)\s*=(?!=)",
+    re.IGNORECASE,
+)
+_RENDER_HTML_MARKUP_CALL_START_RE = re.compile(
+    r"(?:\.\s*(?P<insert>insertAdjacentHTML)|"
+    r"\bdocument\s*(?:\?\.\s*|\.\s*)(?P<write>write|writeln))"
+    r"\s*(?:\?\.\s*)?\(",
     re.IGNORECASE,
 )
 _RENDER_HTML_NETWORK_MEMBERS = frozenset(
@@ -2472,16 +2484,66 @@ def _leading_js_string(expression: str) -> tuple[str, int] | None:
             i += 1
             if i >= len(expression):
                 return None
-            if expression[i] not in ("\\", '"', "'", "`"):
-                return None
-            value.append(expression[i])
+            escape = expression[i]
+            if escape in ("\\", "/", '"', "'", "`"):
+                value.append(escape)
+                i += 1
+                continue
+            escapes = {
+                "b": "\b",
+                "f": "\f",
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
+                "v": "\v",
+            }
+            if escape in escapes:
+                value.append(escapes[escape])
+                i += 1
+                continue
+            if escape == "0":
+                if i + 1 < len(expression) and expression[i + 1].isdigit():
+                    return None
+                value.append("\0")
+                i += 1
+                continue
+            if escape == "x":
+                digits = expression[i + 1 : i + 3]
+                if len(digits) != 2 or not re.fullmatch(r"[0-9a-fA-F]{2}", digits):
+                    return None
+                value.append(chr(int(digits, 16)))
+                i += 3
+                continue
+            if escape == "u":
+                if i + 1 < len(expression) and expression[i + 1] == "{":
+                    end = expression.find("}", i + 2)
+                    digits = expression[i + 2 : end] if end != -1 else ""
+                    if not digits or not re.fullmatch(r"[0-9a-fA-F]{1,6}", digits):
+                        return None
+                    codepoint = int(digits, 16)
+                    if codepoint > 0x10FFFF:
+                        return None
+                    value.append(chr(codepoint))
+                    i = end + 1
+                    continue
+                digits = expression[i + 1 : i + 5]
+                if len(digits) != 4 or not re.fullmatch(r"[0-9a-fA-F]{4}", digits):
+                    return None
+                value.append(chr(int(digits, 16)))
+                i += 5
+                continue
+            if escape in ("\n", "\r"):
+                if escape == "\r" and i + 1 < len(expression) and expression[i + 1] == "\n":
+                    i += 1
+                i += 1
+                continue
+            value.append(escape)
             i += 1
             continue
         if char == quote:
-            text = "".join(value)
-            if quote == "`" and "${" in text:
-                return None
-            return text, i + 1
+            return "".join(value), i + 1
+        if quote == "`" and char == "$" and i + 1 < len(expression) and expression[i + 1] == "{":
+            return None
         value.append(char)
         i += 1
     return None
@@ -2518,6 +2580,18 @@ def _static_js_string(expression: str) -> str | None:
     return value
 
 
+def _static_js_assignment_string(expression: str) -> str | None:
+    """Fold a static assignment value and reject trailing transformations."""
+    parsed = _static_js_string_prefix(expression)
+    if parsed is None:
+        return None
+    value, end = parsed
+    rest = expression[end:].lstrip()
+    if not rest or rest.startswith("//") or rest[0] in ";,)]}\n\r<":
+        return value
+    return None
+
+
 def _render_html_attribute_reaches_network(name: str, value: str | None) -> bool:
     if value is None:
         return False
@@ -2528,13 +2602,20 @@ def _render_html_attribute_reaches_network(name: str, value: str | None) -> bool
 
 
 class _RenderHtmlAttributeParser(HTMLParser):
-    def __init__(self):
+    def __init__(self, depth: int):
         super().__init__(convert_charrefs = True)
+        self.depth = depth
         self.reaches_network = False
 
     def handle_starttag(self, tag, attrs):
         for name, value in attrs:
             name = name.lower()
+            if name == "srcdoc" and value:
+                if self.depth >= 8 or _render_html_code_reaches_network(value, self.depth + 1):
+                    self.reaches_network = True
+                    return
+            if name == "xlink:href":
+                name = "href"
             if name in _RENDER_HTML_NETWORK_ATTRIBUTES and _render_html_attribute_reaches_network(
                 name, value
             ):
@@ -2542,8 +2623,8 @@ class _RenderHtmlAttributeParser(HTMLParser):
                 return
 
 
-def _render_html_attributes_reach_network(code: str) -> bool:
-    parser = _RenderHtmlAttributeParser()
+def _render_html_attributes_reach_network(code: str, depth: int = 0) -> bool:
+    parser = _RenderHtmlAttributeParser(depth)
     try:
         parser.feed(code)
         parser.close()
@@ -2586,7 +2667,7 @@ def _js_call_arguments(code: str, offset: int) -> list[str] | None:
     return None
 
 
-def _render_html_computed_network_access(code: str) -> bool:
+def _render_html_computed_network_access(code: str, depth: int = 0) -> bool:
     for match in _RENDER_HTML_GLOBAL_BRACKET_RE.finditer(code):
         expression = match.group(1)
         member = _static_js_string(expression)
@@ -2608,40 +2689,73 @@ def _render_html_computed_network_access(code: str) -> bool:
         arguments = _js_call_arguments(code, match.end())
         if arguments is None:
             return True
-        if len(arguments) < 2:
+        if match.group("method").lower() == "setattributens":
+            name_index, value_index = 1, 2
+        else:
+            name_index, value_index = 0, 1
+        if len(arguments) <= value_index:
             continue
-        name = _static_js_string(arguments[0])
-        value = _static_js_string(arguments[1])
+        name = _static_js_string(arguments[name_index])
+        value = _static_js_string(arguments[value_index])
         if name is None:
             if value is None or _RENDER_HTML_URL_LIST_NETWORK_RE.search(value.lstrip()):
                 return True
             continue
-        name = name.lower()
+        name = name.lower().rsplit(":", 1)[-1]
         if name not in _RENDER_HTML_NETWORK_ATTRIBUTES:
             continue
         if value is None or _render_html_attribute_reaches_network(name, value):
             return True
 
     for match in _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE.finditer(code):
-        parsed = _static_js_string_prefix(code[match.end() :])
-        if parsed is None:
-            continue
-        value, _ = parsed
+        value = _static_js_assignment_string(code[match.end() :])
+        if value is None:
+            return True
         if _render_html_attribute_reaches_network(match.group("attr").lower(), value):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_ASSIGNMENT_START_RE.finditer(code):
+        markup = _static_js_assignment_string(code[match.end() :])
+        if markup is None:
+            return True
+        if _render_html_code_reaches_network(markup, depth + 1):
+            return True
+
+    for match in _RENDER_HTML_MARKUP_CALL_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
+            return True
+        method = (match.group("insert") or match.group("write")).lower()
+        if method == "insertadjacenthtml":
+            if len(arguments) < 2:
+                continue
+            markup = _static_js_string(arguments[1])
+        else:
+            if not arguments:
+                continue
+            parts = [_static_js_string(argument) for argument in arguments]
+            markup = "".join(part for part in parts if part is not None)
+            if any(part is None for part in parts):
+                markup = None
+        if markup is None or _render_html_code_reaches_network(markup, depth + 1):
             return True
     return False
 
 
-def _render_html_reaches_network(arguments: dict) -> bool:
-    code = arguments.get("code")
-    if not isinstance(code, str):
-        return False
+def _render_html_code_reaches_network(code: str, depth: int = 0) -> bool:
+    if depth > 8:
+        return True
     code = _JS_BLOCK_COMMENT_RE.sub("", code)
     return bool(
         _RENDER_HTML_NETWORK_RE.search(code)
-        or _render_html_attributes_reach_network(code)
-        or _render_html_computed_network_access(code)
+        or _render_html_attributes_reach_network(code, depth)
+        or _render_html_computed_network_access(code, depth)
     )
+
+
+def _render_html_reaches_network(arguments: dict) -> bool:
+    code = arguments.get("code")
+    return isinstance(code, str) and _render_html_code_reaches_network(code)
 
 
 # Tools that are read-only regardless of their arguments, so auto mode never has

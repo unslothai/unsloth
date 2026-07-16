@@ -403,6 +403,65 @@ class TestSandboxEnvIsolation:
         assert bypass.returncode == 0, bypass.stderr
         assert bypass.stdout.strip() == "7"
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "name = ''.join(['http', 'core']); print(__import__(name).__name__)",
+            (
+                "import importlib; name = ''.join(['http', 'core']); "
+                "print(importlib.import_module(name).__name__)"
+            ),
+            ("import httpx; name = ''.join(['http', 'core']); print(__import__(name).__name__)"),
+            (
+                "import httpx, importlib; suffix = ''.join(['_', 'api']); "
+                "print(importlib.import_module('.' + suffix, package='httpcore')"
+                ".__name__.split('.')[0])"
+            ),
+        ],
+    )
+    def test_runtime_import_guard_blocks_direct_dynamic_httpcore(self, tmp_path, code):
+        from core.inference.tools import _build_bypass_env, _build_safe_env
+
+        sandboxed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert sandboxed.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in sandboxed.stderr
+
+        bypass = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_bypass_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert bypass.returncode == 0, bypass.stderr
+        assert bypass.stdout.strip() == "httpcore"
+
+    def test_runtime_import_guard_blocks_local_module_httpcore_import(self, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        (tmp_path / "loader.py").write_text(
+            "name = ''.join(['http', 'core'])\nprint(__import__(name).__name__)\n",
+            encoding = "utf-8",
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", "import loader"],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode != 0
+        assert "Blocked: low-level network module 'httpcore'" in result.stderr
+
     @pytest.mark.parametrize("module", ["httpx", "requests", "huggingface_hub"])
     def test_runtime_import_guard_keeps_supported_clients_available(self, tmp_path, module):
         from core.inference.tools import _build_safe_env

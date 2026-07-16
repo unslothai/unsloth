@@ -973,6 +973,10 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script src='https://cdn/x.js'></script>") is True
     assert rh("<script>new XMLHttpRequest().open('GET','/x')</script>") is True
     assert rh("<img src='https://evil/pixel.png'>") is True
+    assert rh('<svg><image xlink:href="https://evil/x.png"/></svg>') is True
+    assert rh('<svg><use xlink:href="#local-symbol"/></svg>') is False
+    assert rh('<iframe srcdoc="<img src=https://evil/x>"></iframe>') is True
+    assert rh('<iframe srcdoc="<h1>Local report</h1>"></iframe>') is False
     # Worker / SharedWorker constructors run an off-thread script the scan cannot
     # see (a module worker from a CORS CDN, or a blob/same-origin worker that
     # fetches/importScripts) under worker-src http: https: blob:, so they ask.
@@ -1014,6 +1018,10 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>this['fetch']('https://x')</script>") is True
     assert rh("<script>this[`fet`+`ch`]('https://x')</script>") is True
     assert rh("<script>frames[0]</script>") is False
+    assert rh("<script>frames[0]['fetch']('https://x')</script>") is True
+    assert rh("<script>frames?.[0]?.['fetch']('https://x')</script>") is True
+    assert rh("<script>document.defaultView['fetch']('https://x')</script>") is True
+    assert rh("<script>navigator['serviceWorker'].register('/sw.js')</script>") is True
     assert (
         rh(
             "<script>const i=document.createElement('img');"
@@ -1049,9 +1057,36 @@ def test_render_html_gated_only_when_networked():
         )
         is True
     )
+    assert (
+        rh(
+            "<script>image.setAttributeNS('http://www.w3.org/1999/xlink',"
+            "'href','https://evil/x.png')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>image.setAttributeNS('http://www.w3.org/1999/xlink',"
+            "'xlink:href','#local-symbol')</script>"
+        )
+        is False
+    )
     assert rh("<script>const i={};i.setAttribute(name,'https://evil/x')</script>") is True
     assert rh("<script>const i={};i.src='https://evil/x'</script>") is True
+    assert rh("<script>const i={};i.src='https:\\/\\/evil/x'</script>") is True
+    assert rh("<script>const i={};i.src='\\x68ttps://evil/x'</script>") is True
+    assert rh("<script>const i={};i.src='\\u0068ttps://evil/x'</script>") is True
+    assert rh("<script>const i={};i.src=source</script>") is True
+    assert rh("<script>const i={};i.src='./local.png'.replace('local','/api')</script>") is True
     assert rh("<script>const i={};i.srcset='local.png 1x, https://evil/x 2x'</script>") is True
+    assert rh("<script>document.body.innerHTML='<img src=https://evil/x>'</script>") is True
+    assert rh("<script>document.body.innerHTML='<p>Local</p>'</script>") is False
+    assert rh("<script>document.body.innerHTML=markup</script>") is True
+    assert rh("<script>node.outerHTML='<script>fetch(1)<\\/script>'</script>") is True
+    assert rh("<script>node.insertAdjacentHTML('beforeend','<img src=/api/x>')</script>") is True
+    assert rh("<script>document.write('<img sr','c=https://evil/x>')</script>") is True
+    assert rh("<script>document.writeln('<p>Local</p>')</script>") is False
+    assert rh("<script>writer.write('<img src=https://evil/x>')</script>") is False
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True

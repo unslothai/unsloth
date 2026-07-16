@@ -28,6 +28,8 @@ Identical with and without output streaming because the child env is.
 """
 
 import builtins
+import importlib
+import importlib.util
 import io
 import json
 import os
@@ -47,14 +49,102 @@ _remapped_writes: dict = {}
 # fallback healed, so an unrelated same-basename file is never adopted.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
 _BLOCKED_NETWORK_MODULES = frozenset({"boto3", "botocore"})
+# httpx imports httpcore internally, so block only sandbox-user requests.
+_DIRECT_BLOCKED_NETWORK_MODULES = frozenset({"httpcore"})
 _import_guard_installed = False
+_original_import = builtins.__import__
+_original_import_module = importlib.import_module
+
+
+def _path_is_in_sandbox(filename):
+    if not isinstance(filename, str) or filename.startswith("<"):
+        return False
+    try:
+        cwd = os.path.realpath(os.getcwd())
+        path = os.path.realpath(filename)
+        return os.path.commonpath((cwd, path)) == cwd
+    except (OSError, ValueError):
+        return False
+
+
+def _sandbox_code_requested_import():
+    try:
+        frame = sys._getframe(1)
+    except ValueError:
+        return True
+    while frame is not None:
+        module = frame.f_globals.get("__name__", "")
+        if (
+            module == __name__
+            or module == "importlib"
+            or module.startswith("importlib.")
+            or module.startswith("_frozen_importlib")
+        ):
+            frame = frame.f_back
+            continue
+        if module == "__main__" or _path_is_in_sandbox(frame.f_globals.get("__file__")):
+            return True
+        return False
+    return True
 
 
 def _blocked_network_module(fullname):
     if not isinstance(fullname, str):
         return None
     root = fullname.split(".", 1)[0]
-    return root if root in _BLOCKED_NETWORK_MODULES else None
+    if root in _BLOCKED_NETWORK_MODULES:
+        return root
+    if root in _DIRECT_BLOCKED_NETWORK_MODULES and _sandbox_code_requested_import():
+        return root
+    return None
+
+
+def _raise_blocked_network_module(root):
+    raise ModuleNotFoundError(
+        f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
+    )
+
+
+def _absolute_import_name(
+    name,
+    package = None,
+    level = 0,
+):
+    if not isinstance(name, str):
+        return name
+    if level:
+        if not isinstance(package, str) or not package:
+            return name
+        relative = "." * level + name
+    elif name.startswith(".") and isinstance(package, str) and package:
+        relative = name
+    else:
+        return name
+    try:
+        return importlib.util.resolve_name(relative, package)
+    except (ImportError, ValueError):
+        return name
+
+
+def _guarded_import(
+    name,
+    globals = None,
+    locals = None,
+    fromlist = (),
+    level = 0,
+):
+    package = globals.get("__package__") if isinstance(globals, dict) else None
+    root = _blocked_network_module(_absolute_import_name(name, package, level))
+    if root is not None:
+        _raise_blocked_network_module(root)
+    return _original_import(name, globals, locals, fromlist, level)
+
+
+def _guarded_import_module(name, package = None):
+    root = _blocked_network_module(_absolute_import_name(name, package))
+    if root is not None:
+        _raise_blocked_network_module(root)
+    return _original_import_module(name, package)
 
 
 def _network_import_audit(event, args):
@@ -62,9 +152,7 @@ def _network_import_audit(event, args):
         return
     root = _blocked_network_module(args[0])
     if root is not None:
-        raise ModuleNotFoundError(
-            f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
-        )
+        _raise_blocked_network_module(root)
 
 
 class _BlockedNetworkModuleFinder:
@@ -78,9 +166,7 @@ class _BlockedNetworkModuleFinder:
     ):
         root = _blocked_network_module(fullname)
         if root is not None:
-            raise ModuleNotFoundError(
-                f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
-            )
+            _raise_blocked_network_module(root)
         return None
 
 
@@ -90,6 +176,8 @@ def _install_import_guard():
         return
     if not _import_guard_installed:
         sys.addaudithook(_network_import_audit)
+        builtins.__import__ = _guarded_import
+        importlib.import_module = _guarded_import_module
         _import_guard_installed = True
     if any(getattr(finder, "_unsloth_blocked_network_guard", False) for finder in sys.meta_path):
         return
