@@ -141,6 +141,26 @@ def test_raw_text_loader():
         except ValueError as e:
             assert "stride" in str(e) and "chunk_size" in str(e)
 
+        # smart_chunk_text validation: called directly, chunk_size/stride are its own
+        # arguments and bypass the constructor guard, so it must guard itself or an
+        # invalid stride makes `start_idx += chunk_size - stride` non-positive and the
+        # chunking loop never terminates (hangs).
+        long_text = "This is a test file for raw text training. " * 10
+        valid_chunks = loader.smart_chunk_text(long_text, chunk_size = 5, stride = 2)
+        assert len(valid_chunks) > 0, "Valid stride should produce chunks"
+
+        try:
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 5)
+            assert False, "Should raise ValueError for stride == chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
+        try:
+            loader.smart_chunk_text(long_text, chunk_size = 5, stride = 10)
+            assert False, "Should raise ValueError for stride > chunk_size"
+        except ValueError as e:
+            assert "stride" in str(e) and "chunk_size" in str(e)
+
         # Preprocessor.
         preprocessor = TextPreprocessor()
         clean_text = preprocessor.clean_text("  messy   text  \n\n\n  ")
@@ -221,6 +241,61 @@ def test_raw_text_loader():
         os.unlink(test_file)
 
 
+def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
+    """smart_chunk_text's single-chunk branch must return a plain list for
+    input_ids even when the tokenizer has no eos_token_id, matching the
+    multi-chunk branch's unconditional tolist()/list() conversion."""
+
+    class MockTensor:
+        def __init__(self, data):
+            self.data = data
+
+        def __getitem__(self, idx):
+            return self.data
+
+        def __len__(self):
+            return len(self.data)
+
+        def tolist(self):
+            return self.data
+
+    class MockTokenizerNoEos:
+        def __init__(self):
+            self.eos_token = None
+            self.eos_token_id = None
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            token_ids = list(range(len(text.split())))
+            if return_tensors == "pt":
+                return {"input_ids": [MockTensor(token_ids)]}
+            return {"input_ids": token_ids}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    loader = RawTextDataLoader(MockTokenizerNoEos(), chunk_size = 2048, stride = 512)
+    result = loader.smart_chunk_text(
+        "hello world short text", chunk_size = 2048, stride = 512, return_tokenized = True
+    )
+    input_ids = result[0]["input_ids"]
+    assert isinstance(
+        input_ids, list
+    ), f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
+    assert input_ids == [0, 1, 2, 3], f"unexpected input_ids: {input_ids}"
+    print("✅ test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed!")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
+    success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
     sys.exit(0 if success else 1)

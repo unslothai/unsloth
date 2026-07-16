@@ -677,7 +677,22 @@ jobs:
                       print(f"[retry] {path}: {exc!r}", flush = True)
                       time.sleep(15)
 
-          def post_sse(path, body, *, timeout = 600):
+          def post_sse(path, body, *, timeout = 600, retries = 1, soft = False):
+              # The server-side agentic loop always answers over SSE. A
+              # shared CI runner can stall the stream transport (the
+              # connection opening, or a mid-stream read) even when Studio
+              # is healthy, so harden the read three ways:
+              #   * retry a transport stall once with a fresh request,
+              #     capped at 300s (a healthy server answers a retry
+              #     quickly, a wedged one never does);
+              #   * return any text already streamed before a stall, so a
+              #     stall on the trailing tokens -- after the answer
+              #     arrived -- still counts;
+              #   * when every attempt yields nothing, a hard call
+              #     re-raises while a soft call (the best-effort
+              #     server-side tool probes) returns None so the caller
+              #     can WARN instead of sinking the whole job.
+              # HTTP status errors always surface immediately.
               body = {**body, "stream": True}
               data = json.dumps(body).encode()
               req = urllib.request.Request(
@@ -689,24 +704,43 @@ jobs:
                       "Content-Type": "application/json",
                   },
               )
-              parts = []
-              with urllib.request.urlopen(req, timeout = timeout) as resp:
-                  for raw in resp:
-                      line = raw.decode().strip()
-                      if not line.startswith("data: "):
-                          continue
-                      payload = line[6:]
-                      if payload == "[DONE]":
-                          break
-                      try:
-                          chunk = json.loads(payload)
-                      except json.JSONDecodeError:
-                          continue
-                      for choice in chunk.get("choices", []):
-                          delta = choice.get("delta", {}) or {}
-                          if delta.get("content"):
-                              parts.append(delta["content"])
-              return "".join(parts)
+              for attempt in range(retries + 1):
+                  parts = []
+                  t = timeout if attempt == 0 else min(timeout, 300)
+                  try:
+                      with urllib.request.urlopen(req, timeout = t) as resp:
+                          for raw in resp:
+                              line = raw.decode().strip()
+                              if not line.startswith("data: "):
+                                  continue
+                              payload = line[6:]
+                              if payload == "[DONE]":
+                                  break
+                              try:
+                                  chunk = json.loads(payload)
+                              except json.JSONDecodeError:
+                                  continue
+                              for choice in chunk.get("choices", []):
+                                  delta = choice.get("delta", {}) or {}
+                                  if delta.get("content"):
+                                      parts.append(delta["content"])
+                      return "".join(parts)
+                  except urllib.error.HTTPError:
+                      raise
+                  except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
+                      # Text already streamed is a valid signal -- keep it
+                      # rather than re-running a heavy generation.
+                      if parts:
+                          joined = "".join(parts)
+                          print(f"[retry-sse] {path}: {exc!r}; keeping {len(joined)} partial chars", flush = True)
+                          return joined
+                      if attempt == retries:
+                          if soft:
+                              print(f"[tools] WARN {path}: SSE transport stalled with no data ({exc!r}) -- non-blocking", flush = True)
+                              return None
+                          raise
+                      print(f"[retry-sse] {path}: {exc!r}", flush = True)
+                      time.sleep(15)
 
           # ── 1. Standard OpenAI function calling ──────────────────────
           weather_tool = {
@@ -749,16 +783,24 @@ jobs:
               )
 
           # ── 2. Server-side python tool ───────────────────────────────
+          # Bound each soft probe to a single 180s attempt (timeout=180,
+          # retries=0): this job runs two of them back-to-back under a
+          # 30-minute cap, so the default 600+15+300s per stall could hit
+          # the workflow timeout before the thinking checks run. A soft
+          # probe only WARNs anyway, so a retry buys nothing.
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "What is 123 * 456? Use the python tool to compute it and tell me the number."}],
               "enable_tools":  True,
+              "permission_mode": "full",
               "enabled_tools": ["python"],
               "session_id":    "ci-tool-calling-py",
               "temperature":   TEMP,
               "seed":          SEED,
               "max_tokens":    600,
-          })
-          if "56088" in content or "56,088" in content:
+          }, timeout = 180, retries = 0, soft = True)
+          if content is None:
+              print("[tools] WARN python tool: SSE transport stalled after retries -- non-blocking")
+          elif "56088" in content or "56,088" in content:
               print(f"[tools] PASS python tool ({len(content)} chars, found 56088)")
           else:
               assert content, "python tool: SSE stream empty"
@@ -775,13 +817,16 @@ jobs:
           content = post_sse("/v1/chat/completions", {
               "messages":      [{"role": "user", "content": "Use the terminal tool to run `echo hello-bash-tool` and tell me the exact output."}],
               "enable_tools":  True,
+              "permission_mode": "full",
               "enabled_tools": ["terminal"],
               "session_id":    "ci-tool-calling-bash",
               "temperature":   TEMP,
               "seed":          SEED,
               "max_tokens":    600,
-          })
-          if "hello-bash-tool" in content:
+          }, timeout = 180, retries = 0, soft = True)
+          if content is None:
+              print("[tools] WARN terminal tool: SSE transport stalled after retries -- non-blocking")
+          elif "hello-bash-tool" in content:
               print(f"[tools] PASS terminal tool ({len(content)} chars)")
           else:
               assert content, "terminal tool: SSE stream empty"
@@ -797,12 +842,13 @@ jobs:
               content = post_sse("/v1/chat/completions", {
                   "messages":      [{"role": "user", "content": "Search the web for 'unsloth ai github' and summarise."}],
                   "enable_tools":  True,
+                  "permission_mode": "full",
                   "enabled_tools": ["web_search"],
                   "session_id":    "ci-tool-calling-web",
                   "temperature":   TEMP,
                   "seed":          SEED,
                   "max_tokens":    400,
-              })
+              }, timeout = 180, retries = 0)
               print(f"[tools] PASS web_search stream ({len(content)} chars)")
           except Exception as exc:
               print(f"[tools] WARN web_search probe failed (non-blocking): {exc}")

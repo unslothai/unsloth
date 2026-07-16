@@ -6,16 +6,6 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -39,6 +29,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
@@ -80,6 +71,8 @@ import { Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
+import { PermissionModeDropdown } from "./permission-mode-select";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
@@ -573,7 +566,10 @@ export function ChatSettingsPanel({
     status: llamaUpdateStatus,
     applying: llamaUpdating,
     apply: applyLlamaUpdate,
-  } = useLlamaUpdateCheck({ enabled: mtpUpdatable });
+  } = useLlamaUpdateCheck({
+    enabled: mtpUpdatable,
+    onReloadRequired: resyncInferenceStatusAfterServerModelChange,
+  });
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
@@ -938,7 +934,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -1064,7 +1060,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -1107,7 +1103,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[124px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                         data-test-id="speculative-type-select"
                       >
                         <SelectValue />
@@ -1167,7 +1163,7 @@ export function ChatSettingsPanel({
                         3 on CPU/Mac.
                       </InfoHint>
                     </div>
-                    <input
+                    <Input
                       type="number"
                       disabled={modelControlsDisabled}
                       min={1}
@@ -1189,7 +1185,7 @@ export function ChatSettingsPanel({
                       }}
                       data-test-id="spec-draft-n-max-input"
                       aria-label="Speculative decoding draft tokens"
-                      className="h-7 w-[76px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                      className="h-7 w-[88px] rounded-full border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.1] pl-3 py-0 text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
                     />
                   </div>
                 )}
@@ -2032,9 +2028,8 @@ function NudgeToolCallsToggle() {
 }
 
 function ConfirmToolCallsToggle() {
-  const confirmToolCalls = useChatRuntimeStore((s) => s.confirmToolCalls);
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
     <div className="flex items-center justify-between gap-3">
@@ -2044,85 +2039,49 @@ function ConfirmToolCallsToggle() {
             Confirm tool calls
           </span>
           <InfoHint>
-            When on, local Studio tool calls pause for your approval before they
-            run. Provider-hosted tools are not gated here.
+            When on, every local Unsloth tool call pauses for your approval
+            before it runs (the "Ask for approval" level). When off, tool calls
+            run without prompts inside the sandbox (the "Off" level).
+            Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
-        {bypassPermissions ? (
+        {permissionMode === "full" ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Bypass permissions
+            Overridden by Full access (Bypass permissions)
           </span>
         ) : null}
       </div>
       <Switch
         className="panel-switch"
-        checked={confirmToolCalls && !bypassPermissions}
+        checked={permissionMode === "ask"}
         onCheckedChange={setConfirmToolCalls}
-        disabled={bypassPermissions}
+        disabled={permissionMode === "full"}
       />
     </div>
   );
 }
 
 function BypassPermissionsToggle() {
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
-  const setBypassPermissions = useChatRuntimeStore(
-    (s) => s.setBypassPermissions,
-  );
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Bypass permissions
-          </span>
-          <InfoHint>
-            Dangerous. Runs every tool call with no confirmation and disables
-            the python/terminal sandbox. Environment secrets are stripped, but
-            code can still read files and credentials on your machine.
-          </InfoHint>
-        </div>
-        <Switch
-          className="panel-switch"
-          checked={bypassPermissions}
-          onCheckedChange={(next) => {
-            if (next) setDialogOpen(true);
-            else setBypassPermissions(false);
-          }}
-        />
+    <div className="flex flex-col gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="whitespace-nowrap text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Bypass permissions
+        </span>
+        <InfoHint>
+          How Unsloth approves tool calls before they run. Full access is
+          dangerous: it disables confirmations and the code sandbox.
+        </InfoHint>
       </div>
-      {bypassPermissions ? (
+      {/* Full width, styled like the panel selects/preset input. */}
+      <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-[13px] font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
+      {permissionMode === "full" ? (
         <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}
-      <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Bypass permissions is dangerous since the AI model might delete,
-              corrupt your machine, and or cause real world damage to you or the
-              world - only accept if you are certain
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
-              onClick={() => {
-                setBypassPermissions(true);
-                setDialogOpen(false);
-              }}
-            >
-              I understand
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

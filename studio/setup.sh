@@ -1975,8 +1975,8 @@ else
     else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 fi
 echo ""
 

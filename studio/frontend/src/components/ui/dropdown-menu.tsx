@@ -2,10 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
-import type * as React from "react";
+import * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -206,6 +207,14 @@ function DropdownMenuShortcut({
   );
 }
 
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null) {
+  if (typeof ref === "function") {
+    ref(value);
+  } else if (ref) {
+    ref.current = value;
+  }
+}
+
 function DropdownMenuSub({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
@@ -242,17 +251,63 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  sideOffset,
+  style,
+  ref,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  const isMobile = useIsMobile();
+  const [contentWidth, setContentWidth] = React.useState(0);
+  const resizeObserverRef = React.useRef<ResizeObserver | null>(null);
+  const composedRef = React.useCallback(
+    (
+      element: React.ComponentRef<
+        typeof DropdownMenuPrimitive.SubContent
+      > | null,
+    ) => {
+      resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
+      assignRef(ref, element);
+      if (!element) return;
+
+      const updateContentWidth = () => {
+        setContentWidth(element.offsetWidth);
+      };
+      updateContentWidth();
+
+      if (typeof ResizeObserver !== "undefined") {
+        resizeObserverRef.current = new ResizeObserver(updateContentWidth);
+        resizeObserverRef.current.observe(element);
+      }
+    },
+    [ref],
+  );
+
+  React.useEffect(
+    () => () => {
+      resizeObserverRef.current?.disconnect();
+    },
+    [],
+  );
+
+  const compactSideOffset =
+    isMobile && contentWidth > 0 ? -contentWidth : sideOffset;
   return (
     // Portaled like DropdownMenuContent: rendered inline, the fixed popper
     // wrapper is a descendant of the parent menu's scroll container, so any
     // transform there turns on overflow clipping and hides the submenu.
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.SubContent
+        ref={composedRef}
         data-slot="dropdown-menu-sub-content"
+        sideOffset={compactSideOffset}
+        style={{
+          ...style,
+          visibility:
+            isMobile && contentWidth === 0 ? "hidden" : style?.visibility,
+        }}
         className={cn(
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-36 rounded-lg p-1 duration-100 z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 bg-popover text-popover-foreground min-w-36 max-w-[calc(100vw-2rem)] rounded-lg p-1 duration-100 z-50 origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden",
           className,
         )}
         {...props}

@@ -455,7 +455,7 @@ function RecipeGraphNodeBase({
       : meta.tone;
   const runtimeNodeTone =
     runtimeState === "running"
-      ? "border-primary/70 ring-2 ring-primary/20 shadow-md"
+      ? "border-ring-strong shadow-md"
       : runtimeState === "done"
         ? "border-emerald-500/60 ring-1 ring-emerald-500/20"
         : "";
