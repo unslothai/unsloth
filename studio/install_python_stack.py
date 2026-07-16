@@ -110,6 +110,7 @@ _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
 
+
 def _strip_index_url_credentials(url: str) -> str:
     """Strip userinfo (user:password@) AND query/fragment from a wheel index URL.
 
