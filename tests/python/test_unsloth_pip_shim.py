@@ -524,9 +524,9 @@ def test_forwarded_install_carries_protected_constraints(shim):
     assert all("==" in pin for pin in pins), pins
     names = {pin.split("==", 1)[0].lower().replace("_", "-") for pin in pins}
     protected = {"transformers"} | shim._KEEP | {"nvidia-"}
-    assert all(n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names), (
-        names
-    )
+    assert all(
+        n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
+    ), names
 
 
 def test_noop_install_gets_no_constraints(shim):
