@@ -2813,8 +2813,6 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
             [
                 "chat",
                 "-Q",
-                "--yolo",
-                "--accept-hooks",
                 "--resume",
                 "session-id",
                 "-q",
@@ -2823,19 +2821,17 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
         ),
         (
             ["-rsession-id", "-zfollow up"],
-            ["chat", "-Q", "--yolo", "--accept-hooks", "-rsession-id", "-qfollow up"],
+            ["chat", "-Q", "-rsession-id", "-qfollow up"],
         ),
         (
             ["-c=project", "-z=follow up"],
-            ["chat", "-Q", "--yolo", "--accept-hooks", "-c=project", "-q=follow up"],
+            ["chat", "-Q", "-c=project", "-q=follow up"],
         ),
         (
             ["-r", "session-id", "--oneshot=follow up"],
             [
                 "chat",
                 "-Q",
-                "--yolo",
-                "--accept-hooks",
                 "-r",
                 "session-id",
                 "--query=follow up",
@@ -2846,8 +2842,6 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
             [
                 "chat",
                 "-Q",
-                "--yolo",
-                "--accept-hooks",
                 "--continue",
                 "project",
                 "-q",
@@ -2859,7 +2853,6 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
             [
                 "chat",
                 "-Q",
-                "--accept-hooks",
                 "--yolo",
                 "--resume",
                 "session-id",
@@ -2872,7 +2865,6 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
             [
                 "chat",
                 "-Q",
-                "--yolo",
                 "--accept-hooks",
                 "--resume",
                 "session-id",
@@ -2885,8 +2877,6 @@ def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatc
             [
                 "chat",
                 "-Q",
-                "--yolo",
-                "--accept-hooks",
                 "--resume",
                 "chat",
                 "-q",
@@ -2910,13 +2900,37 @@ def test_hermes_resume_oneshot_uses_session_aware_chat(fake_studio, monkeypatch)
     assert captured["command"][1:] == [
         "chat",
         "-Q",
-        "--yolo",
-        "--accept-hooks",
         "--resume",
         "session-id",
         "-q",
         "follow up",
     ]
+
+
+def test_hermes_resume_oneshot_forwards_only_explicit_approvals(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
+
+    yolo = _capture_launch(
+        monkeypatch,
+        ["hermes", "--persist", "--yolo", "--resume", "session-id", "-z", "follow up"],
+    )
+    assert "--yolo" in yolo["command"]
+    assert "--accept-hooks" not in yolo["command"]
+
+    accept_hooks = _capture_launch(
+        monkeypatch,
+        [
+            "hermes",
+            "--persist",
+            "--resume",
+            "session-id",
+            "-z",
+            "follow up",
+            "--accept-hooks",
+        ],
+    )
+    assert "--yolo" not in accept_hooks["command"]
+    assert "--accept-hooks" in accept_hooks["command"]
 
 
 @pytest.mark.parametrize("usage_arg", ["--usage-file", "--usage-file=usage.json"])

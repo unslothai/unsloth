@@ -197,12 +197,7 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
             raise typer.BadParameter(
                 "Hermes cannot resume a one-shot session with --usage-file; remove that option."
             )
-        prefix = ["chat", "-Q"]
-        if "--yolo" not in rewritten:
-            prefix.append("--yolo")
-        if "--accept-hooks" not in rewritten:
-            prefix.append("--accept-hooks")
-        rewritten = prefix + rewritten
+        rewritten = ["chat", "-Q", *rewritten]
         return rewritten
     return args
 
