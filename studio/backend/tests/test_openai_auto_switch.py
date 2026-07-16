@@ -3042,6 +3042,37 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     assert captured["claim_resident"] is False
 
 
+def test_count_tokens_switch_marks_new_model_preview_owned(monkeypatch):
+    # Codex P2: a count_tokens auto-switch can still load a new GGUF via _load_model_impl,
+    # which clears the preview marker (Studio-owned). Counting never generates, so the
+    # switched-in model must be marked preview-owned, or a tokenize-only count leaves it
+    # Studio-owned and blocks later previews for other checkpoints.
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+
+    inference_route._set_preview_resident(None)
+    # _loaded_slot_ident() returns A before the switch, B after (a real switch to B).
+    slots = iter(["/outputs/run/A"])
+    monkeypatch.setattr(
+        inference_route, "_loaded_slot_ident", lambda: next(slots, "/outputs/run/B")
+    )
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    # Backend reports not loaded, so the route raises 503 right AFTER the compensation.
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    payload = _anthropic_payload_with_tools(None)
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
+    # B (the switched-in model) is marked preview-owned, not left Studio-owned.
+    assert inference_route._is_preview_resident("/outputs/run/B")
+    inference_route._set_preview_resident(None)  # cleanup
+
+
 def test_audio_generate_is_reload_only(monkeypatch):
     # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
     # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal

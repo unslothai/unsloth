@@ -622,6 +622,12 @@ def _anthropic_stream_error_event(exc, *, force: bool = False):
     if _cls is None and not force:
         return None
     status = 400 if _cls is not None else 500
+    # This error is emitted in-band after the 200 headers (local /v1/messages stream
+    # and the passthrough), so flag the response failed: the keep-warm middleware must
+    # not claim a preview-owned model for Studio on a stream that errored.
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
     return build_anthropic_sse_event(
         "error",
         anthropic_error_body(_friendly_error(exc), status = status),
@@ -3888,7 +3894,16 @@ async def load_model_for_preview(
                     await _load_model_impl(request, fastapi_request, current_subject)
                     loaded_ok = True
                 finally:
-                    _set_preview_resident(request.model_path if loaded_ok else prior_marker)
+                    # Base ownership on what is actually resident now: the load can make
+                    # this preview's checkpoint resident and then raise while assembling
+                    # the load response, leaving loaded_ok false. If the slot now holds
+                    # this preview's model, mark it preview-owned (it was loaded only by
+                    # this preview); only when the resident model was not replaced do we
+                    # restore the prior owner.
+                    if loaded_ok or _loaded_slot_ident() == request.model_path:
+                        _set_preview_resident(request.model_path)
+                    else:
+                        _set_preview_resident(prior_marker)
                     # The shared model slot was touched (a partial failure can also
                     # unload/replace it), so bump the swap counter -- still inside the
                     # lifecycle gate, before it is released. A non-preview request that
@@ -7336,6 +7351,11 @@ async def openai_chat_completions(
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
                         api_monitor.fail(monitor_id, _friendly_error(e))
+                        # In-band error after 200 headers: flag the response failed so
+                        # the keep-warm middleware does not claim a preview-owned model.
+                        from core.inference.llama_keepwarm import mark_current_response_failed
+
+                        mark_current_response_failed()
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -12220,6 +12240,7 @@ async def anthropic_count_tokens(
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
+    _slot_before_count = _loaded_slot_ident()
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
@@ -12230,6 +12251,14 @@ async def anthropic_count_tokens(
         # count_tokens from its successful-response claim.
         claim_resident = False,
     )
+    # The auto-switch may still have loaded a new GGUF via _load_model_impl, which
+    # clears the preview marker to reclaim the slot for Studio. Counting never
+    # generates, so a tokenize-only switch must not leave that model Studio-owned:
+    # mark a newly switched-in model preview-owned so it does not block later previews
+    # for other checkpoints. Only when the switch actually changed the resident slot.
+    _slot_after_count = _loaded_slot_ident()
+    if _slot_after_count is not None and _slot_after_count != _slot_before_count:
+        _set_preview_resident(_slot_after_count)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:

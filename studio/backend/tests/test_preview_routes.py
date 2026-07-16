@@ -1062,6 +1062,49 @@ def test_openai_stream_error_sse_flags_current_response_failed(slot_state):
         kw.set_current_response_scope(None)
 
 
+def test_anthropic_stream_error_event_flags_current_response_failed(slot_state):
+    # Codex P2: the local /v1/messages and passthrough Anthropic stream errors emit via
+    # _anthropic_stream_error_event after the 200 headers, so it must flag the current
+    # response failed (via the contextvar the middleware sets), or the middleware would
+    # claim a preview-owned model for Studio on a failed stream.
+    from core.inference import llama_keepwarm as kw
+
+    scope = {"type": "http", "path": "/v1/messages"}
+    kw.set_current_response_scope(scope)
+    try:
+        ev = inference._anthropic_stream_error_event(RuntimeError("boom"), force = True)
+        assert ev is not None
+        assert scope.get(kw._RESPONSE_FAILED_SCOPE_KEY) is True
+    finally:
+        kw.set_current_response_scope(None)
+
+
+def test_preview_load_assembly_failure_marks_new_checkpoint(fake_slot, monkeypatch):
+    # Codex P2: if _load_model_impl makes checkpoint B resident and then raises while
+    # assembling the load response (loaded_ok stays false), the slot holds B, so it
+    # must be marked preview-owned -- it was loaded only by this preview -- not
+    # restored to the prior checkpoint A (which would leave B looking Studio-owned).
+    inference._set_preview_resident("/outputs/run/ckpt-a")  # prior preview A
+
+    async def _load_then_assembly_fail(load_req, fastapi_request, subject):
+        fake_slot["loads"].append(load_req.model_path)
+        fake_slot["ident"] = load_req.model_path  # B is now the resident slot
+        raise HTTPException(status_code = 500, detail = "assembly failed after load")
+
+    monkeypatch.setattr(inference, "_load_model_impl", _load_then_assembly_fail)
+
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt-b"),
+                SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
+                "admin",
+            )
+        )
+    assert inference._is_preview_resident("/outputs/run/ckpt-b")  # B is preview-owned
+    assert not inference._is_preview_resident("/outputs/run/ckpt-a")
+
+
 def test_same_loaded_identifier_is_filesystem_aware():
     # The already-loaded dedup must be filesystem-aware: on a case-sensitive filesystem
     # two checkpoint paths differing only by case are different models and must reload.
