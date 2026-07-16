@@ -118,7 +118,6 @@ def _env_idle_seconds() -> Optional[int]:
         if not _env_floor_warned:
             _env_floor_warned = True
             from loggers import get_logger
-
             get_logger(__name__).warning(
                 "%s=%s is below the %ss minimum; using %ss",
                 MODEL_IDLE_TTL_ENV_VAR,
