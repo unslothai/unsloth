@@ -441,6 +441,12 @@ class LlamaKeepWarmMiddleware:
                 _note_unpending(is_preview)
         ended = {"done": False}
         status = {"code": None}
+        # Set once the terminal body frame (more_body False) is sent: only a response that
+        # completed cleanly adopts the model for Studio. A client disconnect after the 200
+        # headers raises before that frame (an OSError that _SameTaskStreamingResponse turns
+        # into a CancelledError for the body generator, which finishes the monitor and
+        # re-raises without flagging the scope), so a cancelled stream never claims the slot.
+        completed = {"done": False}
 
         def _finish() -> None:
             # A route that untracked itself already decremented; don't double-count.
@@ -480,6 +486,7 @@ class LlamaKeepWarmMiddleware:
                 and 200 <= code < 300
                 and not path.endswith("/messages/count_tokens")
                 and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
+                and completed["done"]
             ):
                 _claim_non_preview_slot()
             _note_end(is_preview)
@@ -487,10 +494,11 @@ class LlamaKeepWarmMiddleware:
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":
                 status["code"] = message.get("status")
-            # Final body frame marks the end of a (possibly streaming) response.
+            # Terminal body frame marks a clean end of a (possibly streaming) response.
             elif message.get("type") == "http.response.body" and not message.get(
                 "more_body", False
             ):
+                completed["done"] = True
                 _finish()
             await send(message)
 

@@ -1253,6 +1253,43 @@ def test_failed_stream_response_does_not_claim_slot(slot_state):
     _reset_keepwarm_counters()
 
 
+def test_disconnect_before_terminal_frame_does_not_claim_slot(slot_state):
+    # Codex P2 (round 26): a client disconnect after the 200 headers raises before the terminal
+    # body frame (an OSError _SameTaskStreamingResponse converts to a CancelledError, whose
+    # handler finishes the monitor and re-raises without flagging the scope). The middleware
+    # only claims on a clean completion, so this cancelled 2xx preserves preview ownership.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        # A content chunk streams, then the body is cut off mid-stream: no terminal
+        # more_body False frame is ever sent (the client-disconnect-after-headers path).
+        await send({"type": "http.response.body", "body": b"data: hi\n\n", "more_body": True})
+        raise RuntimeError("client disconnected mid-stream")
+
+    with pytest.raises(RuntimeError):
+        _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")  # cancelled stream did not claim
+    _reset_keepwarm_counters()
+
+
+def test_clean_stream_completion_claims_slot(slot_state):
+    # Positive control for the completion gate: a streaming 200 that sends its terminal frame
+    # completed cleanly, so it adopts the resident model for Studio (clears the preview marker).
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"data: hi\n\n", "more_body": True})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert not inference._is_preview_resident("/outputs/run/ckpt")  # clean completion claimed
+    _reset_keepwarm_counters()
+
+
 def test_non_gguf_load_failure_restores_preview_marker():
     # Codex P2: a failed non-GGUF (Unsloth/LoRA) load unloads only the new entry, so the
     # prior preview checkpoint can still be resident though the marker was cleared;
