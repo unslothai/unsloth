@@ -23,6 +23,7 @@ import {
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
 import { useExternalProvidersStore } from "./external-providers-store";
+import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
@@ -356,6 +357,24 @@ function saveBool(key: string, value: boolean): void {
     localStorage.setItem(key, value ? "true" : "false");
   } catch {
     // ignore
+  }
+}
+
+// The visibility flag shipped after the menu pins, so when it is absent,
+// profiles that had explicitly pinned Canvas keep it visible.
+function loadShowCanvasMenuItem(): boolean {
+  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
+  if (stored !== null) return stored;
+  if (!canUseStorage()) return false;
+  try {
+    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
+    if (raw === null) return false;
+    const parsed = JSON.parse(raw) as {
+      state?: { pins?: { canvas?: boolean } };
+    };
+    return parsed.state?.pins?.canvas === true;
+  } catch {
+    return false;
   }
 }
 
@@ -1152,7 +1171,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
-  showCanvasMenuItem: loadBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, false),
+  showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
