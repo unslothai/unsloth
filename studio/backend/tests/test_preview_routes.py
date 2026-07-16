@@ -844,18 +844,20 @@ def test_preview_reuses_own_checkpoint_without_reload(fake_slot):
     assert inference._is_preview_resident("/outputs/run/ckpt-a")
 
 
-def test_generation_paths_claim_via_gated_helper():
-    # Every local generation entry (native stream/audio + OpenAI chat) must adopt
-    # the resident model for Studio through the gated helper, so a preview cannot
-    # swap it out between turns -- while an audio preview routed through
-    # openai_chat_completions -> generate_audio still keeps its ownership.
+def test_generation_paths_rely_on_middleware_claim():
+    # Native generation entries no longer claim the resident model directly: claiming
+    # before generation could strand a preview-owned checkpoint as Studio-owned if the
+    # generation (or an upstream llama-server call) then fails. The keep-warm
+    # middleware claims the slot on a successful 2xx response instead. generate_stream
+    # additionally enforces the preview-swap reject, since it does not run through
+    # _maybe_auto_switch_model where that guard otherwise fires.
     import inspect
-    for fn in (
-        inference.generate_stream,
-        inference.generate_audio,
-        inference._maybe_auto_switch_model,
-    ):
-        assert "_claim_slot_for_non_preview(" in inspect.getsource(fn)
+
+    stream_src = inspect.getsource(inference.generate_stream)
+    audio_src = inspect.getsource(inference.generate_audio)
+    assert "_claim_slot_for_non_preview(" not in stream_src
+    assert "_claim_slot_for_non_preview(" not in audio_src
+    assert "_PREVIEW_SWAP_REJECT_SCOPE_KEY" in stream_src
 
 
 def test_preview_swap_refused_when_studio_request_queued(fake_slot):
@@ -990,8 +992,34 @@ def test_generate_stream_image_on_text_model_preserves_preview_marker(slot_state
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference.generate_stream(req, fake_req, "tester"))
     assert exc.value.status_code == 400
-    # The claim runs only after the (failed) modality check, so ownership is intact.
+    # No direct claim runs, so ownership is intact after the failed modality check.
     assert inference._is_preview_resident("/outputs/run/ckpt-a")
+
+
+def test_generate_stream_rejects_after_preview_swap(slot_state, monkeypatch):
+    # Codex P1: generate_stream does not run through _maybe_auto_switch_model, so it
+    # must enforce the preview-swap reject itself. If a public preview loaded a
+    # different checkpoint (GGUF or Unsloth/LoRA) while this native request waited on
+    # the keep-warm gate (the middleware flagged the scope), generate_stream must 503
+    # instead of streaming from the preview's model.
+    from models.inference import GenerateRequest
+    from core.inference import llama_keepwarm as kw
+
+    backend = SimpleNamespace(
+        active_model_name = "/outputs/run/ckpt-a",
+        models = {"/outputs/run/ckpt-a": {"is_vision": False}},
+    )
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    req = GenerateRequest(messages = [{"role": "user", "content": "hi"}])
+    fake_req = SimpleNamespace(
+        scope = {
+            "path": "/api/inference/generate/stream",
+            kw._PREVIEW_SWAP_REJECT_SCOPE_KEY: True,
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference.generate_stream(req, fake_req, "tester"))
+    assert exc.value.status_code == 503
 
 
 def test_same_loaded_identifier_is_filesystem_aware():
@@ -1010,6 +1038,46 @@ def test_same_loaded_identifier_is_filesystem_aware():
     assert inference._same_loaded_identifier("Unsloth/Foo", "unsloth/foo")
     assert inference._same_loaded_identifier("unsloth/foo", "unsloth/foo")
     assert not inference._same_loaded_identifier("unsloth/foo", "unsloth/bar")
+
+
+def test_same_loaded_identifier_treats_existing_relative_paths_as_filesystem(tmp_path, monkeypatch):
+    # Codex P2: an existing RELATIVE checkpoint path is a local filesystem path (as
+    # ModelConfig.from_identifier resolves it), not a repo id, so it must compare
+    # filesystem-aware. Two relative paths differing only by case must not dedup to the
+    # already-loaded fast path on a case-sensitive filesystem.
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "outputs" / "Run").mkdir(parents = True)
+    # Only "outputs/Run" exists, so this is classified local and compared normcase.
+    expected = os.path.normcase("outputs/Run") == os.path.normcase("outputs/run")
+    assert inference._same_loaded_identifier("outputs/Run", "outputs/run") is expected
+    # An identical existing relative path still dedups.
+    assert inference._same_loaded_identifier("outputs/Run", "outputs/Run")
+
+
+def test_completions_embeddings_defer_claim_to_middleware():
+    # Codex P2: /v1/completions and /v1/embeddings must not claim the resident model
+    # before the llama-server call. llama-server can still reject a valid body (e.g. a
+    # no-pooling error for embeddings against a non-embedding GGUF), which would strand
+    # a preview-owned checkpoint as Studio-owned; the keep-warm middleware claims on a
+    # successful 2xx instead.
+    import inspect
+
+    for fn in (inference.openai_completions, inference.openai_embeddings):
+        assert "_claim_slot_for_non_preview(" not in inspect.getsource(fn), fn.__name__
+
+
+def test_load_restores_preview_marker_on_late_companion_reject():
+    # Codex P2: _load_model_impl clears the preview marker before the native vision
+    # companion validation, which can still reject after the clear. On that late reject
+    # the resident preview model was never torn down, so preview ownership is restored
+    # rather than left marked Studio-owned.
+    import inspect
+
+    src = inspect.getsource(inference._load_model_impl)
+    assert "_prior_preview_marker = _get_preview_resident()" in src
+    assert "_set_preview_resident(_prior_preview_marker)" in src
 
 
 def _run_middleware(app, path):

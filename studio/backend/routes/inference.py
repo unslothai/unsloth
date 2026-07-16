@@ -3734,8 +3734,17 @@ def _same_loaded_identifier(loaded: Optional[str], requested: str) -> bool:
     case-insensitively to avoid an unnecessary unload/reload of the same repo."""
     if not loaded:
         return False
-    # An absolute path on either side means this is a local checkpoint, not a repo id.
-    if os.path.isabs(loaded) or os.path.isabs(requested):
+
+    # A local checkpoint is an absolute path OR a relative path that exists on disk:
+    # ModelConfig.from_identifier() resolves an existing relative path as a local file,
+    # so two such paths differing only by case (e.g. outputs/Run vs outputs/run) are
+    # different checkpoints on a case-sensitive filesystem and must not take the
+    # already-loaded fast path. Only genuine repo ids fall through to the
+    # case-insensitive compare.
+    def _is_local_path(ident: str) -> bool:
+        return os.path.isabs(ident) or os.path.exists(ident)
+
+    if _is_local_path(loaded) or _is_local_path(requested):
         return os.path.normcase(loaded) == os.path.normcase(requested)
     return loaded.lower() == requested.lower()
 
@@ -4376,9 +4385,12 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
         )
 
-        # Past validation, about to actually touch the backend: reclaim the slot
-        # for Studio now, not before validation could still reject the load and
-        # leave a preview-owned checkpoint resident but unmarked.
+        # About to actually touch the backend: reclaim the slot for Studio. Capture the
+        # prior marker first so a still-later pre-load check that rejects (the native
+        # vision-companion validation below) can restore preview ownership -- otherwise
+        # a still-resident preview checkpoint is left marked Studio-owned and later
+        # previews 503 against it.
+        _prior_preview_marker = _get_preview_resident()
         _set_preview_resident(None)
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4502,9 +4514,18 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 # Local mode: llama-server loads via -m <path>
                 if native_grant_backed:
                     if config.gguf_mmproj_file:
-                        _validate_native_gguf_companion(
-                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
-                        )
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                            )
+                        except HTTPException:
+                            # The resident model has not been torn down yet, so restore
+                            # preview ownership before propagating this reject: the load
+                            # fails here and the still-resident preview checkpoint must
+                            # not be left marked Studio-owned (later previews would 503).
+                            if _prior_preview_marker is not None:
+                                _set_preview_resident(_prior_preview_marker)
+                            raise
                     if config.gguf_mtp_file:
                         # The drafter is optional (unlike mmproj for a vision
                         # model): drop it rather than fail the load.
@@ -5549,12 +5570,22 @@ async def generate_stream(
                 log = logger,
             )
 
-    # Studio generating directly against the resident model claims it (a model first
-    # loaded by a shared /p preview must not stay preview-owned, or a later preview
-    # could swap it out between turns). Claim only after the modality checks above
-    # that can still reject the request, so an image-on-text-only 400 doesn't leave a
-    # preview-owned checkpoint marked Studio-owned without ever generating.
-    _claim_slot_for_non_preview(fastapi_request)
+    # generate_stream does not go through _maybe_auto_switch_model, so enforce the
+    # preview-swap reject here: if a public preview loaded a different checkpoint (GGUF
+    # or Unsloth/LoRA) while this native Studio request waited on the keep-warm gate,
+    # the middleware flagged the scope and running now would silently stream from the
+    # preview's model. The keep-warm middleware claims the slot on a successful 2xx, so
+    # no direct claim is needed here (claiming before generation could strand a
+    # preview-owned checkpoint as Studio-owned if generation then fails).
+    from core.inference.llama_keepwarm import _PREVIEW_SWAP_REJECT_SCOPE_KEY
+
+    _gs_scope = getattr(fastapi_request, "scope", None)
+    if isinstance(_gs_scope, dict) and _gs_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
+        raise HTTPException(
+            status_code = 503,
+            detail = "A preview is loading a model. Please retry shortly.",
+            headers = {"Retry-After": "1"},
+        )
 
     cancel_event = threading.Event()
 
@@ -5906,12 +5937,10 @@ async def generate_audio(
             use_adapter = payload.use_adapter,
         )
 
-    # An audio-capable backend is confirmed, so this non-preview request will run
-    # against the resident model: claim it for Studio now (after the modality checks
-    # above that can still reject). Gated on the request path: an audio preview reaches
-    # here via openai_chat_completions and must stay preview-owned.
-    _claim_slot_for_non_preview(request)
-
+    # An audio-capable backend is confirmed. The keep-warm middleware claims the slot
+    # for Studio on a successful 2xx response, so no direct claim here: claiming before
+    # the audio backend runs could strand a preview-owned checkpoint as Studio-owned if
+    # generation then fails.
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
     except Exception as e:
@@ -9943,11 +9972,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    # GGUF is loaded and the body is valid, so this non-preview request will run
-    # against the resident model: claim it for Studio now (the switch helper's claim
-    # was deferred so the "No GGUF model loaded" 503 above can't strand a
-    # preview-owned non-GGUF model as Studio-owned).
-    _claim_slot_for_non_preview(request)
+    # GGUF is loaded and the body is valid. The keep-warm middleware claims the slot
+    # for Studio on a successful 2xx response, so no direct claim here: llama-server can
+    # still return a non-2xx for a valid body (e.g. a no-pooling error on /v1/embeddings
+    # against a non-embedding GGUF), so claiming before the upstream response would
+    # strand a preview-owned checkpoint as Studio-owned for a request that never ran.
 
     _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
     body["max_tokens"] = (
@@ -10172,11 +10201,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    # GGUF is loaded and the body is valid, so this non-preview request will run
-    # against the resident model: claim it for Studio now (the switch helper's claim
-    # was deferred so the "No GGUF model loaded" 503 above can't strand a
-    # preview-owned non-GGUF model as Studio-owned).
-    _claim_slot_for_non_preview(request)
+    # GGUF is loaded and the body is valid. The keep-warm middleware claims the slot
+    # for Studio on a successful 2xx response, so no direct claim here: llama-server can
+    # still return a non-2xx for a valid body (e.g. a no-pooling error on /v1/embeddings
+    # against a non-embedding GGUF), so claiming before the upstream response would
+    # strand a preview-owned checkpoint as Studio-owned for a request that never ran.
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
