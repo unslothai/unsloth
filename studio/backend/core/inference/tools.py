@@ -4836,7 +4836,7 @@ def _check_signal_escape_patterns(code: str):
                 self.visit(case.pattern)
                 bound_names = self._match_bound_names(case.pattern)
                 self._update_pyyaml_bindings(
-                    [ast.Name(id=name, ctx=ast.Store()) for name in bound_names], None
+                    [ast.Name(id = name, ctx = ast.Store()) for name in bound_names], None
                 )
                 if case.guard is not None:
                     self.visit(case.guard)
@@ -4864,9 +4864,7 @@ def _check_signal_escape_patterns(code: str):
                 if handler.type is not None:
                     self.visit(handler.type)
                 if handler.name:
-                    self._update_pyyaml_bindings(
-                        [ast.Name(id=handler.name, ctx=ast.Store())], None
-                    )
+                    self._update_pyyaml_bindings([ast.Name(id = handler.name, ctx = ast.Store())], None)
                 for statement in handler.body:
                     self.visit(statement)
                 exit_states.append(self._pyyaml_scope_state())
@@ -4916,7 +4914,7 @@ def _check_signal_escape_patterns(code: str):
             try:
                 arg_names = self._argument_names(node.args)
                 self._update_pyyaml_bindings(
-                    [ast.Name(id=name, ctx=ast.Store()) for name in arg_names], None
+                    [ast.Name(id = name, ctx = ast.Store()) for name in arg_names], None
                 )
                 if isinstance(node, ast.Lambda):
                     self.visit(node.body)
@@ -5117,11 +5115,8 @@ def _check_signal_escape_patterns(code: str):
             self.visit_With(node)
 
         def visit_Call(self, node):
-            if (
-                id(node) not in self.direct_pyyaml_module_refs
-                and _is_pyyaml_module_expr(
-                    node, self.yaml_aliases, self.dynamic_import_aliases
-                )
+            if id(node) not in self.direct_pyyaml_module_refs and _is_pyyaml_module_expr(
+                node, self.yaml_aliases, self.dynamic_import_aliases
             ):
                 self._record_unsafe_pyyaml(
                     node,

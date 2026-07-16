@@ -273,18 +273,10 @@ class TestPyYamlDeserialization:
             ),
             "__import__('yaml').safe_load('a: 1')",
             "from importlib import import_module as im\nim('yaml').safe_load('a: 1')",
-            (
-                "import importlib\n"
-                "im = importlib.import_module\n"
-                "im('yaml').safe_load('a: 1')"
-            ),
+            ("import importlib\nim = importlib.import_module\nim('yaml').safe_load('a: 1')"),
             "import sys, yaml\nsys.modules['yaml'].safe_load('a: 1')",
             "import yaml\nglobals().get('yaml').safe_load('a: 1')",
-            (
-                "from yaml import load\n"
-                "load = print\n"
-                "load('not deserialized')"
-            ),
+            ("from yaml import load\nload = print\nload('not deserialized')"),
         ],
     )
     def test_safe_pyyaml_loaders_allowed(self, code):
