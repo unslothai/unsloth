@@ -774,6 +774,10 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
 
+        # Throttled training-status logging to the server log (not one line/step).
+        self._last_progress_log_ts: float = 0.0
+        self._last_progress_log_step: int = -1
+
         # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
@@ -881,93 +885,129 @@ class TrainingBackend:
         else:
             defer_auto_selection = True
 
-        # Synchronous validation passed -> free VRAM (export + chat) now, before
-        # auto-selection and the spawn, so placement sees the freed memory.
-        if before_spawn is not None:
-            try:
-                before_spawn()
-            except Exception:
-                logger.warning("before_spawn hook failed; continuing", exc_info = True)
+        # Handshake with the sidecar install route: mark the spawn in progress BEFORE rechecking
+        # the reservation, so either this recheck aborts, or the install's is_training_active()
+        # sees this flag (or the recorded proc) and refuses.
+        from utils.transformers_version import sidecar_swap_in_progress
 
-        if defer_auto_selection:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
-            config["resolved_gpu_ids"] = resolved_gpu_ids
-            config["gpu_selection"] = gpu_selection
+        self._spawn_in_progress = True
+        if sidecar_swap_in_progress():
+            self._spawn_in_progress = False
+            from utils.transformers_version import SidecarSwapInProgress
+            raise SidecarSwapInProgress(
+                "A transformers installation is replacing the latest sidecar; "
+                "retry when it completes."
+            )
 
-        from .worker import run_training_process
-
+        # Any exception between the handshake above and the flag reset below would
+        # otherwise leave _spawn_in_progress latched, wedging is_training_active
+        # (and the install route) until restart.
         try:
-            with native_path_secret_removed_for_child_start():
-                event_queue = _CTX.Queue()
-                stop_queue = _CTX.Queue()
+            # Synchronous validation passed -> free VRAM (export + chat) now, before
+            # auto-selection and the spawn, so placement sees the freed memory. Runs AFTER the handshake
+            # so a lost race to an install can't tear down chat/export for a training run that never spawns.
+            if before_spawn is not None:
+                try:
+                    before_spawn()
+                except Exception:
+                    logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
-                proc = _CTX.Process(
-                    target = run_without_native_path_secret,
-                    args = (run_training_process,),
-                    kwargs = {
-                        "event_queue": event_queue,
-                        "stop_queue": stop_queue,
-                        "config": config,
-                    },
-                    daemon = True,
-                )
-                proc.start()
-                from utils.process_lifetime import adopt_pid
+            if defer_auto_selection:
+                try:
+                    resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                        None, **gpu_selection_kwargs
+                    )
+                except Exception:
+                    # Flag is already set; a failed GPU selection must not leave is_training_active stuck True.
+                    self._spawn_in_progress = False
+                    raise
+                config["resolved_gpu_ids"] = resolved_gpu_ids
+                config["gpu_selection"] = gpu_selection
 
-                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+            from .worker import run_training_process
+
+            try:
+                with native_path_secret_removed_for_child_start():
+                    event_queue = _CTX.Queue()
+                    stop_queue = _CTX.Queue()
+
+                    proc = _CTX.Process(
+                        target = run_without_native_path_secret,
+                        args = (run_training_process,),
+                        kwargs = {
+                            "event_queue": event_queue,
+                            "stop_queue": stop_queue,
+                            "config": config,
+                        },
+                        daemon = True,
+                    )
+                    proc.start()
+                    from utils.process_lifetime import adopt_pid
+
+                    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+            except Exception:
+                logger.error("Failed to start training subprocess", exc_info = True)
+                self._spawn_in_progress = False
+                return False
+
+            logger.info("Training subprocess started (pid=%s)", proc.pid)
+
+            # Reset state (old pump thread dead, proc.start() succeeded).
+            self.current_job_id = job_id
+            self._should_stop = False
+            self._cancel_requested = False
+            self._complete_seen.clear()
+            self._progress = TrainingProgress(
+                is_training = True, status_message = "Initializing training..."
+            )
+            # Reset the progress-log throttle so the new run always logs its first step,
+            # even if it starts within 30s of a prior run whose last logged step matches.
+            self._last_progress_log_ts = 0.0
+            self._last_progress_log_step = -1
+            self.loss_history.clear()
+            self.lr_history.clear()
+            self.step_history.clear()
+            self.grad_norm_history.clear()
+            self.grad_norm_step_history.clear()
+            self.eval_loss_history.clear()
+            self.eval_step_history.clear()
+            self.eval_enabled = False
+            self._output_dir = None
+            self._metric_buffer.clear()
+            self._run_finalized = False
+            self._db_run_created = False
+            self._db_create_in_progress = False  # a stale watchdog create can't block this run
+            self._db_total_steps_set = False
+            self._db_config = _sanitize_db_config(config)
+            self._db_started_at = datetime.now(timezone.utc).isoformat()
+            # Start each job Xet-first; keep config so a stall can respawn over HTTP.
+            self._last_full_config = config
+            self._in_model_load = False
+            self._xet_fallback_used = False
+            self._needs_xet_respawn = False
+
+            # Create the DB run row before the pump can consume events, so it appears
+            # in history during model loading and a fast terminal worker can't race the
+            # pump into a duplicate create/finalize. From here the pump only finalizes.
+            self._ensure_db_run_created()
+
+            # Assign handles and start the pump together under the lock so a concurrent
+            # poll can't see a live _proc with no pump and spawn a duplicate.
+            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            with self._lock:
+                self._pump_running = False
+                self._event_queue = event_queue
+                self._stop_queue = stop_queue
+                self._proc = proc
+                self._pump_thread = new_pump
+                new_pump.start()
+                self._spawn_in_progress = False
+
+            return True
+
         except Exception:
-            logger.error("Failed to start training subprocess", exc_info = True)
-            return False
-
-        logger.info("Training subprocess started (pid=%s)", proc.pid)
-
-        # Reset state (old pump thread dead, proc.start() succeeded).
-        self.current_job_id = job_id
-        self._should_stop = False
-        self._cancel_requested = False
-        self._complete_seen.clear()
-        self._progress = TrainingProgress(
-            is_training = True, status_message = "Initializing training..."
-        )
-        self.loss_history.clear()
-        self.lr_history.clear()
-        self.step_history.clear()
-        self.grad_norm_history.clear()
-        self.grad_norm_step_history.clear()
-        self.eval_loss_history.clear()
-        self.eval_step_history.clear()
-        self.eval_enabled = False
-        self._output_dir = None
-        self._metric_buffer.clear()
-        self._run_finalized = False
-        self._db_run_created = False
-        self._db_create_in_progress = False  # a stale watchdog create can't block this run
-        self._db_total_steps_set = False
-        self._db_config = _sanitize_db_config(config)
-        self._db_started_at = datetime.now(timezone.utc).isoformat()
-        # Start each job Xet-first; keep config so a stall can respawn over HTTP.
-        self._last_full_config = config
-        self._in_model_load = False
-        self._xet_fallback_used = False
-        self._needs_xet_respawn = False
-
-        # Create the DB run row before the pump can consume events, so it appears
-        # in history during model loading and a fast terminal worker can't race the
-        # pump into a duplicate create/finalize. From here the pump only finalizes.
-        self._ensure_db_run_created()
-
-        # Assign handles and start the pump together under the lock so a concurrent
-        # poll can't see a live _proc with no pump and spawn a duplicate.
-        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
-        with self._lock:
-            self._pump_running = False
-            self._event_queue = event_queue
-            self._stop_queue = stop_queue
-            self._proc = proc
-            self._pump_thread = new_pump
-            new_pump.start()
-
-        return True
+            self._spawn_in_progress = False
+            raise
 
     def stop_training(self, save: bool = True) -> bool:
         """Send stop signal to the training subprocess."""
@@ -1266,50 +1306,84 @@ class TrainingBackend:
 
         from .worker import run_training_process
 
-        try:
-            with native_path_secret_removed_for_child_start():
-                event_queue = _CTX.Queue()
-                stop_queue = _CTX.Queue()
-                new_proc = _CTX.Process(
-                    target = run_without_native_path_secret,
-                    args = (run_training_process,),
-                    kwargs = {
-                        "event_queue": event_queue,
-                        "stop_queue": stop_queue,
-                        "config": config,
-                    },
-                    daemon = True,
-                )
-                new_proc.start()
-                from utils.process_lifetime import adopt_pid
+        # This run is active, so an install request 409s rather than proceeds: a reservation seen here
+        # is transient (an aborting install or short lazy repair). Wait it out instead of stranding the
+        # stalled run; only a wedged reservation fails the respawn.
+        from utils.transformers_version import sidecar_swap_in_progress
 
-                adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
-        except Exception:
-            logger.error("Failed to respawn training subprocess", exc_info = True)
-            with self._lock:
-                # No replacement pump will run; clear the flag so a later run can't
-                # inherit a stale _pump_running=True and spawn a duplicate.
-                self._pump_running = False
-                self._progress.is_training = False
-                self._progress.error = "Failed to recover stalled model download"
-            self._ensure_db_run_created()
-            self._finalize_run_in_db(
-                status = "error",
-                error_message = "Failed to recover stalled model download",
+        self._spawn_in_progress = True
+        _swap_wait_deadline = time.time() + 120
+        while sidecar_swap_in_progress() and time.time() < _swap_wait_deadline:
+            time.sleep(1)
+        if sidecar_swap_in_progress():
+            # Raising here would land in the pump's broad finalization catch and
+            # strand the run in a training state with no worker: finalize it as a
+            # failure explicitly instead.
+            self._spawn_in_progress = False
+            msg = (
+                "A transformers installation is replacing the latest sidecar; "
+                "cannot respawn the training worker."
             )
+            logger.error(msg)
+            with self._lock:
+                self._progress.is_training = False
+                self._progress.error = msg
+            self._ensure_db_run_created()
+            self._finalize_run_in_db(status = "error", error_message = msg)
             return
 
-        logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
-        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
-        with self._lock:
-            self._in_model_load = False
-            self._event_queue = event_queue
-            self._stop_queue = stop_queue
-            self._proc = new_proc
-            self._pump_thread = new_pump
-            # Start under the lock so _ensure_pump_alive can never observe the
-            # new pump as a not-yet-started (dead) thread and spawn a duplicate.
-            new_pump.start()
+        # Reset the handshake flag on any unexpected failure past this point, so a
+        # crashed respawn cannot wedge is_training_active until restart.
+        try:
+            try:
+                with native_path_secret_removed_for_child_start():
+                    event_queue = _CTX.Queue()
+                    stop_queue = _CTX.Queue()
+                    new_proc = _CTX.Process(
+                        target = run_without_native_path_secret,
+                        args = (run_training_process,),
+                        kwargs = {
+                            "event_queue": event_queue,
+                            "stop_queue": stop_queue,
+                            "config": config,
+                        },
+                        daemon = True,
+                    )
+                    new_proc.start()
+                    from utils.process_lifetime import adopt_pid
+
+                    adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
+            except Exception:
+                logger.error("Failed to respawn training subprocess", exc_info = True)
+                self._spawn_in_progress = False
+                with self._lock:
+                    # No replacement pump will run; clear the flag so a later run can't
+                    # inherit a stale _pump_running=True and spawn a duplicate.
+                    self._pump_running = False
+                    self._progress.is_training = False
+                    self._progress.error = "Failed to recover stalled model download"
+                self._ensure_db_run_created()
+                self._finalize_run_in_db(
+                    status = "error",
+                    error_message = "Failed to recover stalled model download",
+                )
+                return
+
+            logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
+            new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+            with self._lock:
+                self._in_model_load = False
+                self._event_queue = event_queue
+                self._stop_queue = stop_queue
+                self._proc = new_proc
+                self._spawn_in_progress = False
+                self._pump_thread = new_pump
+                # Start under the lock so _ensure_pump_alive can never observe the
+                # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+                new_pump.start()
+        except Exception:
+            self._spawn_in_progress = False
+            raise
 
     def _ensure_pump_alive(self) -> bool:
         """Restart the event pump if it crashed, even after the worker exited.
@@ -1342,6 +1416,10 @@ class TrainingBackend:
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
+        # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded,
+        # so an install cannot slip in mid-spawn.
+        if getattr(self, "_spawn_in_progress", False):
+            return True
         # Self-heal a crashed pump first: a dead pump must never leave the worker
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
@@ -1760,6 +1838,37 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        if etype == "progress":
+            self._log_training_progress()
+
+    def _log_training_progress(self) -> None:
+        """One throttled training-status line to the server log (the per-step stream
+        still goes to the UI via SSE): first step, then at most every 30s, plus the
+        final step; resyncs on a new run. Runs on the pump thread."""
+        p = self._progress
+        step = int(p.step or 0)
+        if step <= 0:
+            return
+        total = int(p.total_steps or 0)
+        is_final = total > 0 and step >= total
+        prev = self._last_progress_log_step
+        if step == prev:
+            return
+        now = time.monotonic()
+        if prev >= 0 and step > prev and not is_final and (now - self._last_progress_log_ts) < 30.0:
+            return
+        self._last_progress_log_ts = now
+        self._last_progress_log_step = step
+        logger.info(
+            "training_progress",
+            step = step,
+            total_steps = total or None,
+            percent = int(step * 100 / total) if total > 0 else None,
+            loss = round(p.loss, 4) if p.loss is not None else None,
+            epoch = round(p.epoch, 2) if p.epoch is not None else None,
+            eta_s = int(p.eta_seconds) if p.eta_seconds else None,
+        )
 
     def _ensure_db_run_created(self) -> None:
         """Create the DB row if it doesn't exist yet. An in-progress flag lets only one

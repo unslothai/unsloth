@@ -103,6 +103,7 @@ export const ptBR = {
       connections: "Conexões",
       apiKeys: "API",
       about: "Sobre",
+      voice: "Voz",
     },
     general: {
       title: "Geral",
@@ -343,10 +344,6 @@ export const ptBR = {
         fontSmoothing: {
           label: "Suavização de fonte",
           description: "Usar anti-aliasing suavizado nas fontes.",
-        },
-        edgeFades: {
-          label: "Esmaecimento nas bordas",
-          description: "Esmaece o conteúdo nas bordas dos painéis. Desligado mostra uma linha divisória fina.",
         },
         contrast: {
           label: "Contraste",

@@ -9,6 +9,7 @@ export type SettingsTab =
   | "appearance"
   | "resources"
   | "chat"
+  | "voice"
   | "connections"
   | "data"
   | "api-keys"
@@ -64,6 +65,7 @@ function loadInitialTab(): SettingsTab {
     "appearance",
     "resources",
     "chat",
+    "voice",
     "connections",
     "data",
     "api-keys",

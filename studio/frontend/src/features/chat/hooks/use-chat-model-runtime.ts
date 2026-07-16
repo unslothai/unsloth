@@ -4,6 +4,10 @@
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -243,6 +247,10 @@ function toLoraSummary(lora: {
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} was not loaded because its custom code was not approved. Load it again to review the code and approve it.`;
+}
+
+function getTransformersUpgradeRequiredMessage(modelName: string): string {
+  return `${modelName} was not loaded because it needs a newer transformers release that was not installed. Load it again to install it.`;
 }
 
 /**
@@ -626,6 +634,30 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
+            // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
+            if (validation.requires_transformers_upgrade) {
+              const upgraded = await confirmTransformersUpgradeIfNeeded({
+                modelName: modelId,
+                upgrade: validation.transformers_upgrade,
+                // No installable release: custom-code models may fall back to the trust_remote_code gate below.
+                trustRemoteCodeFallback: validation.requires_trust_remote_code,
+              });
+              // The install unloads the previous model before the swap (even when
+              // the swap then fails), so any exit after this point must roll back.
+              // False for the custom-code fallback, which resolves without installing.
+              if (
+                useTransformersUpgradeDialogStore
+                  .getState()
+                  .consumeServerUnloadedChat()
+                && currentCheckpoint
+              ) {
+                previousWasUnloaded = true;
+              }
+              if (!upgraded) {
+                throw new Error(getTransformersUpgradeRequiredMessage(displayName));
+              }
+            }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
             // worker requires a matching fingerprint that only the dialog produces.
@@ -766,7 +798,8 @@ export function useChatModelRuntime() {
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
-              reasoningStyle === "enable_thinking_effort"
+              reasoningStyle === "enable_thinking_effort" ||
+              reasoningStyle === "reasoning_effort"
                 ? clampReasoningEffortToLevels(
                     existingReasoningEffort,
                     reasoningEffortLevels,

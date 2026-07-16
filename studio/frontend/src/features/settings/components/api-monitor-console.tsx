@@ -111,7 +111,7 @@ function MonitorEntry({
   const reply = replyText || (entry.status === "running" ? "Waiting..." : "No reply");
 
   return (
-    <article className="rounded-lg border border-border/70 bg-background">
+    <article className="min-w-0 rounded-lg border border-border/70 bg-background">
       <button
         type="button"
         onClick={onToggle}

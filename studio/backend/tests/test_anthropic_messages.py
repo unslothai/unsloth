@@ -1631,6 +1631,48 @@ class TestAnthropicMessagesToolRouting:
         assert entry["status"] == "cancelled"
         assert monitor.active_count() == 0
 
+    @staticmethod
+    def _sse_blob(chunks):
+        # StreamingResponse may hand back str or already-encoded bytes.
+        return "".join(c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks)
+
+    def test_plain_streaming_unclassified_error_emits_error_event(self, monkeypatch):
+        # An unclassified mid-stream failure must surface as an SSE `error` event
+        # and stop, not a message_stop that masks a truncated turn as clean.
+        def _gen_boom(**_kwargs):
+            yield "partial"
+            raise RuntimeError("llama-server crashed mid-decode")
+
+        _mock_backend(monkeypatch, generate_chat_completion = _gen_boom)
+        payload = _basic_payload(stream = True)
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        blob = self._sse_blob(self._consume_response(response))
+
+        assert "event: error" in blob
+        assert '"type": "error"' in blob
+        assert "event: message_stop" not in blob
+
+    def test_tool_streaming_unclassified_error_emits_error_event(self, monkeypatch):
+        # Same guarantee on the tool-calling stream path.
+        def _gen_tools_boom(**_kwargs):
+            yield {"type": "content", "text": "partial"}
+            raise RuntimeError("llama-server crashed mid-decode")
+
+        _mock_backend(monkeypatch, generate_chat_completion_with_tools = _gen_tools_boom)
+        payload = _basic_payload(
+            stream = True,
+            enable_tools = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        blob = self._sse_blob(self._consume_response(response))
+
+        assert "event: error" in blob
+        assert '"type": "error"' in blob
+        assert "event: message_stop" not in blob
+
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -1739,7 +1781,9 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls[0][0] == "plain"
 
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
-        # Mirror of the previous test for the default (None) policy.
+        # Mirror of the previous test for the default (None) policy. An omitted
+        # permission_mode still runs here because web_search is a safe server tool
+        # (only a selected terminal/python would require the missing gate).
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
@@ -1760,6 +1804,126 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
         assert backend.calls == []
+
+    def test_permission_mode_gating_for_server_tools(self, monkeypatch):
+        # ask is a request for a per-call pause this channel cannot honor, so it is
+        # always rejected, even for a safe-only server tool (web_search).
+        safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = safe_tools, permission_mode = "ask")
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "no confirmation channel" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
+
+        # auto only gates unsafe calls, so a safe-only selection runs (nothing to
+        # gate), like the omitted default. Both keep existing callers working.
+        for extra in ({"permission_mode": "auto"}, {}):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(tools = safe_tools, **extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+        # But auto or an omitted mode that would run a local tool (terminal/python,
+        # via a bare Anthropic tool type or enabled_tools) is rejected, since that
+        # tool could need the gate this channel lacks.
+        for local_payload in (
+            _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
+            _basic_payload(
+                tools = [{"type": "terminal", "name": "terminal"}], permission_mode = "auto"
+            ),
+            _basic_payload(tools = safe_tools, enable_tools = True, enabled_tools = ["python"]),
+        ):
+            backend = _mock_backend(monkeypatch)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(local_payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert "terminal" in exc.value.detail["error"]["message"]
+            assert backend.calls == []
+
+        # off, full, and a legacy confirm_tool_calls=False opt-out all run, even
+        # with a local tool selected. The explicit opt-out wins over the mode
+        # (mirrors _permission_mode_confirm and the GGUF path), so it runs even
+        # under ask, which otherwise always rejects.
+        for extra in (
+            {"tools": safe_tools, "permission_mode": "off"},
+            {"tools": safe_tools, "permission_mode": "full"},
+            {"tools": safe_tools, "enabled_tools": ["python"], "confirm_tool_calls": False},
+            {"tools": safe_tools, "permission_mode": "ask", "confirm_tool_calls": False},
+            {
+                "tools": [{"type": "terminal", "name": "terminal"}],
+                "permission_mode": "ask",
+                "confirm_tool_calls": False,
+            },
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(**extra)
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+    def test_render_html_gated_for_server_tools(self, monkeypatch):
+        # render_html is no longer unconditionally safe: a networked canvas prompts
+        # in auto and this channel cannot present that gate, so selecting it under
+        # ask/auto/omitted rejects like terminal/python; off/full (and an explicit
+        # confirm opt-out) run it.
+        rh = {"enable_tools": True, "enabled_tools": ["render_html"]}
+        for mode in ("ask", "auto", None):
+            backend = _mock_backend(monkeypatch)
+            fields = dict(rh)
+            if mode is not None:
+                fields["permission_mode"] = mode
+            payload = _basic_payload(**fields)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert "no confirmation channel" in exc.value.detail["error"]["message"]
+            assert backend.calls == []
+        for extra in (
+            {"permission_mode": "off"},
+            {"permission_mode": "full"},
+            {"confirm_tool_calls": False},
+        ):
+            backend = _mock_backend(monkeypatch)
+            payload = _basic_payload(**{**rh, **extra})
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert backend.calls[0][0] == "tools"
+
+    def test_permission_mode_rejected_before_auto_switch(self, monkeypatch):
+        # The unsupported-mode rejection must run before _maybe_auto_switch_model,
+        # so an invalid confirm-gated request never evicts the resident model
+        # (mirrors the pre-switch malformed- and mixed-tool guards).
+        import routes.inference as inf_mod
+
+        switch_calls = []
+
+        async def _rec_switch(*_args, **_kwargs):
+            switch_calls.append(1)
+
+        monkeypatch.setattr(inf_mod, "_maybe_auto_switch_model", _rec_switch)
+        safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        local_tools = [{"type": "terminal", "name": "terminal"}]
+
+        # ask (any server tool), auto with a local tool, and an omitted mode
+        # selecting a local tool are all rejected up front, before the switch runs.
+        for payload in (
+            _basic_payload(tools = safe_tools, permission_mode = "ask"),
+            _basic_payload(tools = local_tools, permission_mode = "auto"),
+            _basic_payload(tools = local_tools),
+        ):
+            switch_calls.clear()
+            _mock_backend(monkeypatch)
+            with pytest.raises(HTTPException) as exc:
+                _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+            assert exc.value.status_code == 400
+            assert switch_calls == [], "rejection must precede the auto-switch"
+
+        # A supported request (off) still reaches the switch and runs the loop.
+        switch_calls.clear()
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = safe_tools, permission_mode = "off")
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert switch_calls == [1]
 
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
         backend = _mock_backend(monkeypatch)
@@ -1954,3 +2118,339 @@ def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkey
     if isinstance(merged, list):
         merged = " ".join(p.get("text", "") for p in merged if isinstance(p, dict))
     assert "first question" in merged and "please continue" in merged
+
+
+def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
+    """Heartbeats from a parallel-disabled, dropped tool call must still reach
+    the client as SSE keepalives: the dropped call runs server-side and the
+    stall keepalive never fires while the generator keeps producing events, so
+    swallowing them recreates the silent window keepalives exist to prevent."""
+    import threading as _threading
+
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_tool_stream,
+    )
+
+    def run_gen():
+        def gen():
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            yield {"type": "heartbeat"}
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "result": "r1",
+            }
+            # Second call: dropped by disable_parallel_tool_use, still executed
+            # server-side (heartbeats + live output).
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "arguments": {},
+            }
+            yield {"type": "heartbeat"}
+            yield {
+                "type": "tool_output",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "text": "x",
+            }
+            yield {"type": "heartbeat"}
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "result": "r2",
+            }
+            yield {"type": "content", "text": "final answer"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_tool_stream(
+            request,
+            _threading.Event(),
+            run_gen,
+            "msg_hb",
+            "m",
+            disable_parallel_tool_use = True,
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    # One heartbeat inside the kept call, two inside the dropped window.
+    assert len(keepalives) >= 3
+    # The dropped call must not surface as a second tool_use block.
+    tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
+    assert len(tool_use_starts) == 1
+
+
+def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
+    """A chatty tool streaming tool_output/tool_args with no heartbeats keeps the
+    generator busy (stall keepalive never fires); the Anthropic path can't
+    translate those events and drops them. Dropping silently would let an idle
+    proxy kill the stream, so the drop branch emits a rate-limited keepalive."""
+    import threading as _threading
+
+    import routes.inference as inf_mod
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_tool_stream,
+    )
+
+    # Deterministic clock: only the drop-branch keepalive uses time.monotonic
+    # here, so jumping past the stall window per call makes each dropped event
+    # cross the rate-limit threshold. asyncio.wait uses the loop clock and
+    # next(gen) returns promptly, so the outer stall keepalive never fires --
+    # every keepalive here is from the drop branch.
+    _real_time = inf_mod.time
+    _tick = {"v": 0.0}
+
+    def _fast_monotonic():
+        _tick["v"] += 100.0
+        return _tick["v"]
+
+    fake_time = SimpleNamespace(
+        monotonic = _fast_monotonic,
+        sleep = _real_time.sleep,
+        time = _real_time.time,
+        perf_counter = _real_time.perf_counter,
+    )
+    monkeypatch.setattr(inf_mod, "time", fake_time)
+
+    n_output = 4
+
+    def run_gen():
+        def gen():
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            # Chatty streamed stdout, no heartbeats.
+            for i in range(n_output):
+                yield {
+                    "type": "tool_output",
+                    "tool_name": "python",
+                    "tool_call_id": "call_0",
+                    "text": f"line {i}\n",
+                }
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "result": "done",
+            }
+            yield {"type": "content", "text": "final answer"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_tool_stream(
+            request,
+            _threading.Event(),
+            run_gen,
+            "msg_drop_ka",
+            "m",
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    assert len(keepalives) == n_output
+    # Final answer still reaches the client (drop is transport-only).
+    assert any("final answer" in c for c in chunks)
+
+
+def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(monkeypatch):
+    """Under disable_parallel_tool_use a chatty second call is dropped whole
+    (drop_until_tool_end). Its tool_output/tool_args events must still emit
+    rate-limited keepalives: the drop window can last minutes with no heartbeats
+    and no stall keepalive, so swallowing them silently would let an idle proxy
+    kill the stream. The keepalive branch runs before the drop skip."""
+    import threading as _threading
+
+    import routes.inference as inf_mod
+    from routes.inference import (
+        _OPENAI_PASSTHROUGH_SSE_KEEPALIVE,
+        _anthropic_tool_stream,
+    )
+
+    # Deterministic clock: jumps past the stall window per call (see sibling test).
+    _real_time = inf_mod.time
+    _tick = {"v": 0.0}
+
+    def _fast_monotonic():
+        _tick["v"] += 100.0
+        return _tick["v"]
+
+    fake_time = SimpleNamespace(
+        monotonic = _fast_monotonic,
+        sleep = _real_time.sleep,
+        time = _real_time.time,
+        perf_counter = _real_time.perf_counter,
+    )
+    monkeypatch.setattr(inf_mod, "time", fake_time)
+
+    n_output = 4
+
+    def run_gen():
+        def gen():
+            # First (kept) call.
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "arguments": {},
+            }
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_0",
+                "result": "r1",
+            }
+            # Second call: dropped whole by disable_parallel_tool_use but still
+            # executed server-side, streaming chatty stdout with no heartbeats.
+            yield {
+                "type": "tool_start",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "arguments": {},
+            }
+            for i in range(n_output):
+                yield {
+                    "type": "tool_output",
+                    "tool_name": "python",
+                    "tool_call_id": "call_1",
+                    "text": f"line {i}\n",
+                }
+            yield {
+                "type": "tool_end",
+                "tool_name": "python",
+                "tool_call_id": "call_1",
+                "result": "r2",
+            }
+            yield {"type": "content", "text": "final answer"}
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_tool_stream(
+            request,
+            _threading.Event(),
+            run_gen,
+            "msg_drop_ka2",
+            "m",
+            disable_parallel_tool_use = True,
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    assert len(keepalives) == n_output
+    # The dropped call must not surface as a second tool_use block.
+    tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
+    assert len(tool_use_starts) == 1
+    assert any("final answer" in c for c in chunks)
+
+
+def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
+    """No-tool Anthropic stream must emit SSE keepalives while a long prompt
+    prefill blocks next(gen), matching the tool stream (finding 5). The old
+    single unbounded to_thread(next, ...) could sit silent past a proxy idle cap."""
+    import threading as _threading
+    import time as _time
+
+    from routes import inference as inf_mod
+    from routes.inference import _OPENAI_PASSTHROUGH_SSE_KEEPALIVE, _anthropic_plain_stream
+
+    monkeypatch.setattr(inf_mod, "_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S", 0.05)
+
+    def run_gen():
+        def gen():
+            _time.sleep(0.24)  # stall past several shortened keepalive windows
+            yield "hello world"
+
+        return gen()
+
+    async def _drive():
+        async def _is_disconnected():
+            return False
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_plain_stream(
+            request, _threading.Event(), run_gen, "msg_plain_ka", "m"
+        )
+        return [chunk async for chunk in resp.body_iterator]
+
+    chunks = asyncio.run(_drive())
+    keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
+    assert len(keepalives) >= 2
+    assert any("hello world" in c for c in chunks)
+
+
+def test_plain_stream_closes_generator_on_disconnect():
+    """On disconnect the no-tool teardown must drain any pending worker and close
+    the generator (finding 6). The old finally only stopped the disconnect
+    watcher, leaking the generator. A fake generator records close() so the
+    teardown is asserted deterministically, not via GC."""
+    import threading as _threading
+
+    from routes.inference import _anthropic_plain_stream
+
+    closed = _threading.Event()
+
+    class _FakeGen:
+        def __init__(self):
+            self._items = iter(["tok0", "tok1", "tok2", "tok3"])
+
+        def __next__(self):
+            return next(self._items)
+
+        def close(self):
+            closed.set()
+
+    def run_gen():
+        return _FakeGen()
+
+    state = {"disconnected": False}
+
+    async def _drive():
+        async def _is_disconnected():
+            return state["disconnected"]
+
+        request = SimpleNamespace(is_disconnected = _is_disconnected)
+        resp = await _anthropic_plain_stream(
+            request, _threading.Event(), run_gen, "msg_plain_close", "m"
+        )
+        out = []
+        async for chunk in resp.body_iterator:
+            out.append(chunk)
+            if "tok0" in chunk:
+                # Client drops after the first token; the next loop turn tears down.
+                state["disconnected"] = True
+        return out
+
+    asyncio.run(_drive())
+    assert closed.is_set()
