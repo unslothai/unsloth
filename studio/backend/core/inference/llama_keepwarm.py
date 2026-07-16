@@ -237,6 +237,25 @@ def _preview_swap_active() -> bool:
         return _preview_swap_inflight > 0
 
 
+def preview_swapped_since_entry(scope) -> bool:
+    """True if a preview swap ran, or is running, since this request entered the
+    middleware. Extends the gate-wait reject flag to catch a non-preview request that
+    passed the gate BEFORE a swap (so it never set _PREVIEW_SWAP_REJECT_SCOPE_KEY) but is
+    still pre-admission when a preview swaps the model out from under it: run at local-
+    inference admission, it would otherwise serve and then claim the swapped-in
+    checkpoint. entry_gen is None only when the middleware never snapshotted it (non-dict
+    scope / non-inference path), so fall back to the swap-in-progress flag alone."""
+    if not isinstance(scope, dict):
+        return False
+    if scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
+        return True
+    entry_gen = scope.get(_SWAP_GEN_AT_ENTRY_KEY)
+    with _lock:
+        if _preview_swap_inflight > 0:
+            return True
+        return entry_gen is not None and _preview_swap_generation != entry_gen
+
+
 def _claim_non_preview_slot() -> None:
     """A non-preview inference request that actually ran against the local model (a
     2xx response) adopts it for Studio, so clear preview ownership -- a later preview
@@ -262,6 +281,11 @@ _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 # 503) so an external-provider request, which untracks and returns before that check,
 # is never rejected for a swap it never touches.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
+
+# The swap generation snapshot at middleware entry, stored on the scope so local-
+# inference admission can also reject a request that passed the gate BEFORE a swap (so it
+# never got the gate-wait reject flag) but is still pre-auth when a preview swaps in.
+_SWAP_GEN_AT_ENTRY_KEY = "_unsloth_keepwarm_swap_gen_at_entry"
 
 # Set on the ASGI scope by a streaming route that failed after its 200 headers were
 # sent (an SSE error chunk, a passthrough relaying a mid-stream error while HTTP stays
@@ -398,6 +422,11 @@ class LlamaKeepWarmMiddleware:
         # swap already underway (counter bumped, gate not yet released). Either rejects.
         swap_gen_at_entry = _preview_swap_gen()
         swap_active_at_entry = _preview_swap_active()
+        # Store the entry generation so local-inference admission can reject a request
+        # that passed the gate before a later swap (it never waits on the gate, so the
+        # block below won't flag it) yet is still pre-auth when the preview swaps in.
+        if isinstance(scope, dict):
+            scope[_SWAP_GEN_AT_ENTRY_KEY] = swap_gen_at_entry
         started = False
         try:
             async with _unload_gate():

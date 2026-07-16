@@ -854,7 +854,7 @@ def test_generation_paths_rely_on_middleware_claim():
     audio_src = inspect.getsource(inference.generate_audio)
     assert "_claim_slot_for_non_preview(" not in stream_src
     assert "_claim_slot_for_non_preview(" not in audio_src
-    assert "_PREVIEW_SWAP_REJECT_SCOPE_KEY" in stream_src
+    assert "preview_swapped_since_entry(" in stream_src
 
 
 def test_preview_swap_proceeds_when_studio_request_only_queued(fake_slot):
@@ -1480,6 +1480,38 @@ def test_preview_not_blocked_by_unadmitted_inflight_request(fake_slot, monkeypat
     finally:
         kw._inflight = 0
         kw._admitted_inference = 0
+
+
+def test_preview_swapped_since_entry_catches_pre_admission_swap():
+    # Codex P2 (round 22): a non-preview request that passed the middleware gate BEFORE a
+    # preview swap never gets _PREVIEW_SWAP_REJECT_SCOPE_KEY (it did not wait on the gate
+    # during the swap). preview_swapped_since_entry compares the swap generation captured
+    # on the scope at entry against the current one, so local-inference admission still
+    # rejects it after the swap; a swap in progress and the gate-wait flag also reject.
+    from core.inference import llama_keepwarm as kw
+
+    kw._preview_swap_generation = 5
+    kw._preview_swap_inflight = 0
+    try:
+        # Entered when the generation was 5, no swap since: not rejected.
+        scope = {"path": "/v1/chat/completions", kw._SWAP_GEN_AT_ENTRY_KEY: 5}
+        assert kw.preview_swapped_since_entry(scope) is False
+        # A preview swap completes (generation advances) while it is pre-admission.
+        kw._preview_swap_generation = 6
+        assert kw.preview_swapped_since_entry(scope) is True
+        # A swap in progress rejects even before the generation advances.
+        scope2 = {"path": "/v1/chat/completions", kw._SWAP_GEN_AT_ENTRY_KEY: 6}
+        assert kw.preview_swapped_since_entry(scope2) is False
+        kw._preview_swap_inflight = 1
+        assert kw.preview_swapped_since_entry(scope2) is True
+        # The explicit gate-wait flag still rejects (checked first).
+        kw._preview_swap_inflight = 0
+        assert kw.preview_swapped_since_entry({kw._PREVIEW_SWAP_REJECT_SCOPE_KEY: True}) is True
+        # A non-dict scope is never rejected.
+        assert kw.preview_swapped_since_entry(None) is False
+    finally:
+        kw._preview_swap_generation = 0
+        kw._preview_swap_inflight = 0
 
 
 def test_responses_stream_failure_paths_mark_response_failed():

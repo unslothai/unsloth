@@ -3475,7 +3475,7 @@ async def _maybe_auto_switch_model(
         other_inference_request_count,
         inference_lifecycle_gate,
         note_admitted_inference,
-        _PREVIEW_SWAP_REJECT_SCOPE_KEY,
+        preview_swapped_since_entry,
     )
 
     # This request passed FastAPI auth and reached the local-inference path, so count it
@@ -3483,13 +3483,14 @@ async def _maybe_auto_switch_model(
     # _inflight (a no-op for preview scopes, which carry their own ownership).
     _swap_scope = getattr(fastapi_request, "scope", None)
     note_admitted_inference(_swap_scope)
-    # A preview swapped in a different checkpoint while this request was queued on the
-    # keep-warm gate (the middleware flags the scope). Running now would serve the
-    # preview's model to Studio traffic, so reject and let the client retry. Deferred
-    # here (not a middleware 503) so an external-provider request that untracks and
-    # returns before this hook is never rejected for a swap it never touched; over-
-    # rejecting a local request is acceptable, serving the wrong checkpoint is not.
-    if isinstance(_swap_scope, dict) and _swap_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
+    # A preview swapped a different checkpoint in since this request entered. Running now
+    # would serve the preview's model to Studio traffic, so reject and let the client
+    # retry. Covers a request that waited on the gate through the swap AND one that
+    # passed the gate before the swap but is still pre-admission. Deferred here (not a
+    # middleware 503) so an external-provider request that untracks and returns before
+    # this hook is never rejected for a swap it never touched; over-rejecting a local
+    # request is acceptable, serving the wrong checkpoint is not.
+    if preview_swapped_since_entry(_swap_scope):
         raise HTTPException(
             status_code = 503,
             detail = "A preview is loading a model. Please retry shortly.",
@@ -5615,16 +5616,18 @@ async def generate_stream(
     # where this guard otherwise runs. No direct claim is needed: the keep-warm
     # middleware claims the slot on a successful 2xx.
     from core.inference.llama_keepwarm import (
-        _PREVIEW_SWAP_REJECT_SCOPE_KEY,
         mark_response_failed,
         note_admitted_inference,
+        preview_swapped_since_entry,
     )
 
     _gs_scope = getattr(fastapi_request, "scope", None)
     # Passed auth and reached local inference, so count it in the admitted-inference
     # tally the preview busy guard uses instead of raw _inflight.
     note_admitted_inference(_gs_scope)
-    if isinstance(_gs_scope, dict) and _gs_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
+    # Reject if a preview swapped in since this request entered (waited on the gate
+    # through the swap, or passed the gate before it but is still pre-admission).
+    if preview_swapped_since_entry(_gs_scope):
         raise HTTPException(
             status_code = 503,
             detail = "A preview is loading a model. Please retry shortly.",
