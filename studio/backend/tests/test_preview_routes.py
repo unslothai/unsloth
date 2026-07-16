@@ -1722,6 +1722,7 @@ def test_non_streaming_tool_cancel_marks_response_failed():
     # failed before returning or the middleware claims a preview-owned slot for a cancelled
     # completion (round 29 covered their streaming siblings; these are the non-streaming ones).
     import inspect
+
     src = inspect.getsource(inference.openai_chat_completions)
     sentinel = '"cancelled" if cancel_event.is_set() else "completed"'
     non_streaming = 0

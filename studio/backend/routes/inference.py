@@ -8299,7 +8299,6 @@ async def openai_chat_completions(
                 # middleware claims a preview-owned slot for a cancelled completion.
                 if cancel_event.is_set():
                     from core.inference.llama_keepwarm import mark_current_response_failed
-
                     mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -9339,7 +9338,6 @@ async def openai_chat_completions(
             # claims a preview-owned slot for a cancelled completion.
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_current_response_failed
-
                 mark_current_response_failed()
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
