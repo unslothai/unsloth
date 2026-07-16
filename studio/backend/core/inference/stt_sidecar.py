@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import gc
 import io
+import json
 import re
 import threading
+from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
@@ -61,6 +63,10 @@ class SttModelNotDownloadedError(RuntimeError):
 
 class SttModelIdError(ValueError):
     """The requested custom model is not a valid Hugging Face repository id."""
+
+
+class SttModelCompatibilityError(ValueError):
+    """The requested repository is not a Transformers Whisper checkpoint."""
 
 
 class SttAudioDecodeError(ValueError):
@@ -150,6 +156,57 @@ def resolve_model_repo(model_id: str) -> str:
     """Return the Hub repository for a curated or custom model id."""
     resolved = resolve_model_id(model_id)
     return STT_MODELS.get(resolved, resolved)
+
+
+def _is_whisper_config(config: object) -> bool:
+    """True when Hub/local config metadata identifies a Whisper ASR model."""
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type.strip().lower() == "whisper":
+        return True
+    architectures = config.get("architectures")
+    return isinstance(architectures, list) and any(
+        isinstance(name, str) and name == "WhisperForConditionalGeneration"
+        for name in architectures
+    )
+
+
+def _read_json_object(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding = "utf-8") as file:
+            value = json.load(file)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def validate_remote_model(model: Optional[str], hf_token: Optional[str] = None) -> dict:
+    """Verify a custom Hub repository is Whisper-compatible without downloading weights."""
+    model_id = resolve_model_id(model)
+    repo = resolve_model_repo(model_id)
+    if model_id in STT_MODELS:
+        return {"model": model_id, "repo": repo}
+
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi(token = hf_token or False).model_info(
+            repo,
+            expand = ["config"],
+            timeout = 10,
+        )
+    except Exception as exc:
+        raise SttModelCompatibilityError(
+            f"Could not verify STT model '{model_id}'. "
+            "Check that the repository exists and your Hugging Face token can access it."
+        ) from exc
+
+    if not _is_whisper_config(getattr(info, "config", None)):
+        raise SttModelCompatibilityError(
+            f"STT model '{model_id}' is not a compatible Transformers Whisper model."
+        )
+    return {"model": model_id, "repo": repo}
 
 
 def _is_missing_local_model_error(exc: BaseException) -> bool:
@@ -259,6 +316,8 @@ def _decode_audio_bounded(audio: bytes):
 
     try:
         with av.open(io.BytesIO(audio), mode = "r", metadata_errors = "ignore") as container:
+            if not container.streams.audio:
+                raise SttAudioDecodeError("Could not decode the audio.")
             frames = iter(container.decode(audio = 0))
             while True:
                 try:
@@ -279,7 +338,7 @@ def _decode_audio_bounded(audio: bytes):
                     write_frame(resampled)
             for resampled in resampler.resample(None):
                 write_frame(resampled)
-    except SttAudioTooLongError:
+    except (SttAudioDecodeError, SttAudioTooLongError):
         raise
     except (FFmpegError, ValueError, RuntimeError) as exc:
         raise SttAudioDecodeError("Could not decode the audio.") from exc
@@ -427,15 +486,26 @@ class WhisperSttSidecar:
             _clear_device_cache(device)
             raise
 
-    def _ensure_model_downloaded(self, model_id: str) -> None:
-        """Fail before decode or model replacement when the cache is incomplete."""
+    def _ensure_model_downloaded(self, model_id: str) -> Optional[bool]:
+        """Validate the local snapshot before decode or resident-model replacement.
+
+        Returns the checkpoint's multilingual flag when local metadata provides
+        it. Studio's curated defaults are known multilingual.
+        """
         model_id = resolve_model_id(model_id)
         with self._lock:
             if self._engine is not None and self._model_id == model_id:
-                return
+                resident_model = (
+                    self._engine[0]
+                    if isinstance(self._engine, (tuple, list))
+                    else self._engine
+                )
+                generation_config = getattr(resident_model, "generation_config", None)
+                is_multilingual = getattr(generation_config, "is_multilingual", None)
+                return is_multilingual if isinstance(is_multilingual, bool) else None
         try:
             from huggingface_hub import snapshot_download
-            snapshot_download(
+            snapshot = snapshot_download(
                 repo_id = resolve_model_repo(model_id),
                 local_files_only = True,
             )
@@ -446,6 +516,22 @@ class WhisperSttSidecar:
                     "Download it in Settings, then Voice, before loading it."
                 ) from exc
             raise
+
+        if model_id in STT_MODELS:
+            return True
+
+        snapshot_path = Path(snapshot)
+        if not _is_whisper_config(_read_json_object(snapshot_path / "config.json")):
+            raise SttModelCompatibilityError(
+                f"STT model '{model_id}' is not a compatible Transformers Whisper model."
+            )
+        generation_config = _read_json_object(snapshot_path / "generation_config.json")
+        is_multilingual = generation_config.get("is_multilingual")
+        if isinstance(is_multilingual, bool):
+            return is_multilingual
+        if resolve_model_repo(model_id).lower().endswith(".en"):
+            return False
+        return None
 
     def load(self, model: Optional[str] = None):
         """Load (or switch to) a model, reusing it if already resident.
@@ -536,6 +622,14 @@ class WhisperSttSidecar:
         import torch
 
         model, processor = self.load(model_id)
+        effective_generate_kwargs = dict(generate_kwargs)
+        generation_config = getattr(model, "generation_config", None)
+        if getattr(generation_config, "is_multilingual", None) is False:
+            # Transformers rejects both controls for English-only Whisper
+            # checkpoints; their generation config already fixes the language
+            # and transcription task.
+            effective_generate_kwargs.pop("task", None)
+            effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
         target_dtype = getattr(model, "dtype", None)
         parts: list[str] = []
@@ -552,7 +646,7 @@ class WhisperSttSidecar:
                 features = inputs.input_features.to(model.device)
                 if target_dtype is not None:
                     features = features.to(target_dtype)
-                generated = model.generate(features, **generate_kwargs)
+                generated = model.generate(features, **effective_generate_kwargs)
                 text = processor.batch_decode(generated, skip_special_tokens = True)
                 parts.append(text[0] if text else "")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
@@ -583,7 +677,11 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by STT model '{model_id}'."
             )
-        self._ensure_model_downloaded(model_id)
+        is_multilingual = self._ensure_model_downloaded(model_id)
+        if is_multilingual is False and lang not in (None, "en"):
+            raise SttLanguageError(
+                f"Language '{language}' is not supported by English-only STT model '{model_id}'."
+            )
         decoded_audio = _decode_audio_bounded(audio)
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior
         # context, which otherwise causes runaway repeats.

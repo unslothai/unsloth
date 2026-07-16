@@ -26,6 +26,7 @@ import {
   fetchSttStatus,
   loadSttModel,
   unloadSttModel,
+  validateSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   StudioSpeechSynthesisAdapter,
@@ -127,6 +128,7 @@ function SttModelCombobox({
   // instead of the combobox writing the raw value back as a search query.
   const selectingRef = useRef(false);
   const [inputValue, setInputValue] = useState(() => sttModelName(value));
+  const [validating, setValidating] = useState(false);
   // A pick fills the input with the model's display text. Treat that text as a
   // selection, not a search, so choosing a model never triggers a lookup.
   const trimmedInput = inputValue.trim();
@@ -161,33 +163,44 @@ function SttModelCombobox({
     }
 
     const ids: string[] = [];
-    if (isSttModelId(query)) {
-      ids.push(query);
-    }
     for (const result of results) {
       const tags = result.tags?.map((tag) => tag.toLowerCase()) ?? [];
       const isWhisper =
         result.id.toLowerCase().includes("whisper") || tags.includes("whisper");
+      const isExactMatch =
+        result.id.toLowerCase() === query.trim().toLowerCase();
       if (
-        isWhisper &&
-        result.pipelineTag === "automatic-speech-recognition" &&
+        (isExactMatch ||
+          (isWhisper &&
+            result.pipelineTag === "automatic-speech-recognition")) &&
         isSttModelLanguageCompatible(result.id, language) &&
         !ids.includes(result.id)
       ) {
         ids.push(result.id);
       }
     }
-    if (!ids.includes(value)) {
-      ids.push(value);
-    }
     return ids;
   }, [language, query, results, value]);
 
-  const selectModel = (model: string | null) => {
-    if (!(model && isSttModelId(model))) {
+  const selectModel = async (model: string | null) => {
+    if (!(model && isSttModelId(model)) || validating) {
       return;
     }
     selectingRef.current = true;
+    if (!(STT_MODELS as readonly string[]).includes(model)) {
+      setValidating(true);
+      try {
+        await validateSttModel(model, hfApiToken(hfToken));
+      } catch (error) {
+        selectingRef.current = false;
+        toast.error(t("settings.voice.dictation.sttModelInvalid"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+        return;
+      } finally {
+        setValidating(false);
+      }
+    }
     onChange(model);
     setInputValue(sttModelName(model));
   };
@@ -206,7 +219,7 @@ function SttModelCombobox({
           return;
         }
         event.preventDefault();
-        selectModel(items[0]);
+        void selectModel(items[0]);
       }}
     >
       <Combobox
@@ -215,7 +228,9 @@ function SttModelCombobox({
         filter={null}
         value={value}
         inputValue={inputValue}
-        onValueChange={selectModel}
+        onValueChange={(model) => {
+          void selectModel(model);
+        }}
         onInputValueChange={(next) => {
           // Ignore the value the combobox echoes back on a pick; keep our display.
           if (selectingRef.current) {
@@ -241,10 +256,12 @@ function SttModelCombobox({
           }
         />
         <ComboboxContent anchor={anchorRef}>
-          {isLoading && query ? (
+          {(isLoading && query) || validating ? (
             <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
               <Spinner className="size-3.5" />
-              {t("settings.voice.dictation.sttModelSearching")}
+              {validating
+                ? t("settings.voice.dictation.sttModelValidating")
+                : t("settings.voice.dictation.sttModelSearching")}
             </div>
           ) : (
             <ComboboxEmpty>
@@ -693,6 +710,16 @@ export function VoiceTab() {
   const startSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
+      if (!(STT_MODELS as readonly string[]).includes(sttModel)) {
+        try {
+          await validateSttModel(sttModel, hfApiToken(hfToken));
+        } catch (error) {
+          toast.error(t("settings.voice.dictation.sttModelInvalid"), {
+            description: error instanceof Error ? error.message : undefined,
+          });
+          return;
+        }
+      }
       await sttDownload.requestStartDownload(null, 0);
     } finally {
       setSttDownloadStarting(false);

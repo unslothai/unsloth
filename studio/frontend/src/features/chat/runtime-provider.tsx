@@ -1039,13 +1039,6 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
-  const speech = useMemo(
-    () =>
-      StudioSpeechSynthesisAdapter.isSupported()
-        ? new StudioSpeechSynthesisAdapter()
-        : undefined,
-    [],
-  );
   const attachments = useMemo(
     () =>
       new CompositeAttachmentAdapter([

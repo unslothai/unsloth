@@ -74,6 +74,41 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 _HIDDEN_STT_CACHE_NAMES = tuple(repo_id.replace("/", "--") for repo_id in _HIDDEN_STT_REPO_IDS)
 
 
+def _config_is_whisper(path: Path) -> bool:
+    try:
+        with open(path, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+    except Exception:
+        return False
+    if not isinstance(config, dict):
+        return False
+    model_type = config.get("model_type")
+    if isinstance(model_type, str) and model_type.strip().lower() == "whisper":
+        return True
+    architectures = config.get("architectures")
+    return isinstance(architectures, list) and any(
+        isinstance(name, str) and name == "WhisperForConditionalGeneration"
+        for name in architectures
+    )
+
+
+def _path_is_whisper_model(value: str) -> bool:
+    """Inspect an existing local model path without hiding name-only matches."""
+    if _HF_REPO_ID_RE.fullmatch(value.strip()):
+        return False
+    path = Path(value).expanduser()
+    try:
+        if path.is_file():
+            path = path.parent
+        candidates = [path / "config.json"]
+        snapshots = path / "snapshots"
+        if snapshots.is_dir():
+            candidates.extend(child / "config.json" for child in snapshots.iterdir())
+    except OSError:
+        return False
+    return any(_config_is_whisper(candidate) for candidate in candidates)
+
+
 def _is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
     EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
@@ -113,6 +148,8 @@ def _is_hidden_model(*values: str | None) -> bool:
             return True
         path_parts = re.split(r"[\\/]", low)
         if any(f"models--{name}" in path_parts for name in _HIDDEN_STT_CACHE_NAMES):
+            return True
+        if _path_is_whisper_model(v):
             return True
         if any(n in low for n in needles):
             return True

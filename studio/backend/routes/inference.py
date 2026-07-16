@@ -29,6 +29,7 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 
 from utils.api_errors import openai_error_body, anthropic_error_body
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
+from hub.dependencies import get_hf_token
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -5763,6 +5764,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
+        SttModelCompatibilityError,
         SttModelIdError,
         SttModelNotDownloadedError,
         SttUnavailableError,
@@ -5780,10 +5782,32 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
     except Exception as e:
         logger.error(f"STT load error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
+
+
+@studio_router.post("/audio/stt/validate")
+async def stt_validate(
+    payload: SttLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Verify a Hub repository is a Whisper checkpoint before downloading it."""
+    from core.inference.stt_sidecar import (
+        SttModelCompatibilityError,
+        SttModelIdError,
+        validate_remote_model,
+    )
+
+    try:
+        result = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+    except (SttModelIdError, SttModelCompatibilityError) as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    return JSONResponse(content = result)
 
 
 @studio_router.post("/audio/stt/unload")
@@ -5805,6 +5829,7 @@ async def _transcribe_audio_bytes(
         SttAudioTooLongError,
         SttLanguageError,
         SttLoadCancelledError,
+        SttModelCompatibilityError,
         SttModelIdError,
         SttModelNotDownloadedError,
         SttUnavailableError,
@@ -5832,6 +5857,8 @@ async def _transcribe_audio_bytes(
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelIdError as e:
+        raise HTTPException(status_code = 422, detail = str(e))
+    except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttLanguageError as e:
         raise HTTPException(status_code = 422, detail = str(e))

@@ -126,7 +126,7 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
     assert not models_route._is_hidden_model("user/stories260K-finetune-GGUF")
 
 
-def test_is_hidden_model_hides_dictation_models():
+def test_is_hidden_model_hides_dictation_models(tmp_path):
     assert models_route._is_hidden_model("unsloth/whisper-tiny")
     assert models_route._is_hidden_model("unsloth/whisper-base")
     assert models_route._is_hidden_model("unsloth/whisper-small")
@@ -137,6 +137,24 @@ def test_is_hidden_model_hides_dictation_models():
     assert not models_route._is_hidden_model("user/whisper-finetune")
     assert not models_route._is_hidden_model(
         "C:\\cache\\models--unsloth--whisper-small-finetune\\model.safetensors"
+    )
+    custom = tmp_path / "custom-whisper"
+    custom.mkdir()
+    (custom / "config.json").write_text(
+        '{"model_type": "whisper", '
+        '"architectures": ["WhisperForConditionalGeneration"]}'
+    )
+    (custom / "model.safetensors").write_bytes(b"weights")
+    assert models_route._is_hidden_model(
+        "user/custom-checkpoint",
+        str(custom / "model.safetensors"),
+    )
+    named_only = tmp_path / "whisper-finetune"
+    named_only.mkdir()
+    (named_only / "config.json").write_text('{"model_type": "llama"}')
+    assert not models_route._is_hidden_model(
+        "user/whisper-finetune",
+        str(named_only),
     )
 
 

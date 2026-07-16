@@ -19,6 +19,7 @@ from core.inference.stt_sidecar import (
     SttAudioTooLongError,
     SttLanguageError,
     SttLoadCancelledError,
+    SttModelCompatibilityError,
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
@@ -26,6 +27,7 @@ from core.inference.stt_sidecar import (
     normalize_whisper_language,
     resolve_model_id,
     resolve_model_repo,
+    validate_remote_model,
 )
 
 _REAL_DECODE_AUDIO_BOUNDED = stt_sidecar_module._decode_audio_bounded
@@ -131,6 +133,59 @@ def test_invalid_custom_model_id_is_rejected(model):
         resolve_model_id(model)
 
 
+def test_remote_custom_model_validation_requires_whisper_config(monkeypatch):
+    calls = []
+
+    class FakeApi:
+        def __init__(self, token):
+            calls.append(("token", token))
+
+        def model_info(self, repo, **kwargs):
+            calls.append(("model_info", repo, kwargs))
+            return SimpleNamespace(
+                config = {
+                    "model_type": "whisper",
+                    "architectures": ["WhisperForConditionalGeneration"],
+                }
+            )
+
+    monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
+
+    result = validate_remote_model("owner/custom-whisper", "hf_private")
+
+    assert result == {
+        "model": "owner/custom-whisper",
+        "repo": "owner/custom-whisper",
+    }
+    assert calls == [
+        ("token", "hf_private"),
+        (
+            "model_info",
+            "owner/custom-whisper",
+            {"expand": ["config"], "timeout": 10},
+        ),
+    ]
+
+
+def test_remote_custom_model_validation_rejects_non_whisper(monkeypatch):
+    class FakeApi:
+        def __init__(self, token):
+            assert token is False
+
+        def model_info(self, _repo, **_kwargs):
+            return SimpleNamespace(
+                config = {
+                    "model_type": "llama",
+                    "architectures": ["LlamaForCausalLM"],
+                }
+            )
+
+    monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
+
+    with pytest.raises(SttModelCompatibilityError, match = "not a compatible"):
+        validate_remote_model("owner/chat-model")
+
+
 def test_fast_transcription_uses_greedy_decoding(monkeypatch):
     sidecar = WhisperSttSidecar()
     infer = _CaptureInference()
@@ -197,6 +252,77 @@ def test_transcription_normalizes_region_qualified_language(monkeypatch):
     sidecar.transcribe(b"encoded audio", language = "fr-FR")
 
     assert infer.generate_kwargs["language"] == "fr"
+
+
+def test_english_only_model_rejects_non_english_before_decode(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text('{"model_type": "whisper"}')
+    (tmp_path / "generation_config.json").write_text('{"is_multilingual": false}')
+    sidecar = WhisperSttSidecar()
+
+    def should_not_decode(_audio):
+        pytest.fail("English-only language mismatch must be rejected before decode")
+
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda **_kwargs: str(tmp_path),
+    )
+    monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", should_not_decode)
+
+    with pytest.raises(SttLanguageError, match = "English-only"):
+        sidecar.transcribe(
+            b"encoded audio",
+            model = "owner/whisper-small.en",
+            language = "fr-FR",
+        )
+
+
+def test_english_only_model_omits_forbidden_generation_controls(monkeypatch):
+    calls = []
+
+    class FakeTensor:
+        def to(self, *_args):
+            return self
+
+    class FakeProcessor:
+        def __call__(self, *_args, **_kwargs):
+            return SimpleNamespace(input_features = FakeTensor())
+
+        def batch_decode(self, *_args, **_kwargs):
+            return ["hello"]
+
+    class FakeModel:
+        dtype = None
+        device = "cpu"
+        generation_config = SimpleNamespace(is_multilingual = False)
+
+        def generate(self, _features, **kwargs):
+            calls.append(kwargs)
+            return [[1]]
+
+    class NoGrad:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(no_grad = NoGrad))
+    sidecar = WhisperSttSidecar()
+    monkeypatch.setattr(sidecar, "load", lambda _model: (FakeModel(), FakeProcessor()))
+
+    text = sidecar._transcribe_decoded(
+        "owner/whisper-small.en",
+        np.zeros(160, dtype = np.float32),
+        {
+            "task": "transcribe",
+            "language": "en",
+            "condition_on_prev_tokens": False,
+            "num_beams": 1,
+        },
+    )
+
+    assert text == "hello"
+    assert calls == [{"condition_on_prev_tokens": False, "num_beams": 1}]
 
 
 def test_unknown_language_is_rejected_before_decode_or_model_load(monkeypatch):
@@ -339,11 +465,12 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
         ("openai/whisper-medium", "openai/whisper-medium"),
     ],
 )
-def test_model_cache_preflight_is_local_only(monkeypatch, model_id, repo_id):
+def test_model_cache_preflight_is_local_only(monkeypatch, tmp_path, model_id, repo_id):
     calls = []
+    (tmp_path / "config.json").write_text('{"model_type": "whisper"}')
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
-        lambda **kwargs: calls.append(kwargs) or "/cached/model",
+        lambda **kwargs: calls.append(kwargs) or str(tmp_path),
     )
 
     WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(model_id)
@@ -442,6 +569,28 @@ def test_missing_model_switch_keeps_resident_model(monkeypatch):
 
     with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
         sidecar.load("large-v3")
+
+    assert sidecar._engine is resident
+    assert sidecar.loaded_model == "small"
+
+
+def test_incompatible_custom_model_switch_keeps_resident_model(monkeypatch, tmp_path):
+    (tmp_path / "config.json").write_text(
+        '{"model_type": "llama", "architectures": ["LlamaForCausalLM"]}'
+    )
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    resident = (object(), object())
+    sidecar._engine = resident
+    sidecar._model_id = "small"
+    sidecar._device = "cpu"
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda **_kwargs: str(tmp_path),
+    )
+
+    with pytest.raises(SttModelCompatibilityError, match = "not a compatible"):
+        sidecar.load("owner/chat-model")
 
     assert sidecar._engine is resident
     assert sidecar.loaded_model == "small"
@@ -695,6 +844,47 @@ def test_bounded_decoder_rejects_malformed_audio(audio):
 
     with pytest.raises(SttAudioDecodeError, match = "Could not decode"):
         _REAL_DECODE_AUDIO_BOUNDED(audio)
+
+
+def test_bounded_decoder_rejects_container_without_audio_stream(monkeypatch):
+    class FakeFFmpegError(Exception):
+        pass
+
+    class FakeResampler:
+        def __init__(self, **_kwargs):
+            pass
+
+    class FakeFifo:
+        samples = 0
+
+    class FakeContainer:
+        streams = SimpleNamespace(audio = [])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    fake_av = SimpleNamespace(
+        audio = SimpleNamespace(
+            resampler = SimpleNamespace(AudioResampler = FakeResampler),
+            fifo = SimpleNamespace(AudioFifo = FakeFifo),
+        ),
+        open = lambda *_args, **_kwargs: FakeContainer(),
+    )
+    monkeypatch.setitem(sys.modules, "av", fake_av)
+    monkeypatch.setitem(
+        sys.modules,
+        "av.error",
+        SimpleNamespace(
+            FFmpegError = FakeFFmpegError,
+            InvalidDataError = FakeFFmpegError,
+        ),
+    )
+
+    with pytest.raises(SttAudioDecodeError, match = "Could not decode"):
+        _REAL_DECODE_AUDIO_BOUNDED(b"video-only")
 
 
 def test_unload_releases_model_and_device():

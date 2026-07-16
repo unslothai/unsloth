@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import {
   applyDictationDictionary,
   recordRecentDictation,
@@ -115,6 +116,27 @@ export async function fetchSttStatus(refreshKey?: number): Promise<SttStatus> {
   const response = await authFetch(`/api/inference/audio/stt/status${suffix}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as SttStatus;
+}
+
+/** Verify a custom Hub repository is a Transformers Whisper checkpoint. */
+export async function validateSttModel(
+  model: string,
+  hfToken?: string,
+): Promise<void> {
+  const response = await authFetch("/api/inference/audio/stt/validate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(hfToken),
+    },
+    body: JSON.stringify({ model }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
 }
 
 /** Load a selected model already downloaded through Studio's Model Hub. */
