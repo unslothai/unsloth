@@ -13487,7 +13487,6 @@ async def _anthropic_passthrough_stream(
             # a preview-owned model for a cancelled generation (mirrors the OpenAI passthrough).
             if cancel_event.is_set():
                 from core.inference.llama_keepwarm import mark_response_failed
-
                 mark_response_failed(getattr(request, "scope", None))
             # Same shape as the OpenAI passthrough: a close-time CancelledError
             # re-raised by _aclose_stream_resources must not skip the tracker exit.

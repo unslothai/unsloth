@@ -1325,7 +1325,6 @@ def test_passthrough_cancel_marks_response_failed():
     # passthrough streams flag the response failed in their finally when cancel_event is set.
     import inspect
     import re
-
     for fn in (
         inference._openai_passthrough_stream_admitted,
         inference._anthropic_passthrough_stream,
