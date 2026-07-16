@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import threading
 import time
 
@@ -269,6 +270,26 @@ def mark_response_failed(scope) -> None:
         scope[_RESPONSE_FAILED_SCOPE_KEY] = True
 
 
+# The current request's ASGI scope, set by the middleware so deep streaming error
+# helpers can flag a failure without threading the scope through every yield site.
+# The middleware runs in the same task as the (same-task) streaming body, so the
+# contextvar propagates to the generators that emit the error SSE.
+_current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
+    "_unsloth_current_response_scope", default=None
+)
+
+
+def set_current_response_scope(scope) -> None:
+    _current_response_scope.set(scope if isinstance(scope, dict) else None)
+
+
+def mark_current_response_failed() -> None:
+    """Flag the current request's response as failed via the contextvar the middleware
+    set, so an OpenAI-family streaming error emitted deep in a generator (which has no
+    direct scope handle) still prevents the successful-response slot claim."""
+    mark_response_failed(_current_response_scope.get())
+
+
 def untrack_current_request(scope) -> None:
     """Drop this request from the in-flight count once the route knows it won't
     use the local GGUF, so unrelated external-provider traffic can't trip the
@@ -337,6 +358,10 @@ class LlamaKeepWarmMiddleware:
         # unloading) can't free the model while this request is waiting to start.
         path = scope.get("path") or ""
         is_preview = _is_preview_path(path)
+        # Expose this request's scope to deep streaming error helpers (same task, so
+        # the contextvar propagates to the response body generators), so an SSE error
+        # emitted after the 200 headers can flag the response failed.
+        set_current_response_scope(scope)
         _note_pending(is_preview)
         # Capture the preview-swap state before waiting on the gate: if a preview swap
         # completes while this non-preview request is blocked, the counter advances; if

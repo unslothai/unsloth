@@ -419,6 +419,13 @@ def _openai_stream_error_chunk(exc) -> dict:
 
 
 def _openai_stream_error_sse(error: dict) -> str:
+    # Every OpenAI-family streaming error (local chat/completions/responses, admission
+    # failures, and passthrough relays) is emitted through here after the 200 headers
+    # are already sent, so flag the response failed: the keep-warm middleware must not
+    # claim a preview-owned model for Studio on a stream that errored.
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
     return f"data: {json.dumps(error)}\n\ndata: [DONE]\n\n"
 
 
@@ -5561,6 +5568,27 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
+    # Enforce the preview-swap reject FIRST, before reading any backend state. If a
+    # public preview loaded a different checkpoint (GGUF or Unsloth/LoRA) while this
+    # native Studio request waited on the keep-warm gate, the middleware flagged the
+    # scope; the loaded-model and image-capability checks below would otherwise run
+    # against the swapped-in model and return a hard 400 instead of the intended
+    # retryable 503. generate_stream does not go through _maybe_auto_switch_model,
+    # where this guard otherwise runs. No direct claim is needed: the keep-warm
+    # middleware claims the slot on a successful 2xx.
+    from core.inference.llama_keepwarm import (
+        _PREVIEW_SWAP_REJECT_SCOPE_KEY,
+        mark_response_failed,
+    )
+
+    _gs_scope = getattr(fastapi_request, "scope", None)
+    if isinstance(_gs_scope, dict) and _gs_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
+        raise HTTPException(
+            status_code = 503,
+            detail = "A preview is loading a model. Please retry shortly.",
+            headers = {"Retry-After": "1"},
+        )
+
     backend = get_inference_backend()
 
     if not backend.active_model_name:
@@ -5597,26 +5625,6 @@ async def generate_stream(
                 event = "inference.decode_image_failed",
                 log = logger,
             )
-
-    # generate_stream does not go through _maybe_auto_switch_model, so enforce the
-    # preview-swap reject here: if a public preview loaded a different checkpoint (GGUF
-    # or Unsloth/LoRA) while this native Studio request waited on the keep-warm gate,
-    # the middleware flagged the scope and running now would silently stream from the
-    # preview's model. The keep-warm middleware claims the slot on a successful 2xx, so
-    # no direct claim is needed here (claiming before generation could strand a
-    # preview-owned checkpoint as Studio-owned if generation then fails).
-    from core.inference.llama_keepwarm import (
-        _PREVIEW_SWAP_REJECT_SCOPE_KEY,
-        mark_response_failed,
-    )
-
-    _gs_scope = getattr(fastapi_request, "scope", None)
-    if isinstance(_gs_scope, dict) and _gs_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
-        raise HTTPException(
-            status_code = 503,
-            detail = "A preview is loading a model. Please retry shortly.",
-            headers = {"Retry-After": "1"},
-        )
 
     cancel_event = threading.Event()
 

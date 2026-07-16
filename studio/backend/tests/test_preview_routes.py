@@ -1022,6 +1022,46 @@ def test_generate_stream_rejects_after_preview_swap(slot_state, monkeypatch):
     assert exc.value.status_code == 503
 
 
+def test_generate_stream_swap_reject_precedes_no_model_check(slot_state, monkeypatch):
+    # Codex P2: the preview-swap reject must run before the loaded-model / capability
+    # checks. If a preview loaded a GGUF (no active_model_name) while this request was
+    # queued, the request must get the retryable 503, not a hard 400 "No model loaded"
+    # from a backend-state check against the swapped-in model.
+    from models.inference import GenerateRequest
+    from core.inference import llama_keepwarm as kw
+
+    backend = SimpleNamespace(active_model_name = None, models = {})
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    req = GenerateRequest(messages = [{"role": "user", "content": "hi"}])
+    fake_req = SimpleNamespace(
+        scope = {
+            "path": "/api/inference/generate/stream",
+            kw._PREVIEW_SWAP_REJECT_SCOPE_KEY: True,
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference.generate_stream(req, fake_req, "tester"))
+    assert exc.value.status_code == 503  # retryable swap reject, not the 400 no-model
+
+
+def test_openai_stream_error_sse_flags_current_response_failed(slot_state):
+    # Codex P2: every OpenAI-family streaming error (local chat/completions/responses,
+    # admission failures, passthrough relays) is emitted through _openai_stream_error_sse
+    # after the 200 headers, so it must flag the current response failed via the
+    # contextvar the middleware sets -- otherwise the middleware claims a preview-owned
+    # model for Studio on a stream that errored.
+    from core.inference import llama_keepwarm as kw
+
+    scope = {"type": "http", "path": "/v1/chat/completions"}
+    kw.set_current_response_scope(scope)
+    try:
+        out = inference._openai_stream_error_sse({"error": {"message": "boom"}})
+        assert "boom" in out  # still returns the error SSE
+        assert scope.get(kw._RESPONSE_FAILED_SCOPE_KEY) is True
+    finally:
+        kw.set_current_response_scope(None)
+
+
 def test_same_loaded_identifier_is_filesystem_aware():
     # The already-loaded dedup must be filesystem-aware: on a case-sensitive filesystem
     # two checkpoint paths differing only by case are different models and must reload.
