@@ -1134,12 +1134,18 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # and nothing checks a signature or hash on the fetched content. Naming the source
     # turns a blind "yes" into informed consent.
     source = _install_source(install_hint)
-    warning = (
-        f"This will download and RUN a script from {source} with your privileges"
-        if source
-        else f"This will RUN `{install_hint}` with your privileges"
-    )
-    typer.secho(f"{warning}; there is no signature or hash check.", fg = "yellow", err = True)
+    if source:
+        warning = (
+            "Security warning: This will download and execute an unverified third-party "
+            f"script from {source} with your privileges. Unsloth does not pin or verify "
+            "the downloaded content. Continue only if you trust this source."
+        )
+    else:
+        warning = (
+            f"This will RUN `{install_hint}` with your privileges; "
+            "there is no signature or hash check."
+        )
+    typer.secho(warning, fg = "yellow", err = True)
     if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
     # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)

@@ -128,7 +128,7 @@ def test_install_agent_uses_powershell_on_windows(monkeypatch):
     assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
 
 
-def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
+def test_install_agent_warns_remote_installer_is_unverified_third_party(monkeypatch, capsys):
     # Before the confirm, a remote installer must name the URL it fetches so the
     # user consents to a specific source rather than blindly accepting.
     monkeypatch.setattr(start.os, "name", "nt")
@@ -137,9 +137,11 @@ def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
     hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
     assert start._install_agent("hermes", hint) is None
     err = capsys.readouterr().err
+    assert "Security warning" in err
+    assert "unverified third-party script" in err
     assert "https://hermes-agent.nousresearch.com/install.ps1" in err
-    assert "download and RUN" in err
-    assert "signature or hash" in err
+    assert "Unsloth does not pin or verify the downloaded content" in err
+    assert "Continue only if you trust this source" in err
 
 
 def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
