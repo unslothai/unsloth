@@ -1431,6 +1431,37 @@ def test_preview_not_blocked_by_pending_non_preview_waiter(fake_slot):
         kw._note_unpending(is_preview = False)
 
 
+def test_responses_stream_failure_paths_mark_response_failed():
+    # Codex P2 (round 20): _responses_stream emits its own response.failed SSE events
+    # (admission timeout, upstream unreachable, non-200, transport error, generic
+    # exception) after the 200 headers. With claim_resident=False the middleware would
+    # otherwise treat that 2xx as a successful Studio generation and clear preview
+    # ownership, so every failed-response builder / inline emitter flags the response
+    # failed before yielding.
+    import inspect
+
+    src = inspect.getsource(inference._responses_stream)
+    # 2 failure-only builders (admission-failed + failed_response_payload, the latter
+    # covering both the transport-error and generic-exception yields) plus 2 inline
+    # emitters (upstream-unreachable, non-200) all mark the response failed.
+    assert src.count('mark_response_failed(getattr(request, "scope", None))') >= 4
+
+
+def test_generate_stream_cancel_marks_response_failed():
+    # Codex P2 (round 20): generate_stream's `if cancel_event.is_set(): ... break` ends
+    # a 200 stream with no completion (client disconnect, possibly before the first
+    # token) without going through the except path, so it must flag the response failed
+    # or the middleware claims a preview-owned model for a stream that never completed.
+    import inspect
+
+    src = inspect.getsource(inference.generate_stream)
+    # Marked in the cancel-break branch in addition to the existing except handler.
+    assert src.count("mark_response_failed(_gs_scope)") >= 2
+    cancel_idx = src.index("if cancel_event.is_set():")
+    branch = src[cancel_idx : src.index("chunk = await asyncio.to_thread", cancel_idx)]
+    assert "mark_response_failed(_gs_scope)" in branch
+
+
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
     # A non-preview inference that returns 2xx adopts the resident model for Studio,
     # so the preview-ownership marker is cleared on completion.

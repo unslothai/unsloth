@@ -5709,6 +5709,11 @@ async def generate_stream(
                     # the generator does not signal a subprocess backend, so it would
                     # keep decoding. The finally's reset is guarded, so no double-run.
                     backend.reset_generation_state()
+                    # The 200 stream ends here with no completion (client disconnected,
+                    # possibly before the first token), so flag the failure: the
+                    # keep-warm middleware must not treat this cancelled stream as a
+                    # successful Studio generation and claim a preview-owned model.
+                    mark_response_failed(_gs_scope)
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
@@ -11034,6 +11039,8 @@ async def _responses_stream(
     (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
     with a ``function_call_output`` item next turn.
     """
+    from core.inference.llama_keepwarm import mark_response_failed
+
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
@@ -11089,6 +11096,10 @@ async def _responses_stream(
         raise _openai_admission_http_exception(exc, status_code = 429)
 
     def _responses_admission_failed_sse(exc: Exception, *, status_code: int) -> str:
+        # Emitted in-band after the 200 stream headers, so flag the response failed:
+        # the keep-warm middleware must not treat this failed stream as a successful
+        # Studio generation and claim a preview-owned model.
+        mark_response_failed(getattr(request, "scope", None))
         return (
             "event: response.failed\n"
             "data: "
@@ -11473,6 +11484,10 @@ async def _responses_stream(
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
         def _failed_response_payload(exc: Exception, status_code: int) -> dict:
+            # Built only for in-band response.failed events after the 200 headers, so
+            # flag the response failed: the keep-warm middleware must not treat this
+            # failed stream as a successful Studio generation and claim the slot.
+            mark_response_failed(getattr(request, "scope", None))
             return {
                 "type": "response.failed",
                 "response": {
@@ -11538,6 +11553,9 @@ async def _responses_stream(
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # 200 headers already flushed; this is an in-band failure, so the
+                # middleware must not claim a preview-owned model for it.
+                mark_response_failed(getattr(request, "scope", None))
                 yield _sse(
                     "response.failed",
                     {
@@ -11564,6 +11582,9 @@ async def _responses_stream(
                     err_text[:500],
                 )
                 api_monitor.fail(monitor_id, err_text[:500])
+                # 200 headers already flushed; an upstream non-200 is an in-band
+                # failure, so the middleware must not claim a preview-owned model.
+                mark_response_failed(getattr(request, "scope", None))
                 yield _sse(
                     "response.failed",
                     {
