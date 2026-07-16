@@ -13459,6 +13459,24 @@ async def _anthropic_passthrough_stream(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(chunk, dict):
+                    error_message = _monitor_openai_error_message(chunk)
+                    if error_message:
+                        # Upstream HTTP-200 SSE error payload (data: {"error": ...}):
+                        # emitter.feed_chunk ignores chunks without choices, so the stream
+                        # would finish cleanly and the middleware would claim a preview-owned
+                        # model. Flag failed and surface an Anthropic error event instead of a
+                        # silent message_stop (mirrors the OpenAI passthrough / Responses).
+                        from core.inference.llama_keepwarm import mark_response_failed
+
+                        mark_response_failed(getattr(request, "scope", None))
+                        event = _anthropic_stream_error_event(
+                            RuntimeError(error_message),
+                            force = True,
+                        )
+                        if event is not None:
+                            yield event
+                        return
                 if disable_parallel_tool_use:
                     _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):

@@ -1625,6 +1625,22 @@ def test_responses_stream_disconnect_and_error_chunk_mark_failed():
     assert "return" in err_branch
 
 
+def test_anthropic_passthrough_error_chunk_marks_failed():
+    # Codex P2 (round 28): the Anthropic passthrough ignored HTTP-200 data:{"error"} chunks
+    # (emitter.feed_chunk drops chunks without choices), so the stream finished cleanly and the
+    # middleware claimed a preview-owned model. The loop now detects the error before feed_chunk,
+    # flags the response failed, and surfaces an Anthropic error event before returning.
+    import inspect
+
+    src = inspect.getsource(inference._anthropic_passthrough_stream)
+    assert "_monitor_openai_error_message(chunk)" in src
+    err_idx = src.index("_monitor_openai_error_message(chunk)")
+    err_branch = src[err_idx : src.index("emitter.feed_chunk(chunk)", err_idx)]
+    assert 'mark_response_failed(getattr(request, "scope", None))' in err_branch
+    assert "_anthropic_stream_error_event(" in err_branch
+    assert "return" in err_branch
+
+
 def test_generate_stream_cancel_marks_response_failed():
     # Codex P2 (round 20): generate_stream's `if cancel_event.is_set(): ... break` ends a 200
     # stream with no completion (client disconnect, possibly before the first token) without
