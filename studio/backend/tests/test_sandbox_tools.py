@@ -121,6 +121,19 @@ class TestUntrustedHostBlock:
         _ok('import requests; url = "https://example.com/"; requests.get(url)')
 
 
+class TestLowLevelNetworkModules:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            'import httpcore; httpcore.request("GET", "https://example.com")',
+            'import boto3; boto3.client("s3").list_buckets()',
+            "from botocore.session import get_session; get_session()",
+        ],
+    )
+    def test_low_level_client_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: low-level network module")
+
+
 class TestHostNormalization:
     def test_trailing_dot_treated_same(self):
         _ok('import requests; requests.get("https://wikipedia.org./")')

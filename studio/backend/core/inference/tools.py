@@ -552,6 +552,10 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Low-level clients bypass the sandbox host scanner, so sandboxed Python blocks
+# them and auto mode asks before they can run.
+_SANDBOX_BLOCKED_NETWORK_MODULES = frozenset({"httpcore", "boto3", "botocore"})
+
 # Python: modules whose import alone signals side effects auto mode should ask
 # about (process spawning, network, bulk file ops, low-level memory).
 _AUTO_UNSAFE_PY_MODULES = frozenset(
@@ -605,6 +609,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "venv",
     }
 )
+_AUTO_UNSAFE_PY_MODULES |= _SANDBOX_BLOCKED_NETWORK_MODULES
 # Attribute calls that mutate the filesystem / spawn processes (os.remove,
 # Path.write_text, sock.connect, ...) regardless of how the module was bound.
 _AUTO_UNSAFE_PY_ATTRS = frozenset(
@@ -2403,19 +2408,22 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"@import|"
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
-    r"\b(?:src|href|srcset)\s*=\s*[\"']?\s*(?:https?:|/)|"
+    r"\b(?:src|href|srcset|action|formaction|poster|data|ping)\s*="
+    r"\s*[\"']?\s*(?:https?:|/)|"
+    r"\.\s*setAttribute\s*\(\s*[\"'`](?:src|href|srcset|action|formaction|"
+    r"poster|data|ping)[\"'`]|"
     # Self-navigation sinks: location.assign/replace(...), window.open(...), and
     # assigning a URL to (window.)location(.href). location.reload()/history.back
     # do not navigate to a new URL, so they stay static.
     r"\blocation\s*\.\s*(?:assign|replace)\s*\(|"
     r"\bwindow\s*\.\s*open\s*\(|"
     r"\b(?:window\s*\.\s*)?location(?:\s*\.\s*href)?\s*=\s*[\"'`]?\s*(?:https?:|/)|"
-    # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
-    r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
-    r"sendBeacon|serviceWorker)[\"']\s*\]|"
-    # Computed bracket key spliced at runtime on a global host object
-    # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
-    # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.
+    # Bracket access and computed keys on global host objects.
+    r"\[\s*[\"'`](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
+    r"sendBeacon|serviceWorker)[\"'`]\s*\]|"
+    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
+    r"(?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
+    r"sendBeacon|serviceWorker)[^\]]*\]|"
     r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
     r"(?:[\"']\s*\+|\+\s*[\"'])[^\]]*\]|"
     # Declarative meta-refresh navigation to a URL (order-tolerant); a bare
@@ -5116,6 +5124,29 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def _block_low_level_network_module(self, module_name: str, node) -> None:
+            root = module_name.split(".", 1)[0]
+            if root not in _SANDBOX_BLOCKED_NETWORK_MODULES:
+                return
+            network_calls.append(
+                {
+                    "type": "low_level_network_module_blocked",
+                    "line": getattr(node, "lineno", -1),
+                    "description": (
+                        f"Blocked: low-level network module {root!r} is unavailable "
+                        "in sandboxed code"
+                    ),
+                }
+            )
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                self._block_low_level_network_module(alias.name, node)
+
+        def visit_ImportFrom(self, node):
+            if node.module:
+                self._block_low_level_network_module(node.module, node)
+
         def visit_Call(self, node):
             parts: list[str] = []
             cur = node.func
