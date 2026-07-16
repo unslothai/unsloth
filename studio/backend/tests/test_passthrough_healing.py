@@ -1422,6 +1422,7 @@ class TestHealerSignalAlignment:
             "<|tool_call>",
             "<function=",
             "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
         }
 
     def test_prose_with_bare_args_marker_streams_through(self):
