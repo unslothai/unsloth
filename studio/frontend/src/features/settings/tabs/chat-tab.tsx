@@ -413,19 +413,8 @@ export function ChatTab() {
         }
       >
         {PLUS_MENU_SETTINGS.map((item) => (
-          <SettingsRow
-            key={item.id}
-            label={item.label}
-            icon={item.icon}
-            description={
-              // Canvas toggles visibility, not placement: off removes it
-              // from the menu entirely (the default) instead of moving it
-              // into "More".
-              item.id === "canvas"
-                ? "Off hides Canvas from the menu entirely."
-                : undefined
-            }
-          >
+          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
               checked={
                 item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
