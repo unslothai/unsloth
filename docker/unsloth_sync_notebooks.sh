@@ -37,45 +37,28 @@ STATE="$DEST/.unsloth_sync_state"     # "sha256  relpath" of what we last wrote
 SYNCED="$DEST/.unsloth_sync_commit"   # upstream commit we last synced to
 TIMEOUT="${UNSLOTH_NOTEBOOK_FETCH_TIMEOUT:-60}"
 
-# Helper that compares the *content* (the middle, ignoring the auto-generated
-# install header / announcements / footer) of two notebooks. Used so a refresh
-# doesn't rewrite an untouched notebook when only that boilerplate moved
-# upstream. Resolved from an explicit override, then PATH, then a sibling file.
+# Resolve a helper script ($1 explicit override, $2 PATH command name, $3
+# sibling filename next to this script), echoing the resolved path or nothing.
+# An empty result leaves the caller's guard to degrade gracefully. Used for the
+# content-sig comparator (SIG), categorized-view builder (VIEW) and Docker-only
+# Colab-intro stripper (STRIP).
 PYBIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
-SIG_HELPER="${UNSLOTH_NB_SIG_HELPER:-}"
-if [ -z "$SIG_HELPER" ]; then
-    if command -v unsloth-nb-content-sig >/dev/null 2>&1; then
-        SIG_HELPER="$(command -v unsloth-nb-content-sig)"
-    else
-        _self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-        [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_content_sig.py" ] \
-            && SIG_HELPER="$_self_dir/unsloth_nb_content_sig.py"
-    fi
-fi
+_self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+resolve_helper() {
+    if [ -n "$1" ]; then printf '%s' "$1"; return 0; fi
+    if command -v "$2" >/dev/null 2>&1; then command -v "$2"; return 0; fi
+    [ -n "$_self_dir" ] && [ -f "$_self_dir/$3" ] && printf '%s' "$_self_dir/$3"
+    return 0
+}
+SIG_HELPER="$(resolve_helper "${UNSLOTH_NB_SIG_HELPER:-}" unsloth-nb-content-sig unsloth_nb_content_sig.py)"
+VIEW_HELPER="$(resolve_helper "${UNSLOTH_NB_VIEW_HELPER:-}" unsloth-nb-view unsloth_nb_view.py)"
+STRIP_HELPER="$(resolve_helper "${UNSLOTH_NB_STRIP_HELPER:-}" unsloth-nb-strip-colab unsloth_nb_strip_colab.py)"
 
-# Same resolution (override -> PATH -> sibling file) for the categorized-view
-# builder and the Docker-only Colab-intro stripper.
-_self_dir="${_self_dir:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)}"
-VIEW_HELPER="${UNSLOTH_NB_VIEW_HELPER:-}"
-if [ -z "$VIEW_HELPER" ]; then
-    if command -v unsloth-nb-view >/dev/null 2>&1; then
-        VIEW_HELPER="$(command -v unsloth-nb-view)"
-    elif [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_view.py" ]; then
-        VIEW_HELPER="$_self_dir/unsloth_nb_view.py"
-    fi
-fi
-STRIP_HELPER="${UNSLOTH_NB_STRIP_HELPER:-}"
-if [ -z "$STRIP_HELPER" ]; then
-    if command -v unsloth-nb-strip-colab >/dev/null 2>&1; then
-        STRIP_HELPER="$(command -v unsloth-nb-strip-colab)"
-    elif [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_strip_colab.py" ]; then
-        STRIP_HELPER="$_self_dir/unsloth_nb_strip_colab.py"
-    fi
-fi
-
-# True only when BOTH are .ipynb, the helper is usable, and it reports the
-# non-boilerplate middle is identical (so only the header/footer changed).
-# Any failure returns false, so the caller falls back to a normal refresh.
+# True only when BOTH are .ipynb, the SIG helper is usable, and it reports the
+# non-boilerplate middle (ignoring the auto-generated install header /
+# announcements / footer) is identical -- so a refresh doesn't rewrite an
+# untouched notebook when only that boilerplate moved upstream. Any failure
+# returns false, so the caller falls back to a normal refresh.
 middle_unchanged() {
     case "$1" in *.ipynb) : ;; *) return 1 ;; esac
     [ -n "$PYBIN" ] && [ -n "$SIG_HELPER" ] || return 1
@@ -176,14 +159,12 @@ if [ ! -f "$STATE" ]; then
     echo "[unsloth-nb] notebooks ready at $DEST"
 fi
 
-# 1b) Every-boot OFFLINE restore of deleted notebooks. A file we previously wrote
-# that the user has since DELETED is restored from the baked template -- works
-# with no network and even when upstream has not advanced. Files that still exist
-# (edited or not) are never touched, so this cannot resurrect or clobber an edit;
-# the GitHub refresh below then bumps any restored file to the latest upstream.
-# The restored file's recorded hash is reset to the template's so the refresh
-# treats it as pristine (not as a user edit). Opt out with
-# UNSLOTH_KEEP_DELETED_NOTEBOOKS=1 (for users who prune notebooks on purpose).
+# 1b) Every-boot OFFLINE restore of deleted notebooks: a file we previously
+# wrote that the user has since DELETED comes back from the baked template (no
+# network needed). Files that still exist (edited or not) are never touched, so
+# this cannot clobber an edit; the restored file's recorded hash is reset to
+# the template's so the GitHub refresh below treats it as pristine and bumps it
+# to latest. Opt out with UNSLOTH_KEEP_DELETED_NOTEBOOKS=1.
 if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
     restored=0
     RS_TMP="$(mktemp)"

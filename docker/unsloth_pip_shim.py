@@ -328,47 +328,27 @@ def _classify_flag_target(spec):
     return "keep", None
 
 
-def _parse_include(stripped):
-    """If `stripped` is an `-r`/`--requirement`/`-c`/`--constraint` include,
-    return (flag, target_path, inline_comment_or_None); else (None, None, None)."""
+def _parse_flag_line(stripped, flags):
+    """If `stripped` is a `<flag> <target>` requirements-file line for one of
+    `flags`, return (flag, target_or_None, inline_comment_or_None); else
+    (None, None, None).
+
+    Shared by the `-r`/`--requirement`/`-c`/`--constraint` include parse and
+    the `-e`/`--editable` install-line parse. Handles the separated
+    (`-r <t>` / `--editable <t>`), inline (`--editable=<t>` / `-e=<t>`) and
+    attached short (`-rextras.txt`, `-egit+...`) forms pip accepts from a
+    requirement file, so a protected include or editable there is handled
+    exactly like the command-line case."""
     body, sep, comment = stripped.partition(" #")
     body = body.rstrip()
     comment = ("#" + comment) if sep else None
-    for flag in ("-r", "--requirement", "-c", "--constraint"):
-        target = None
+    for flag in flags:
         if body == flag or body.startswith(flag + " "):
             target = body[len(flag) :].strip()
         elif body.startswith(flag + "="):
             target = body[len(flag) + 1 :].strip()
         elif not flag.startswith("--") and body.startswith(flag) and len(body) > len(flag):
-            target = body[len(flag) :].strip()  # attached short form, e.g. `-rextras.txt`
-        else:
-            continue
-        return flag, (target or None), comment
-    return None, None, None
-
-
-def _parse_editable(stripped):
-    """If `stripped` is an `-e`/`--editable` install line, return
-    (flag, target, inline_comment_or_None); else (None, None, None).
-
-    Handles the separated (`-e <t>` / `--editable <t>`), attached (`-e<t>`),
-    long inline (`--editable=<t>`) and short inline (`-e=<t>`) forms pip accepts
-    from a requirement file, so a protected editable there is dropped exactly
-    like the command-line -e case."""
-    body, sep, comment = stripped.partition(" #")
-    body = body.rstrip()
-    comment = ("#" + comment) if sep else None
-    for flag in ("-e", "--editable"):
-        target = None
-        if body == flag:
-            target = None
-        elif body.startswith(flag + " "):
-            target = body[len(flag) :].strip()
-        elif body.startswith(flag + "="):
-            target = body[len(flag) + 1 :].strip()
-        elif not flag.startswith("--") and body.startswith(flag) and len(body) > len(flag):
-            target = body[len(flag) :].strip()  # attached short form, e.g. `-egit+...`
+            target = body[len(flag) :].strip()  # attached short form
         else:
             continue
         return flag, (target or None), comment
@@ -386,7 +366,9 @@ def _rewrite_include(line, stripped, src_dir, depth):
     parent at that filtered copy. URLs and unreadable/absolute-unfiltered files
     fall back to an absolutised path so they still resolve. Returns
     (new_line, changed, recorded, dropped)."""
-    flag, raw_target, comment = _parse_include(stripped)
+    flag, raw_target, comment = _parse_flag_line(
+        stripped, ("-r", "--requirement", "-c", "--constraint")
+    )
     if not raw_target:
         return line, False, None, []
     # Resolve pip's ${VAR} references so the include we read/filter is the file
@@ -458,7 +440,7 @@ def _filter_requirements_file(path, _depth = 0):
             # baked stack. Classify it through _KEEP exactly like the
             # command-line -e case and drop the whole line (flag + target) when
             # the target is protected; a transformers pin is still recorded.
-            e_flag, e_target, _e_comment = _parse_editable(stripped)
+            e_flag, e_target, _e_comment = _parse_flag_line(stripped, ("-e", "--editable"))
             if e_target is not None:
                 _action, _ver = _classify_flag_target(_expand_env_refs(e_target))
                 if _action == "drop":
@@ -561,13 +543,10 @@ def main():
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
 
-    # Locate the `install` verb (uv: `uv pip install ...`; pip: `pip install ...`).
+    # Locate the `install` verb (pip: `pip install ...`; uv: `uv pip install ...`
+    # -- index() already skips uv's leading `pip` subcommand).
     try:
-        if tool == "uv":
-            # skip a leading `pip` subcommand
-            i = argv.index("install")
-        else:
-            i = argv.index("install")
+        i = argv.index("install")
     except ValueError:
         os.execv(REAL[tool], [REAL[tool]] + argv)  # not an install -> passthrough
         return

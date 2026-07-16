@@ -30,7 +30,7 @@
 #
 # Cross-arch build (DGX Spark / GB10 / sm_121):
 #   The arm64 image is built via QEMU binfmt emulation on an x86_64 host:
-#       bash docker/setup_qemu.sh                   # one-time host setup
+#       docker run --privileged --rm tonistiigi/binfmt --install all   # one-time host setup
 #       docker buildx build --platform linux/arm64 -t unsloth-blackwell:arm64 .
 #   The resulting arm64 image runs NATIVELY on aarch64 hosts (DGX Spark, Grace).
 #   QEMU is only used at build time -- runtime emulation does NOT work for CUDA.
@@ -41,7 +41,7 @@
 #   * Docker with buildkit (default since 23.x)
 #   * docker buildx (mandatory for multi-platform; install: apt install docker-buildx)
 #   * nvidia-container-toolkit (only needed for `docker run --gpus all` at test time)
-#   * For arm64 builds on x86_64 hosts: QEMU binfmt (see docker/setup_qemu.sh)
+#   * For arm64 builds on x86_64 hosts: QEMU binfmt (the one-time setup above)
 #   * A GPU is NOT required at build time.
 # -----------------------------------------------------------------------------
 
@@ -56,7 +56,7 @@ FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS builder
 
 # TARGETARCH is auto-populated by buildx ("amd64" or "arm64"). We use it to
 # select an unsloth extras set that matches the wheels actually available for
-# the target platform (xformers has no cu128 aarch64 wheel as of 0.0.34).
+# the target platform (the xformers aarch64 gap -- see header).
 ARG TARGETARCH
 ARG PYTHON_VERSION
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -147,10 +147,8 @@ RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 #
 # Why arm64 uses a different extra:
 #   `cu128-ampere-torch2110` transitively pulls `cu128onlytorch2110` whose
-#   xformers wheel URL is hardcoded to manylinux_2_28_x86_64. There is no
-#   cu128 aarch64 wheel for xformers as of 0.0.35. We use the plain
-#   `huggingface` extra on arm64 -- Unsloth falls back to its native SDPA
-#   kernels (a ~5-10% slowdown vs xformers; functionally complete).
+#   xformers wheel URL is hardcoded to manylinux_2_28_x86_64 (the aarch64
+#   wheel gap -- see header), so arm64 takes the plain `huggingface` extra.
 #
 # Why no `flash-attn` here:
 #   - FA3 is hard-refused on Blackwell (Dao-AILab/flash-attention#1810).
@@ -194,7 +192,7 @@ RUN set -eux \
 #     since 0.17, so the SAME pass now runs on the arm64 leg (DGX Spark /
 #     GB10 class). amd64 failures abort the build; arm64 is fail-soft
 #     because aarch64 wheels are newer and the GPU-side kernels there are
-#     validated on Spark hardware via docker_confirm.sh, not in CI.
+#     validated manually on Spark hardware, not in CI.
 #
 # https://docs.vllm.ai/en/latest/getting_started/installation/gpu/
 # https://wheels.vllm.ai/nightly
@@ -279,11 +277,9 @@ RUN set -eux \
 # JupyterLab so the published image runs unslothai/notebooks out of the box:
 #   docker run --gpus all -p 8888:8888 unsloth/unsloth \
 #       jupyter lab --ip 0.0.0.0 --port 8888 --allow-root --no-browser
-# Installed as a separate pass AFTER the torch-pinned resolves on purpose:
-# jupyterlab's dependency closure is pure-Python (tornado, jinja2, nbconvert,
-# nbclient, ipykernel, ...) and never names torch, so uv cannot disturb the
-# cu128 pin set here. Naming torch in this pass would be actively dangerous:
-# without the cu128 extra index uv could swap in the PyPI CPU wheel.
+# Separate pass AFTER the torch-pinned resolves: this closure is pure-Python
+# and never names torch, so uv cannot disturb the cu128 pin set (naming torch
+# without the cu128 index could swap in the PyPI CPU wheel).
 # matplotlib rides along for the notebook crowd: plotting is table stakes in
 # a Jupyter image, and several model repos' trust_remote_code modeling files
 # (e.g. DeepSeek-OCR) import it unconditionally.
@@ -301,15 +297,14 @@ RUN set -eux \
 #   einx  TTS codec tensor-rearrange (Llasa / Oute / Spark TTS)
 #   librosa  Whisper audio feature extraction (pairs with soundfile + torchcodec)
 #   ftfy  Oute TTS text normalisation
-# decord (ERNIE-VL video decode) is installed separately below: it ships no
-# aarch64 wheel, so a hard install here would break the arm64 build.
+# decord is installed separately below (no aarch64 wheel; see that block).
 # librosa pulls numba/soxr/audioread; numba is already pinned >=0.65 (numpy 2.4
 # compatible) by the vLLM pass, so the resolve must NOT move torch/numpy/numba --
 # the assertion below fails the build loudly if it did.
 # Pinned (==) to the resolved, tested versions for reproducible rebuilds -- the
 # same convention as the cu128 core (torch/torchvision/torchaudio). Bump these
 # deliberately, not silently on the next build. Transitive deps of these are
-# captured by the full venv lockfile (docker/freeze.sh -> requirements.lock.txt).
+# captured by the in-image pin record (/opt/unsloth-venv/requirements.lock.txt).
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
@@ -462,8 +457,7 @@ assert "sm_120" in arches, f"sm_120 missing: {arches}"
 print(f"OK: torch 2.11.0+cu128 with sm_100 + sm_120 native SASS intact ({target})")
 
 from importlib.metadata import version, PackageNotFoundError
-# xformers has no cu128 aarch64 wheel as of 0.0.34, so we only require it
-# on amd64. Everything else is platform-agnostic.
+# xformers is amd64-only (the aarch64 wheel gap -- see Dockerfile header).
 REQUIRED = ["torch", "triton", "bitsandbytes", "unsloth",
             "unsloth_zoo", "transformers", "trl", "peft", "accelerate"]
 if target == "amd64":
@@ -515,14 +509,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/unsloth-venv/bin:${PATH} \
     HF_HOME=/workspace/.cache/huggingface \
     TRITON_CACHE_DIR=/workspace/.cache/triton \
-    # Keep the arch list visible at runtime in case the user source-builds anything
-    # extra inside the container (e.g. a custom CUDA op). Same list as the builder
-    # stage so a `pip install some-cuda-ext` inside the container gets a SASS blob
-    # that covers every supported arch. 10.3 (B300) is intentionally omitted: it
-    # runs sm_100 SASS, and the bundled CUDA 12.8 nvcc cannot compile compute_103
-    # (added in CUDA 12.9), so listing it would fail any such in-container build.
-    # The same cu12.8 limit affects runtime Triton/NVRTC JIT on amd64 sm_103 (see
-    # the header note); precompiled SASS still runs there via sm_100 forward-compat.
+    # Keep the arch list visible at runtime so an in-container source build of a
+    # custom CUDA op gets the same SASS coverage as the builder stage. 10.3 is
+    # omitted for the same cu12.8-cannot-emit-compute_103 reason as the builder
+    # list + header (sm_103 runs sm_100 SASS via forward-compat).
     TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX"
 
 # zstd: the official Ollama notebooks run `curl ollama.com/install.sh | sh`
@@ -565,20 +555,14 @@ RUN CUDA_PKG="$(echo "${CUDA_VERSION}" | awk -F. '{print $1"-"$2}')" \
 
 COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 
-# Blackwell JIT fix for sm_103 (B300/GB300, amd64) and sm_121 (DGX Spark /
-# GB10, arm64). Precompiled SASS already runs on both via forward-compat
-# (sm_100 SASS -> sm_103, sm_120 SASS -> sm_121); this covers the JIT gap.
-#
-# Two cu12.8 compilers baked into the stack cannot emit compute_103 /
-# compute_121, so JIT-heavy paths error out or silently downgrade:
+# Blackwell JIT fix for sm_103 (amd64) and sm_121 (arm64) -- the cu12.8 JIT
+# gap described in the header. Two JIT paths need the cu13 override:
 #
 #   (1) torch's bundled libnvrtc.so.12 is CUDA 12.8. The jiterator C++ side
 #       queries the device cap directly, so any NVRTC JIT path (e.g.
 #       torch.fft.rfft(complex).abs(), used inside mel-spectrogram code)
-#       errors out on sm_103/sm_121. Fix: keep cu12.8 as the immutable default
-#       (real lib saved as .cu128.orig, libnvrtc.so.12 -> it) and stage a cu13
-#       alias (.cu13); the runtime retargets libnvrtc.so.12 -> .cu13 for those
-#       two arches only -- see below.
+#       errors out on sm_103/sm_121. Fix: stage a cu13 NVRTC alias beside the
+#       immutable cu12.8 default (mechanics at the staging step below).
 #
 #   (2) Triton's nvidia backend invokes its OWN bundled ptxas, which in the
 #       triton 3.6.0 we pin is still CUDA 12.8 (V12.8.93): it tops out at
@@ -586,15 +570,13 @@ COPY --from=builder /opt/unsloth-venv /opt/unsloth-venv
 #       triton-lang/triton#8335. Fix: install cu13 ptxas and point Triton at
 #       it with TRITON_PTXAS_PATH.
 #
-# Both cu13 tools are CPU-side compilers (no libcuda call), so they install
-# alongside the cu128 runtime with no driver-floor bump at INSTALL time (570+).
-# But their OUTPUT cubin needs a >= 580 driver to LOAD, so they are NOT baked as a
-# global ENV/symlink default -- forcing every host's JIT through cu13 would break
-# the Ampere/Ada/Hopper/Turing GPUs this image still supports on 570-579 drivers.
-# They are activated per device at runtime only for sm_103/sm_121 (which launched
-# after cu12.8 and only ship on >= 580 drivers, so gating cu13 to them is always
-# safe) -- see select_cuda_jit_tools in entrypoint.sh. Both arches carry the
-# ~400 MB: amd64 needs it for sm_103, arm64 for sm_121.
+# Both cu13 tools are CPU-side compilers (no driver-floor bump at INSTALL
+# time), but their OUTPUT cubin needs a >= 580 driver to LOAD, so neither is
+# baked as a global ENV/symlink default -- that would break the Ampere/Ada/
+# Hopper/Turing GPUs this image still supports on 570-579 drivers. Instead
+# select_cuda_jit_tools in entrypoint.sh activates them per device, only for
+# sm_103/sm_121 (which only ship on >= 580 drivers, so the gate is always
+# safe). Both arches carry the ~400 MB: amd64 for sm_103, arm64 for sm_121.
 RUN set -eux; \
         # The nvidia/cuda base already configures the CUDA apt repo (x86_64 or
         # sbsa) with its own Signed-By keyring at
@@ -610,26 +592,21 @@ RUN set -eux; \
             cuda-nvrtc-13-0 \
             cuda-nvcc-13-0; \
         rm -rf /var/lib/apt/lists/*; \
-        # (1) NVRTC staging. cu12.8 stays the IMMUTABLE default; a cu13 alias is
-        #     staged beside it for the runtime switch. Keep the wheel's real
-        #     cu12.8 lib as .cu128.orig, point libnvrtc.so.12 at it (relative
-        #     symlink), and add .cu13 -> the cu13 lib. select_cuda_jit_tools in
-        #     entrypoint.sh retargets libnvrtc.so.12 -> .cu13 ONLY for sm_103/
-        #     sm_121 hosts. Because the default needs no runtime write, a non-root
-        #     `docker run --user` container -- which cannot rewrite the symlink --
-        #     keeps cu12.8, which every supported 570+ driver can load; a baked
-        #     cu13 default would instead leave those hosts on a cubin a 570-579
-        #     driver cannot load.
+        # (1) NVRTC staging: keep the wheel's real cu12.8 lib as .cu128.orig,
+        #     point libnvrtc.so.12 at it (relative symlink), and stage
+        #     .cu13 -> the cu13 lib; select_cuda_jit_tools retargets the
+        #     symlink ONLY on sm_103/sm_121 hosts. The default needs no
+        #     runtime write, so a non-root `docker run --user` container
+        #     (which cannot rewrite the symlink) keeps cu12.8, loadable on
+        #     every supported 570+ driver.
         NVRTC_DIR=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages/nvidia/cuda_nvrtc/lib; \
         if [ -f "${NVRTC_DIR}/libnvrtc.so.12" ] && [ ! -L "${NVRTC_DIR}/libnvrtc.so.12" ]; then \
             mv "${NVRTC_DIR}/libnvrtc.so.12" "${NVRTC_DIR}/libnvrtc.so.12.cu128.orig"; \
             ln -s libnvrtc.so.12.cu128.orig "${NVRTC_DIR}/libnvrtc.so.12"; \
             ln -s /usr/local/cuda-13.0/lib64/libnvrtc.so.13 "${NVRTC_DIR}/libnvrtc.so.12.cu13"; \
         fi
-# (2) ptxas override. triton 3.6.0's ptxas is cu12.8 (no sm_103/sm_121), so those
-# two arches need the cu13 ptxas installed above. Not baked as a global ENV for the
-# same driver-floor reason as NVRTC (a cu13 cubin needs a >= 580 driver to load);
-# TRITON_PTXAS_PATH is selected per device at boot -- see select_cuda_jit_tools.
+# (2) ptxas: the cu13 nvcc package above provides it; TRITON_PTXAS_PATH is set
+# per device at boot (select_cuda_jit_tools) for the same driver-floor reason.
 
 # Register the venv's torch + NVIDIA lib dirs with the loader so torchcodec
 # (installed in the builder, see the bake comment there) can dlopen them.

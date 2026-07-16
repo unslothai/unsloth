@@ -103,100 +103,81 @@ def _run(shim, tool, args):
 
 
 # --------------------------------------------------------------------------
-# Item 3541142907 -- pair -e/--editable with its target.
+# Item 3541142907 -- pair -e/--editable with its target (the attached short
+# `-e<target>` form from item 3541404845 is folded in here). A protected
+# editable such as `pip install -e git+...unsloth...#egg=unsloth peft` must
+# NOT become `pip install -e peft` (which pip rejects): the flag drops WITH
+# its value, and an unprotected editable is forwarded verbatim.
 # --------------------------------------------------------------------------
-def test_editable_protected_target_drops_flag_and_value(shim):
-    # `pip install -e git+...unsloth...#egg=unsloth peft` must NOT become
-    # `pip install -e peft` (which pip rejects); it must install just peft.
-    execd, _ = _run(
-        shim,
-        "pip",
-        ["-e", "git+https://github.com/unslothai/unsloth.git#egg=unsloth", "peft"],
-    )
-    assert execd == ["peft"], execd
-    assert "-e" not in execd
+UNSLOTH_VCS = "git+https://github.com/unslothai/unsloth.git#egg=unsloth"
+
+# Sentinel expectation: the whole command line is forwarded verbatim (execd == args).
+KEPT = object()
 
 
-def test_editable_only_protected_target_noops(shim):
-    execd, _ = _run(shim, "pip", ["-e", "git+https://github.com/unslothai/unsloth.git#egg=unsloth"])
-    assert execd is None  # nothing left to install -> no-op, no dangling -e
-
-
-def test_editable_unprotected_target_is_kept(shim):
-    execd, _ = _run(shim, "pip", ["-e", "./localpkg"])
-    assert execd == ["-e", "./localpkg"], execd
-
-
-def test_editable_long_form_inline_protected(shim):
-    execd, _ = _run(
-        shim,
-        "pip",
-        ["--editable=git+https://github.com/unslothai/unsloth.git#egg=unsloth", "peft"],
-    )
-    assert execd == ["peft"], execd
-
-
-def test_editable_long_form_inline_unprotected_kept(shim):
-    execd, _ = _run(shim, "pip", ["--editable=./localpkg"])
-    assert execd == ["--editable=./localpkg"], execd
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        pytest.param(["-e", UNSLOTH_VCS, "peft"], ["peft"], id = "sep-protected"),
+        # nothing left to install -> no-op, no dangling -e
+        pytest.param(["-e", UNSLOTH_VCS], None, id = "sep-only-protected-noop"),
+        pytest.param(["-e", "./localpkg"], KEPT, id = "sep-unprotected-kept"),
+        pytest.param(["--editable=" + UNSLOTH_VCS, "peft"], ["peft"], id = "inline-protected"),
+        pytest.param(["--editable=./localpkg"], KEPT, id = "inline-unprotected-kept"),
+        pytest.param(["-e" + UNSLOTH_VCS, "peft"], ["peft"], id = "attached-protected"),
+    ],
+)
+def test_editable_forms(shim, args, expected):
+    execd, _ = _run(shim, "pip", args)
+    assert execd == (args if expected is KEPT else expected), execd
 
 
 # --------------------------------------------------------------------------
-# Item 3541142906 -- filter uv -P/--upgrade-package values.
+# Item 3541142906 -- filter uv -P/--upgrade-package values. `uv pip install
+# -P torch peft` must not let uv refresh baked torch; a pinned transformers
+# upgrade selector still feeds the sidecar marker.
 # --------------------------------------------------------------------------
-def test_upgrade_package_protected_short_flag_dropped(shim):
-    # `uv pip install -P torch peft` must not let uv refresh baked torch.
-    execd, _ = _run(shim, "uv", ["-P", "torch", "peft"])
-    assert execd == ["peft"], execd
-    assert "torch" not in execd and "-P" not in execd
-
-
-def test_upgrade_package_protected_long_inline_dropped(shim):
-    execd, marker = _run(shim, "uv", ["--upgrade-package=transformers", "peft"])
-    assert execd == ["peft"], execd
-    assert "--upgrade-package=transformers" not in execd
-
-
-def test_upgrade_package_transformers_pin_recorded(shim):
-    # A pinned transformers upgrade selector still feeds the sidecar marker.
-    execd, marker = _run(shim, "uv", ["-P", "transformers==4.55.0", "peft"])
-    assert execd == ["peft"], execd
-    assert marker == "4.55.0"
-
-
-def test_upgrade_package_unprotected_kept(shim):
-    execd, _ = _run(shim, "uv", ["-P", "requests", "requests"])
-    assert execd == ["-P", "requests", "requests"], execd
-
-
-def test_upgrade_package_only_protected_noops(shim):
-    execd, _ = _run(shim, "uv", ["-P", "torch"])
-    assert execd is None  # -P is not itself a target
+@pytest.mark.parametrize(
+    "args, expected, expected_marker",
+    [
+        pytest.param(["-P", "torch", "peft"], ["peft"], None, id = "protected-dropped"),
+        pytest.param(["--upgrade-package=transformers", "peft"], ["peft"], None, id = "inline"),
+        pytest.param(["-P", "transformers==4.55.0", "peft"], ["peft"], "4.55.0", id = "tf-pin"),
+        pytest.param(["-P", "requests", "requests"], KEPT, None, id = "unprotected-kept"),
+        # -P is not itself a target
+        pytest.param(["-P", "torch"], None, None, id = "only-protected-noop"),
+    ],
+)
+def test_upgrade_package_forms(shim, args, expected, expected_marker):
+    execd, marker = _run(shim, "uv", args)
+    assert execd == (args if expected is KEPT else expected), execd
+    assert marker == expected_marker, marker
 
 
 # --------------------------------------------------------------------------
-# Item 3541142908 -- parse protected wheel basenames before URL passthrough.
+# Item 3541142908 -- parse protected wheel basenames before URL passthrough
+# (a recognised protected wheel URL/path is dropped -> no-op).
 # --------------------------------------------------------------------------
-def test_direct_torch_wheel_url_dropped(shim):
-    execd, _ = _run(shim, "pip", [TORCH_WHEEL_URL])
-    assert execd is None  # torch wheel URL recognised + dropped -> no-op
+NUMPY_WHEEL_URL = "https://example.com/wheels/numpy-2.1.0-cp312-cp312-linux_x86_64.whl"
 
 
-def test_local_torch_wheel_path_dropped(shim):
-    execd, _ = _run(shim, "pip", ["/tmp/wheels/torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"])
-    assert execd is None
-
-
-def test_normalised_wheel_name_dropped(shim):
-    # unsloth_zoo-*.whl normalises to unsloth-zoo, which is protected.
-    execd, _ = _run(shim, "pip", ["https://example.com/unsloth_zoo-1.0-py3-none-any.whl"])
-    assert execd is None
-
-
-def test_unprotected_wheel_url_kept(shim):
-    url = "https://example.com/wheels/numpy-2.1.0-cp312-cp312-linux_x86_64.whl"
-    execd, _ = _run(shim, "pip", [url])
-    assert execd == [url], execd
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        pytest.param([TORCH_WHEEL_URL], None, id = "direct-url"),
+        pytest.param(
+            ["/tmp/torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"], None, id = "local-path"
+        ),
+        # unsloth_zoo-*.whl normalises to unsloth-zoo, which is protected.
+        pytest.param(
+            ["https://example.com/unsloth_zoo-1.0-py3-none-any.whl"], None, id = "normalised"
+        ),
+        pytest.param([NUMPY_WHEEL_URL], KEPT, id = "unprotected-kept"),
+    ],
+)
+def test_wheel_url_and_path_forms(shim, args, expected):
+    execd, _ = _run(shim, "pip", args)
+    assert execd == (args if expected is KEPT else expected), execd
 
 
 def test_protected_wheel_in_requirements_file_dropped(shim, tmp_path):
@@ -305,7 +286,8 @@ def test_nested_requirement_transformers_pin_recorded(shim, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Item 3541404845 -- handle pip's attached short options (-rfile / -cfile / etc).
+# Item 3541404845 -- handle pip's attached short options (-rfile / -cfile /
+# etc). The attached `-e<target>` case lives in test_editable_forms above.
 # --------------------------------------------------------------------------
 def test_attached_short_requirement_file_filtered(shim, tmp_path):
     # `pip install -rreqs.txt` (attached) must filter the file AND count as a
@@ -329,15 +311,6 @@ def test_attached_short_constraint_file_filtered(shim, tmp_path):
     assert "torch" not in filtered
 
 
-def test_attached_short_editable_protected_dropped(shim):
-    execd, _ = _run(
-        shim,
-        "pip",
-        ["-egit+https://github.com/unslothai/unsloth.git#egg=unsloth", "peft"],
-    )
-    assert execd == ["peft"], execd
-
-
 def test_attached_short_upgrade_package_protected_dropped(shim):
     execd, _ = _run(shim, "uv", ["-Ptorch", "peft"])
     assert execd == ["peft"], execd
@@ -346,22 +319,20 @@ def test_attached_short_upgrade_package_protected_dropped(shim):
 
 # --------------------------------------------------------------------------
 # Item 3541773143 -- a bare wheel filename (no ./ or / prefix) is still a pip
-# target from the CWD, so its protected distribution must be parsed too.
+# target from the CWD, so its protected distribution must be parsed too
+# (`pip install torch-2.11.0-...whl` must not reinstall torch).
 # --------------------------------------------------------------------------
-def test_bare_torch_wheel_filename_dropped(shim):
-    # `pip install torch-2.11.0-...whl` from the CWD must not reinstall torch.
-    execd, _ = _run(shim, "pip", ["torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"])
-    assert execd is None, execd
-
-
-def test_bare_wheel_in_subdir_dropped(shim):
-    execd, _ = _run(shim, "pip", ["dist/torch-2.11.0-cp312-cp312-linux_x86_64.whl"])
-    assert execd is None, execd
-
-
-def test_bare_unprotected_wheel_filename_kept(shim):
-    execd, _ = _run(shim, "pip", ["numpy-2.1.0-cp312-cp312-linux_x86_64.whl"])
-    assert execd == ["numpy-2.1.0-cp312-cp312-linux_x86_64.whl"], execd
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        pytest.param(["torch-2.11.0+cu128-cp312-cp312-linux_x86_64.whl"], None, id = "bare-torch"),
+        pytest.param(["dist/torch-2.11.0-cp312-cp312-linux_x86_64.whl"], None, id = "subdir-torch"),
+        pytest.param(["numpy-2.1.0-cp312-cp312-linux_x86_64.whl"], KEPT, id = "unprotected-kept"),
+    ],
+)
+def test_bare_wheel_filename_forms(shim, args, expected):
+    execd, _ = _run(shim, "pip", args)
+    assert execd == (args if expected is KEPT else expected), execd
 
 
 # --------------------------------------------------------------------------
@@ -389,29 +360,23 @@ def test_vcs_url_without_egg_unprotected_kept(shim):
 # Item 3541773153 -- refuse remote (URL) requirement / constraint files in shim
 # mode; their protected pins cannot be inspected before the real tool installs.
 # --------------------------------------------------------------------------
-def test_remote_requirement_url_only_noops(shim):
-    execd, _ = _run(shim, "pip", ["-r", "https://example.com/reqs.txt"])
-    assert execd is None, execd  # dropped, and no dangling -r left behind
+R_URL = "https://example.com/reqs.txt"
 
 
-def test_remote_requirement_url_with_other_target_kept(shim):
-    execd, _ = _run(shim, "pip", ["-r", "https://example.com/reqs.txt", "peft"])
-    assert execd == ["peft"], execd
-
-
-def test_remote_requirement_inline_form_dropped(shim):
-    execd, _ = _run(shim, "pip", ["--requirement=https://example.com/reqs.txt", "peft"])
-    assert execd == ["peft"], execd
-
-
-def test_remote_requirement_attached_form_dropped(shim):
-    execd, _ = _run(shim, "pip", ["-rhttps://example.com/reqs.txt", "peft"])
-    assert execd == ["peft"], execd
-
-
-def test_remote_constraint_url_dropped_target_kept(shim):
-    execd, _ = _run(shim, "pip", ["-c", "https://example.com/constraints.txt", "peft"])
-    assert execd == ["peft"], execd
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        # dropped, and no dangling -r left behind
+        pytest.param(["-r", R_URL], None, id = "sep-r-only-noop"),
+        pytest.param(["-r", R_URL, "peft"], ["peft"], id = "sep-r-target-kept"),
+        pytest.param(["--requirement=" + R_URL, "peft"], ["peft"], id = "inline-r"),
+        pytest.param(["-r" + R_URL, "peft"], ["peft"], id = "attached-r"),
+        pytest.param(["-c", "https://example.com/constraints.txt", "peft"], ["peft"], id = "sep-c"),
+    ],
+)
+def test_remote_requirement_and_constraint_urls_refused(shim, args, expected):
+    execd, _ = _run(shim, "pip", args)
+    assert execd == expected, execd
 
 
 def test_nested_remote_include_dropped(shim, tmp_path):
@@ -449,56 +414,43 @@ def test_uv_reinstall_flag_stripped(shim):
 # Item 3541773168 -- uv's --reinstall-package selector is filtered through _KEEP
 # exactly like -P/--upgrade-package (both forms, no dangling flag).
 # --------------------------------------------------------------------------
-def test_reinstall_package_protected_separated_dropped(shim):
-    execd, _ = _run(shim, "uv", ["--reinstall-package", "torch", "peft"])
-    assert execd == ["peft"], execd
-    assert "torch" not in execd and "--reinstall-package" not in execd
-
-
-def test_reinstall_package_protected_inline_dropped(shim):
-    execd, _ = _run(shim, "uv", ["--reinstall-package=torch", "peft"])
-    assert execd == ["peft"], execd
-
-
-def test_reinstall_package_unprotected_kept(shim):
-    execd, _ = _run(shim, "uv", ["--reinstall-package", "requests", "requests"])
-    assert execd == ["--reinstall-package", "requests", "requests"], execd
-
-
-def test_reinstall_package_transformers_pin_recorded(shim):
-    execd, marker = _run(shim, "uv", ["--reinstall-package", "transformers==4.55.0", "peft"])
-    assert execd == ["peft"], execd
-    assert marker == "4.55.0", marker
+@pytest.mark.parametrize(
+    "args, expected, expected_marker",
+    [
+        pytest.param(["--reinstall-package", "torch", "peft"], ["peft"], None, id = "sep-protected"),
+        pytest.param(["--reinstall-package=torch", "peft"], ["peft"], None, id = "inline-protected"),
+        pytest.param(["--reinstall-package", "requests", "requests"], KEPT, None, id = "unprotected"),
+        pytest.param(
+            ["--reinstall-package", "transformers==4.55.0", "peft"], ["peft"], "4.55.0", id = "tf-pin"
+        ),
+    ],
+)
+def test_reinstall_package_forms(shim, args, expected, expected_marker):
+    execd, marker = _run(shim, "uv", args)
+    assert execd == (args if expected is KEPT else expected), execd
+    assert marker == expected_marker, marker
 
 
 # --------------------------------------------------------------------------
 # Item 3542096750 -- parse protected source archives (sdist / zip) too.
 # --------------------------------------------------------------------------
-def test_sdist_url_protected_dropped(shim):
-    url = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
-    execd, _ = _run(shim, "pip", [url, "peft"])
-    assert execd == ["peft"], execd
+SDIST_URL = "https://files.pythonhosted.org/packages/aa/unsloth-2026.7.1.tar.gz"
 
 
-def test_sdist_bare_protected_dropped(shim):
-    execd, _ = _run(shim, "pip", ["torch-2.11.0.tar.gz"])
-    assert execd is None, execd
-
-
-def test_sdist_zip_protected_dropped(shim):
-    execd, _ = _run(shim, "pip", ["./transformers-4.55.0.zip", "peft"])
-    assert execd == ["peft"], execd
-
-
-def test_sdist_hyphenated_name_protected_dropped(shim):
-    # flashinfer-python is protected; the name must survive the hyphen split.
-    execd, _ = _run(shim, "pip", ["flashinfer-python-0.5.0.tar.gz"])
-    assert execd is None, execd
-
-
-def test_sdist_unprotected_kept(shim):
-    execd, _ = _run(shim, "pip", ["numpy-2.1.0.tar.gz"])
-    assert execd == ["numpy-2.1.0.tar.gz"], execd
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        pytest.param([SDIST_URL, "peft"], ["peft"], id = "url-protected"),
+        pytest.param(["torch-2.11.0.tar.gz"], None, id = "bare-protected"),
+        pytest.param(["./transformers-4.55.0.zip", "peft"], ["peft"], id = "zip-protected"),
+        # flashinfer-python is protected; the name must survive the hyphen split.
+        pytest.param(["flashinfer-python-0.5.0.tar.gz"], None, id = "hyphenated-name"),
+        pytest.param(["numpy-2.1.0.tar.gz"], KEPT, id = "unprotected-kept"),
+    ],
+)
+def test_source_archive_forms(shim, args, expected):
+    execd, _ = _run(shim, "pip", args)
+    assert execd == (args if expected is KEPT else expected), execd
 
 
 # --------------------------------------------------------------------------
@@ -529,21 +481,21 @@ def test_uv_plural_constraints_filtered(shim, tmp_path):
 # Item 3542096764 -- neutralise --upgrade-strategy eager so a kept target cannot
 # eagerly rebuild already-satisfied baked deps.
 # --------------------------------------------------------------------------
-def test_upgrade_strategy_eager_dropped(shim):
-    execd, _ = _run(shim, "pip", ["-U", "--upgrade-strategy", "eager", "peft"])
-    assert execd == ["-U", "peft"], execd
-
-
-def test_upgrade_strategy_eager_inline_dropped(shim):
-    execd, _ = _run(shim, "pip", ["--upgrade-strategy=eager", "peft"])
-    assert execd == ["peft"], execd
-
-
-def test_upgrade_strategy_only_if_needed_also_dropped(shim):
-    # only-if-needed is pip's default, so dropping it is a harmless no-op that
-    # keeps the kept target installing normally.
-    execd, _ = _run(shim, "pip", ["--upgrade-strategy", "only-if-needed", "peft"])
-    assert execd == ["peft"], execd
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        pytest.param(["-U", "--upgrade-strategy", "eager", "peft"], ["-U", "peft"], id = "eager"),
+        pytest.param(["--upgrade-strategy=eager", "peft"], ["peft"], id = "inline-eager"),
+        # only-if-needed is pip's default, so dropping it is a harmless no-op that
+        # keeps the kept target installing normally.
+        pytest.param(
+            ["--upgrade-strategy", "only-if-needed", "peft"], ["peft"], id = "only-if-needed"
+        ),
+    ],
+)
+def test_upgrade_strategy_forms(shim, args, expected):
+    execd, _ = _run(shim, "pip", args)
+    assert execd == expected, execd
 
 
 # --------------------------------------------------------------------------
@@ -572,9 +524,9 @@ def test_forwarded_install_carries_protected_constraints(shim):
     assert all("==" in pin for pin in pins), pins
     names = {pin.split("==", 1)[0].lower().replace("_", "-") for pin in pins}
     protected = {"transformers"} | shim._KEEP | {"nvidia-"}
-    assert all(
-        n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
-    ), names
+    assert all(n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names), (
+        names
+    )
 
 
 def test_noop_install_gets_no_constraints(shim):

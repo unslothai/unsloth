@@ -80,12 +80,15 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Resolve the llama.cpp prebuilt release ONCE, up front, so both arch legs of
-  # the base build bake the identical GGUF binaries. Resolving "latest" inside
-  # each leg would let upstream publish a new release between the amd64 and
-  # arm64 builds, putting different binaries under one published image tag.
-  # An explicit dispatch input pins a frozen release; otherwise we follow the
-  # /releases/latest redirect to a concrete tag (mirrors docker/build.sh).
+  # Resolve every upstream ref ONCE, up front -- the llama.cpp prebuilt tag plus
+  # one unsloth sha, one zoo sha and one notebooks commit -- so both arch legs
+  # of the base build AND the Studio build bake identical bits. Resolving
+  # per-leg would let upstream advance between the amd64 and arm64 builds (or
+  # between the base and Studio builds), putting different content under one
+  # published tag. An explicit dispatch input pins a frozen value; otherwise a
+  # branch/tag is frozen to a sha via ls-remote (falling back to the bare ref
+  # on a lookup miss so the Dockerfile can still fetch it by name), and the
+  # llama "latest" follows the /releases/latest redirect (mirrors build.sh).
   # ---------------------------------------------------------------------------
   prepare:
     runs-on: ubuntu-latest
@@ -94,11 +97,7 @@ jobs:
       contents: read
     outputs:
       llama_tag: ${{ steps.llama.outputs.tag }}
-      # One unsloth ref + one zoo ref + one notebooks commit, resolved here so
-      # BOTH arch legs of the base build AND the Studio build bake the identical
-      # bits. Resolving them per-leg would let upstream advance between the amd64
-      # and arm64 builds (or between the base and Studio builds), putting
-      # different content under one published tag.
+      # Resolved once, shared by every consumer -- see the job header.
       unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
       zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
       notebooks_commit: ${{ steps.notebooks.outputs.commit }}
@@ -117,16 +116,10 @@ jobs:
           echo "tag=${TAG:-latest}" >> "$GITHUB_OUTPUT"
           echo "llama.cpp prebuilt tag: ${TAG:-latest}"
 
-      # Freeze the requested unsloth ref to ONE concrete sha before the matrix
-      # fans out, so both base arch legs AND the Studio build bake the identical
-      # unsloth commit even when the requested ref is a mutable branch that
-      # advances during the ~4h base + Studio run. Same requested-ref precedence
-      # the inline build-arg used: the dispatch input wins (blank by default,
-      # so stable tags stay enabled), else the pushed tag, else
-      # the triggering commit sha, else main. A 40-char sha (branch/schedule
-      # push) is already frozen; a branch/tag is resolved via ls-remote, exactly
-      # like the zoo and notebooks steps, falling back to the bare ref on a
-      # lookup miss so the Dockerfile can still fetch it by name.
+      # Requested-ref precedence (same as the old inline build-arg): the
+      # dispatch input wins (blank by default, so stable tags stay enabled),
+      # else the pushed tag, else the triggering commit sha, else main --
+      # then frozen to one sha per the job header.
       - name: Resolve unsloth ref
         id: unsloth_ref
         env:
@@ -150,9 +143,7 @@ jobs:
       # Mirror the unsloth tag into the zoo ONLY when that tag actually exists
       # there. unsloth's v* tags are Studio releases the zoo never cuts (the zoo
       # repo currently has no tags at all), so blindly mirroring github.ref_name
-      # made every tag publish fail inside the Dockerfile's zoo install. Resolved
-      # once here and forwarded to the base build AND the Studio build, so the
-      # full image's Studio venv runs the same zoo as the base image.
+      # made every tag publish fail inside the Dockerfile's zoo install.
       - name: Resolve unsloth-zoo ref
         id: zoo_ref
         run: |
@@ -164,11 +155,7 @@ jobs:
               fi
           fi
           REF="${REF:-main}"
-          # Freeze a branch/tag ref to ONE concrete sha before the matrix fans
-          # out, so both arch legs (and the base vs Studio builds) bake the
-          # identical unsloth-zoo even if main advances mid-build. A 40-char sha
-          # is already frozen; resolve anything else via ls-remote, as the
-          # notebooks step does, falling back to the bare ref on a lookup miss.
+          # Freeze to one sha per the job header; a 40-char sha already is one.
           if printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
               SHA="$REF"
           else
@@ -178,12 +165,9 @@ jobs:
           echo "ref=${SHA}" >> "$GITHUB_OUTPUT"
           echo "unsloth-zoo ref: ${SHA}"
 
-      # Freeze unslothai/notebooks to ONE concrete commit so both arch legs (and
-      # release reruns) bake the identical baked-notebook templates and
-      # .unsloth_template_commit, even if upstream advances mid-build. A 40-char
-      # sha input is already frozen; a branch/tag (default main) is resolved to
-      # its current sha via ls-remote, falling back to the bare ref on a lookup
-      # miss so the Dockerfile can still fetch it by name.
+      # Freeze unslothai/notebooks to ONE commit per the job header, so the
+      # baked templates + .unsloth_template_commit are identical across legs
+      # and release reruns.
       - name: Resolve unsloth/notebooks commit
         id: notebooks
         env:
@@ -276,20 +260,9 @@ jobs:
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # NOTE: keep prose OUT of build-args -- docker/build-push-action
           # forwards every non-empty line verbatim, so a leading-# line would be
-          # passed as a bogus --build-arg. Explanations live here instead:
-          #   UNSLOTH_REF (from the prepare job): resolved to ONE sha before the
-          #     matrix fans out, so both arch legs and the Studio build bake the
-          #     identical unsloth commit even if a mutable branch (an explicit
-          #     dispatch unsloth_ref) advances mid-run. Same requested-ref
-          #     precedence as before: dispatch input, else the pushed tag, else
-          #     the triggering commit sha, else main.
-          #   UNSLOTH_ZOO_REF (from the prepare job): explicit dispatch input,
-          #     else the pushed tag IF the zoo repo has it, else main -- a branch
-          #     SHA does not exist in the zoo repo. Resolved once in `prepare` and
-          #     shared with the Studio build so both venvs run the same zoo.
-          #   LLAMA_PREBUILT_TAG / UNSLOTH_NOTEBOOKS_REF (from the prepare job):
-          #     one concrete tag / commit shared by both arch legs so the
-          #     published manifest is byte-reproducible across platforms.
+          # passed as a bogus --build-arg. All four values come from the prepare
+          # job: resolved once so both arch legs and the Studio build bake
+          # identical bits (precedence rules live on prepare's steps).
           build-args: |
             CUDA_VERSION=12.8.1
             UBUNTU_VERSION=24.04
@@ -465,12 +438,9 @@ jobs:
           cache-from: type=gha,scope=studio-${{ matrix.platform }}
           cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          # UNSLOTH_STUDIO_REF is the SAME resolved unsloth sha the base build
-          # baked (needs.prepare.outputs.unsloth_ref), so the Studio tree matches
-          # the unsloth in the base venv even if the branch moved mid-run.
-          # UNSLOTH_STUDIO_ZOO_REF is the SAME resolved zoo ref the base build
-          # baked, so install.sh --local overlays the Studio venv with that zoo
-          # instead of always tracking main. (Prose stays out of build-args --
+          # Both refs are the SAME resolved shas the base build baked (prepare
+          # job), so the Studio tree + its zoo overlay match the base venv even
+          # if the branch moved mid-run. (Prose stays out of build-args --
           # forwarded lines must be KEY=VALUE only.)
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
