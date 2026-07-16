@@ -373,9 +373,7 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
-        patch.object(
-            LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
-        ),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         n = LlamaCppBackend._kill_orphaned_servers()
     assert n == 1, "only the Studio-owned orphan should be counted"
@@ -387,9 +385,7 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
-        patch.object(
-            LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)
-        ),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         assert LlamaCppBackend._kill_orphaned_servers() == 0
     assert killed == []
