@@ -31,6 +31,8 @@ export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
+  "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -642,6 +644,8 @@ type ChatRuntimeStore = {
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   artifactsEnabled: boolean;
+  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
@@ -818,6 +822,7 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
+  setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
@@ -1147,6 +1152,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  showCanvasMenuItem: loadBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, false),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -1503,6 +1509,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       return { artifactsEnabled };
+    }),
+  setShowCanvasMenuItem: (showCanvasMenuItem) =>
+    set(() => {
+      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
+      return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set((state) => {

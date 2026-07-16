@@ -175,6 +175,12 @@ export function ChatTab() {
   const [clearing, setClearing] = useState(false);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const showCanvasMenuItem = useChatRuntimeStore(
+    (state) => state.showCanvasMenuItem,
+  );
+  const setShowCanvasMenuItem = useChatRuntimeStore(
+    (state) => state.setShowCanvasMenuItem,
+  );
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,
   );
@@ -406,7 +412,10 @@ export function ChatTab() {
           </>
         }
       >
-        {PLUS_MENU_SETTINGS.map((item) => (
+        {PLUS_MENU_SETTINGS.filter(
+          // Canvas only appears in the menu when opted in under Canvas below.
+          (item) => item.id !== "canvas" || showCanvasMenuItem,
+        ).map((item) => (
           <SettingsRow key={item.id} label={item.label} icon={item.icon}>
             <Switch
               checked={plusPins[item.id]}
@@ -445,6 +454,15 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
+        <SettingsRow
+          label="Canvas in chat menu"
+          description="Offer the Canvas toggle in chat's + side menu. HTML canvases still render either way."
+        >
+          <Switch
+            checked={showCanvasMenuItem}
+            onCheckedChange={setShowCanvasMenuItem}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.artifacts.collapseHtmlBlocks")}
           description={t(

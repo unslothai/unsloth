@@ -2709,6 +2709,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -2959,7 +2960,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -2970,7 +2972,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
