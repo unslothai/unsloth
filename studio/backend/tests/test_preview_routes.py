@@ -1347,6 +1347,52 @@ def test_completions_relay_marks_scope_failed_on_sse_error():
     assert 'mark_response_failed(getattr(request, "scope", None))' in src
 
 
+def test_anthropic_stream_error_event_marks_failed_even_when_unclassified(slot_state):
+    # Codex P2 (round 18): an unclassified local /v1/messages generator error returns
+    # None (no in-band error event emitted) and the caller swallows it, then finishes
+    # the stream normally. The response must still be flagged failed so the middleware
+    # does not claim a preview-owned model for Studio on a stream that errored.
+    from core.inference import llama_keepwarm as kw
+
+    scope = {"type": "http", "path": "/v1/messages"}
+    kw.set_current_response_scope(scope)
+    try:
+        ev = inference._anthropic_stream_error_event(RuntimeError("boom"))  # unclassified
+        assert ev is None  # no in-band error event for an unclassified error
+        assert scope.get(kw._RESPONSE_FAILED_SCOPE_KEY) is True
+    finally:
+        kw.set_current_response_scope(None)
+
+
+def test_openai_passthrough_transport_error_marks_failed():
+    # Codex P2 (round 18): the passthrough httpx transport except (RemoteProtocolError/
+    # ReadError/CloseError) re-raises after the 200 headers without emitting an error
+    # SSE, so it must flag the response failed first or the middleware claims a
+    # preview-owned slot on an interrupted stream.
+    import inspect
+
+    src = inspect.getsource(inference._openai_passthrough_stream_admitted)
+    idx = src.index("httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError")
+    # Bound the slice to the transport-error branch (up to the next except clause).
+    branch = src[idx : src.index("except HTTPException", idx)]
+    assert 'mark_response_failed(getattr(request, "scope", None))' in branch
+    assert "raise" in branch
+
+
+def test_anthropic_passthrough_non_200_marks_failed():
+    # Codex P2 (round 18): the passthrough delivers an upstream 4xx/5xx as an in-band
+    # Anthropic error event under the outer 200 stream headers, so it must flag the
+    # response failed before yielding it, or the middleware claims a preview-owned slot
+    # on a passthrough whose upstream errored before any SSE.
+    import inspect
+
+    src = inspect.getsource(inference._anthropic_passthrough_stream)
+    idx = src.index("anthropic passthrough upstream error")
+    # Bound the slice to the non-200 branch (up to the in-band error event it yields).
+    branch = src[idx : src.index("yield build_anthropic_sse_event", idx)]
+    assert 'mark_response_failed(getattr(request, "scope", None))' in branch
+
+
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
     # A non-preview inference that returns 2xx adopts the resident model for Studio,
     # so the preview-ownership marker is cleared on completion.

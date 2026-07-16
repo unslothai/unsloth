@@ -618,16 +618,17 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
+    # Called only from stream except-handlers, after the 200 headers were flushed, so
+    # flag the response failed up front -- even when we return None for an unclassified
+    # error the caller swallows (it then finishes the stream normally). The keep-warm
+    # middleware must not claim a preview-owned model for Studio on a stream that errored.
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
     _cls = _classify_llama_generation_error(exc)
     if _cls is None and not force:
         return None
     status = 400 if _cls is not None else 500
-    # This error is emitted in-band after the 200 headers (local /v1/messages stream
-    # and the passthrough), so flag the response failed: the keep-warm middleware must
-    # not claim a preview-owned model for Studio on a stream that errored.
-    from core.inference.llama_keepwarm import mark_current_response_failed
-
-    mark_current_response_failed()
     return build_anthropic_sse_event(
         "error",
         anthropic_error_body(_friendly_error(exc), status = status),
@@ -13339,6 +13340,12 @@ async def _anthropic_passthrough_stream(
                     resp.status_code,
                     _err_text,
                 )
+                # The outer 200 stream headers are already flushed, so flag the
+                # failure: the keep-warm middleware must not claim a preview-owned model
+                # for Studio on a passthrough whose upstream errored before any SSE.
+                from core.inference.llama_keepwarm import mark_response_failed
+
+                mark_response_failed(getattr(request, "scope", None))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
@@ -14768,6 +14775,10 @@ async def _openai_passthrough_stream_admitted(
                 if not cancel_event.is_set():
                     api_monitor.fail(monitor_id, "Stream interrupted")
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                    # 200 headers already flushed and we re-raise without emitting an
+                    # error SSE, so flag the failure: the keep-warm middleware must not
+                    # claim a preview-owned model for Studio on an interrupted stream.
+                    mark_response_failed(getattr(request, "scope", None))
                     raise
                 api_monitor.finish(monitor_id, "cancelled")
             except HTTPException as exc:
