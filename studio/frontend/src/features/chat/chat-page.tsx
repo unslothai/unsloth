@@ -1994,6 +1994,11 @@ export function ChatPage({
         forceReload: true,
         throwOnError: true,
       });
+      // Record when this file lease expires so a later reload can prompt
+      // re-selection instead of reusing a token the host has already pruned.
+      useChatRuntimeStore.setState({
+        activeNativePathExpiresAtMs: intent.path.expiresAtMs ?? null,
+      });
       useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
     [stageOrLoad],
@@ -2246,14 +2251,26 @@ export function ChatPage({
     (config: PerModelConfig) => {
       const checkpoint = inferenceParams.checkpoint;
       if (!checkpoint) return;
+      const runtime = useChatRuntimeStore.getState();
+      const nativeToken = runtime.activeNativePathToken;
+      const nativeExpiry = runtime.activeNativePathExpiresAtMs;
+      // A file-picked GGUF is reachable only via its native path token, which
+      // the desktop host prunes after a TTL. Reusing an expired token makes the
+      // reload fail with an opaque error, so prompt the user to re-select the
+      // file instead.
+      if (nativeToken && nativeExpiry != null && Date.now() >= nativeExpiry) {
+        toast.error("This local model file's access has expired.", {
+          description: "Re-select the model file to reload it.",
+        });
+        return;
+      }
       handleCheckpointChange(checkpoint, {
         source: "local",
         isLora: activeModelIsLora,
         ggufVariant: activeGgufVariant ?? undefined,
-        // A file-picked GGUF is reachable only via its token; without it the
-        // reload validates the display label as a repo and fails.
-        nativePathToken:
-          useChatRuntimeStore.getState().activeNativePathToken ?? undefined,
+        // Without the native token the reload validates the display label as a
+        // repo and fails.
+        nativePathToken: nativeToken ?? undefined,
         isGguf: activeModelIsGguf,
         isDownloaded: true,
         config,

@@ -719,6 +719,10 @@ type ChatRuntimeStore = {
   } | null;
   modelLoading: boolean;
   activeNativePathToken: string | null;
+  // Wall-clock expiry (ms) of the active native path token. The desktop host
+  // prunes file leases after a TTL, so a reload checks this to prompt
+  // re-selection instead of reusing a dead token.
+  activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
@@ -1115,6 +1119,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   contextUsage: null,
   modelLoading: false,
   activeNativePathToken: null,
+  activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
     if (get().settingsHydrated) {
       return;
@@ -1284,6 +1289,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeNativePathToken: null,
+      activeNativePathExpiresAtMs: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
