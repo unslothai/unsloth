@@ -1354,11 +1354,22 @@ def run_server(
     if secure:
         os.environ["UNSLOTH_SECURE"] = "1"
 
-    import nest_asyncio
-
-    nest_asyncio.apply()
-
     import asyncio
+
+    # nest_asyncio exists for Colab/IPython, where the main thread already runs
+    # an event loop that blocking waits below would otherwise collide with. Its
+    # Task patches break asyncio.current_task() on Python 3.14+ (task tracking
+    # moved into C), so only apply it when a loop is actually running — a plain
+    # CLI start has nothing to nest and must stay unpatched.
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        import nest_asyncio
+
+        nest_asyncio.apply()
+
     from threading import Thread, Event
     import uvicorn
 
