@@ -3822,6 +3822,23 @@ def _loaded_slot_ident() -> Optional[str]:
     return None
 
 
+def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
+    """True when the resident slot already serves the preview's checkpoint. Exact string
+    match first: it is the fast path and the only comparison that makes sense for a non-path
+    identifier (an HF repo id like ``org/model``). Otherwise compare resolved filesystem
+    paths, so a checkpoint Studio loaded through an equivalent spelling -- a relative
+    ``outputs/run`` vs the absolute path the preview resolver produces -- still borrows the
+    slot instead of 503'ing. realpath preserves case-sensitive distinct paths (it never
+    lowercases, so /outputs/Run and /outputs/run stay distinct); a non-path identifier just
+    resolves to a location under the cwd that cannot match the preview's checkpoint."""
+    if loaded == requested:
+        return True
+    try:
+        return Path(loaded).resolve() == Path(requested).resolve()
+    except OSError:
+        return False
+
+
 def _claim_slot_for_non_preview(fastapi_request) -> None:
     """Non-preview local generation adopts the resident model for Studio.
 
@@ -3874,11 +3891,12 @@ async def load_model_for_preview(
                         headers = {"Retry-After": "10"},
                     )
                 loaded = _loaded_slot_ident()
-                # Compare checkpoint paths exactly: on a case-sensitive filesystem
-                # /outputs/Run and /outputs/run are different checkpoints, so a
-                # lowercased match would borrow the resident model and serve the wrong
-                # one instead of loading the requested path.
-                same_target = loaded is not None and loaded == request.model_path
+                # Borrow the resident model when it already serves this checkpoint, matching
+                # an equivalent spelling (relative vs the resolved absolute path) via realpath
+                # while keeping case-sensitive distinct paths distinct (never lowercased).
+                same_target = loaded is not None and _preview_same_checkpoint(
+                    loaded, request.model_path
+                )
                 preview_resident = loaded is not None and _is_preview_resident(loaded)
                 if loaded is not None and not same_target and not preview_resident:
                     untrack_current_request(scope)
@@ -3887,17 +3905,19 @@ async def load_model_for_preview(
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
-                # Mark the swap in progress BEFORE the admitted-count check below so the two
-                # are atomic against a concurrent non-preview request: preview_swapped_since_
-                # entry() keys on the live _preview_swap_inflight, so a Studio request reaching
-                # _maybe_auto_switch_model after this marker is rejected, while one admitted
-                # before it is caught by the busy check. Setting it only after the check (as
-                # before) left a gap where a Studio request admitted between the check and the
-                # marker ran against the slot this preview is about to replace. A same-target
-                # borrow and a busy 503 both clear it via the finally (no counter bump, so no
-                # spurious swap is recorded). Cleared only after the lifecycle gate releases.
-                note_preview_swap_begin()
-                _swap_begun = True
+                # For a real load (not a same-target borrow) mark the swap in progress BEFORE
+                # the admitted-count check below so the two are atomic against a concurrent
+                # non-preview request: preview_swapped_since_entry() keys on the live
+                # _preview_swap_inflight, so a Studio request reaching _maybe_auto_switch_model
+                # after this marker is rejected, while one admitted before it is caught by the
+                # busy check. Setting it only after the check left a gap where a Studio request
+                # admitted between the check and the marker ran against the slot this preview
+                # is about to replace. Skip it for a same-target borrow: that changes nothing
+                # (no counter bump), so marking would 503 concurrent Studio requests for no
+                # reason. Cleared only after the lifecycle gate releases.
+                if not same_target:
+                    note_preview_swap_begin()
+                    _swap_begun = True
                 # A same-checkpoint request would still restart a Studio-owned GGUF whose
                 # live settings differ from these bare defaults (#5401), so admitted
                 # (post-auth) Studio inference blocks first. Only admitted local inference

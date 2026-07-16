@@ -1873,6 +1873,41 @@ def test_preview_swap_marked_before_admitted_check():
     assert begin < check, "swap marker must be set before the admitted-count busy check"
 
 
+def test_preview_swap_marker_skipped_for_same_target_borrow():
+    # Codex P2 (round 31): a same-target borrow changes nothing (no swap counter bump), so it
+    # must not set the swap-in-progress marker -- doing so 503s concurrent Studio requests via
+    # preview_swapped_since_entry for no reason. The marker is gated on not same_target and
+    # still precedes the admitted-count check for the real-load path.
+    import inspect
+
+    src = inspect.getsource(inference.load_model_for_preview)
+    guard = src.index("if not same_target:")
+    begin = src.index("note_preview_swap_begin()", guard)
+    check = src.index("other_admitted_inference_count()")
+    # The marker is the first statement under the not-same_target guard, still before the check.
+    assert guard < begin < check
+    assert "note_preview_swap_begin()" in src[guard : guard + 200]
+
+
+def test_preview_same_checkpoint_matches_equivalent_spellings(tmp_path):
+    # Codex P2 (round 31): Studio may load a checkpoint via a spelling (a relative outputs/run)
+    # different from the absolute path the preview resolver produces. _preview_same_checkpoint
+    # borrows the slot for an equivalent filesystem path while never matching a distinct
+    # checkpoint or a non-path identifier (an HF repo id resolves under the cwd).
+    ckpt = tmp_path / "outputs" / "run"
+    ckpt.mkdir(parents = True)
+    abs_path = str(ckpt)
+    # Exact string match (fast path, no resolve).
+    assert inference._preview_same_checkpoint(abs_path, abs_path)
+    # Equivalent spelling with a redundant "." segment resolves to the same path.
+    dotted = str(tmp_path / "outputs" / "." / "run")
+    assert inference._preview_same_checkpoint(dotted, abs_path)
+    # A different checkpoint under the same root must not match.
+    assert not inference._preview_same_checkpoint(str(tmp_path / "outputs" / "other"), abs_path)
+    # A non-path identifier (HF repo id) never matches a filesystem checkpoint.
+    assert not inference._preview_same_checkpoint("org/model", abs_path)
+
+
 def test_rejected_preview_request_does_not_refresh_idle_timer(slot_state):
     # Codex P2: a preview POST rejected before loading (429, bad-token 404, body 4xx) never
     # served tokens, so it must not refresh the idle timer -- else repeated rejected POSTs
