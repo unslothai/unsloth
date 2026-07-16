@@ -1590,7 +1590,7 @@ export function AppSidebar() {
                         useSettingsDialogStore.getState().openDialog();
                       }
                     }}
-                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+                    className="-ml-1 flex size-[32px] shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
                   >
                     <HugeiconsIcon
                       icon={Settings02Icon}
