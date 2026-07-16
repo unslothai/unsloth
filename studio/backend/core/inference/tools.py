@@ -2410,22 +2410,12 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"<script[^>]*\bsrc\s*=|"
     r"\b(?:src|href|srcset|action|formaction|poster|data|ping)\s*="
     r"\s*[\"']?\s*(?:https?:|/)|"
-    r"\.\s*setAttribute\s*\(\s*[\"'`](?:src|href|srcset|action|formaction|"
-    r"poster|data|ping)[\"'`]|"
     # Self-navigation sinks: location.assign/replace(...), window.open(...), and
     # assigning a URL to (window.)location(.href). location.reload()/history.back
     # do not navigate to a new URL, so they stay static.
     r"\blocation\s*\.\s*(?:assign|replace)\s*\(|"
     r"\bwindow\s*\.\s*open\s*\(|"
     r"\b(?:window\s*\.\s*)?location(?:\s*\.\s*href)?\s*=\s*[\"'`]?\s*(?:https?:|/)|"
-    # Bracket access and computed keys on global host objects.
-    r"\[\s*[\"'`](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
-    r"sendBeacon|serviceWorker)[\"'`]\s*\]|"
-    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
-    r"(?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
-    r"sendBeacon|serviceWorker)[^\]]*\]|"
-    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[[^\]]*"
-    r"(?:[\"']\s*\+|\+\s*[\"'])[^\]]*\]|"
     # Declarative meta-refresh navigation to a URL (order-tolerant); a bare
     # content="30" self-reload has no url= and stays static.
     r"<meta\b(?=[^>]*http-equiv\s*=\s*[\"']?\s*refresh)(?=[^>]*\burl\s*=)|"
@@ -2436,13 +2426,115 @@ _RENDER_HTML_NETWORK_RE = re.compile(
 # matching. Line // comments are left alone -- stripping them would eat the // in
 # an https:// URL and hide a real load.
 _JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_RENDER_HTML_GLOBAL_BRACKET_RE = re.compile(
+    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[([^\]]*)\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_RENDER_HTML_SET_ATTRIBUTE_RE = re.compile(
+    r"""\.\s*setAttribute\s*\(\s*
+    (?P<quote>["'`])
+    (?P<attr>src|href|srcset|action|formaction|poster|data|ping)
+    (?P=quote)\s*,\s*(?P<value>[^)]*)\)""",
+    re.IGNORECASE | re.DOTALL | re.VERBOSE,
+)
+_RENDER_HTML_NETWORK_MEMBERS = frozenset(
+    {
+        "fetch",
+        "open",
+        "xmlhttprequest",
+        "websocket",
+        "eventsource",
+        "importscripts",
+        "sendbeacon",
+        "serviceworker",
+    }
+)
+
+
+def _leading_js_string(expression: str) -> tuple[str, int] | None:
+    """Return a leading JS string literal and its end offset."""
+    i = 0
+    while i < len(expression) and expression[i].isspace():
+        i += 1
+    if i >= len(expression) or expression[i] not in "\"'`":
+        return None
+    quote = expression[i]
+    i += 1
+    value: list[str] = []
+    while i < len(expression):
+        char = expression[i]
+        if char == "\\":
+            i += 1
+            if i >= len(expression):
+                return None
+            if expression[i] not in ("\\", '"', "'", "`"):
+                return None
+            value.append(expression[i])
+            i += 1
+            continue
+        if char == quote:
+            text = "".join(value)
+            if quote == "`" and "${" in text:
+                return None
+            return text, i + 1
+        value.append(char)
+        i += 1
+    return None
+
+
+def _static_js_string(expression: str) -> str | None:
+    """Fold a sequence of JS string literals joined with +."""
+    parts: list[str] = []
+    offset = 0
+    while True:
+        parsed = _leading_js_string(expression[offset:])
+        if parsed is None:
+            return None
+        value, end = parsed
+        parts.append(value)
+        offset += end
+        while offset < len(expression) and expression[offset].isspace():
+            offset += 1
+        if offset == len(expression):
+            return "".join(parts)
+        if expression[offset] != "+":
+            return None
+        offset += 1
+
+
+def _render_html_computed_network_access(code: str) -> bool:
+    for match in _RENDER_HTML_GLOBAL_BRACKET_RE.finditer(code):
+        expression = match.group(1)
+        member = _static_js_string(expression)
+        if member is not None:
+            if member.lower() in _RENDER_HTML_NETWORK_MEMBERS:
+                return True
+            continue
+        leading = _leading_js_string(expression)
+        if leading is not None:
+            member, end = leading
+            if member.lower() in _RENDER_HTML_NETWORK_MEMBERS and expression[
+                end:
+            ].lstrip().startswith("."):
+                return True
+        if not re.fullmatch(r"\s*\d+\s*", expression):
+            return True
+
+    for match in _RENDER_HTML_SET_ATTRIBUTE_RE.finditer(code):
+        value = _static_js_string(match.group("value"))
+        if value is None:
+            return True
+        if value.lstrip().lower().startswith(("http:", "https:", "/")):
+            return True
+    return False
 
 
 def _render_html_reaches_network(arguments: dict) -> bool:
     code = arguments.get("code")
     if not isinstance(code, str):
         return False
-    return bool(_RENDER_HTML_NETWORK_RE.search(_JS_BLOCK_COMMENT_RE.sub("", code)))
+    code = _JS_BLOCK_COMMENT_RE.sub("", code)
+    return bool(_RENDER_HTML_NETWORK_RE.search(code) or _render_html_computed_network_access(code))
 
 
 # Tools that are read-only regardless of their arguments, so auto mode never has
@@ -5124,6 +5216,12 @@ def _check_signal_escape_patterns(code: str):
         return None
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.importlib_aliases = {"importlib"}
+            self.builtins_aliases = {"builtins", "__builtins__"}
+            self.import_loader_aliases = {"__import__"}
+            self.literal_strings: dict[str, str] = {}
+
         def _block_low_level_network_module(self, module_name: str, node) -> None:
             root = module_name.split(".", 1)[0]
             if root not in _SANDBOX_BLOCKED_NETWORK_MODULES:
@@ -5139,15 +5237,93 @@ def _check_signal_escape_patterns(code: str):
                 }
             )
 
+        def _static_string(self, node) -> str | None:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value
+            if isinstance(node, ast.Name):
+                return self.literal_strings.get(node.id)
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                left = self._static_string(node.left)
+                right = self._static_string(node.right)
+                if left is not None and right is not None:
+                    return left + right
+            return None
+
+        def _is_import_loader(self, node) -> bool:
+            if isinstance(node, ast.Name):
+                return node.id in self.import_loader_aliases
+            if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+                return False
+            if node.attr == "import_module":
+                return node.value.id in self.importlib_aliases
+            if node.attr == "__import__":
+                return node.value.id in self.builtins_aliases
+            return False
+
+        @staticmethod
+        def _target_names(node) -> list[str]:
+            if isinstance(node, ast.Name):
+                return [node.id]
+            if isinstance(node, (ast.Tuple, ast.List)):
+                names: list[str] = []
+                for item in node.elts:
+                    names.extend(NetworkAndIoVisitor._target_names(item))
+                return names
+            return []
+
+        def _bind_assignment(self, targets, value) -> None:
+            names: list[str] = []
+            for target in targets:
+                names.extend(self._target_names(target))
+            static_string = self._static_string(value)
+            for name in names:
+                if static_string is None:
+                    self.literal_strings.pop(name, None)
+                else:
+                    self.literal_strings[name] = static_string
+
+            if self._is_import_loader(value):
+                self.import_loader_aliases.update(names)
+            else:
+                self.import_loader_aliases.difference_update(names)
+            if isinstance(value, ast.Name) and value.id in self.importlib_aliases:
+                self.importlib_aliases.update(names)
+            if isinstance(value, ast.Name) and value.id in self.builtins_aliases:
+                self.builtins_aliases.update(names)
+
         def visit_Import(self, node):
             for alias in node.names:
                 self._block_low_level_network_module(alias.name, node)
+                if alias.name == "importlib":
+                    self.importlib_aliases.add(alias.asname or "importlib")
+                elif alias.name == "builtins":
+                    self.builtins_aliases.add(alias.asname or "builtins")
 
         def visit_ImportFrom(self, node):
             if node.module:
                 self._block_low_level_network_module(node.module, node)
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if node.module == "importlib" and alias.name == "import_module":
+                    self.import_loader_aliases.add(bound)
+                elif node.module == "builtins" and alias.name == "__import__":
+                    self.import_loader_aliases.add(bound)
+
+        def visit_Assign(self, node):
+            self._bind_assignment(node.targets, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None:
+                self._bind_assignment([node.target], node.value)
+            self.generic_visit(node)
 
         def visit_Call(self, node):
+            if node.args and self._is_import_loader(node.func):
+                module_name = self._static_string(node.args[0])
+                if module_name is not None:
+                    self._block_low_level_network_module(module_name, node)
+
             parts: list[str] = []
             cur = node.func
             while isinstance(cur, ast.Attribute):

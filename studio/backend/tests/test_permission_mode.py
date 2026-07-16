@@ -1004,6 +1004,9 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
     assert rh("<script>window[`fetch`]('https://example.com')</script>") is True
     assert rh("<script>window['fetch'.replace('x','x')]('https://x')</script>") is True
+    assert rh("<script>window['fetch'+suffix]('https://x')</script>") is True
+    assert rh("<script>window[key]('https://x')</script>") is True
+    assert rh("<script>frames[0]</script>") is False
     assert (
         rh(
             "<script>const i=document.createElement('img');"
@@ -1016,6 +1019,42 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>self['open' + '']('https://x')</script>") is True
     # A computed key on a plain object (not a global host) stays a static canvas.
     assert rh("<script>var o={}; o['a'+'b']=1</script>") is False
+    assert rh("<script>var o={}; o['fetch']=1</script>") is False
+    assert rh("<script>window['isFetching']=false</script>") is False
+    assert rh("<script>window['openState']=false</script>") is False
+    # Local and fragment setAttribute values do not leave the canvas.
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src','./local.png')</script>"
+        )
+        is False
+    )
+    assert (
+        rh(
+            "<script>const a=document.createElement('a');"
+            "a.setAttribute('href','#section')</script>"
+        )
+        is False
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src',`data:image/png;base64,AA==`)</script>"
+        )
+        is False
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('src','/' + 'api/image')</script>"
+        )
+        is True
+    )
+    assert (
+        rh("<script>const i=document.createElement('img');i.setAttribute('src',source)</script>")
+        is True
+    )
     assert rh("<script>/* just a note */ var x = 1</script>") is False  # comment only
     # A meta-refresh with a url navigates the frame to an external origin.
     assert rh('<meta http-equiv="refresh" content="0;url=https://example.com">') is True

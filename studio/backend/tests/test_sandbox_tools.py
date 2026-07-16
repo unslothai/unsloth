@@ -128,10 +128,33 @@ class TestLowLevelNetworkModules:
             'import httpcore; httpcore.request("GET", "https://example.com")',
             'import boto3; boto3.client("s3").list_buckets()',
             "from botocore.session import get_session; get_session()",
+            "m = __import__('boto3'); print(m.__name__)",
+            ("import importlib as il; m = il.import_module('http' + 'core'); print(m.__name__)"),
+            (
+                "from importlib import import_module as load; "
+                "name = 'botocore.session'; print(load(name).__name__)"
+            ),
+            (
+                "from builtins import __import__ as load; "
+                "loader = load; print(loader('boto3').__name__)"
+            ),
         ],
     )
     def test_low_level_client_blocked(self, code):
         _blocked(code, expect_phrase = "Blocked: low-level network module")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "m = __import__('statistics'); print(m.mean([1, 2]))",
+            (
+                "from importlib import import_module as load; "
+                "print(load('statistics').mean([1, 2]))"
+            ),
+        ],
+    )
+    def test_other_dynamic_imports_stay_available(self, code):
+        _ok(code)
 
 
 class TestHostNormalization:
