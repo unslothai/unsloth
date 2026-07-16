@@ -1547,7 +1547,7 @@ def _is_external_link(path: Path) -> bool:
 # so duck-typed engine stand-ins in tests do not need the attribute.
 _INKLING_REASONING_EFFORT = {
     "none": 0.0,
-    "minimal": 0.2,
+    "minimal": 0.1,
     "low": 0.2,
     "medium": 0.7,
     "high": 0.9,
