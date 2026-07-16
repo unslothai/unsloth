@@ -1536,6 +1536,52 @@ def test_generate_stream_cancel_marks_response_failed():
     assert "mark_response_failed(_gs_scope)" in branch
 
 
+def test_preheader_cancel_marks_response_failed():
+    # Codex P2 (round 24): _send_stream_with_preheader_cancel returns None when the client
+    # cancels/disconnects before the upstream response starts. Every caller then ends its 200
+    # stream without serving tokens, so the helper flags the scope failed once (covering all
+    # callers -- legacy completions, responses, Anthropic/OpenAI passthrough) or the middleware
+    # claims a preview-owned slot for a request that never used the model.
+    import inspect
+
+    src = inspect.getsource(inference._send_stream_with_preheader_cancel)
+    assert 'mark_response_failed(getattr(request, "scope", None))' in src
+    # Both return-None paths flag the scope: the pre-send check and the post-send cancel race.
+    assert src.count("_mark_preheader_cancel()") >= 2
+
+
+def test_native_chat_stream_cancels_mark_response_failed():
+    # Codex P2 (round 24): the GGUF/safetensors chat streaming loops end a 200 with no
+    # completion on cancel_event (client disconnect via the watcher, checked first) or on
+    # is_disconnected, so each cancel-break and disconnect-return must flag the response failed
+    # or the middleware claims a preview-owned slot for a cancelled stream.
+    import inspect
+
+    src = inspect.getsource(inference.openai_chat_completions)
+    for gen in ("gguf_tool_stream", "gguf_stream_chunks", "sf_tool_stream", "stream_chunks"):
+        start = src.index(f"async def {gen}()")
+        try:
+            nxt = src.index("async def ", start + 1)
+        except ValueError:
+            nxt = len(src)
+        block = src[start:nxt]
+        # cancel-break + disconnect-return both mark failed.
+        assert block.count("mark_current_response_failed()") >= 2, gen
+
+
+def test_deferred_claim_load_leaves_new_model_preview_owned():
+    # Codex P2 (round 24): a claim_resident=False auto-switch load clears the preview marker
+    # mid-load, but the route still runs post-switch checks that can 4xx. On a rejection the
+    # middleware skips its 2xx claim, so the freshly loaded model must be marked preview-owned
+    # (evictable by the next preview) rather than stranded as Studio-owned.
+    import inspect
+
+    src = inspect.getsource(inference._maybe_auto_switch_model)
+    after_load = src[src.index("await _load_model_impl(") :]
+    assert "if not claim_resident:" in after_load
+    assert "_set_preview_resident(_loaded_slot_ident())" in after_load
+
+
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
     # A non-preview inference returning 2xx adopts the resident model, so the preview
     # marker is cleared on completion.

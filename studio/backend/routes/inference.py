@@ -1572,7 +1572,16 @@ async def _send_stream_with_preheader_cancel(
 ) -> Optional[httpx.Response]:
     if cancel_event is None and request is None:
         return await client.send(req, stream = True)
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    def _mark_preheader_cancel() -> None:
+        # Cancelled before the upstream response started: the caller ends its 200
+        # stream without serving tokens, so flag it failed or the middleware claims
+        # a preview-owned slot for a request that never used the model.
+        mark_response_failed(getattr(request, "scope", None))
+
     if await _preheader_cancelled(cancel_event, request):
+        _mark_preheader_cancel()
         return None
 
     send_task = asyncio.create_task(client.send(req, stream = True))
@@ -1598,6 +1607,7 @@ async def _send_stream_with_preheader_cancel(
             return await send_task
 
         await _stop_send_task()
+        _mark_preheader_cancel()
         return None
     except asyncio.CancelledError:
         if mark_cancel_on_cancel and cancel_event is not None:
@@ -3684,6 +3694,16 @@ async def _maybe_auto_switch_model(
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
+                        # Deferred claim: _load_model_impl cleared the preview marker
+                        # mid-load, but this route still runs post-switch checks that can
+                        # 4xx (e.g. client tools the freshly loaded model lacks). On a
+                        # rejection the middleware skips its 2xx claim, so mark the new
+                        # model preview-owned rather than leave it stranded as Studio-owned
+                        # -- the next preview can then reclaim the slot. A 2xx turn clears
+                        # this marker via the middleware/route claim; while this request is
+                        # in flight the busy guard blocks a concurrent preview swap.
+                        if not claim_resident:
+                            _set_preview_resident(_loaded_slot_ident())
                 finally:
                     _auto_switch_process_lock.release()
         finally:
@@ -7792,6 +7812,8 @@ async def openai_chat_completions(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
                 try:
+                    from core.inference.llama_keepwarm import mark_current_response_failed
+
                     yield _chat_role_chunk(completion_id, created, model_name)
 
                     # Iterate the sync generator in a thread so the event loop
@@ -7819,9 +7841,11 @@ async def openai_chat_completions(
 
                     while True:
                         if cancel_event.is_set():
+                            mark_current_response_failed()
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
 
@@ -8364,6 +8388,8 @@ async def openai_chat_completions(
                 next_task = None
                 stream_completed = False
                 try:
+                    from core.inference.llama_keepwarm import mark_current_response_failed
+
                     yield _chat_role_chunk(completion_id, created, model_name)
 
                     # Iterate the sync generator in a thread so the event loop
@@ -8376,9 +8402,11 @@ async def openai_chat_completions(
                     _stream_finish = None
                     while True:
                         if cancel_event.is_set():
+                            mark_current_response_failed()
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
                         next_task = asyncio.create_task(
@@ -9080,6 +9108,8 @@ async def openai_chat_completions(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
             try:
+                from core.inference.llama_keepwarm import mark_current_response_failed
+
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 gen = sf_generate_with_tools()
@@ -9100,10 +9130,12 @@ async def openai_chat_completions(
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         break
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
@@ -9398,6 +9430,8 @@ async def openai_chat_completions(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
             try:
+                from core.inference.llama_keepwarm import mark_current_response_failed
+
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 # Client-tool passthrough: heal text-form calls on the fly
@@ -9420,6 +9454,7 @@ async def openai_chat_completions(
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         break
                     # next(gen, _DONE) returns _DONE instead of raising
                     # StopIteration -- StopIteration can't propagate through
@@ -9430,6 +9465,7 @@ async def openai_chat_completions(
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
@@ -10163,6 +10199,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         # terminated for the client's parser.
                         yield out + b"\n\n"
                 if disconnect_event.is_set():
+                    mark_response_failed(getattr(request, "scope", None))
                     api_monitor.finish(monitor_id, "cancelled")
                     return
                 api_monitor.finish(monitor_id)
@@ -10173,6 +10210,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse_bytes(error_chunk)
                     return
+                mark_response_failed(getattr(request, "scope", None))
                 api_monitor.finish(monitor_id, "cancelled")
                 return
             except asyncio.CancelledError:
@@ -10181,6 +10219,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 raise
             except Exception as e:
                 if disconnect_event.is_set():
+                    mark_response_failed(getattr(request, "scope", None))
                     api_monitor.finish(monitor_id, "cancelled")
                     return
                 logger.error("openai_completions stream error: %s", e)
