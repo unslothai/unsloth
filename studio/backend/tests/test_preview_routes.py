@@ -1290,6 +1290,54 @@ def test_clean_stream_completion_claims_slot(slot_state):
     _reset_keepwarm_counters()
 
 
+def test_disconnect_on_terminal_frame_write_does_not_claim_slot(slot_state):
+    # Codex P2 (round 27): the claim must run only after the terminal body frame is actually
+    # delivered. If the client disconnects on that final write, send() raises, so the stream
+    # did not complete cleanly and preview ownership is preserved.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"data: hi\n\n", "more_body": True})
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    mw = llama_keepwarm.LlamaKeepWarmMiddleware(_app)
+    scope = {"type": "http", "method": "POST", "path": "/v1/chat/completions"}
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(msg):
+        # Emulate a client disconnect on the terminal frame's write.
+        if msg.get("type") == "http.response.body" and not msg.get("more_body", False):
+            raise OSError("client disconnected on final write")
+
+    with pytest.raises(OSError):
+        asyncio.run(mw(scope, _receive, _send))
+    assert inference._is_preview_resident("/outputs/run/ckpt")  # terminal write failed -> no claim
+    _reset_keepwarm_counters()
+
+
+def test_passthrough_cancel_marks_response_failed():
+    # Codex P2 (round 27): an explicit /inference/cancel ends a passthrough stream with a clean
+    # terminal frame, which the completion gate treats as success. Both the OpenAI and Anthropic
+    # passthrough streams flag the response failed in their finally when cancel_event is set.
+    import inspect
+    import re
+
+    for fn in (
+        inference._openai_passthrough_stream_admitted,
+        inference._anthropic_passthrough_stream,
+    ):
+        src = inspect.getsource(fn)
+        assert re.search(
+            r"if cancel_event\.is_set\(\):\n(?:\s*#.*\n|\s*from core[^\n]*\n|\s*\n)*"
+            r'\s*mark_response_failed\(getattr\(request, "scope", None\)\)',
+            src,
+        ), fn.__name__
+
+
 def test_non_gguf_load_failure_restores_preview_marker():
     # Codex P2: a failed non-GGUF (Unsloth/LoRA) load unloads only the new entry, so the
     # prior preview checkpoint can still be resident though the marker was cleared;
@@ -1635,6 +1683,11 @@ def test_deferred_claim_load_leaves_new_model_preview_owned():
     after_load = src[src.index("await _load_model_impl(") :]
     assert "if not claim_resident:" in after_load
     assert "_set_preview_resident(_loaded_slot_ident())" in after_load
+    # Round 27: the load is wrapped in try/finally so a post-load raise (the new model is
+    # resident, then _load_model_impl raises while building the response) still marks the
+    # resident slot preview-owned, or restores the prior owner if the target never loaded.
+    assert "finally:" in after_load
+    assert "_set_preview_resident(_switch_prior_marker)" in after_load
 
 
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):

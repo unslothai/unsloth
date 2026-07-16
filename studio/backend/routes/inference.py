@@ -3686,24 +3686,33 @@ async def _maybe_auto_switch_model(
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
                         load_request = LoadRequest(**load_kwargs)
-                        await _load_model_impl(
-                            load_request,
-                            fastapi_request,
-                            current_subject,
-                        )
+                        # Deferred claim (claim_resident=False): _load_model_impl clears the
+                        # preview marker mid-load and can make the new model resident and then
+                        # raise while building the load response, so base ownership on what is
+                        # actually resident, in a finally that runs on that post-load failure
+                        # too. If the new target is resident, mark it preview-owned (a later
+                        # route 4xx leaves it evictable; a 2xx turn clears it via the claim,
+                        # and the in-flight busy guard blocks a concurrent preview swap);
+                        # otherwise restore the prior owner. claim_resident=True adopts the
+                        # model outright, so _load_model_impl's own marker clear stands.
+                        _switch_prior_marker = _get_preview_resident()
+                        _switch_loaded_ok = False
+                        try:
+                            await _load_model_impl(
+                                load_request,
+                                fastapi_request,
+                                current_subject,
+                            )
+                            _switch_loaded_ok = True
+                        finally:
+                            if not claim_resident:
+                                if _switch_loaded_ok or _loaded_slot_ident() == target_id:
+                                    _set_preview_resident(_loaded_slot_ident())
+                                else:
+                                    _set_preview_resident(_switch_prior_marker)
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
-                        # Deferred claim: _load_model_impl cleared the preview marker
-                        # mid-load, but this route still runs post-switch checks that can
-                        # 4xx (e.g. client tools the freshly loaded model lacks). On a
-                        # rejection the middleware skips its 2xx claim, so mark the new
-                        # model preview-owned rather than leave it stranded as Studio-owned
-                        # -- the next preview can then reclaim the slot. A 2xx turn clears
-                        # this marker via the middleware/route claim; while this request is
-                        # in flight the busy guard blocks a concurrent preview swap.
-                        if not claim_resident:
-                            _set_preview_resident(_loaded_slot_ident())
                 finally:
                     _auto_switch_process_lock.release()
         finally:
@@ -13472,6 +13481,14 @@ async def _anthropic_passthrough_stream(
                     yield event
                 return
         finally:
+            # Any cancel path ends the stream with a clean terminal frame (an explicit
+            # /inference/cancel closes the upstream, the except falls through, then
+            # emitter.finish() yields), so flag the response failed or the middleware claims
+            # a preview-owned model for a cancelled generation (mirrors the OpenAI passthrough).
+            if cancel_event.is_set():
+                from core.inference.llama_keepwarm import mark_response_failed
+
+                mark_response_failed(getattr(request, "scope", None))
             # Same shape as the OpenAI passthrough: a close-time CancelledError
             # re-raised by _aclose_stream_resources must not skip the tracker exit.
             try:
@@ -14873,6 +14890,12 @@ async def _openai_passthrough_stream_admitted(
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
+                # Any cancel path ends the stream with a clean terminal frame (an explicit
+                # /inference/cancel closes the upstream and this handler finishes "cancelled"
+                # without re-raising), so flag the response failed or the middleware claims a
+                # preview-owned model for a generation that was cancelled.
+                if cancel_event.is_set():
+                    mark_response_failed(getattr(request, "scope", None))
                 # _aclose_stream_resources re-raises a close-time CancelledError
                 # only after finishing teardown, and the tracker exits either way.
                 try:

@@ -495,12 +495,16 @@ class LlamaKeepWarmMiddleware:
             if message.get("type") == "http.response.start":
                 status["code"] = message.get("status")
             # Terminal body frame marks a clean end of a (possibly streaming) response.
-            elif message.get("type") == "http.response.body" and not message.get(
+            is_terminal = message.get("type") == "http.response.body" and not message.get(
                 "more_body", False
-            ):
+            )
+            await send(message)
+            # Claim only after the terminal frame is actually delivered: a client that
+            # disconnects on the final write makes send() above raise, so completed stays
+            # False and the cut-off stream is not mistaken for a clean completion.
+            if is_terminal:
                 completed["done"] = True
                 _finish()
-            await send(message)
 
         try:
             await self.app(scope, receive, send_wrapper)
