@@ -253,7 +253,8 @@ export function SettingsDialog() {
           <DialogDescription className="sr-only">
             {t("settings.dialog.description")}
           </DialogDescription>
-          <div className="flex h-full min-h-0 max-sm:flex-col">
+          {/* Keep tab content from expanding the dialog grid. */}
+          <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
             <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-muted/20 p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
