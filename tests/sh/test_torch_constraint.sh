@@ -109,7 +109,7 @@ _hardcoded=$(grep -c '"torch>=2.4,<2.11.0"' "$INSTALL_SH" || true)
 assert_eq "hardcoded torch>=2.4 appears exactly once" "1" "$_hardcoded"
 
 # A pinned custom/unknown-leaf index must bound the companions like the Python
-# _CUSTOM_INDEX_TORCH_PKG_SPEC, not leave them bare. Structural: the bounded assignments
+# custom-index repair spec, not leave them bare. Structural: the bounded assignments
 # exist AND are gated on a custom (empty) flavor tag.
 _count=$(grep -c 'TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"' "$INSTALL_SH" || true)
 assert_eq "custom-leaf pin bounds torchvision (<0.26)" "1" "$_count"

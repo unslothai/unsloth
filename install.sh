@@ -2331,16 +2331,8 @@ _torch_index_repairable() {
     esac
 }
 
-# ── Torch-index marker ───────────────────────────────────────────────────────
-# Records the exact wheel --index-url at a stable per-venv path so `unsloth studio
-# update` / setup.ps1 / install_python_stack.py detect a pin change by EXACT string
-# compare instead of the wheel version tag (which can't encode the AMD gfx family).
-# Path/format MUST match install_python_stack.py, setup.ps1, install.ps1:
-#   <venv_dir>/.unsloth-torch-index   (single line = the resolved index URL)
-_TORCH_INDEX_MARKER_NAME=".unsloth-torch-index"
-
-# Remove credentials from a wheel index URL ($1) so an authenticated pin never persists
-# in the marker or leaks in output. Drops userinfo AND query/fragment; scheme/host/path
+# Remove credentials from a wheel index URL ($1) so an authenticated pin never
+# leaks in output. Drops userinfo AND query/fragment; scheme/host/path
 # stay exact. Mirrors _strip_index_url_credentials (py) / Remove-IndexUrlCredentials (ps1).
 _strip_index_url_credentials() {
     _sic_url="$1"
@@ -2364,72 +2356,6 @@ _strip_index_url_credentials() {
     else
         printf '%s://%s/%s' "$_sic_scheme" "$_sic_host" "${_sic_rest#*/}"
     fi
-}
-
-# Lowercase ONLY a known wheel-family leaf (rocm<digit>* / gfx* / cpu / cuXXX); a custom
-# mirror leaf keeps its case so a verbatim URL pin isn't falsely matched equal. Mirrors
-# _normalize_family_leaf in install_python_stack.py / setup.ps1.
-_normalize_family_leaf() {
-    _l_low=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
-    case "$_l_low" in
-        cpu) printf '%s' "$_l_low"; return ;;
-    esac
-    # Exact rocm/gfx family -> normalized; a suffixed custom leaf keeps its case.
-    if _is_pip_rocm_family_leaf "$_l_low"; then printf '%s' "$_l_low"; return; fi
-    # cu + digits ONLY (cu128, not cu128-private).
-    case "$_l_low" in
-        cu[0-9]*)
-            case "${_l_low#cu}" in
-                *[!0-9]*) ;;                          # a non-digit follows -> custom
-                *) printf '%s' "$_l_low"; return ;;   # all digits -> cu family
-            esac
-            ;;
-    esac
-    printf '%s' "$1"
-}
-
-# Normalise a wheel index URL for exact marker/pin comparison: trim whitespace, strip
-# credentials (so an OLD marker recording them still compares equal) and all trailing
-# slashes, lowercase ONLY a known-family final segment. Mirrors _normalize_index_url
-# in install_python_stack.py / setup.ps1.
-_normalize_index_url() {
-    _n_url="$1"
-    _n_url="${_n_url#"${_n_url%%[![:space:]]*}"}"; _n_url="${_n_url%"${_n_url##*[![:space:]]}"}"
-    [ -n "$_n_url" ] || { printf '%s' ""; return; }
-    _n_url=$(_strip_index_url_credentials "$_n_url")
-    while [ "${_n_url%/}" != "$_n_url" ]; do _n_url="${_n_url%/}"; done
-    [ -n "$_n_url" ] || { printf '%s' ""; return; }
-    case "$_n_url" in
-        */*)
-            _n_head="${_n_url%/*}"
-            _n_leaf="${_n_url##*/}"
-            _n_leaf=$(_normalize_family_leaf "$_n_leaf")
-            printf '%s/%s' "$_n_head" "$_n_leaf"
-            ;;
-        *)
-            _normalize_family_leaf "$_n_url"
-            ;;
-    esac
-}
-
-# Write the resolved torch --index-url ($2) into the marker under venv dir ($1),
-# atomically (temp + mv). Best-effort; a blank URL is ignored, credentials stripped.
-_write_torch_index_marker() {
-    _wm_venv="$1"
-    _wm_url="$2"
-    [ -n "$_wm_venv" ] || return 0
-    [ -d "$_wm_venv" ] || return 0
-    _wm_url="${_wm_url#"${_wm_url%%[![:space:]]*}"}"; _wm_url="${_wm_url%"${_wm_url##*[![:space:]]}"}"
-    [ -n "$_wm_url" ] || return 0
-    _wm_url=$(_strip_index_url_credentials "$_wm_url")
-    _wm_marker="$_wm_venv/$_TORCH_INDEX_MARKER_NAME"
-    _wm_tmp="$_wm_marker.$$.tmp"
-    if printf '%s\n' "$_wm_url" > "$_wm_tmp" 2>/dev/null; then
-        mv -f "$_wm_tmp" "$_wm_marker" 2>/dev/null || rm -f "$_wm_tmp" 2>/dev/null || true
-    else
-        rm -f "$_wm_tmp" 2>/dev/null || true
-    fi
-    return 0
 }
 
 get_radeon_wheel_url() {
@@ -2989,15 +2915,9 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
-# Track whether THIS run installed/repaired torch so the marker reflects the real wheel
-# source. A migrated venv that keeps its torch must NOT rewrite its marker to the new pin,
-# or a later update skips a needed reinstall (e.g. gfx1151 -> gfx120X-all, same +rocm tag).
-# Fresh installs below always install torch.
-_TORCH_INSTALLED_THIS_RUN=true
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
-    # existing torch/CUDA (marker unchanged) unless the ROCm repair below fires.
-    _TORCH_INSTALLED_THIS_RUN=false
+    # existing torch/CUDA unless the ROCm repair below fires.
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
@@ -3044,8 +2964,6 @@ if [ "$_MIGRATED" = true ]; then
                 "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                 --default-index "$TORCH_INDEX_URL" \
                 --force-reinstall
-            # torch was reinstalled from $TORCH_INDEX_URL, so record it.
-            _TORCH_INSTALLED_THIS_RUN=true
         fi
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
@@ -3171,11 +3089,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                         --default-index "$TORCH_INDEX_URL"
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
-                    # Record the ACTUAL wheel source: this path installs from
-                    # repo.radeon.com via --find-links, not $TORCH_INDEX_URL (the generic
-                    # ROCm fallback). Recording the generic index would let a later Radeon
-                    # pin compare-equal and skip a needed reinstall. Mirrors install.ps1/setup.ps1.
-                    _TORCH_MARKER_INDEX_URL="$_RADEON_BASE_URL"
                     # Pass explicit wheel URLs so the matched trio is
                     # installed together. --find-links lets uv discover
                     # the Radeon listing for any local lookup, and PyPI
@@ -3263,9 +3176,6 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                 --default-index "$TORCH_INDEX_URL" \
                 --force-reinstall
-            # The repair reinstalled from $TORCH_INDEX_URL (generic ROCm), not the Radeon
-            # repo, so record THAT (an earlier Radeon marker would misreport the source).
-            _TORCH_MARKER_INDEX_URL="$TORCH_INDEX_URL"
         fi
     fi
 else
@@ -3306,10 +3216,6 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
                 "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
                 --default-index "$TORCH_INDEX_URL" \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
-            # torch re-landed from $TORCH_INDEX_URL, so record it even on a migrated venv
-            # whose flavor was wrong (the gfx-switch case keeps its rocm flavor and never
-            # reaches here, so its marker stays).
-            _TORCH_INSTALLED_THIS_RUN=true
             _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
             _installed_torch_tag=""
             [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
@@ -3322,15 +3228,6 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
-fi
-
-# ── Record the resolved torch wheel index (marker) ──
-# Write the exact --index-url so `unsloth studio update` detects a later pin change by
-# string compare. Only when torch was installed/repaired this run (a migrated venv that
-# kept its torch leaves the old marker). Source: the Radeon path's _TORCH_MARKER_INDEX_URL,
-# else $TORCH_INDEX_URL.
-if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ] && [ "$_TORCH_INSTALLED_THIS_RUN" = true ]; then
-    _write_torch_index_marker "$VENV_DIR" "${_TORCH_MARKER_INDEX_URL:-$TORCH_INDEX_URL}"
 fi
 
 # ── Run studio setup ──

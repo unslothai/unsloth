@@ -87,12 +87,6 @@ def _run_cuda_repair(
             return smi_path
         return None
 
-    import tempfile as _tempfile
-
-    # Isolate the torch-index marker so the post-reinstall write lands in a throwaway dir.
-    _marker_dir = _tempfile.mkdtemp(prefix = "unsloth-marker-test-")
-    _marker_path = Path(_marker_dir) / ".unsloth-torch-index"
-
     with (
         patch.object(stack_mod, "_TORCH_BACKEND", backend),
         patch.object(stack_mod, "IS_MACOS", is_macos),
@@ -101,7 +95,6 @@ def _run_cuda_repair(
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = bool(smi_path)),
-        patch.object(stack_mod, "_torch_index_marker_path", return_value = _marker_path),
         patch.object(stack_mod, "pip_install") as mock_pip,
         patch.object(
             stack_mod.subprocess,
@@ -196,9 +189,9 @@ class TestCudaRepairFires:
         assert "cu128" in _index_url(mock_pip)
 
     def test_broken_probe_with_cuda_pin_repairs(self):
-        # torch present but unimportable under an explicit CUDA pin: _torch_pin_needs_apply
-        # forces the pass on the failed probe and the base update won't repair a broken
-        # already-installed torch, so reinstall from the pin instead of stranding it.
+        # torch present but unimportable under an explicit CUDA pin: the base update won't
+        # repair a broken already-installed torch, so reinstall from the pin instead of
+        # stranding it.
         mock_pip = _run_cuda_repair(torch_state = "hip", torch_rc = 1, index_family = "cu128")
         assert mock_pip.call_count == 1
         assert "cu128" in _index_url(mock_pip)
