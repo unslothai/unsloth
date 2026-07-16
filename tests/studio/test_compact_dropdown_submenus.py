@@ -8,10 +8,11 @@ DROPDOWN_MENU = REPO / "studio/frontend/src/components/ui/dropdown-menu.tsx"
 FRONTEND_SRC = REPO / "studio/frontend/src"
 
 
-def test_shared_submenu_uses_its_rendered_width_on_mobile():
+def test_shared_submenu_uses_its_layout_width_on_mobile():
     source = DROPDOWN_MENU.read_text(encoding = "utf-8")
     assert 'import { useIsMobile } from "@/hooks/use-mobile";' in source
-    assert "element.getBoundingClientRect().width" in source
+    assert "element.offsetWidth" in source
+    assert "element.getBoundingClientRect().width" not in source
     assert "new ResizeObserver(updateContentWidth)" in source
     assert "isMobile && contentWidth > 0 ? -contentWidth : sideOffset" in source
     assert "sideOffset={compactSideOffset}" in source

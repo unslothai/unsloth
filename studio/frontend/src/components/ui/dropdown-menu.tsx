@@ -271,7 +271,7 @@ function DropdownMenuSubContent({
       if (!element) return;
 
       const updateContentWidth = () => {
-        setContentWidth(element.getBoundingClientRect().width);
+        setContentWidth(element.offsetWidth);
       };
       updateContentWidth();
 
