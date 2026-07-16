@@ -141,9 +141,7 @@ def _pdf(
         if doc.needs_pass:
             raise ValueError("encrypted PDF requires a password")
         total_pages = doc.page_count
-        page_numbers = range(
-            total_pages if max_pages is None else min(total_pages, max_pages)
-        )
+        page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
         if not config.PDF_MARKDOWN:
             md = None
         elif max_pages is None:
