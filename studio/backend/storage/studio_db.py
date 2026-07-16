@@ -1778,13 +1778,9 @@ def _chat_attachment_inventory_entries(
         entries.append(
             {
                 "id": attachment_id,
-                "name": _chat_attachment_metadata_text(
-                    attachment.get("name"), "attachment"
-                ),
+                "name": _chat_attachment_metadata_text(attachment.get("name"), "attachment"),
                 "type": _chat_attachment_metadata_text(attachment.get("type")),
-                "contentType": _chat_attachment_metadata_text(
-                    attachment.get("contentType")
-                ),
+                "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
             }
         )

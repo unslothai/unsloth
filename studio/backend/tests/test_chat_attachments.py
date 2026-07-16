@@ -229,10 +229,8 @@ def test_list_chat_attachments_survives_missing_thread_row(tmp_path, monkeypatch
 
 def test_list_chat_attachments_includes_compare_pair_id(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_thread(_thread(pair_id="pair-1"))
-    studio_db.upsert_chat_message(
-        _message("msg-compare", attachments=[_image_attachment()])
-    )
+    studio_db.upsert_chat_thread(_thread(pair_id = "pair-1"))
+    studio_db.upsert_chat_message(_message("msg-compare", attachments = [_image_attachment()]))
     record = studio_db.list_chat_attachments()[0]
     assert record["threadId"] == "thread-1"
     assert record["pairId"] == "pair-1"
