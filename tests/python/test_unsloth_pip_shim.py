@@ -761,10 +761,15 @@ def test_uv_help_value_flags_all_classified(shim):
 @pytest.mark.parametrize(
     "url",
     [
-        pytest.param("git+https://github.com/unslothai/unsloth.git@feature/foo", id="https-slash-ref"),
-        pytest.param("git+ssh://git@github.com/unslothai/unsloth.git@feature/foo", id="ssh-userinfo-and-slash-ref"),
-        pytest.param("git+https://github.com/unslothai/unsloth.git@v2026.7", id="plain-tag-ref"),
-        pytest.param("git+https://github.com/unslothai/unsloth.git", id="no-ref"),
+        pytest.param(
+            "git+https://github.com/unslothai/unsloth.git@feature/foo", id = "https-slash-ref"
+        ),
+        pytest.param(
+            "git+ssh://git@github.com/unslothai/unsloth.git@feature/foo",
+            id = "ssh-userinfo-and-slash-ref",
+        ),
+        pytest.param("git+https://github.com/unslothai/unsloth.git@v2026.7", id = "plain-tag-ref"),
+        pytest.param("git+https://github.com/unslothai/unsloth.git", id = "no-ref"),
     ],
 )
 def test_vcs_slash_ref_still_protected(shim, url):
