@@ -1367,7 +1367,6 @@ def run_server(
         pass
     else:
         import nest_asyncio
-
         nest_asyncio.apply()
 
     from threading import Thread, Event
