@@ -2977,7 +2977,6 @@ def test_responses_count_tokens_messages_defer_slot_claim():
     # and 503s a later public preview for another checkpoint. They pass claim_resident
     # = False and rely on the keep-warm middleware's claim-on-2xx-success instead.
     import inspect
-
     for fn in (
         inference_route.openai_responses,
         inference_route.anthropic_count_tokens,
