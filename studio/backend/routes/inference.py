@@ -10094,6 +10094,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
             from core.inference.llama_keepwarm import mark_response_failed
+
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
@@ -10131,11 +10132,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
-                        if _monitor_openai_sse_event(
-                            monitor_id,
-                            event,
-                            llama_backend.context_length,
-                        ) == "error":
+                        if (
+                            _monitor_openai_sse_event(
+                                monitor_id,
+                                event,
+                                llama_backend.context_length,
+                            )
+                            == "error"
+                        ):
                             # Upstream forwarded an HTTP-200 SSE error event: the stream
                             # failed, so don't let the middleware claim the slot for
                             # Studio and evict a preview-owned model.
@@ -10144,11 +10148,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         if out is not None:
                             yield out + b"\n\n"
                 if not disconnect_event.is_set() and buffer:
-                    if _monitor_openai_sse_event(
-                        monitor_id,
-                        buffer,
-                        llama_backend.context_length,
-                    ) == "error":
+                    if (
+                        _monitor_openai_sse_event(
+                            monitor_id,
+                            buffer,
+                            llama_backend.context_length,
+                        )
+                        == "error"
+                    ):
                         mark_response_failed(getattr(request, "scope", None))
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
