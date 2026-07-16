@@ -1565,10 +1565,31 @@ export function AppSidebar() {
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
-                  {/* settings cog (replaces the up/down chevron) */}
+                  {/* settings cog; opens the settings dialog directly.
+                      span, not button: nesting a button inside the trigger
+                      button is invalid HTML. */}
                   <span
-                    aria-hidden="true"
-                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center text-muted-foreground group-data-[collapsible=icon]:hidden"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={t("shell.navigation.settings")}
+                    onPointerDown={(e) => {
+                      // Radix opens the dropdown on pointerdown; block it.
+                      e.stopPropagation();
+                      e.preventDefault();
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      useSettingsDialogStore.getState().openDialog();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        useSettingsDialogStore.getState().openDialog();
+                      }
+                    }}
+                    className="ml-auto flex size-[32px] shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-black/10 hover:text-foreground dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
                   >
                     <HugeiconsIcon
                       icon={Settings02Icon}
