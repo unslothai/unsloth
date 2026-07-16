@@ -17,7 +17,11 @@ from loggers import get_logger
 from auth.authentication import get_current_subject
 from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
-from routes.inference import load_model, openai_chat_completions
+from routes.inference import (
+    disable_openai_auto_switch_for_request,
+    load_model,
+    openai_chat_completions,
+)
 from state.tool_policy import tools_force_disabled
 from utils.client_ip import client_ip
 from utils.models.checkpoints import list_preview_targets, resolve_preview_checkpoint
@@ -155,6 +159,9 @@ async def _serve_chat(
     path = _resolve_or_4xx(run, checkpoint)
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
+    # Preview always serves the pinned checkpoint it loads below; a public caller's
+    # `model` field must never trigger an OpenAI auto-switch to another GGUF.
+    disable_openai_auto_switch_for_request(getattr(request, "scope", None))
     await _preview_lock.acquire()
     keep_locked = False
     try:

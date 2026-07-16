@@ -7,7 +7,9 @@ export type SettingsTab =
   | "general"
   | "profile"
   | "appearance"
+  | "resources"
   | "chat"
+  | "voice"
   | "connections"
   | "api-keys"
   | "about";
@@ -60,7 +62,9 @@ function loadInitialTab(): SettingsTab {
     "general",
     "profile",
     "appearance",
+    "resources",
     "chat",
+    "voice",
     "connections",
     "api-keys",
     "about",

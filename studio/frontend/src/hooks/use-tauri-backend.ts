@@ -75,8 +75,7 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
     : "A Unsloth server for this install is already running from a terminal. Stop that server, or run `unsloth studio update` from that terminal before using the desktop app.";
 }
 
-async function waitForManagedServerReady(
-  invoke: TauriInvoke,
+async function waitForManagedServerPort(
   getPort: () => number | null,
   shouldContinue: () => boolean,
 ): Promise<ManagedStartupResult> {
@@ -91,15 +90,7 @@ async function waitForManagedServerReady(
       continue;
     }
 
-    const healthy = await invoke<boolean>("check_health", { port });
-    if (!shouldContinue()) {
-      return { status: "aborted" };
-    }
-    if (healthy && getPort() === port) {
-      return { status: "ready", port };
-    }
-
-    await wait(MANAGED_STARTUP_POLL_MS);
+    return { status: "ready", port };
   }
 }
 
@@ -280,10 +271,9 @@ export function useTauriBackend() {
       // backend/run.py keeps the 8888-8908 fallback via server-port/TAURI_PORT.
       await invoke("start_managed_server", { port: 8888 });
 
-      // Wait for the owned backend's server-port event. Don't attach to an
-      // external backend if the managed start doesn't report a port.
-      const startupResult = await waitForManagedServerReady(
-        invoke,
+      // Rust emits server-port only after validating the desktop-owned process.
+      // Treat that as the UI handoff point instead of doing a second health poll.
+      const startupResult = await waitForManagedServerPort(
         () => portRef.current,
         () => startingRef.current,
       );

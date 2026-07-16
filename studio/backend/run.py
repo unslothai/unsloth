@@ -10,7 +10,80 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+
+
+def _fix_torch_cuda_ld_path():
+    """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH.
+
+    PyTorch wheels ship their own CUDA runtime (libcudart, libcublas, ...) in
+    ``site-packages/nvidia/*/lib``. On Linux the dynamic linker reads
+    LD_LIBRARY_PATH before the RUNPATH baked into torch's .so files, so a
+    pre-existing LD_LIBRARY_PATH pointing at a different system CUDA (e.g.
+    /usr/local/cuda-13/lib64 from conda or a Docker base image) shadows torch's
+    libs and triggers "undefined symbol" errors when torch is imported. Detect
+    torch's lib dirs (without importing torch) and prepend them. Returns True if
+    LD_LIBRARY_PATH was changed.
+    """
+    if sys.platform != "linux":
+        return False
+    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    if not ld_path:
+        return False
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("torch")
+        if not spec or not spec.origin:
+            return False
+        torch_dir = os.path.dirname(spec.origin)
+        site_pkgs = os.path.dirname(torch_dir)
+        nvidia_dir = os.path.join(site_pkgs, "nvidia")
+
+        lib_dirs = []
+        torch_lib = os.path.join(torch_dir, "lib")
+        if os.path.isdir(torch_lib):
+            lib_dirs.append(torch_lib)
+        if os.path.isdir(nvidia_dir):
+            for sub in sorted(os.listdir(nvidia_dir)):
+                lib = os.path.join(nvidia_dir, sub, "lib")
+                if os.path.isdir(lib):
+                    lib_dirs.append(lib)
+        if not lib_dirs:
+            return False
+
+        existing = ld_path.split(":")
+        if existing[: len(lib_dirs)] == lib_dirs:
+            return False  # already at the front, nothing to do
+
+        torch_set = set(lib_dirs)
+        cleaned = [p for p in existing if p not in torch_set]
+        os.environ["LD_LIBRARY_PATH"] = ":".join(lib_dirs + cleaned)
+        return True
+    except Exception:
+        return False
+
+
+_LD_FIXED_SENTINEL = "_UNSLOTH_STUDIO_LD_FIXED"
+
+
+def _maybe_reexec_for_cuda_ld_path():
+    """Re-exec once so the dynamic linker sees the corrected LD_LIBRARY_PATH.
+
+    LD_LIBRARY_PATH is read at process start, so editing os.environ in-process
+    cannot fix the running interpreter; a single re-exec is required. Call only
+    from a true entry point (the ``if __name__ == "__main__"`` block), never at
+    import time, because os.execv replaces the whole process (an embedder such
+    as Colab that does ``from run import run_server`` must not be re-exec'd).
+    """
+    if _LD_FIXED_SENTINEL in os.environ:
+        return
+    if not _fix_torch_cuda_ld_path():
+        return
+    os.environ[_LD_FIXED_SENTINEL] = "1"
+    argv = getattr(sys, "orig_argv", None) or [sys.executable, *sys.argv]
+    os.execv(sys.executable, argv)
+
 
 # Suppress C-level dependency warnings globally (e.g. SwigPyPacked).
 os.environ["PYTHONWARNINGS"] = "ignore"
@@ -253,12 +326,13 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     local_url_c = "\033[38;5;108;1m" if use_color else ""  # matches banner's URL color
     reset = "\033[0m" if use_color else ""
 
-    url = f"http://{display_host}:{port}"
+    url = f"http://{_url_host(display_host)}:{port}"
 
     # Private/loopback/link-local addresses aren't globally routable.
     try:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
+            _public_reachable = False
             print(
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
@@ -380,6 +454,20 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
 
 
+def _display_host_for_bind(host: str) -> str:
+    return _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+
+
+def _loopback_bind_host_for(host: str) -> str:
+    return "::1" if host == "::" else "127.0.0.1"
+
+
+def _url_host(host: str) -> str:
+    return (
+        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+    )
+
+
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
     """One-line tool-policy summary for the plain-server startup banner, so a
     network-reachable launch is never silent about code execution."""
@@ -416,7 +504,7 @@ def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None
     print("")
     print("🦥 Unsloth Studio is running (secure)")
     print("─" * 52)
-    _print_cloudflare_line()
+    _print_cloudflare_line(secure = True)
     print(f"  On this machine only: http://127.0.0.1:{port}/")
     print("─" * 52)
     _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
@@ -447,30 +535,112 @@ def _emit_startup_output(
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
-        _print_cloudflare_line()
+        _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(host, False, enable_tools)
     print_studio_stop_hint()
 
 
-def _print_cloudflare_line() -> None:
-    """Print the Cloudflare quick-tunnel URL for 0.0.0.0 binds, if one is up.
-
-    Reads the module-level URL set by ``run_server``. Prints nothing when the
-    tunnel is disabled or failed -- failures are silently ignored. When the public
-    reachability probe just failed (``_public_reachable is False``) but the tunnel
-    is up, reword to point the user at the Cloudflare link as the way in.
-    """
-    if not _cloudflare_url:
-        return
+def _print_cloudflare_line(secure: bool = False, loopback_host: str = "127.0.0.1") -> None:
+    """Print Cloudflare tunnel state for startup banners."""
     from startup_banner import stdout_supports_color
 
     accent = "\033[38;5;150;1m"
+    warn = "\033[38;5;215;1m"
     reset = "\033[0m"
-    if _public_reachable is False:
-        line = f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}"
-    else:
-        line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
-    print(f"{accent}{line}{reset}" if stdout_supports_color() else line)
+    color = stdout_supports_color()
+
+    def _emit(text: str, style: str = "") -> None:
+        print(f"{style}{text}{reset}" if (color and style) else text)
+
+    if _cloudflare_url:
+        if _public_reachable is False:
+            _emit(f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}", accent)
+        else:
+            _emit(f"  Secure link access via Cloudflare: {_cloudflare_url}", accent)
+        if not secure:
+            if _public_reachable is True:
+                _emit(
+                    "  Cloudflare tunnel: ON. This Cloudflare URL is PUBLIC, and the "
+                    "raw port is also publicly reachable. --no-cloudflare disables "
+                    f"only the Cloudflare URL; bind {loopback_host} or close firewall "
+                    "access to keep Studio private.",
+                    warn,
+                )
+            else:
+                _emit(
+                    "  Cloudflare tunnel: ON. This is a PUBLIC internet URL: anyone "
+                    "who has it can reach this Studio. Relaunch with --no-cloudflare "
+                    f"to disable the Cloudflare URL; bind {loopback_host} or close "
+                    "firewall access to keep Studio private.",
+                    warn,
+                )
+        return
+    if _cloudflare_requested:
+        if _public_reachable is True:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. The raw port is "
+                "still reachable from the public internet (see the reachability check "
+                "above): anyone who can reach it can access this Studio.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. Studio is reachable "
+                "on your local network only (no public link).",
+                warn,
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: requested but failed to start. There is no "
+                "Cloudflare public link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
+    elif _cloudflare_flag:
+        if _public_reachable is True:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. The raw port is still "
+                "reachable from the public internet (see the reachability check above): "
+                "anyone who can reach it can access this Studio.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. Studio is reachable on your "
+                "local network only (no public link)."
+            )
+        else:
+            _emit(
+                "  Cloudflare tunnel: OFF for this mode. There is no Cloudflare public "
+                "link. Raw port reachability was not verified; "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
+    elif _cloudflare_flag is False or _cloudflare_flag is None:
+        # None = off by default (no flag); False = explicit --no-cloudflare.
+        _reason = "default" if _cloudflare_flag is None else "--no-cloudflare"
+        if _public_reachable is True:
+            _emit(
+                f"  Cloudflare tunnel: OFF ({_reason}). The raw port is still "
+                "reachable from the public internet (see the reachability check above): "
+                "pass --cloudflare to also expose a public Cloudflare HTTPS link, or "
+                f"bind {loopback_host} to keep Studio private.",
+                warn,
+            )
+        elif _public_reachable is False:
+            _emit(
+                f"  Cloudflare tunnel: OFF ({_reason}). Studio is reachable on your "
+                "local network only. Pass --cloudflare to expose a public "
+                "Cloudflare HTTPS link."
+            )
+        else:
+            _emit(
+                f"  Cloudflare tunnel: OFF ({_reason}). There is no Cloudflare "
+                "public link. Raw port reachability was not verified; pass --cloudflare "
+                "to expose a public Cloudflare HTTPS link, or "
+                f"bind {loopback_host} or close firewall access to keep Studio private.",
+                warn,
+            )
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
@@ -697,7 +867,7 @@ _server_thread = None
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
 
-# trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
+# trycloudflare.com URL for wildcard binds (set by run_server, read by the banner);
 # None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
 _cloudflare_url = None
 
@@ -706,6 +876,11 @@ _cloudflare_url = None
 # False when it confirmed NOT reachable, None when the probe did not run or could
 # not decide (timeout, blocked, private address).
 _public_reachable = None
+
+_cloudflare_requested = False
+# Opt-in tri-state (mirrors the CLI): None = off by default, True = on,
+# False = explicit --no-cloudflare. run_server overwrites it before the banner.
+_cloudflare_flag = None
 
 
 _DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -880,12 +1055,205 @@ def _cloudflare_tunnel_should_start(
 ) -> bool:
     """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel
     (loopback bind), so it tunnels even api-only (headless secure API serving);
-    otherwise tunnel only a 0.0.0.0 bind, never api-only (Tauri) or Colab."""
+    otherwise tunnel wildcard binds, never api-only (Tauri) or Colab."""
     if is_colab or not cloudflare:
         return False
     if secure:
         return True
-    return host == "0.0.0.0" and not api_only
+    return host in ("0.0.0.0", "::") and not api_only
+
+
+def _stream_isatty(stream) -> bool:
+    """isatty() that treats broken streams as non-interactive.
+
+    isatty() can raise under service wrappers (closed stdin -> ValueError;
+    sys.stdin None in Windows GUI -> AttributeError); such a stream can't host a
+    prompt, which is a fallback, not an error.
+    """
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _terminal_password_gate(
+    *,
+    tunnel_will_start: bool,
+    host: str,
+    secure: bool,
+    api_only: bool,
+    frontend_served: bool,
+    is_colab: bool = False,
+) -> Tuple[bool, bool]:
+    """Force a terminal password change before the public tunnel goes up.
+
+    When the tunnel is about to publish Studio and the seeded admin password was
+    never changed, ask for a new one (masked, confirmed) before any public URL
+    exists. The CLI normally does this before re-exec'ing the backend; this is
+    the backstop for direct `python run.py` launches and older-CLI installs.
+    Must run BEFORE the uvicorn socket binds: on a wildcard bind the served HTML
+    injects the bootstrap credential, so a pre-gate listener would hand the
+    default password to anyone reaching the raw port while the operator types.
+
+    Returns (proceed, drop_bootstrap_injection):
+      proceed False -> abort the launch (interactive refusal, or a headless
+        public launch nothing would protect); fail closed.
+      drop_bootstrap_injection True -> caller must null
+        app.state.bootstrap_password: the password just changed (stale), or a
+        public URL is about to serve the default credential and must not leak it.
+
+    Without a usable terminal the prompt is skipped: proceed if the bootstrap
+    deadline (armed later) will protect the launch; if even that is disabled
+    (api-only, timeout 0) nothing protects it, so refuse. NOT wrapped in a broad
+    try/except: an auth storage failure must abort rather than expose the default.
+    """
+    if not tunnel_will_start:
+        return True, False
+
+    from auth import hashing as _auth_hashing
+    from auth import storage as _auth_storage
+    from auth.bootstrap_timeout import (
+        bootstrap_timeout_seconds,
+        should_arm_bootstrap_timeout,
+    )
+    from auth.terminal_prompt import (
+        prompt_for_password_change,
+        should_prompt_password_change,
+    )
+
+    _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
+    # Gate can run before lifespan: seed the admin row here (idempotent).
+    _auth_storage.ensure_default_admin()
+    requires_change = _auth_storage.requires_password_change(_admin)
+    if not requires_change:
+        return True, False
+
+    if not should_prompt_password_change(
+        tunnel_will_start = tunnel_will_start,
+        requires_change = requires_change,
+        stdin_isatty = _stream_isatty(sys.stdin),
+        stderr_isatty = _stream_isatty(sys.stderr),
+    ):
+        # No terminal: only proceed if the bootstrap deadline will arm; api-only
+        # and TIMEOUT=0 never arm it, leaving the default credential public.
+        deadline_arms = should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = frontend_served,
+            is_colab = is_colab,
+            requires_change = True,
+            timeout_seconds = bootstrap_timeout_seconds(),
+        )
+        if not deadline_arms:
+            print(
+                "Refusing to publish Studio on a public Cloudflare URL: the "
+                "default admin password was never changed, no terminal is "
+                "attached to change it here, and the bootstrap shutdown "
+                "deadline does not apply to this launch (api-only, or "
+                "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the password "
+                "first (run `unsloth studio` locally and log in, or re-run "
+                "with a terminal attached), then retry.",
+                file = sys.stderr,
+                flush = True,
+            )
+            return False, False
+        # The public page won't auto-fill the bootstrap credential (suppressed
+        # below) and the seeded file may already be gone, so point recovery at a
+        # terminal-attached run / reset-password instead of reading it from disk.
+        print(
+            "  WARNING: the default admin password is still active while "
+            "Studio is about to be published on a public Cloudflare URL, and "
+            "no terminal is attached to change it here. The public page will "
+            "NOT auto-fill the bootstrap credential. Set a new password by "
+            "running `unsloth studio` locally with a terminal attached, or "
+            "`unsloth studio reset-password`. Studio shuts down after the "
+            "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
+            "unless the password is changed.",
+            file = sys.stderr,
+            flush = True,
+        )
+        # Never serve the default credential in HTML over a public URL.
+        return True, True
+
+    def _is_current_password(candidate: str) -> bool:
+        record = _auth_storage.get_user_and_secret(_admin)
+        if record is None:
+            return False
+        salt, pwd_hash, _jwt_secret, _must_change = record
+        return _auth_hashing.verify_password(candidate, salt, pwd_hash)
+
+    def _apply_change(new_password: str) -> None:
+        # Same effects as routes/auth.py change_password: rehash, rotate the JWT
+        # secret, revoke refresh tokens in the SAME transaction.
+        _auth_storage.update_password(_admin, new_password, revoke_refresh_tokens = True)
+
+    changed = prompt_for_password_change(
+        min_length = _auth_storage.MIN_PASSWORD_LENGTH,
+        is_current_password = _is_current_password,
+        apply_change = _apply_change,
+        out = sys.stderr,
+    )
+    return (True, True) if changed else (False, False)
+
+
+def _apply_supplied_password(password_value: "Optional[str]") -> None:
+    """Non-interactively set the INITIAL admin password before the socket binds,
+    for a direct ``python run.py`` launch (the CLI does this in its own parent).
+    Value comes from --password / UNSLOTH_STUDIO_PASSWORD / stdin.
+
+    Only ever sets the FIRST password: an already-set one is a hard error, an
+    invalid value fails closed. NOT wrapped in a broad try/except: an auth
+    storage failure must abort rather than expose the default credential.
+    """
+    from auth import hashing as _auth_hashing
+    from auth import storage as _auth_storage
+    from auth.terminal_prompt import SUPPLIED_PASSWORD_ENV, resolve_supplied_password
+
+    supplied = resolve_supplied_password(password_value)
+    # Strip the env var once read so child subprocesses (cloudflared, llama-server,
+    # code-exec tools) can't inherit the plaintext via /proc/PID/environ. Mirrors
+    # the CLI. Unconditional: strips a leftover value even when a literal --password won.
+    os.environ.pop(SUPPLIED_PASSWORD_ENV, None)
+    if not supplied:
+        return
+
+    _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
+    _auth_storage.ensure_default_admin()
+    if not _auth_storage.requires_password_change(_admin):
+        print(
+            "Error: a Studio admin password is already set; --password only sets "
+            "the initial password. Run `unsloth studio reset-password` first.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+
+    def _is_current_password(candidate: str) -> bool:
+        record = _auth_storage.get_user_and_secret(_admin)
+        if record is None:
+            return False
+        salt, pwd_hash, _jwt_secret, _must_change = record
+        return _auth_hashing.verify_password(candidate, salt, pwd_hash)
+
+    if len(supplied) < _auth_storage.MIN_PASSWORD_LENGTH:
+        print(
+            f"Error: password must be at least {_auth_storage.MIN_PASSWORD_LENGTH} "
+            "characters; not starting.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    if _is_current_password(supplied):
+        print(
+            "Error: the new password must differ from the current bootstrap "
+            "password; not starting.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    _auth_storage.update_password(_admin, supplied, revoke_refresh_tokens = True)
+    print(f"Password updated for '{_admin}'.", file = sys.stderr, flush = True)
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
@@ -906,9 +1274,10 @@ def run_server(
     silent: bool = False,
     api_only: bool = False,
     llama_parallel_slots: int = 1,
-    cloudflare: bool = True,
+    cloudflare: "Optional[bool]" = None,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    password: "Optional[str]" = None,
     emit_tauri_port: bool = True,
 ):
     """
@@ -921,6 +1290,9 @@ def run_server(
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
         llama_parallel_slots: parallel slots for llama-server
+        cloudflare: opt in to the public Cloudflare HTTPS tunnel for a wildcard
+            bind. Tri-state: None (unset) and False both mean off; True enables it.
+            --secure implies it (True) and rejects an explicit False.
         enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
             the default (tools on, per-request enable_tools honored)
         emit_tauri_port: print the machine-readable TAURI_PORT line the desktop
@@ -933,19 +1305,25 @@ def run_server(
     """
     global _server, _server_thread, _shutdown_event
 
+    boot_started = time.perf_counter()
+    logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
     from utils.process_lifetime import initialize_parent_lifetime
 
     initialize_parent_lifetime()
 
-    # --secure exposes only the Cloudflare link: force a loopback bind so the raw
-    # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
-    if secure and not cloudflare:
-        raise SystemExit(
-            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
-        )
+    # --secure exposes ONLY the Cloudflare link: reject --secure --no-cloudflare,
+    # then force a loopback bind so the raw port is never public (even -H 0.0.0.0).
+    # Otherwise keep the tri-state so the banner distinguishes "off by default"
+    # from an explicit --no-cloudflare.
     if secure:
+        if cloudflare is False:
+            raise SystemExit(
+                "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
+            )
+        cloudflare = True
         host = "127.0.0.1"
 
     # `unsloth studio run` installs its own resolved policy and passes None here.
@@ -984,7 +1362,25 @@ def run_server(
     from threading import Thread, Event
     import uvicorn
 
+    # `from main import app` below loads torch/unsloth/transformers (~2 min cold,
+    # silent), so print a flushed heads-up (piped stdout is block-buffered).
+    if not silent:
+        print(
+            "Loading Unsloth Studio, please wait... (this can take a few minutes)",
+            flush = True,
+        )
+        print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
+
+    import_started = time.perf_counter()
+
     from main import app, setup_frontend, _IS_COLAB
+
+    logger.info(
+        "Imported FastAPI app in %.1fms",
+        (time.perf_counter() - import_started) * 1000,
+    )
+    if not silent:
+        print("  - Starting server...", flush = True)
     from utils.paths import ensure_studio_directories
 
     # Allow local stdio MCP servers on a loopback bind (the user's own machine),
@@ -997,6 +1393,11 @@ def run_server(
     # Create all standard directories on startup.
     ensure_studio_directories()
 
+    logger.info(
+        "Ensured Studio directories in %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
+
     # Auto-find a free port if the requested one is in use.
     if not _is_port_free(host, port):
         original_port = port
@@ -1007,7 +1408,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
+                print(f"Port {original_port} is already in use by {name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -1057,8 +1458,13 @@ def run_server(
             )
 
     # Resolve once; shared by the log rewrite and banner.
-    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)
+
+    logger.info(
+        "run_server pre-uvicorn setup completed in %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
 
     ready_event = Event()
     startup_failed = Event()
@@ -1068,6 +1474,10 @@ def run_server(
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
             if getattr(self, "started", False) and not self.should_exit:
+                logger.info(
+                    "Uvicorn startup hook completed in %.1fms",
+                    (time.perf_counter() - boot_started) * 1000,
+                )
                 ready_event.set()
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
@@ -1093,13 +1503,10 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
-    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
+    # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
     if port and port > 0:
-        _direct_host = _resolve_external_ip() if host in ("0.0.0.0", "::") else host
-        # Bracket IPv6 literals so the URL is valid (http://[2405:...]:port).
-        if ":" in _direct_host and not _direct_host.startswith("["):
-            _direct_host = f"[{_direct_host}]"
-        app.state.server_url = f"http://{_direct_host}:{port}"
+        _direct_host = _display_host_for_bind(host)
+        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
     else:
         app.state.server_url = None
     app.state.secure = secure
@@ -1113,6 +1520,44 @@ def run_server(
             _shutdown_event.set()
 
     app.state.trigger_shutdown = _trigger_shutdown
+
+    # A supplied --password / UNSLOTH_STUDIO_PASSWORD / stdin sets the initial
+    # admin password before the gate and socket bind (direct `python run.py`;
+    # the CLI applies it in its own parent).
+    _apply_supplied_password(password)
+
+    # Never publish with the seeded default password active: prompt first (or
+    # warn / fail closed headless; see _terminal_password_gate). Runs BEFORE the
+    # socket binds so a pre-gate listener can't hand out the injected credential.
+    _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
+        tunnel_will_start = _cloudflare_tunnel_should_start(
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            is_colab = _IS_COLAB,
+        ),
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        frontend_served = bool(frontend_path) and not api_only,
+        is_colab = _IS_COLAB,
+    )
+    if not _pw_proceed:
+        print(
+            "Not starting Studio; set a new admin password first, or launch "
+            "without --secure/--cloudflare.",
+            file = sys.stderr,
+            flush = True,
+        )
+        sys.exit(1)
+    if _pw_drop_bootstrap:
+        # Password just changed (stale) or a public URL is about to serve the
+        # default credential: don't leak it in the HTML. Lifespan runs AFTER this
+        # and re-reads the bootstrap password, so the flag (not a plain None)
+        # makes it skip that re-read.
+        app.state.suppress_bootstrap_injection = True
+        app.state.bootstrap_password = None
 
     # Run server in a daemon thread with explicit new_event_loop() +
     # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
@@ -1150,6 +1595,11 @@ def run_server(
         _shutdown_event.set()
         raise
 
+    logger.info(
+        "run_server uvicorn ready after %.1fms",
+        (time.perf_counter() - boot_started) * 1000,
+    )
+
     _write_pid_file()
     import atexit
 
@@ -1163,11 +1613,12 @@ def run_server(
     if api_only and emit_tauri_port:
         print(f"TAURI_PORT={port}", flush = True)
 
-    # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
+    # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
     # read app.state.cloudflare_url; torn down by _graceful_shutdown.
-    global _cloudflare_url
+    global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
     _cloudflare_url = None
+    _cloudflare_flag = cloudflare
     app.state.cloudflare_url = None
     _cloudflare_enabled = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
@@ -1176,6 +1627,8 @@ def run_server(
         api_only = api_only,
         is_colab = _IS_COLAB,
     )
+    _cloudflare_requested = _cloudflare_enabled
+
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
@@ -1263,6 +1716,14 @@ def _build_arg_parser():
         default = "127.0.0.1",
         help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
     )
+    parser.add_argument(
+        "--password",
+        default = None,
+        help = "Set the INITIAL admin password non-interactively (headless), only when "
+        "none is set yet. Also reads UNSLOTH_STUDIO_PASSWORD, or --password - for stdin. "
+        "A literal value is visible in the process list. Rotate later via "
+        "`unsloth studio reset-password`.",
+    )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
@@ -1279,9 +1740,13 @@ def _build_arg_parser():
     parser.add_argument(
         "--cloudflare",
         action = argparse.BooleanOptionalAction,
-        default = True,
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
-        "(default on; --no-cloudflare to disable)",
+        default = None,
+        help = "Expose Studio on a PUBLIC internet URL via a free Cloudflare HTTPS "
+        "tunnel, for non-api-only wildcard binds (0.0.0.0 or ::). Off by default; "
+        "pass --cloudflare to enable it (--secure implies it), --no-cloudflare to "
+        "force it off. It does not change a raw wildcard bind. If the admin "
+        "password was never changed, Studio asks for a new one in the terminal "
+        "before publishing the URL.",
     )
     parser.add_argument(
         "--secure",
@@ -1289,7 +1754,9 @@ def _build_arg_parser():
         default = False,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
-        "0.0.0.0 port, which is reachable from anywhere on the network",
+        "0.0.0.0 port, which is reachable from anywhere on the network. If the "
+        "admin password was never changed, Studio asks for a new one in the "
+        "terminal before publishing the URL.",
     )
     # Back-compat: accept --not-secure as a hidden alias for --no-secure.
     parser.add_argument(
@@ -1331,6 +1798,12 @@ def _build_arg_parser():
 
 # For direct execution (also invoked by CLI via os.execvp / subprocess).
 if __name__ == "__main__":
+    # Correct a conflicting system CUDA on LD_LIBRARY_PATH before torch is
+    # imported (below, via run_server). Re-execs once on Linux so the dynamic
+    # linker uses torch's bundled CUDA libs; no-op on other platforms, when
+    # LD_LIBRARY_PATH is unset or already correct, or after the single re-exec.
+    _maybe_reexec_for_cuda_ld_path()
+
     import signal
     import traceback
 
@@ -1345,7 +1818,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
-    if args.secure and not args.cloudflare:
+    if args.secure and args.cloudflare is False:
         parser.error(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
         )
@@ -1359,6 +1832,7 @@ if __name__ == "__main__":
         cloudflare = args.cloudflare,
         secure = args.secure,
         enable_tools = args.enable_tools,
+        password = args.password,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

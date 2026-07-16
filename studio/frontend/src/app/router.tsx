@@ -10,7 +10,6 @@ import { Route as dataRecipesRoute } from "./routes/data-recipes";
 import { Route as dataRecipeRoute } from "./routes/data-recipes.$recipeId";
 import { Route as chatRoute } from "./routes/chat";
 import { Route as exportRoute } from "./routes/export";
-import { Route as gridTestRoute } from "./routes/grid-test";
 import { Route as indexRoute } from "./routes/index";
 import { Route as loginRoute } from "./routes/login";
 import { Route as hubRoute } from "./routes/hub";
@@ -25,7 +24,6 @@ const routeTree = rootRoute.addChildren([
   onboardingRoute,
   loginRoute,
   changePasswordRoute,
-  gridTestRoute,
   hubRoute,
   settingsRoute,
   studioRoute,

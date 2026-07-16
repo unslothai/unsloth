@@ -99,25 +99,122 @@ def _embed_all(texts: list[str], model_name: str | None):
     return vectors
 
 
+def _ocr_scanned_pages(
+    pages: list,
+    stored_path: str,
+    conn,
+    job_id: str,
+    ocr: bool | None = None,
+) -> tuple[list, set[int]]:
+    """Replace text on near-empty (scanned/image-only) PDF pages with vision-model OCR
+    so image PDFs become searchable. ``ocr`` overrides ``config.OCR_SCANNED`` per upload
+    (``None`` = config default); no-op without scanned pages or a vision model. OCR'd
+    pages have no text layer, so no preview highlight regions, but stay searchable.
+    Returns ``(pages, ocred)``: new ``Page`` objects for OCR'd pages (originals
+    otherwise) and the set of page numbers actually transcribed."""
+    if not (config.OCR_SCANNED if ocr is None else ocr):
+        return pages, set()
+    scanned = [
+        p.page_number
+        for p in pages
+        if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
+    ]
+    if not scanned or captioner.vision_endpoint() is None:
+        return pages, set()
+    if len(scanned) > config.OCR_MAX_PAGES:
+        logger.warning(
+            "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
+            "untranscribed (raise RAG_OCR_MAX_PAGES to cover them)",
+            len(scanned),
+            config.OCR_MAX_PAGES,
+        )
+    scanned = scanned[: config.OCR_MAX_PAGES]
+    _progress(conn, job_id, "ocr", 0.25)
+    page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
+    texts = captioner.ocr_pages(page_pngs)
+    if not texts:
+        return pages, set()
+
+    from .parsers import Page
+
+    out: list = []
+    ocred: set[int] = set()
+    for page in pages:
+        text = texts.get(page.page_number)
+        if text:
+            original = (page.text or "").strip()
+            merged = text if not original or original in text else f"{original}\n\n{text}"
+            out.append(Page(text = merged, page_number = page.page_number, char_count = len(merged)))
+            ocred.add(page.page_number)
+        else:
+            out.append(page)
+    return out, ocred
+
+
+def _replace_old_document(conn, replaces: tuple[str, str | None] | None, keep_path: str) -> None:
+    """Drop the document this ingestion replaced (stale embedder / empty prior
+    ingest), called only after the replacement completed successfully."""
+    if replaces is None:
+        return
+    old_id, old_path = replaces
+    try:
+        store.delete_document(conn, old_id)
+        _remove_upload(old_path, keep_path = keep_path)
+    except Exception:  # noqa: BLE001 - the new document is already live
+        logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
+
+
 def _run(
-    job_id: str, document_id: str, scope: str, stored_path: str, model_name: str | None
+    job_id: str,
+    document_id: str,
+    scope: str,
+    stored_path: str,
+    model_name: str | None,
+    ocr: bool | None = None,
+    caption: bool | None = None,
+    replaces: tuple[str, str | None] | None = None,
 ) -> None:
     conn = rag_db.get_connection()
     try:
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
-        if config.CAPTION_IMAGES and stored_path.lower().endswith(".pdf"):
-            # Caption figures, splice into page text (no-op without a vision model).
+        is_pdf = stored_path.lower().endswith(".pdf")
+        ocred: set[int] = set()
+        if is_pdf:
+            pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
+        caption_on = config.CAPTION_IMAGES if caption is None else caption
+        # Skip all figure work (PDF rasterization included) without a vision model.
+        if caption_on and is_pdf and captioner.vision_endpoint() is not None:
+            # Tile figure pages, transcribe+describe each tile, then merge/dedup/splice
+            # into the page text so small labels and every sub-figure are captured.
             try:
-                figures = parsers.render_pdf_figures(
-                    stored_path, max_figures = config.CAPTION_MAX_IMAGES
+                fig_pages = parsers.pages_with_figures(
+                    stored_path,
+                    max_pages = config.CAPTION_MAX_PAGES,
+                    # Skip only pages OCR actually transcribed (it covers them whole); a
+                    # scanned figure page past the OCR cap or with empty OCR still tiles.
+                    exclude_pages = ocred,
+                )
+                tiles = (
+                    parsers.render_pdf_figure_tiles(
+                        stored_path,
+                        fig_pages,
+                        dpi = config.FIGURE_DPI,
+                        rows = config.FIGURE_TILE_ROWS,
+                        cols = config.FIGURE_TILE_COLS,
+                        overlap = config.FIGURE_TILE_OVERLAP,
+                        fullpage = config.FIGURE_FULLPAGE,
+                        max_tiles = config.CAPTION_MAX_IMAGES,
+                    )
+                    if fig_pages
+                    else []
                 )
             except Exception:
-                logger.warning("figure rendering failed for job %s", job_id, exc_info = True)
-                figures = []
-            if figures:
-                _progress(conn, job_id, "captioning", 0.2)
-                captions = captioner.caption_images(figures)
+                logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
+                tiles = []
+            if tiles:
+                _progress(conn, job_id, "captioning", 0.28)
+                captions = captioner.merge_page_captions(captioner.caption_images(tiles))
                 pages = captioner.splice_captions(pages, captions)
 
         _progress(conn, job_id, "chunking", 0.3)
@@ -130,6 +227,7 @@ def _run(
         )
         if not chunks:
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
+            _replace_old_document(conn, replaces, stored_path)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
@@ -150,6 +248,7 @@ def _run(
         _progress(conn, job_id, "storing", 0.9)
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
+        _replace_old_document(conn, replaces, stored_path)
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
@@ -175,6 +274,8 @@ def start_ingestion(
     *,
     project_id: str | None = None,
     model_name: str | None = None,
+    ocr: bool | None = None,
+    caption: bool | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -189,15 +290,43 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        effective_model = model_name or config.effective_embedding_model()
+        # (old_document_id, old_stored_path) replaced by this upload; deleted by
+        # the worker only after the replacement completes, so a failed re-index
+        # never destroys the still-searchable original.
+        replaces: tuple[str, str | None] | None = None
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
-            job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
-            _remove_upload(stored_path)
-            with _jobs_lock:
-                _jobs[job_id] = queue.Queue()
-            _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
-            _emit(job_id, None)
-            return existing, job_id
+            doc = store.get_document(conn, existing)
+            empty_completed = (
+                doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
+            )
+            # Vectors from a different embedder are stale; re-uploading must
+            # re-index, not dedupe. NULL (legacy rows) is assumed current. Only
+            # completed rows are replaceable: a pending/running duplicate has a
+            # live worker whose writes must not land on a deleted document.
+            stale_model = (
+                doc is not None
+                and doc.get("status") == "completed"
+                and doc.get("embedding_model") is not None
+                and doc.get("embedding_model") != effective_model
+            )
+            if empty_completed or stale_model:
+                # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
+                # PDF uploaded before a vision model loaded), or was embedded with a
+                # different model. Re-ingest, don't dedupe.
+                replaces = (existing, doc.get("stored_path"))
+            else:
+                job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
+                _remove_upload(stored_path)
+                with _jobs_lock:
+                    _jobs[job_id] = queue.Queue()
+                _emit(
+                    job_id,
+                    {"type": "complete", "num_chunks": doc.get("num_chunks") or 0, "deduped": True},
+                )
+                _emit(job_id, None)
+                return existing, job_id
         for failed in store.failed_documents_by_hash(conn, scope, sha):
             store.delete_document(conn, failed["id"])
             _remove_upload(failed.get("stored_path"), keep_path = stored_path)
@@ -212,6 +341,7 @@ def start_ingestion(
             project_id = project_id,
             status = "pending",
             stored_path = stored_path,
+            embedding_model = effective_model,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
@@ -221,7 +351,10 @@ def start_ingestion(
         _jobs[job_id] = queue.Queue()
     threading.Thread(
         target = _run,
-        args = (job_id, document_id, scope, stored_path, model_name),
+        # effective_model (not the raw model_name) pins the embedder for the
+        # whole job: a Settings change mid-ingestion must not switch tokenizer
+        # or embedder between batches of one document.
+        args = (job_id, document_id, scope, stored_path, effective_model, ocr, caption, replaces),
         daemon = True,
     ).start()
     return document_id, job_id
@@ -339,10 +472,16 @@ def job_events(job_id: str):
 
 
 def get_job_status(job_id: str) -> dict | None:
-    """Read the persisted ingestion job row (status / stage / progress / error)."""
+    """Read the persisted ingestion job row (status / stage / progress / error), plus
+    the document's ``num_chunks`` so a client polling to completion learns the chunk
+    count (the SSE ``complete`` frame carries it, but the poll/reconcile path does not)."""
     conn = rag_db.get_connection()
     try:
-        row = conn.execute("SELECT * FROM ingestion_jobs WHERE id=?", (job_id,)).fetchone()
+        row = conn.execute(
+            "SELECT j.*, d.num_chunks AS num_chunks FROM ingestion_jobs j "
+            "LEFT JOIN documents d ON d.id = j.document_id WHERE j.id=?",
+            (job_id,),
+        ).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()

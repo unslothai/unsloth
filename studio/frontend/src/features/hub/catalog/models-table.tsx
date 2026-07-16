@@ -340,7 +340,7 @@ function VerifiedOwner({ owner }: { owner: string }) {
       {owner.toLowerCase() === "unsloth" && (
         <span
           aria-label="Verified Unsloth"
-          className="hub-verified-badge size-3.5 shrink-0 text-primary"
+          className="hub-verified-badge size-3.5 shrink-0 text-verified"
         />
       )}
     </span>
@@ -570,22 +570,6 @@ export const ResultCard = memo(function ResultCard({
       node: <span className="shrink-0">{sizeLabel}</span>,
     });
   }
-  if (row.fitLevel) {
-    const label = row.fitLevel === "comfortable" ? "Comfortable" : row.fitLevel === "fits" ? "Fits GPU" : "OOM";
-    const toneClass = row.fitLevel === "comfortable"
-      ? "text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-500/15"
-      : row.fitLevel === "fits"
-        ? "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-500/15"
-        : "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-500/15";
-    textParts.push({
-      key: "gpuFit",
-      node: (
-        <span className={cn("shrink-0 uppercase text-[9px] font-medium px-1.5 py-0.5 rounded leading-none", toneClass)}>
-          {label}
-        </span>
-      ),
-    });
-  }
   if (row.result.updatedAt) {
     textParts.push({
       key: "updated",
@@ -602,7 +586,7 @@ export const ResultCard = memo(function ResultCard({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="hub-result-row hub-result-card group/row flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-result-row hub-result-card group/row flex h-full w-full cursor-pointer items-center gap-3.5 px-4 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <OwnerAvatar
         owner={row.owner}
@@ -701,7 +685,7 @@ export const ResultGridRow = memo(function ResultGridRow({
       type="button"
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
-      className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     />
   );
 
@@ -745,21 +729,6 @@ export const ResultGridRow = memo(function ResultGridRow({
             </div>
             <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
               <VerifiedOwner owner={row.owner} />
-              {row.fitLevel && (
-                <>
-                  <span aria-hidden="true" className="text-muted-foreground/35">•</span>
-                  <span
-                    className={cn(
-                      "text-[9px] font-semibold uppercase shrink-0",
-                      row.fitLevel === "comfortable" && "text-emerald-600 dark:text-emerald-400",
-                      row.fitLevel === "fits" && "text-amber-600 dark:text-amber-400",
-                      row.fitLevel === "oom" && "text-red-500"
-                    )}
-                  >
-                    {row.fitLevel === "comfortable" ? "Comfortable" : row.fitLevel === "fits" ? "Fits GPU" : "OOM"}
-                  </span>
-                </>
-              )}
             </span>
           </div>
         </div>
@@ -858,7 +827,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       aria-current={selected || undefined}
       data-selected={selected || undefined}
       onClick={() => onSelect(row.id)}
-      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-white/[0.05] dark:data-[selected]:bg-white/[0.08]"
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-white/[0.05] dark:data-[selected]:bg-white/[0.08]"
     >
       <OwnerAvatar
         owner={row.owner}
@@ -882,21 +851,6 @@ export const ResultSplitRow = memo(function ResultSplitRow({
         </div>
         <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10.5px] leading-[14px] text-muted-foreground/80">
           <VerifiedOwner owner={row.owner} />
-          {row.fitLevel && (
-            <>
-              <span aria-hidden="true" className="text-muted-foreground/35">•</span>
-              <span
-                className={cn(
-                  "text-[9px] font-semibold uppercase shrink-0",
-                  row.fitLevel === "comfortable" && "text-emerald-600 dark:text-emerald-400",
-                  row.fitLevel === "fits" && "text-amber-600 dark:text-amber-400",
-                  row.fitLevel === "oom" && "text-red-500"
-                )}
-              >
-                {row.fitLevel === "comfortable" ? "Comfortable" : row.fitLevel === "fits" ? "Fits GPU" : "OOM"}
-              </span>
-            </>
-          )}
         </span>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-0.5 text-[10.5px] tabular-nums text-muted-foreground/70">

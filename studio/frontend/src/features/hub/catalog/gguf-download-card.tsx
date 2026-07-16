@@ -17,7 +17,10 @@ import {
   useDownloadManagerStore,
   useRepoDownload,
 } from "../download-manager";
-import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
+import {
+  type GgufVariantDetail,
+  deleteCachedModel,
+} from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
@@ -27,7 +30,9 @@ import {
 } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "../stores/hf-token-store";
+import { useOnlineStatus } from "../hooks/use-online-status";
 import {
+  ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
@@ -56,6 +61,7 @@ import {
   CardDivider,
   DeleteConfirmDialog,
   DownloadCard,
+  UpdateConfirmDialog,
 } from "./download-card";
 import {
   activeDownloadState,
@@ -114,7 +120,7 @@ const CHIP_BASE =
 const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
-  "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  "border-control-accent/40 bg-control-accent/10 text-control-accent";
 
 function QuantBadge({
   quant,
@@ -160,10 +166,14 @@ function QuantBadge({
         <span className="min-w-0 truncate">{quant}</span>
       </span>
     ) : (
+      // Trigger quant label is the row's primary identity and is short
+      // (e.g. "Q4_K_M"); keep it `shrink-0` + `whitespace-nowrap` so it never
+      // collapses to "q…" when the Update/Run actions crowd the row. The info
+      // group's `overflow-hidden` sacrifices the trailing status tags instead.
       <span
         className={cn(
-          "inline-flex min-w-0 max-w-full shrink cursor-help items-center gap-1.5 text-[12.5px] font-medium tracking-tight tabular-nums",
-          active ? "text-emerald-600 dark:text-emerald-400" : "text-foreground",
+          "inline-flex shrink-0 cursor-help items-center gap-1.5 whitespace-nowrap text-[12.5px] font-medium tracking-tight tabular-nums",
+          active ? "text-control-accent" : "text-foreground",
         )}
       >
         {showFit && (
@@ -173,7 +183,7 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span className="min-w-0 truncate">{quant}</span>
+        <span>{quant}</span>
       </span>
     );
   if (!showFit || tooltipMode === "none") return inner;
@@ -288,6 +298,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
       )}
     >
+      {/* Status (On device / Loaded / Partial) sits beside the quant on the
+          left so the model's identity reads as one unit; only the size pins
+          right. No per-row "GGUF" tag: every row here is a GGUF quant and the
+          trigger already labels it, so repeating it only stole the room the
+          quant label needs (it would otherwise truncate to "q…"). */}
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <QuantBadge
           quant={item.label}
@@ -297,8 +312,6 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           variant="menu"
           tooltipMode="lazy"
         />
-      </span>
-      <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {item.downloaded && (
           <DotTag tone="success" label={loaded ? "Loaded" : "On device"} />
         )}
@@ -319,7 +332,8 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             </TooltipContent>
           </Tooltip>
         )}
-        <DotTag tone="gguf" label="GGUF" />
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <span className="relative">
           <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
             {item.downloadSizeLabel}
@@ -377,6 +391,7 @@ export function GgufDownloadCard({
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
+  const online = useOnlineStatus();
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
@@ -394,6 +409,7 @@ export function GgufDownloadCard({
     selectedQuantState.repoId === repoId ? selectedQuantState.quant : null;
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [updateTarget, setUpdateTarget] = useState<string | null>(null);
   const [completedVariantKeys, setCompletedVariantKeys] = useState<
     ReadonlySet<string>
   >(() => new Set<string>());
@@ -416,7 +432,7 @@ export function GgufDownloadCard({
     if (completedVariantKeys.size === 0) return withLive;
     return withLive.map((v) =>
       completedVariantKeys.has(normalizeGgufVariantIdentity(v.quant))
-        ? { ...v, downloaded: true, partial: false }
+        ? { ...v, downloaded: true, partial: false, update_available: false }
         : v,
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
@@ -444,6 +460,7 @@ export function GgufDownloadCard({
       setCompletedVariantKeys((prev) =>
         prev.has(key) ? prev : new Set(prev).add(key),
       );
+      void refresh();
     },
   });
   const progress = job.progress;
@@ -529,6 +546,8 @@ export function GgufDownloadCard({
   const selectedDownloadSizeLabel = selected
     ? formatBytes(ggufVariantDownloadSizeBytes(selected))
     : null;
+  const updateAvailable =
+    selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
     ? normalizeGgufVariantIdentity(selectedQuant)
     : null;
@@ -587,6 +606,35 @@ export function GgufDownloadCard({
       setDeleteTarget(null);
     },
   });
+  const updateTargetVariant =
+    updateTarget && sortedVariants
+      ? sortedVariants.find((v) => ggufVariantsMatch(v.quant, updateTarget))
+      : null;
+  const updateTargetLabel = updateTargetVariant
+    ? ggufVariantDisplayLabel(updateTargetVariant)
+    : updateTarget;
+  // Confirm → close the dialog and run the re-download as a MANAGED download, so
+  // it surfaces in the "Downloading N items" panel with correct manifest-based
+  // progress and a working Cancel — the same UX as any other download — instead
+  // of a bespoke modal/toast. The worker re-resolves `main` and pulls only the
+  // changed blobs, so the cached version stays intact (and runnable) until the
+  // new revision lands. Completion refreshes the variant list, whose metadata
+  // carries the "Update available" cue.
+  const handleConfirmUpdate = useCallback(() => {
+    if (!updateTarget) return;
+    const variant = updateTarget;
+    const expectedBytes =
+      updateTargetVariant?.download_size_bytes ??
+      updateTargetVariant?.size_bytes ??
+      0;
+    setUpdateTarget(null);
+    void downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant,
+      expectedBytes,
+    });
+  }, [updateTarget, updateTargetVariant, repoId]);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
 
@@ -640,24 +688,44 @@ export function GgufDownloadCard({
         job={job}
         progress={downloadingThisVariant ? progress : null}
         dialogs={
-          <DeleteConfirmDialog
-            open={deleteTarget !== null}
-            onOpenChange={(o) => {
-              if (!o && !deleting) setDeleteTarget(null);
-            }}
-            title="Delete quantization?"
-            deleting={deleting}
-            onConfirm={() => void runDelete()}
-            description={
-              <>
-                This will remove{" "}
-                <span className="font-medium text-foreground">
-                  {repoId} ({deleteTargetLabel})
-                </span>{" "}
-                from disk. You can re-download it later.
-              </>
-            }
-          />
+          <>
+            <DeleteConfirmDialog
+              open={deleteTarget !== null}
+              onOpenChange={(o) => {
+                if (!o && !deleting) setDeleteTarget(null);
+              }}
+              title="Delete quantization?"
+              deleting={deleting}
+              onConfirm={() => void runDelete()}
+              description={
+                <>
+                  This will remove{" "}
+                  <span className="font-medium text-foreground">
+                    {repoId} ({deleteTargetLabel})
+                  </span>{" "}
+                  from disk. You can re-download it later.
+                </>
+              }
+            />
+            <UpdateConfirmDialog
+              open={updateTarget !== null}
+              onOpenChange={(o) => {
+                if (!o) setUpdateTarget(null);
+              }}
+              title="Update quantization?"
+              updating={false}
+              onConfirm={handleConfirmUpdate}
+              description={
+                <>
+                  This will re-download the latest version of{" "}
+                  <span className="font-medium text-foreground">
+                    {repoId} ({updateTargetLabel})
+                  </span>{" "}
+                  from Hugging Face.
+                </>
+              }
+            />
+          </>
         }
       >
         <Popover open={open} onOpenChange={setOpen}>
@@ -668,21 +736,24 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
             >
-              {selected ? (
-                <QuantBadge
-                  quant={selectedLabel ?? selected.quant}
-                  fit={selectedFit ?? "oom"}
-                  showFit={showFitInfo}
-                  active={Boolean(selectedIsActive)}
-                />
-              ) : (
-                <span className="text-[12.5px] text-muted-foreground">
-                  Select quantization
-                </span>
-              )}
-              <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+              {/* Quant label + status tags travel together as one left-aligned
+                  group so the fit-info icon never floats orphaned from its tags;
+                  only the chevron pins right, the standard select affordance. */}
+              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-[12px] text-muted-foreground">
+                {selected ? (
+                  <QuantBadge
+                    quant={selectedLabel ?? selected.quant}
+                    fit={selectedFit ?? "oom"}
+                    showFit={showFitInfo}
+                    active={Boolean(selectedIsActive)}
+                  />
+                ) : (
+                  <span className="text-[12.5px] text-muted-foreground">
+                    Select quantization
+                  </span>
+                )}
                 {selected?.downloaded && (
                   <DotTag
                     tone="success"
@@ -710,15 +781,15 @@ export function GgufDownloadCard({
                 {selected &&
                   selectedDownloadSizeLabel &&
                   !selected.downloaded && (
-                    <span className="tabular-nums">
+                    <span className="shrink-0 tabular-nums">
                       {selectedDownloadSizeLabel}
                     </span>
                   )}
-                <HugeiconsIcon
-                  icon={ChevronDownStandardIcon}
-                  className="ml-0.5 size-3.5 shrink-0"
-                />
               </span>
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                className="size-3.5 shrink-0 text-muted-foreground"
+              />
             </button>
           </PopoverTrigger>
           <PopoverContent
@@ -726,7 +797,7 @@ export function GgufDownloadCard({
             side="bottom"
             sideOffset={8}
             avoidCollisions={false}
-            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
+            className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[300px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >
             <div className="max-h-[344px] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
@@ -759,6 +830,25 @@ export function GgufDownloadCard({
         )}
 
         {!isGgufRunCta && <CardDivider />}
+
+        {selected?.downloaded &&
+          online &&
+          updateAvailable &&
+          !selectedIsActive &&
+          !downloadingThisVariant && (
+            <button
+              type="button"
+              onClick={() => selected && setUpdateTarget(selected.quant)}
+              aria-label={`Update ${repoId}`}
+              className="hub-action-btn ml-1 text-amber-700 dark:text-amber-300"
+            >
+              <HugeiconsIcon
+                icon={ArrowReloadHorizontalIcon}
+                strokeWidth={1.75}
+              />
+              Update
+            </button>
+          )}
 
         <button
           type="button"

@@ -242,7 +242,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # CPU torch (vllm/peft/st all depend on it).
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchcodec<0.10'
           # torchcodec is a hard requirement on transformers 5.x:
           # transformers/audio_utils.py:55 does
@@ -283,6 +283,92 @@ jobs:
           PYTHONPATH=. python -m pytest \
             tests/vllm_compat/test_unsloth_zoo_imports.py \
             tests/vllm_compat/test_extended_module_imports.py \
+            -v --tb=short
+
+  # Fake-CUDA GRPO/SFT/DPO patch run against REAL TRL (latest + main). Unlike
+  # the static symbol/source greps above, this drives unsloth's actual
+  # source-transform patchers (models/rl.py + rl_replacements.py) on a CPU-only
+  # runner under the tests/conftest.py spoof harness -- no GPU, no training.
+  # Catches structural TRL drift the greps miss (e.g. TRL 1.7.0's 2->3-tuple
+  # per-token-logps return, restructured PEFT ref-adapter block) by asserting
+  # the generated Unsloth trainer still satisfies the transform contracts.
+  grpo-fake-run:
+    name: GRPO fake-run (latest + main TRL, CPU spoof)
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          path: unsloth
+      - name: Clone unsloth-zoo @ main
+        run: |
+          for attempt in 1 2 3; do
+            rm -rf "$RUNNER_TEMP/unsloth-zoo"
+            if git clone --depth=1 https://github.com/unslothai/unsloth-zoo \
+                "$RUNNER_TEMP/unsloth-zoo"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::git clone unsloth-zoo failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((5 * attempt))
+            echo "::warning::clone failed (attempt $attempt/3), retrying in ${delay}s..."
+            sleep "$delay"
+          done
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install CPU torch + ecosystem + TRL latest
+        run: |
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11' 'torchvision<0.26' 'torchcodec<0.10'
+          # Ecosystem floors unsloth needs; TRL itself is installed last so it
+          # can pull the transformers/peft it requires.
+          pip install \
+            'transformers>=4.57' 'peft>=0.18.0' 'accelerate>=1.0' 'datasets>=3.4,<5' \
+            'bitsandbytes>=0.45.5' sentencepiece protobuf safetensors numpy 'pytest>=8' \
+            'huggingface_hub>=0.34' tqdm packaging psutil triton Pillow
+          pip install --upgrade trl
+          pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
+          pip install --no-deps -e ./unsloth
+      - name: Fake-run vs TRL latest
+        env:
+          UNSLOTH_IS_PRESENT: '1'
+          UNSLOTH_COMPILE_DISABLE: '1'
+          # Disable dynamo/inductor at the process level, before conftest.py's early
+          # `import unsloth`, so the GRPO hot path never compiles on the GPU-less runner
+          # (defense in depth; the CPU fake-train also flips this at runtime).
+          TORCHDYNAMO_DISABLE: '1'
+          TORCH_COMPILE_DISABLE: '1'
+          PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+        run: |
+          cd unsloth
+          python -c "import trl; print('Resolved TRL', trl.__version__)"
+          PYTHONPATH=. python -m pytest \
+            tests/version_compat/test_trl_grpo_fake_run.py \
+            tests/version_compat/test_trl_fake_train_cpu.py \
+            -v --tb=short
+      # `main` is scheduled/dispatch-only so PR jobs stay fast and a bleeding-edge
+      # TRL break does not red every PR. github.event_name is valid in a step if.
+      - name: Fake-run vs TRL main (scheduled / dispatch only)
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          UNSLOTH_IS_PRESENT: '1'
+          UNSLOTH_COMPILE_DISABLE: '1'
+          TORCHDYNAMO_DISABLE: '1'
+          TORCH_COMPILE_DISABLE: '1'
+          PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+        run: |
+          pip install --upgrade "git+https://github.com/huggingface/trl"
+          cd unsloth
+          python -c "import trl; print('Resolved TRL', trl.__version__)"
+          PYTHONPATH=. python -m pytest \
+            tests/version_compat/test_trl_grpo_fake_run.py \
+            tests/version_compat/test_trl_fake_train_cpu.py \
             -v --tb=short
 
   # Daily-only: same suites but with --strict on importable upstream

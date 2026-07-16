@@ -7,6 +7,7 @@ import {
   FieldLegend,
   FieldSet,
 } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -59,6 +60,8 @@ function stepLR(value: number, direction: 1 | -1): number {
 export function HyperparametersStep() {
   const {
     trainingMethod,
+    projectName,
+    setProjectName,
     maxSteps,
     setMaxSteps,
     epochs,
@@ -79,6 +82,8 @@ export function HyperparametersStep() {
   } = useTrainingConfigStore(
     useShallow((s) => ({
       trainingMethod: s.trainingMethod,
+      projectName: s.projectName,
+      setProjectName: s.setProjectName,
       maxSteps: s.maxSteps,
       setMaxSteps: s.setMaxSteps,
       epochs: s.epochs,
@@ -125,6 +130,26 @@ export function HyperparametersStep() {
       <FieldSet>
         <FieldLegend variant="label">Choose your training parameters</FieldLegend>
         <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <FieldLabel className="flex items-center gap-1.5 !text-sm text-muted-foreground">
+                Project Name
+                <span className="text-xs font-normal text-muted-foreground/70">
+                  Optional
+                </span>
+              </FieldLabel>
+            </div>
+            <Input
+              value={projectName || ""}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="customer-support-lora"
+              maxLength={80}
+            />
+            <p className="text-xs text-muted-foreground">
+              Used in training output folder names, export defaults, and history.
+            </p>
+          </div>
+
           <div
             key={useEpochs ? "epochs" : "steps"}
             className="flex flex-col gap-2 animate-in fade-in-1 slide-in-from-bottom-1 duration-200"
@@ -200,7 +225,7 @@ export function HyperparametersStep() {
                   min={1}
                   max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                   step={1}
-                  className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                  className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                 />
               </div>
             </div>
@@ -354,7 +379,7 @@ export function HyperparametersStep() {
                     min={4}
                     max={128}
                     step={4}
-                    className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -403,7 +428,7 @@ export function HyperparametersStep() {
                     min={8}
                     max={256}
                     step={8}
-                    className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -453,7 +478,7 @@ export function HyperparametersStep() {
                     min={0}
                     max={0.5}
                     step={0.01}
-                    className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>

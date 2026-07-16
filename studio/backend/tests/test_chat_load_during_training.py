@@ -731,11 +731,19 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         inf._shutdown_subprocess = MagicMock()
         llama = SimpleNamespace(is_loaded = False, model_identifier = None, hf_variant = None)
         llama.unload_model = MagicMock()
-        cfg = SimpleNamespace(is_gguf = False, is_lora = False, path = None, base_model = None)
+        cfg = SimpleNamespace(
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            base_model = None,
+            identifier = "unsloth/Qwen3-1.7B",
+        )
         request = LoadRequest(model_path = "unsloth/Qwen3-1.7B")
         info = {"required_gb": 40.0, "usable_gb": 5.0, "needed_gb": 50.0, "mode": "auto"}
 
         with (
+            # Pin the latest-sidecar tier check so the guard path stays offline.
+            patch("utils.transformers_version.latest_tier_active_for", return_value = False),
             patch.object(self.route, "validate_extra_args", return_value = None),
             patch.object(
                 self.route,

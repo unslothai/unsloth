@@ -11,7 +11,7 @@ import { ownerPaletteColor } from "@/features/hub/lib/avatar-theme";
 import { buildAdaptiveCardAccentStyle } from "@/features/hub/lib/card-accent";
 import { useDominantColor } from "@/features/hub/lib/use-dominant-color";
 import { formatModelParamLabel } from "@/features/hub/lib/view-models";
-import { cn, formatCompact } from "@/lib/utils";
+import { formatCompact } from "@/lib/utils";
 import { Download01Icon, FavouriteIcon } from "@hugeicons/core-free-icons";
 import { type CSSProperties, memo, useMemo } from "react";
 import type { DiscoverRow } from "../types";
@@ -277,7 +277,7 @@ export const ModelCard = memo(function ModelCard({
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
       style={cardAccentStyle}
-      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
     >
       <div className="flex min-w-0 items-start gap-2.5">
         <OwnerAvatar
@@ -295,7 +295,7 @@ export const ModelCard = memo(function ModelCard({
             {row.owner.toLowerCase() === "unsloth" && (
               <span
                 aria-label="Verified Unsloth"
-                className="hub-verified-badge size-3.5 shrink-0 text-primary"
+                className="hub-verified-badge size-3.5 shrink-0 text-verified"
               />
             )}
           </span>
@@ -339,25 +339,11 @@ export const ModelCard = memo(function ModelCard({
             value={formatCompact(row.result.likes)}
           />
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {row.fitLevel && (
-            <span
-              className={cn(
-                "text-[9px] font-medium px-1.5 py-0.5 rounded leading-none uppercase shrink-0",
-                row.fitLevel === "comfortable" && "text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-500/15",
-                row.fitLevel === "fits" && "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-500/15",
-                row.fitLevel === "oom" && "text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-500/15"
-              )}
-            >
-              {row.fitLevel === "comfortable" ? "Comfortable" : row.fitLevel === "fits" ? "Fits GPU" : "OOM"}
-            </span>
-          )}
-          {hasSize ? (
-            <span className="hub-chip shrink-0">{sizeLabel}</span>
-          ) : topCapability ? (
-            <CapabilityPill capability={topCapability} iconOnly={true} />
-          ) : null}
-        </div>
+        {hasSize ? (
+          <span className="hub-chip shrink-0">{sizeLabel}</span>
+        ) : topCapability ? (
+          <CapabilityPill capability={topCapability} iconOnly={true} />
+        ) : null}
       </div>
     </button>
   );

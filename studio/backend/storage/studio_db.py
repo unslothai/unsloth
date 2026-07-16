@@ -22,7 +22,25 @@ logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
-from utils.paths import project_workspaces_root, studio_db_path, ensure_dir
+from utils.paths import (
+    ensure_dir,
+    project_workspaces_root,
+    studio_db_path,
+)
+from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.sensitive import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
+)
+from utils.training_runs import extract_project_name
+
+
+def _extract_project_name_from_config_json(config_json: Optional[str]) -> Optional[str]:
+    if not config_json:
+        return None
+    try:
+        return extract_project_name(json.loads(config_json))
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -49,6 +67,33 @@ def _denied_path_prefixes() -> list[str]:
         pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
         return [os.path.normcase(p) for p in [win, pf, pf86]]
     return []
+
+
+def is_denied_system_path(path: str) -> bool:
+    """True if *path* is, or descends from, a denied system directory.
+
+    Mirrors the denylist add_scan_folder() enforces at registration so the
+    browser refuses /etc, /proc, C:\\Windows, etc. even when the allowlist holds
+    a broad root (a Windows drive root C:\\ or a legacy-registered / root). The
+    /run carve-out keeps Linux removable-media mounts browseable. Expects an
+    already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
+    """
+    is_win = platform.system() == "Windows"
+    check = os.path.normcase(path) if is_win else path
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
+            return True
+    return False
+
+
+def _contains_sensitive_path_component(path: str) -> bool:
+    return _shared_contains_sensitive_path_component(path)
+
+
+def contains_sensitive_path_component(path: str) -> bool:
+    return _contains_sensitive_path_component(path)
 
 
 _schema_lock = threading.Lock()
@@ -214,6 +259,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             project_id TEXT,
             archived INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
+            updated_at INTEGER,
             openai_code_exec_container_id TEXT,
             anthropic_code_exec_container_id TEXT,
             forked_from_thread_id TEXT,
@@ -235,6 +281,24 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_thread_id TEXT")
     if "forked_from_message_id" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
+    if "updated_at" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
+        # Floor at created_at: forked threads copy older ancestor messages,
+        # so the fork's creation time must win over the branch message times.
+        conn.execute(
+            """
+            UPDATE chat_threads SET updated_at = MAX(
+                COALESCE(
+                    (
+                        SELECT MAX(m.created_at) FROM chat_messages m
+                        WHERE m.thread_id = chat_threads.id
+                    ),
+                    created_at
+                ),
+                created_at
+            )
+            """
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -680,6 +744,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
+            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:
@@ -719,6 +784,7 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
+        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
@@ -884,6 +950,14 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
+    # Reject a local filesystem root ("/", or a bare Windows drive root "C:\\"):
+    # registering one seeds the browse allowlist with a root above denied system
+    # dirs. A UNC share root (\\server\share) has none under it and was
+    # registerable before this guard, so it stays allowed. Mirrors scan_folders.py.
+    if is_local_filesystem_root(normalized):
+        raise ValueError("The filesystem root cannot be registered")
+    if _contains_sensitive_path_component(normalized):
+        raise ValueError("Credential or configuration directories are not allowed")
 
     # Windows: normcase for the denylist check but store original casing
     # so consumers see the native drive-letter casing (e.g. C:\Models).
@@ -891,6 +965,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()
@@ -960,6 +1036,9 @@ def _chat_thread_from_row(row: sqlite3.Row) -> dict:
         "projectId": data.get("project_id") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
+        "updatedAt": data.get("updated_at")
+        if data.get("updated_at") is not None
+        else data["created_at"],
         "openaiCodeExecContainerId": data.get("openai_code_exec_container_id"),
         "anthropicCodeExecContainerId": data.get("anthropic_code_exec_container_id"),
         "forkedFromThreadId": data.get("forked_from_thread_id"),
@@ -1007,8 +1086,8 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.execute(
             """
             INSERT INTO chat_threads
-                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, model_type, model_id, pair_id, project_id, archived, created_at, updated_at, openai_code_exec_container_id, anthropic_code_exec_container_id, forked_from_thread_id, forked_from_message_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 model_type = excluded.model_type,
@@ -1017,6 +1096,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 project_id = excluded.project_id,
                 archived = excluded.archived,
                 created_at = excluded.created_at,
+                updated_at = COALESCE(excluded.updated_at, chat_threads.updated_at),
                 openai_code_exec_container_id = excluded.openai_code_exec_container_id,
                 anthropic_code_exec_container_id = excluded.anthropic_code_exec_container_id,
                 forked_from_thread_id = excluded.forked_from_thread_id,
@@ -1031,6 +1111,7 @@ def upsert_chat_thread(thread: dict) -> dict:
                 thread.get("projectId"),
                 1 if thread.get("archived") else 0,
                 int(thread["createdAt"]),
+                int(thread["updatedAt"]) if thread.get("updatedAt") is not None else None,
                 thread.get("openaiCodeExecContainerId"),
                 thread.get("anthropicCodeExecContainerId"),
                 thread.get("forkedFromThreadId"),
@@ -1052,6 +1133,7 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
         "projectId": ("project_id", patch.get("projectId")),
         "archived": ("archived", 1 if patch.get("archived") else 0),
         "createdAt": ("created_at", patch.get("createdAt")),
+        "updatedAt": ("updated_at", patch.get("updatedAt")),
         "openaiCodeExecContainerId": (
             "openai_code_exec_container_id",
             patch.get("openaiCodeExecContainerId"),
@@ -1123,7 +1205,8 @@ def list_chat_threads(
     conn = get_connection()
     try:
         rows = conn.execute(
-            f"SELECT * FROM chat_threads {where} ORDER BY created_at DESC",
+            f"SELECT * FROM chat_threads {where} "
+            "ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC",
             values,
         ).fetchall()
         return [_chat_thread_from_row(row) for row in rows]
@@ -1362,6 +1445,44 @@ def _raise_if_chat_message_thread_conflicts(
         )
 
 
+def _bump_chat_thread_updated_at(
+    conn: sqlite3.Connection, thread_id: str, message_created_at: int
+) -> None:
+    conn.execute(
+        """
+        UPDATE chat_threads
+        SET updated_at = MAX(COALESCE(updated_at, created_at), ?)
+        WHERE id = ?
+        """,
+        (message_created_at, thread_id),
+    )
+
+
+def _recompute_chat_thread_updated_at(conn: sqlite3.Connection, thread_id: str) -> None:
+    """Set updated_at from the remaining messages, floored at created_at.
+
+    Unlike the ratchet-only bump, this can lower updated_at -- needed after
+    pruning, which may delete the thread's newest message.
+    """
+    conn.execute(
+        """
+        UPDATE chat_threads
+        SET updated_at = MAX(
+            COALESCE(
+                (
+                    SELECT MAX(m.created_at) FROM chat_messages m
+                    WHERE m.thread_id = chat_threads.id
+                ),
+                created_at
+            ),
+            created_at
+        )
+        WHERE id = ?
+        """,
+        (thread_id,),
+    )
+
+
 def upsert_chat_message(message: dict) -> dict:
     conn = get_connection()
     try:
@@ -1400,6 +1521,7 @@ def upsert_chat_message(message: dict) -> dict:
                 int(message["createdAt"]),
             ),
         )
+        _bump_chat_thread_updated_at(conn, message["threadId"], int(message["createdAt"]))
         conn.commit()
         return message
     except Exception:
@@ -1452,6 +1574,12 @@ def sync_chat_messages(
                 for m in messages
             ],
         )
+        if prune_missing:
+            _recompute_chat_thread_updated_at(conn, thread_id)
+        elif messages:
+            _bump_chat_thread_updated_at(
+                conn, thread_id, max(int(m["createdAt"]) for m in messages)
+            )
         conn.commit()
         return list_chat_messages(thread_id)
     except ChatMessageConflictError:
@@ -1673,6 +1801,43 @@ def upsert_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
         conn.commit()
         rows = conn.execute("SELECT key, value_json FROM app_settings ORDER BY key").fetchall()
         return {row["key"]: _json_loads(row["value_json"], None) for row in rows}
+    finally:
+        conn.close()
+
+
+def upsert_app_setting_map_entry(
+    key: str, entry_key: str, entry_value: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
+    app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
+    sub-entries cannot drop each other's updates."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
+        current = _json_loads(row["value_json"], {}) if row else {}
+        if not isinstance(current, dict):
+            current = {}
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """
+            INSERT INTO app_settings (key, value_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at
+            """,
+            (key, json.dumps(current), now),
+        )
+        conn.commit()
+        return current
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

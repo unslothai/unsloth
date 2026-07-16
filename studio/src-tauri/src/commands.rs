@@ -65,9 +65,17 @@ pub async fn desktop_preflight(
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<crate::preflight::DesktopPreflightResult, String> {
+    let started = Instant::now();
     let (result, adopted_watchdog_generation) =
         crate::preflight::desktop_preflight_result_with_state(state.inner()).await?;
     diagnostics::record_preflight(&diagnostics, &result);
+
+    info!(
+        "desktop_preflight completed disposition={:?} port={:?} in {}ms",
+        result.disposition,
+        result.port,
+        started.elapsed().as_millis()
+    );
 
     if let Some((generation, newly_adopted)) = adopted_watchdog_generation {
         if newly_adopted {
@@ -205,8 +213,16 @@ pub async fn start_managed_server(
     port: u16,
 ) -> Result<(), String> {
     info!("start_managed_server command called with port {}", port);
+
+    let started = Instant::now();
     let diagnostics_state = diagnostics.inner().clone();
     let generation = process::start_backend(&app, &state, port, &shutdown, &diagnostics_state)?;
+
+    info!(
+        "start_managed_server spawned generation={} in {}ms",
+        generation,
+        started.elapsed().as_millis()
+    );
 
     let watchdog_state = state.inner().clone();
     let watchdog_shutdown = shutdown.inner().clone();

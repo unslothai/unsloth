@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -21,7 +22,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import type {
   CapabilityFilter,
-  GpuFitFilter,
   ModelFormatFilter,
   ModelsTab,
   ResourceTypeFilter,
@@ -29,7 +29,6 @@ import type {
 import {
   CAPABILITY_FILTER_OPTIONS,
   FORMAT_FILTER_OPTIONS,
-  GPU_FIT_FILTER_OPTIONS,
 } from "../lib/view-models";
 import { HubOptionMenu, type HubOption } from "./hub-option-menu";
 import {
@@ -70,8 +69,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange,
   capabilityFilter,
   onCapabilityFilterChange,
-  gpuFitFilter,
-  onGpuFitFilterChange,
+  fitOnDeviceOnly,
+  onFitOnDeviceOnlyChange,
   onManageLocalFolders,
   onOpenFineTune,
 }: {
@@ -88,8 +87,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   capabilityFilter: CapabilityFilter;
   onCapabilityFilterChange: (value: CapabilityFilter) => void;
-  gpuFitFilter: GpuFitFilter;
-  onGpuFitFilterChange: (value: GpuFitFilter) => void;
+  /** Shared with the chat model selector: hide models over the device budget. */
+  fitOnDeviceOnly: boolean;
+  onFitOnDeviceOnlyChange: (value: boolean) => void;
   onManageLocalFolders: () => void;
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
@@ -154,14 +154,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
     () =>
       CAPABILITY_FILTER_OPTIONS.map((option) => ({
-        value: option.value,
-        label: option.label,
-      })),
-    [],
-  );
-  const gpuFitOptions = useMemo<HubOption<GpuFitFilter>[]>(
-    () =>
-      GPU_FIT_FILTER_OPTIONS.map((option) => ({
         value: option.value,
         label: option.label,
       })),
@@ -357,16 +349,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        {tab === "discover" && !isDataset && (
-          <HubOptionMenu
-            value={gpuFitFilter}
-            options={gpuFitOptions}
-            onValueChange={onGpuFitFilterChange}
-            ariaLabel="GPU fit filter"
-            className={cn(triggerBase, "w-[128px]")}
-          />
-        )}
-
         {tab === "discover" && (
           <HubOptionMenu
             value={sortBy}
@@ -374,6 +356,33 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onValueChange={onSortChange}
             ariaLabel="Sort models"
             className={cn(triggerBase, "w-[128px]")}
+            footer={
+              isDataset ? undefined : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={fitOnDeviceOnly}
+                      onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
+                      className="flex w-full cursor-pointer select-none items-center gap-2 rounded-[10px] px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <Checkbox
+                        checked={fitOnDeviceOnly}
+                        tabIndex={-1}
+                        aria-hidden
+                        className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+                      />
+                      Only show models that fit
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    Hides models larger than this device's memory budget.
+                    Downloaded models stay visible.
+                  </TooltipContent>
+                </Tooltip>
+              )
+            }
           />
         )}
 

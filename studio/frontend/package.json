@@ -62,7 +62,6 @@
     "lucide-react": "^1.7.0",
     "mammoth": "^1.11.0",
     "motion": "^12.34.0",
-    "next-themes": "^0.4.6",
     "node-forge": "^1.4.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.4",
@@ -86,7 +85,7 @@
     "@tanstack/router-core": "1.169.2",
     "@tanstack/history": "1.161.6",
     "mermaid": "11.15.0",
-    "hono": "4.12.21",
+    "hono": "4.12.25",
     "qs": "6.15.2",
     "ip-address": "10.1.1",
     "brace-expansion@5.0.5": "5.0.6"

@@ -44,6 +44,12 @@ from .vram_estimation import (
     estimate_training_vram,
 )
 
+
+def export_capability() -> dict:
+    """Return live export capability from the hardware module."""
+    return _hardware.export_capability()
+
+
 __all__ = [
     "DeviceType",
     "DEVICE",
@@ -51,6 +57,7 @@ __all__ = [
     "IS_ROCM",
     "detect_hardware",
     "get_device",
+    "export_capability",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",

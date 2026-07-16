@@ -15,6 +15,12 @@ import {
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
@@ -35,15 +41,16 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
-import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   BubbleChatTemporaryIcon,
+  Edit03Icon,
   Folder02Icon,
   LayoutAlignRightIcon,
+  MoreVerticalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -51,7 +58,9 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
   type ReactElement,
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -81,6 +90,7 @@ import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import {
   type SidebarItem,
+  renameChatItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
 import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
@@ -133,6 +143,13 @@ import {
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+
+
+const ProjectSourcesPanel = lazy(() =>
+  import("@/features/rag/components/project-sources-panel").then((module) => ({
+    default: module.ProjectSourcesPanel,
+  })),
+);
 
 type LoraCandidate = {
   id: string;
@@ -606,7 +623,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end">
+            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
@@ -654,7 +671,7 @@ function GeneralCompareHeader({
   return (
     <div
       className={cn(
-        "pointer-events-none relative z-[65] flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+        "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
         side === "left"
           ? pinned
             ? "pl-12 pr-3 md:pl-2"
@@ -892,6 +909,19 @@ function ProjectLanding({
   const [previews, setPreviews] = useState<
     Record<string, { snippet: string; date: string }>
   >({});
+  // Inline rename, mirroring the sidebar recent-row UX: edit the title in place,
+  // commit on Enter/blur, cancel on Escape. Reuses the projectId-agnostic
+  // renameChatItem so behavior matches the sidebar.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  // Skips the input's blur-commit when Enter/Escape already handled it.
+  const skipRenameBlurRef = useRef(false);
+  // Optimistic title shown until the debounced sidebar refresh (fired by the
+  // rename) catches up, so the old name does not flash back in.
+  const [pendingRename, setPendingRename] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
 
   useEffect(() => {
     initialActiveThreadRef.current =
@@ -900,7 +930,39 @@ function ProjectLanding({
     useChatRuntimeStore.getState().setContextUsage(null);
     setPendingNewThreadId(null);
     setNewThreadNonce(crypto.randomUUID());
+    setRenamingId(null);
+    setPendingRename(null);
   }, [projectId]);
+
+  useEffect(() => {
+    if (!pendingRename) return;
+    const match = items.find((item) => item.id === pendingRename.id);
+    if (match && match.title === pendingRename.title) setPendingRename(null);
+  }, [items, pendingRename]);
+
+  const openRename = useCallback((item: SidebarItem) => {
+    skipRenameBlurRef.current = false;
+    setRenameDraft(item.title);
+    setRenamingId(item.id);
+  }, []);
+
+  const commitRename = useCallback(
+    async (item: SidebarItem) => {
+      const trimmed = renameDraft.trim();
+      setRenamingId(null);
+      if (!trimmed || trimmed === item.title) return;
+      setPendingRename({ id: item.id, title: trimmed });
+      try {
+        await renameChatItem(item, trimmed);
+      } catch (err) {
+        setPendingRename(null);
+        toast.error("Failed to rename chat", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      }
+    },
+    [renameDraft],
+  );
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -1018,40 +1080,135 @@ function ProjectLanding({
             </div>
 
             {projectTab === "sources" ? (
-              <ProjectSourcesPanel projectId={projectId} />
+              <Suspense
+                fallback={
+                  <div className="mt-8 rounded-[26px] bg-muted/30 px-6 py-10 text-center text-sm text-muted-foreground">
+                    Loading sources…
+                  </div>
+                }
+              >
+                <ProjectSourcesPanel projectId={projectId} />
+              </Suspense>
             ) : (
               <div className="mt-8 flex flex-col gap-1">
                 {items.map((item) => {
                   const preview = previews[item.id];
-                  return (
-                    <button
-                      key={`${item.type}:${item.id}`}
-                      type="button"
-                      onClick={() => {
-                        navigate({
-                          to: "/chat",
-                          search:
-                            item.type === "single"
-                              ? { thread: item.id, project: projectId }
-                              : { compare: item.id, project: projectId },
-                        });
-                      }}
-                      className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
-                          {item.title}
+                  const displayTitle =
+                    pendingRename?.id === item.id
+                      ? pendingRename.title
+                      : item.title;
+                  if (renamingId === item.id) {
+                    return (
+                      <div
+                        key={`${item.type}:${item.id}`}
+                        className="flex min-h-[58px] w-full items-center rounded-full px-4 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <input
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(event) =>
+                              setRenameDraft(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                if (event.nativeEvent.isComposing || event.keyCode === 229)
+                                  return;
+                                event.preventDefault();
+                                skipRenameBlurRef.current = true;
+                                void commitRename(item);
+                              } else if (event.key === "Escape") {
+                                event.preventDefault();
+                                skipRenameBlurRef.current = true;
+                                setRenamingId(null);
+                              }
+                            }}
+                            onBlur={() => {
+                              if (skipRenameBlurRef.current) {
+                                skipRenameBlurRef.current = false;
+                                return;
+                              }
+                              void commitRename(item);
+                            }}
+                            onFocus={(event) => event.currentTarget.select()}
+                            maxLength={120}
+                            aria-label="Rename chat"
+                            className="w-full border-0 bg-transparent text-[15px] font-semibold leading-5 text-foreground outline-none"
+                          />
+                          {preview?.snippet ? (
+                            <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                              {preview.snippet}
+                            </div>
+                          ) : null}
                         </div>
-                        {preview?.snippet ? (
-                          <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                            {preview.snippet}
-                          </div>
-                        ) : null}
                       </div>
-                      <span className="shrink-0 text-[14px] text-muted-foreground">
-                        {preview?.date ?? formatProjectChatDate(item.createdAt)}
-                      </span>
-                    </button>
+                    );
+                  }
+                  return (
+                    <div
+                      key={`${item.type}:${item.id}`}
+                      className="group relative flex min-h-[58px] w-full items-center rounded-full transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigate({
+                            to: "/chat",
+                            search:
+                              item.type === "single"
+                                ? { thread: item.id, project: projectId }
+                                : { compare: item.id, project: projectId },
+                          });
+                        }}
+                        className="flex min-h-[58px] min-w-0 flex-1 items-center gap-4 rounded-full px-4 py-2 text-left"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                            {displayTitle}
+                          </div>
+                          {preview?.snippet ? (
+                            <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                              {preview.snippet}
+                            </div>
+                          ) : null}
+                        </div>
+                        <span className="shrink-0 text-[14px] text-muted-foreground transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
+                          {preview?.date ??
+                            formatProjectChatDate(item.createdAt)}
+                        </span>
+                      </button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            onClick={(event) => event.stopPropagation()}
+                            aria-label="Chat options"
+                            className="absolute right-3 top-1/2 inline-flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-none transition-opacity hover:bg-foreground/10 md:pointer-fine:opacity-0 md:pointer-fine:pointer-events-none focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto data-[state=open]:opacity-100 data-[state=open]:pointer-events-auto"
+                          >
+                            <HugeiconsIcon
+                              icon={MoreVerticalIcon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          side="bottom"
+                          align="end"
+                          sideOffset={4}
+                          className="unsloth-plus-menu w-56"
+                        >
+                          <DropdownMenuItem onSelect={() => openRename(item)}>
+                            <HugeiconsIcon
+                              icon={Edit03Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Rename</span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   );
                 })}
               </div>
@@ -2246,11 +2403,28 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
-  useEffect(() => {
-    if (getTrainingCompareHandoff()) return;
-    void refresh();
+  const inventoryRefreshStartedRef = useRef(false);
+  const refreshDeferredModelInventories = useCallback(() => {
+    inventoryRefreshStartedRef.current = true;
+    void refresh({ includeLoras: true });
     refreshLocalModels();
   }, [refresh, refreshLocalModels]);
+
+  useEffect(() => {
+    if (getTrainingCompareHandoff()) return;
+    void refresh({ includeLoras: false });
+    const timeoutId = window.setTimeout(() => {
+      if (!inventoryRefreshStartedRef.current) {
+        refreshDeferredModelInventories();
+      }
+    }, 1200);
+    return () => window.clearTimeout(timeoutId);
+  }, [refresh, refreshDeferredModelInventories]);
+
+  useEffect(() => {
+    if (!active || !modelSelectorOpen) return;
+    refreshDeferredModelInventories();
+  }, [active, modelSelectorOpen, refreshDeferredModelInventories]);
 
   useEffect(() => {
     // ChatPage no longer remounts on navigation, so re-check the handoff whenever
@@ -2383,12 +2557,12 @@ export function ChatPage({
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-[66] flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[10px] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -2513,7 +2687,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -2543,7 +2717,7 @@ export function ChatPage({
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex size-[var(--studio-chat-control-height,34px)] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex size-[var(--studio-chat-control-height,34px)] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon

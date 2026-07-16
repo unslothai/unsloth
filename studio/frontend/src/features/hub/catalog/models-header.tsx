@@ -15,6 +15,7 @@ import {
   PackageIcon,
   RamMemoryIcon,
   RemoveCircleIcon,
+  CpuIcon
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -43,6 +44,7 @@ export function ModelsHeader({
   isDataset,
   gpuLabel,
   ramLabel,
+  coreLabel,
   activeCheckpoint,
   activeGgufVariant,
   onTitleClick,
@@ -53,6 +55,7 @@ export function ModelsHeader({
   isDataset: boolean;
   gpuLabel: string;
   ramLabel: string;
+  coreLabel: string;
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
   onTitleClick: () => void;
@@ -84,7 +87,8 @@ export function ModelsHeader({
           value={String(localCount)}
         />
         <StatPill icon={ChipIcon} label="VRAM" value={gpuLabel} />
-        <StatPill icon={RamMemoryIcon} label="CPU RAM" value={ramLabel} />
+        <StatPill icon={RamMemoryIcon} label="RAM" value={ramLabel} />
+        <StatPill icon={CpuIcon} label="CPU" value={coreLabel} />
 
         {activeCheckpoint && (
           <div className="hub-tag-soft ml-1 inline-flex items-center gap-1.5 px-2 py-1 text-[11.5px]">

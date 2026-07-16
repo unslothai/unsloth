@@ -36,6 +36,7 @@ import {
 } from "../utils/handles";
 import type { RecipeSnapshot } from "../utils/import";
 import { getLayoutedElements } from "../utils/layout";
+import { makeUnstructuredUploadUid } from "../utils/config-factories";
 import {
   centerModelInfraNodes,
   optimizeModelInfraEdgeHandles,
@@ -76,6 +77,12 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
+  // Upload-uid directories whose owning block dropped them; server-side
+  // deletion is deferred until a save no longer references them, so a
+  // reload before autosave cannot leave a saved recipe pointing at
+  // deleted files.
+  pendingUploadCleanups: string[];
+  queueUploadCleanup: (uid: string) => void;
   setSheetOpen: (open: boolean) => void;
   setSheetView: (view: SheetView) => void;
   setProcessors: (processors: RecipeProcessorConfig[]) => void;
@@ -137,6 +144,7 @@ const INITIAL_STATE = {
   nextId: 3,
   nextY: 280,
   fitViewTick: 0,
+  pendingUploadCleanups: [],
 } satisfies Pick<
   RecipeStudioState,
   | "nodes"
@@ -154,6 +162,7 @@ const INITIAL_STATE = {
   | "nextId"
   | "nextY"
   | "fitViewTick"
+  | "pendingUploadCleanups"
 >;
 
 function buildAddedNodeState(
@@ -269,6 +278,20 @@ function isModelSemanticEdge(
   );
 }
 
+// Upload uid of a seed block whose server-side directory becomes orphaned
+// when the block drops it. Only uid directories qualify (single owner);
+// legacy node-id directories can be shared by other recipes.
+function seedUploadCleanupUid(config: NodeConfig | undefined): string | null {
+  if (!config || config.kind !== "seed") {
+    return null;
+  }
+  const uid = config.unstructured_upload_uid?.trim();
+  if (!uid || !config.unstructured_file_ids?.length) {
+    return null;
+  }
+  return uid;
+}
+
 export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   ...INITIAL_STATE,
   setSheetOpen: (open) => set({ sheetOpen: open }),
@@ -278,6 +301,12 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   setDialogOpen: (open) => set({ dialogOpen: open }),
   setExecutionLocked: (locked) => set({ executionLocked: locked }),
   resetRecipe: () => set(INITIAL_STATE),
+  queueUploadCleanup: (uid) =>
+    set((state) =>
+      state.pendingUploadCleanups.includes(uid)
+        ? state
+        : { pendingUploadCleanups: [...state.pendingUploadCleanups, uid] },
+    ),
   selectConfig: (id) => set({ activeConfigId: id, dialogOpen: false }),
   openConfig: (id) => set({ activeConfigId: id, dialogOpen: true }),
   setLayoutDirection: (direction) =>
@@ -383,7 +412,18 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       }
       return buildAddedNodeState(state, "sampler", type, position, openDialog);
     }),
-  addSeedNode: (type, position, openDialog = true) =>
+  addSeedNode: (type, position, openDialog = true) => {
+    const current = get();
+    if (!current.executionLocked) {
+      // The reset below clears the block's upload uid and file list; queue
+      // its server-side directory for deletion after the next save.
+      const uid = seedUploadCleanupUid(
+        Object.values(current.configs).find((config) => config.kind === "seed"),
+      );
+      if (uid) {
+        current.queueUploadCleanup(uid);
+      }
+    }
     set((state) => {
       if (state.executionLocked) {
         return state;
@@ -413,6 +453,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_token: "",
         hf_endpoint: "https://huggingface.co",
         local_file_name: "",
+        unstructured_upload_uid:
+          nextSourceType === "unstructured" ? makeUnstructuredUploadUid() : "",
         unstructured_file_ids: [],
         unstructured_file_names: [],
         unstructured_file_sizes: [],
@@ -446,7 +488,8 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         activeConfigId: existing.id,
         dialogOpen: openDialog,
       };
-    }),
+    });
+  },
   addLlmNode: (type, position, openDialog = true) =>
     set((state) => {
       if (state.executionLocked) {
@@ -699,6 +742,9 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       dialogOpen: false,
       sheetView: "root",
       fitViewTick: state.fitViewTick + 1,
+      // Queued cleanups belong to the previous recipe; draining them after
+      // a save of this one could delete files its saved payload still uses.
+      pendingUploadCleanups: [],
     })),
   setAuxNodePosition: (id, position) =>
     set((state) => {
@@ -786,6 +832,17 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
     set(applyUpdate);
   },
   onNodesChange: (changes) => {
+    const current = get();
+    if (!current.executionLocked) {
+      for (const change of changes) {
+        if (change.type === "remove") {
+          const uid = seedUploadCleanupUid(current.configs[change.id]);
+          if (uid) {
+            current.queueUploadCleanup(uid);
+          }
+        }
+      }
+    }
     const applyNodesChange = (state: RecipeStudioState) => {
       if (state.executionLocked) {
         return state;

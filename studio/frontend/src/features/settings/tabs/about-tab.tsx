@@ -158,7 +158,7 @@ export function AboutTab() {
               <code className="font-mono text-xs text-muted-foreground">
                 {gpu.name ?? "—"}
                 {gpu.vramTotalGb != null
-                  ? ` · ${Math.round(gpu.vramTotalGb)} GB`
+                  ? ` · ${Math.round(gpu.vramTotalGb)} GiB`
                   : ""}
               </code>
             </SettingsRow>

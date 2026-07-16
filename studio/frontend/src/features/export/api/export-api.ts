@@ -127,6 +127,8 @@ export async function loadCheckpoint(params: {
 export async function exportMerged(params: {
   save_directory: string;
   format_type?: string;
+  /** Compressed-tensors scheme alias (e.g. "fp8", "w4a16", "mxfp4"); overrides format_type. */
+  compressed_method?: string | null;
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
@@ -158,10 +160,13 @@ export async function exportBase(params: {
 
 export async function exportGGUF(params: {
   save_directory: string;
-  quantization_method: string;
+  /** A single GGUF quant method or a list (list produces multiple GGUFs from one model load). */
+  quantization_method: string | string[];
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
+  imatrix?: boolean;
+  imatrix_path?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",
@@ -177,6 +182,10 @@ export async function exportLoRA(params: {
   repo_id?: string | null;
   hf_token?: string | null;
   private?: boolean;
+  /** Also convert the adapter to a GGUF LoRA file (llama.cpp `--lora`). */
+  gguf?: boolean;
+  /** GGUF LoRA output float type (f32/f16/bf16/q8_0/auto); only used when gguf=true. */
+  gguf_outtype?: string;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/lora", {
     method: "POST",

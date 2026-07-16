@@ -20,6 +20,7 @@ def _loaded_backend(*, load_mmproj: bool = True) -> LlamaCppBackend:
     backend._speculative_type = "draft-mtp"
     backend._spec_draft_n_max = 2
     backend._tensor_parallel = False
+    backend._layer_preserves_tensor_intent = False
     backend._chat_template_override = None
     backend._extra_args = []
     backend._load_mmproj = load_mmproj

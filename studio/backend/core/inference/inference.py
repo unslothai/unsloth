@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
+from utils.transformers_dtype import dtype_kwargs
 from utils.utils import format_error_message
 from utils.hardware import (
     get_device,
@@ -27,6 +28,11 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.runtime_context import runtime_context_length
 from core.inference.message_content import content_to_text
+from core.inference.chat_eos import (
+    chat_eos_repair,
+    resolve_chat_turn_end_eos_ids_using,
+)
+from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -210,6 +216,50 @@ class InferenceBackend:
         # API uses -1 to disable top-k; transformers uses 0.
         return 0 if top_k < 0 else top_k
 
+    def _resolve_chat_eos(self, model_name: str) -> None:
+        """Resolve this chat model's assistant-turn-end stop tokens once at load,
+        cache them in model_info, and repair generation_config so every
+        ``.generate()`` path stops at the turn boundary.
+
+        Some checkpoints (e.g. Qwen3.5 / Qwen3.6 small chat models) end turns with
+        ``<|im_end|>`` but ship ``config.eos_token_id = <|endoftext|>`` and no
+        ``generation_config.json``, so paths that read ``generation_config`` (the
+        vision path, tool loops) run past the turn and loop. Turn-end markers are
+        derived from the chat_template (see chat_eos.resolve_chat_turn_end_eos_ids),
+        so base/coder models and harmony templates are left untouched.
+        """
+        info = self.models.get(model_name) or {}
+        model = info.get("model")
+        container = info.get("tokenizer")
+        tokenizer = getattr(container, "tokenizer", container)  # unwrap processors
+        if model is None or tokenizer is None:
+            return
+        # Vision models carry the chat_template on the processor, not the inner
+        # tokenizer. Read markers from whichever has one, but resolve ids on the
+        # generation tokenizer, else the vision path misses the turn-end token.
+        template_source = container if getattr(container, "chat_template", None) else tokenizer
+        try:
+            turn_end_ids = resolve_chat_turn_end_eos_ids_using(template_source, tokenizer)
+        except Exception as e:  # never block a load on eos resolution
+            logger.warning("Chat turn-end eos resolution failed for %s: %s", model_name, e)
+            return
+        info["chat_turn_end_eos_ids"] = turn_end_ids
+
+        gen = getattr(model, "generation_config", None)
+        if gen is None:
+            return
+        repaired = chat_eos_repair(gen.eos_token_id, turn_end_ids)
+        if repaired is None:
+            return
+        previous = gen.eos_token_id
+        gen.eos_token_id = repaired
+        logger.info(
+            "Repaired generation_config.eos_token_id for %s: %s -> %s",
+            model_name,
+            previous,
+            repaired,
+        )
+
     def load_model(
         self,
         config: ModelConfig,
@@ -221,6 +271,9 @@ class InferenceBackend:
         gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
+        # Keep the token so the native-template fallback can fetch a
+        # gated model's repo template later during generation.
+        self._hf_token = hf_token
         # GGUF uses max_seq_length=0 as "model default"; Unsloth crashes on it.
         if max_seq_length <= 0:
             max_seq_length = 2048
@@ -231,6 +284,8 @@ class InferenceBackend:
             # Already loaded?
             if model_name in self.models and self.models[model_name].get("model"):
                 logger.info(f"Model {model_name} already loaded")
+                if hf_token:
+                    self.models[model_name]["hf_token"] = hf_token
                 self.active_model_name = model_name
                 return True
 
@@ -246,6 +301,14 @@ class InferenceBackend:
             )
 
             self.models[model_name] = {
+                # Per-model token: the native-template fallback must use the
+                # token this model was loaded with, not whichever loaded last.
+                "hf_token": hf_token,
+                # Per-model consent: the native-template reload must re-use the
+                # exact trust_remote_code this model (and a LoRA's base) was loaded
+                # with, so a custom-code tokenizer repo can be re-fetched without
+                # executing any code the user did not already consent to.
+                "trust_remote_code": trust_remote_code,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
                 "is_audio": config.is_audio,
@@ -378,7 +441,7 @@ class InferenceBackend:
                         feature_extractor = tokenizer.feature_extractor,
                         processor = tokenizer,
                         return_language = True,
-                        torch_dtype = torch.float16,
+                        **dtype_kwargs(torch.float16),
                     )
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
@@ -496,6 +559,7 @@ class InferenceBackend:
                 max_seq_length,
             )
 
+            self._resolve_chat_eos(model_name)
             self._load_chat_template_info(model_name)
 
             self.active_model_name = model_name
@@ -766,9 +830,12 @@ class InferenceBackend:
         preserve_thinking: Optional[bool] = None,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
+        nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
+        presence_penalty: float = 0.0,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -802,6 +869,7 @@ class InferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                presence_penalty = presence_penalty,
             )
 
         initial = list(messages)
@@ -815,9 +883,11 @@ class InferenceBackend:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            thread_id = thread_id,
             rag_scope = rag_scope,
         )
 
@@ -837,12 +907,14 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
         ``tools`` / ``enable_thinking`` / ``reasoning_effort`` / ``preserve_thinking``
         are forwarded into ``apply_chat_template`` so templates that understand them
         (Qwen3, Llama 3.1+, gpt-oss harmony) advertise tool schemas / reasoning controls.
+        ``presence_penalty`` matches the GGUF sampling path (0 disables it).
         """
         yield from self._generate_chat_response_inner(
             messages = messages,
@@ -859,6 +931,7 @@ class InferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            presence_penalty = presence_penalty,
         )
 
     def _generate_chat_response_inner(
@@ -878,6 +951,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Inner generation logic, called by generate_chat_response and
         generate_with_adapter_control.
@@ -917,6 +991,7 @@ class InferenceBackend:
                     max_new_tokens,
                     repetition_penalty,
                     cancel_event = cancel_event,
+                    presence_penalty = presence_penalty,
                 )
                 return
             else:
@@ -946,6 +1021,22 @@ class InferenceBackend:
                     tokenizer,
                     chat_template = template_name,
                 )
+                # The mapper installs the effective template only now, at generate
+                # time, so re-resolve and UNION into the load-time cache (never
+                # overwrite). get_chat_template can return a remapped tokenizer
+                # (turn-end folded onto doc-eos) while generate_stream reads the
+                # original, so take marker strings from the mapped template but
+                # resolve their ids on the original.
+                try:
+                    _gen_tok = model_info.get("tokenizer") or tokenizer
+                    refreshed = resolve_chat_turn_end_eos_ids_using(
+                        getattr(tokenizer, "tokenizer", tokenizer),
+                        getattr(_gen_tok, "tokenizer", _gen_tok),
+                    )
+                    existing = model_info.get("chat_turn_end_eos_ids") or []
+                    model_info["chat_turn_end_eos_ids"] = sorted(set(existing) | set(refreshed))
+                except Exception as e:
+                    logger.warning(f"Could not refresh chat turn-end eos after template: {e}")
             else:
                 logger.info(
                     f"No registered Unsloth template for {self.active_model_name}, using tokenizer default"
@@ -975,6 +1066,27 @@ class InferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
+
+            # If tools were requested but the (possibly overridden) template ignored
+            # them, fall back to the model's native template (shared with MLX).
+            from core.inference.chat_template_helpers import (
+                render_with_native_template_fallback,
+            )
+
+            formatted_prompt = render_with_native_template_fallback(
+                formatted_prompt = formatted_prompt,
+                tokenizer = tokenizer,
+                model_info = model_info,
+                active_model_name = self.active_model_name,
+                messages = template_messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                apply_fn = self._apply_chat_template_for_generation,
+                hf_token = model_info.get("hf_token"),
+            )
+
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")
@@ -992,6 +1104,7 @@ class InferenceBackend:
             repetition_penalty,
             cancel_event = cancel_event,
             _adapter_state = _adapter_state,
+            presence_penalty = presence_penalty,
         )
 
     def _generate_vision_response(
@@ -1006,6 +1119,7 @@ class InferenceBackend:
         max_new_tokens,
         repetition_penalty,
         cancel_event = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         model_info = self.models[self.active_model_name]
@@ -1067,13 +1181,22 @@ class InferenceBackend:
                 add_special_tokens = False,
                 return_tensors = "pt",
             ).to(model.device)
+            prompt_text = input_text
         else:
             # Text-only path for a vision model
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
+            prompt_text = formatted_prompt
 
         # Stream with TextIteratorStreamer + background thread
         try:
+            from core.inference.chat_template_helpers import detect_think_prefill
+
+            # Re-emit an open <think> prefill swallowed by skip_prompt (see
+            # generate_stream).
+            think_prefix = detect_think_prefill(
+                prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
+            )
             from transformers import TextIteratorStreamer
             import threading
 
@@ -1095,6 +1218,14 @@ class InferenceBackend:
                 top_k = top_k,
                 min_p = min_p,
             )
+            # Presence penalty (GGUF parity) for VLM chat.
+            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            if _vision_input_ids is not None:
+                _pp = _make_presence_penalty_processor(
+                    presence_penalty, int(_vision_input_ids.shape[1])
+                )
+                if _pp is not None:
+                    generation_kwargs["logits_processor"] = _pp
 
             err: dict[str, str] = {}
 
@@ -1114,7 +1245,11 @@ class InferenceBackend:
             thread = threading.Thread(target = generate_fn)
             thread.start()
 
-            output = ""
+            output = think_prefix
+            # Emit the prefilled <think> before the first token so the block
+            # renders during prompt prefill (which can take seconds).
+            if think_prefix:
+                yield think_prefix
             from queue import Empty
 
             generation_complete = False
@@ -1323,11 +1458,13 @@ class InferenceBackend:
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
+        presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
         _adapter_state: if not None, the background thread toggles adapters
         before model.generate(), under _generation_lock.
+        ``presence_penalty`` matches the GGUF sampling path via a logits processor (0 disables it).
         """
         if not self.active_model_name:
             yield "Error: No active model"
@@ -1346,6 +1483,16 @@ class InferenceBackend:
 
             from transformers import TextIteratorStreamer
             import threading
+            from core.inference.chat_template_helpers import detect_think_prefill
+
+            # skip_prompt swallows an open <think> prefilled by the template;
+            # re-emit it so the frontend can render the thinking block.
+            # gpt-oss emits its own tags via HarmonyTextStreamer.
+            think_prefix = (
+                ""
+                if self._is_gpt_oss_model()
+                else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
+            )
 
             # gpt-oss models: HarmonyTextStreamer parses the multi-channel
             # harmony protocol into <think> tags
@@ -1382,11 +1529,18 @@ class InferenceBackend:
                 min_p = min_p,
                 repetition_penalty = repetition_penalty,
                 do_sample = temperature > 0,
-                eos_token_id = tokenizer.eos_token_id,
+                # Resolved once at load (chat_template-derived turn-end tokens).
+                eos_token_id = model_info.get("chat_turn_end_eos_ids") or tokenizer.eos_token_id,
                 pad_token_id = tokenizer.eos_token_id
                 if tokenizer.pad_token_id is None
                 else tokenizer.pad_token_id,
             )
+            # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
+            _pp = _make_presence_penalty_processor(
+                presence_penalty, int(inputs["input_ids"].shape[1])
+            )
+            if _pp is not None:
+                generation_kwargs["logits_processor"] = _pp
             if cancel_event is not None:
                 from transformers.generation.stopping_criteria import (
                     StoppingCriteria,
@@ -1422,7 +1576,11 @@ class InferenceBackend:
             thread = threading.Thread(target = generate_fn)
             thread.start()
 
-            output = ""
+            output = think_prefix
+            # Emit the prefilled <think> before the first token so the block
+            # renders during prompt prefill (which can take seconds).
+            if think_prefix:
+                yield think_prefix
             from queue import Empty
 
             generation_complete = False

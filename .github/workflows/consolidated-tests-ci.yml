@@ -209,7 +209,7 @@ jobs:
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
             ipython
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           # transformers + trl from the matrix combo.
           pip install "$RESOLVED_TRANSFORMERS_SPEC"
@@ -268,6 +268,11 @@ jobs:
             tests/saving/test_save_shell_injection.py \
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
+            tests/saving/test_compressed_export_schemes.py \
+            tests/saving/test_export_api_surface.py \
+            tests/saving/test_export_dispatch.py \
+            tests/saving/test_imatrix_export.py \
+            tests/saving/test_gguf_single_pass_export.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
@@ -353,9 +358,17 @@ jobs:
             tests/saving/test_save_shell_injection.py \
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
+            tests/saving/test_compressed_export_schemes.py \
+            tests/saving/test_export_api_surface.py \
+            tests/saving/test_export_dispatch.py \
+            tests/saving/test_imatrix_export.py \
+            tests/saving/test_gguf_single_pass_export.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
+            tests/test_bad_mappings_redirect.py \
+            tests/test_prefetch_snapshot_scope.py \
+            tests/test_gemma_2b_mapper_key.py \
             --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
           # The deselected test monkeypatches flash_attn_varlen_func, which is
           # only bound on the module when `flash_attn` is importable. flash_attn
@@ -2166,7 +2179,7 @@ jobs:
           python -m pip install --upgrade pip
           # Match the matrix job's torch path so unsloth_zoo's
           # `import torch` resolves to the same CPU build.
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install \
             'numpy<3' protobuf sentencepiece \

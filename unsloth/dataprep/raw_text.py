@@ -132,6 +132,13 @@ class RawTextDataLoader:
         3. Maintains context with stride overlap
         4. Returns tokenized chunks directly (more efficient) or text chunks
         """
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if stride >= chunk_size:
+            raise ValueError(
+                f"stride ({stride}) must be smaller than chunk_size ({chunk_size}) to progress the chunking loop"
+            )
+
         # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
@@ -147,9 +154,9 @@ class RawTextDataLoader:
         if len(tokens) <= chunk_size:
             # Fits in a single chunk
             if return_tokenized:
+                tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                 eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
-                    tokens = tokens.tolist() if hasattr(tokens, "tolist") else list(tokens)
                     tokens.append(eos_token_id)
 
                 attention_mask = [1] * len(tokens)
@@ -223,48 +230,63 @@ class RawTextDataLoader:
                 return "\n\n".join(texts)
         return ""
 
+    # Cache text fields/columns for better performance
+    _TEXT_FIELDS = ("text", "content", "message", "body", "description", "prompt")
+    _TEXT_COLUMNS = _TEXT_FIELDS
+
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""
-        text_fields = ["text", "content", "message", "body", "description", "prompt"]
-        for field in text_fields:
+        for field in self._TEXT_FIELDS:
             if field in data and isinstance(data[field], str):
                 return data[field]
         return ""
 
     def _extract_text_from_csv_row(self, row):
         """Extract text from CSV row using common column names."""
-        text_columns = ["text", "content", "message", "body", "description", "prompt"]
-        for column in text_columns:
+        for column in self._TEXT_COLUMNS:
             if column in row and row[column]:
                 return row[column]
         return ""
 
 
 class TextPreprocessor:
+    # Compile regex patterns once for better performance
+    _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
+    _INVALID_CHARS_PATTERN = re.compile(r"[^\x20-\x7E\n]")
+    _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
+    _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
+    _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
+    _CHAPTER_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
+    _SECTION_PATTERN = re.compile(r"^## (.+)$", re.MULTILINE)
+    _SUBSECTION_PATTERN = re.compile(r"^### (.+)$", re.MULTILINE)
+    _CODE_BLOCK_PATTERN = re.compile(r"```(\w*)\n(.*?)\n```", re.DOTALL)
+
     def clean_text(self, text):
         """Remove unwanted characters, normalize whitespace"""
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        text = re.sub(r"[^\S\n]+", " ", text)
-        text = re.sub(r"[^\x20-\x7E\n]", "", text)
-        text = re.sub(r"[ ]{2,}", " ", text)
-        text = re.sub(r" *\n *", "\n", text)
-        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = self._WHITESPACE_PATTERN.sub(" ", text)
+        text = self._INVALID_CHARS_PATTERN.sub("", text)
+        text = self._MULTIPLE_SPACES_PATTERN.sub(" ", text)
+        text = self._NEWLINE_SPACES_PATTERN.sub("\n", text)
+        text = self._MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)
         return text.strip()
 
     def extract_sections(self, text, patterns):
         """Extract specific sections (e.g., code blocks, quotes)"""
         sections = []
         for pattern in patterns:
+            # Compile pattern on first use and cache? Well, patterns are user-provided,
+            # so just use re.findall with compiled flags
             matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
             sections.extend(matches)
         return sections
 
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
-        text = re.sub(r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags = re.MULTILINE)
-        text = re.sub(r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags = re.MULTILINE)
-        text = re.sub(r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags = re.MULTILINE)
-        text = re.sub(r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags = re.DOTALL)
+        text = self._CHAPTER_PATTERN.sub(r"<|chapter|>\1<|/chapter|>", text)
+        text = self._SECTION_PATTERN.sub(r"<|section|>\1<|/section|>", text)
+        text = self._SUBSECTION_PATTERN.sub(r"<|subsection|>\1<|/subsection|>", text)
+        text = self._CODE_BLOCK_PATTERN.sub(r"<|code|\1|>\2<|/code|>", text)
         return text
 
     def validate_dataset(self, dataset):

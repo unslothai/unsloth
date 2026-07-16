@@ -10,6 +10,7 @@ must be logged and skipped, not fatal. Fakes only.
 
 from __future__ import annotations
 
+import ast
 import queue
 import sys
 import threading
@@ -89,3 +90,31 @@ def test_dispatcher_survives_mailbox_put_error():
         o._dispatcher_stop.set()
         t.join(timeout = 5)
     assert not t.is_alive()
+
+
+def test_route_llama_streaming_async_clients_disable_proxy_env():
+    """Local llama-server streaming proxies must ignore ambient HTTP_PROXY."""
+    source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and func.attr == "AsyncClient"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "httpx"
+        ):
+            continue
+        calls.append(node)
+
+    assert len(calls) == 5
+    for call in calls:
+        assert any(
+            kw.arg == "trust_env" and isinstance(kw.value, ast.Constant) and kw.value.value is False
+            for kw in call.keywords
+        ), f"httpx.AsyncClient at line {call.lineno} must set trust_env=False"

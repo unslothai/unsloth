@@ -11,6 +11,7 @@ checked by AST so we never import its heavy deps (uvicorn/structlog).
 import ast
 import importlib.util
 import io
+import os
 import sys
 import tarfile
 import types
@@ -136,7 +137,9 @@ def test_ensure_downloads_and_chmods_when_missing(monkeypatch, tmp_path):
     path = ct.ensure_cloudflared()
     assert path == str(cached)
     assert cached.exists()
-    assert cached.stat().st_mode & 0o111  # executable bit set
+    # Host OS, not monkeypatched ct.sys.platform.
+    if os.name != "nt":
+        assert cached.stat().st_mode & 0o111
 
 
 def test_ensure_returns_none_on_download_failure(monkeypatch, tmp_path):
@@ -238,7 +241,8 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
     path = ct.ensure_cloudflared()
     assert path == str(cached)
     assert cached.read_bytes() == b"mach-o"
-    assert cached.stat().st_mode & 0o111  # chmod applied on posix
+    if os.name != "nt":
+        assert cached.stat().st_mode & 0o111
     assert not cached.with_suffix(".tgz").exists()  # temp archive cleaned up
 
 
@@ -687,13 +691,36 @@ def _argparse_default(source, option):
     return None
 
 
-def test_run_server_cloudflare_default_true():
+def test_run_server_cloudflare_default_off():
     defaults = _func_param_defaults(_RUN_PY.read_text(), "run_server")
-    assert defaults.get("cloudflare") is True
+    assert "cloudflare" in defaults
+    assert defaults["cloudflare"] is None
 
 
-def test_argparse_cloudflare_default_true():
-    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
+def test_argparse_cloudflare_default_off():
+    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is None
+
+
+def test_verify_global_reachability_marks_private_address_unreachable():
+    src = _RUN_PY.read_text()
+    tree = ast.parse(src)
+    func_src = next(
+        ast.get_source_segment(src, n)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_verify_global_reachability"
+    )
+    captured = []
+    ns = {
+        "_public_reachable": None,
+        "_stdout_color_ok": lambda: False,
+        "_url_host": lambda host: host,
+        "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
+    }
+    exec(compile(func_src, "<verify_global_reachability>", "exec"), ns)
+    ns["_verify_global_reachability"]("192.168.1.10", 8888)
+
+    assert ns["_public_reachable"] is False
+    assert "private/LAN address" in "\n".join(captured)
 
 
 def test_run_server_registers_tunnel_atexit_backstop():
@@ -703,16 +730,18 @@ def test_run_server_registers_tunnel_atexit_backstop():
     assert "atexit.register(stop_studio_tunnel)" in src
 
 
-def test_run_server_gates_tunnel_on_wildcard():
-    # Guard against accidentally widening the trigger beyond 0.0.0.0.
-    source = _RUN_PY.read_text()
-    assert "_cloudflare_enabled" in source
-    assert 'host == "0.0.0.0"' in source
-
-
-def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable):
-    """Exec the real _print_cloudflare_line source in isolation (run.py has heavy
-    deps), with the two module globals injected and startup_banner stubbed."""
+def _run_print_cloudflare_line(
+    monkeypatch,
+    *,
+    cloudflare_url,
+    public_reachable,
+    cloudflare_requested = False,
+    cloudflare_flag = True,
+    secure = False,
+    loopback_host = "127.0.0.1",
+    color = False,
+):
+    """Exec _print_cloudflare_line without importing run.py's heavy deps."""
     src = _RUN_PY.read_text()
     tree = ast.parse(src)
     func_src = next(
@@ -721,16 +750,18 @@ def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable)
         if isinstance(n, ast.FunctionDef) and n.name == "_print_cloudflare_line"
     )
     stub = types.ModuleType("startup_banner")
-    stub.stdout_supports_color = lambda: False
+    stub.stdout_supports_color = lambda: color
     monkeypatch.setitem(sys.modules, "startup_banner", stub)
     captured: list[str] = []
     ns = {
         "_cloudflare_url": cloudflare_url,
         "_public_reachable": public_reachable,
+        "_cloudflare_requested": cloudflare_requested,
+        "_cloudflare_flag": cloudflare_flag,
         "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
     }
     exec(compile(func_src, "<print_cloudflare_line>", "exec"), ns)
-    ns["_print_cloudflare_line"]()
+    ns["_print_cloudflare_line"](secure = secure, loopback_host = loopback_host)
     return "\n".join(captured)
 
 
@@ -750,7 +781,6 @@ def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
 
 
 def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
-    # Probe did not run / could not decide -> keep the existing wording.
     out = _run_print_cloudflare_line(
         monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = None
     )
@@ -758,6 +788,161 @@ def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
     assert "Use the secure link" not in out
 
 
-def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
+def test_cloudflare_line_states_inactive_when_enabled_but_not_requested(monkeypatch):
     out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
-    assert out == ""
+    assert "Cloudflare tunnel: OFF for this mode" in out
+    assert "local network only" in out
+
+
+def test_cloudflare_line_warns_when_public_url_up(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = "https://x.trycloudflare.com",
+        public_reachable = True,
+        cloudflare_requested = True,
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Cloudflare tunnel: ON" in out
+    assert "PUBLIC" in out
+    assert "--no-cloudflare" in out
+    assert "raw port is also publicly reachable" in out
+    assert "local network only" not in out
+
+
+def test_cloudflare_line_secure_mode_suppresses_public_warning(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = "https://x.trycloudflare.com",
+        public_reachable = True,
+        cloudflare_requested = True,
+        secure = True,
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Cloudflare tunnel: ON" not in out
+
+
+def test_cloudflare_line_states_disabled_when_off(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF" in out
+    assert "local network only" in out
+
+
+def test_cloudflare_line_labels_unset_as_default(monkeypatch):
+    # None = off by default (no flag) -> banner says "(default)", not "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = None,
+    )
+    assert "Cloudflare tunnel: OFF (default)" in out
+    assert "--no-cloudflare" not in out
+
+
+def test_cloudflare_line_labels_explicit_no_cloudflare(monkeypatch):
+    # False = explicit --no-cloudflare -> banner says "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF (--no-cloudflare)" in out
+
+
+def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = True,
+        cloudflare_flag = True,
+    )
+    assert "requested but failed to start" in out
+    assert "local network only" in out
+
+
+def test_cloudflare_line_off_does_not_claim_local_only_when_unknown(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = None,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF" in out
+    assert "Raw port reachability was not verified" in out
+    assert "local network only" not in out
+
+
+def test_cloudflare_line_failed_does_not_claim_local_only_when_unknown(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = None,
+        cloudflare_requested = True,
+        cloudflare_flag = True,
+    )
+    assert "requested but failed to start" in out
+    assert "Raw port reachability was not verified" in out
+    assert "local network only" not in out
+
+
+@pytest.mark.parametrize(
+    "cloudflare_requested,cloudflare_flag,expected",
+    [
+        (True, True, "requested but failed to start"),
+        (False, True, "Cloudflare tunnel: OFF for this mode"),
+        (False, False, "Cloudflare tunnel: OFF"),
+    ],
+)
+def test_cloudflare_line_unknown_warns_with_loopback_host(
+    monkeypatch, cloudflare_requested, cloudflare_flag, expected
+):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = None,
+        cloudflare_requested = cloudflare_requested,
+        cloudflare_flag = cloudflare_flag,
+        loopback_host = "::1",
+        color = True,
+    )
+    assert expected in out
+    assert "bind ::1" in out
+    assert "bind 127.0.0.1" not in out
+    assert "\033[38;5;215;1m" in out
+
+
+def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = True,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF" in out
+    assert "reachable from the public internet" in out
+    assert "local network only" not in out
+
+
+def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = True,
+        cloudflare_requested = True,
+        cloudflare_flag = True,
+    )
+    assert "requested but failed to start" in out
+    assert "reachable from the public internet" in out
+    assert "local network only" not in out

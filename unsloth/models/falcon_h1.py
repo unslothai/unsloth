@@ -38,7 +38,6 @@ try:
         FalconH1Model,
         FalconH1ForCausalLM,
         FalconH1RMSNorm,
-        FalconH1RMSNormGated,
         FalconHybridMambaAttentionDynamicCache,
     )
 except:

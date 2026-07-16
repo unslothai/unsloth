@@ -4,6 +4,7 @@
 import { TrainIcon } from "../components/train-icon";
 import {
   HUB_GGUF_RUN_ACTIONS_VISIBLE,
+  HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
   HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
 } from "../lib/hub-feature-flags";
 import {
@@ -23,6 +24,12 @@ import {
   type ModelInventoryFormat,
   deleteCachedModel,
 } from "../inventory";
+import {
+  downloadManager,
+  jobKeyOf,
+  selectActiveJob,
+  useDownloadManagerStore,
+} from "../download-manager";
 import { formatBytes } from "../lib/format";
 import { ggufVariantsMatch } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
@@ -37,16 +44,23 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
 import { DotTag } from "./dot-tag";
-import { CardDeleteButton, DeleteConfirmDialog } from "./download-card";
+import {
+  CardDeleteButton,
+  CardUpdateButton,
+  DeleteConfirmDialog,
+  UpdateConfirmDialog,
+} from "./download-card";
 import { PathInfoButton } from "./path-info-button";
+import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
+import { useOnlineStatus } from "../hooks/use-online-status";
 
 type LocalLoadOptions = {
   ggufVariant?: string;
@@ -196,8 +210,34 @@ export function LocalOnDeviceCard({
   onChange,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const [variantOpen, setVariantOpen] = useState(false);
+  const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
+    null,
+  );
+  const updateTransportConflict = useDownloadManagerStore((state) =>
+    updateConflictKey
+      ? (state.conflicts[updateConflictKey]?.info ?? null)
+      : null,
+  );
+  const cancelUpdateConflict = useCallback(() => {
+    if (updateConflictKey) downloadManager.cancelConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const resumeUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.resumeConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
+  const restartUpdateConflict = useCallback(() => {
+    if (!updateConflictKey) return;
+    downloadManager.restartConflict(updateConflictKey);
+    setUpdateConflictKey(null);
+  }, [updateConflictKey]);
   const hfToken = useHfTokenStore((s) => s.token);
+  // Update availability is derived from the GGUF variant metadata; offline rows
+  // keep the button hidden because there is no remote revision to fetch.
+  const online = useOnlineStatus();
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -221,6 +261,13 @@ export function LocalOnDeviceCard({
     enabled: needsVariantSelection,
     errorFallback: "Failed to load quantizations",
   });
+  const remoteVariantState = useGgufVariantFetchState({
+    repoId: repoId ?? modelId,
+    hfToken,
+    enabled:
+      online && source === "hf_cache" && needsVariantSelection && !!repoId,
+    errorFallback: "Failed to check for updates",
+  });
   const variantKey = currentVariantState.key;
   const [selectedVariantState, setSelectedVariantState] = useState<{
     key: string;
@@ -232,7 +279,23 @@ export function LocalOnDeviceCard({
 
   const canDelete =
     source === "hf_cache" && !!repoId && !isActive && !isLoading;
-  const variants = currentVariantState.variants;
+  const variants = useMemo(() => {
+    const localVariants = currentVariantState.variants;
+    const remoteVariants = remoteVariantState.variants;
+    if (!localVariants || !remoteVariants) return localVariants;
+    return localVariants.map((variant) => {
+      const remoteVariant = remoteVariants.find((remote) =>
+        ggufVariantsMatch(remote.quant, variant.quant),
+      );
+      if (!remoteVariant) return variant;
+      return {
+        ...variant,
+        download_size_bytes:
+          remoteVariant.download_size_bytes || variant.download_size_bytes,
+        update_available: remoteVariant.update_available === true,
+      };
+    });
+  }, [currentVariantState.variants, remoteVariantState.variants]);
   const sortedVariants = useMemo(
     () =>
       variants
@@ -273,6 +336,54 @@ export function LocalOnDeviceCard({
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
     ) ?? null;
+  // True while a managed download/update for this repo+variant is in flight.
+  const updateJobActive = useDownloadManagerStore((s) =>
+    repoId
+      ? Boolean(
+          selectActiveJob(
+            s,
+            "model",
+            repoId,
+            needsVariantSelection ? selectedQuant : null,
+          ),
+        )
+      : false,
+  );
+  const updateTargetVariant = needsVariantSelection ? selectedQuant : null;
+  const updateExpectedBytes =
+    selectedVariant?.download_size_bytes ?? selectedVariant?.size_bytes ?? 0;
+  const updateAvailable =
+    needsVariantSelection &&
+    selectedVariant?.downloaded === true &&
+    selectedVariant.update_available === true;
+  const canUpdate =
+    online &&
+    source === "hf_cache" &&
+    !!repoId &&
+    !isActive &&
+    !isLoading &&
+    !updateJobActive &&
+    updateAvailable;
+  // Update runs as a MANAGED download (same path as a normal download) so it
+  // shows in the Downloads panel with manifest-based progress and a working
+  // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
+  // cached copy stays runnable until the new revision verifies.
+  const handleConfirmUpdate = () => {
+    if (!repoId || !updateTargetVariant) return;
+    setUpdateOpen(false);
+    void downloadManager.requestStart({
+      kind: "model",
+      repoId,
+      variant: updateTargetVariant,
+      expectedBytes: updateExpectedBytes,
+    }).then((outcome) => {
+      if (outcome === "conflict") {
+        setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
+      }
+      void currentVariantState.refresh();
+      void remoteVariantState.refresh();
+    });
+  };
   const selectedVariantIsActive =
     needsVariantSelection && selectedQuant
       ? isActive && ggufVariantsMatch(activeGgufVariant, selectedQuant)
@@ -300,7 +411,7 @@ export function LocalOnDeviceCard({
   const showOldCacheHint = source === "hf_cache" && !!unsupportedReason;
   const runActionsVisible = isGguf
     ? HUB_GGUF_RUN_ACTIONS_VISIBLE
-    : HUB_POST_DOWNLOAD_ACTIONS_VISIBLE;
+    : HUB_NON_GGUF_RUN_ACTIONS_VISIBLE;
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -426,6 +537,13 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
+              {canUpdate && (
+                <CardUpdateButton
+                  label={`Update ${repoId}`}
+                  emphasized
+                  onClick={() => setUpdateOpen(true)}
+                />
+              )}
               {canDelete && (
                 <CardDeleteButton
                   label={`Delete ${repoId}`}
@@ -543,6 +661,22 @@ export function LocalOnDeviceCard({
             its downloaded files from disk. You can re-download it later.
           </>
         }
+      />
+      <UpdateConfirmDialog
+        open={updateOpen}
+        onOpenChange={(o) => {
+          if (!o) setUpdateOpen(false);
+        }}
+        title={`Update ${repoId}?`}
+        updating={false}
+        onConfirm={handleConfirmUpdate}
+        description="Re-download the latest version of this model from Hugging Face. Progress shows in the Downloads panel."
+      />
+      <TransportConflictDialog
+        conflict={updateTransportConflict}
+        onCancel={cancelUpdateConflict}
+        onKeepTransport={resumeUpdateConflict}
+        onSwitchTransport={restartUpdateConflict}
       />
     </div>
   );
