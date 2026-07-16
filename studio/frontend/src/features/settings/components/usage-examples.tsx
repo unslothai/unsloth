@@ -16,6 +16,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -25,14 +26,15 @@ import {
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { loadCodingAgents } from "../api/coding-agents";
 import {
   type OpenAIAutoSwitchSettings,
   loadOpenAIAutoSwitchSettings,
   updateOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
-import { buildAgentCommand } from "./agent-command";
+import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
 type ExampleType =
   | "curl"
@@ -113,6 +115,30 @@ const DOC_LINKS = [
   { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
   { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
+
+// Falls back to this list until the backend's installed-CLI check resolves;
+// kept in sync with the `unsloth start <agent>` subcommands and with
+// CODING_AGENTS in studio/backend/utils/coding_agents.py.
+const DEFAULT_AGENTS = [
+  "claude",
+  "codex",
+  "openclaw",
+  "opencode",
+  "hermes",
+  "pi",
+];
+// The agent selection resets to this whenever an auto-pick is no longer
+// trustworthy (leaving loopback, or the only compatible detected agent
+// stops being compatible) rather than lingering on a stale choice.
+const DEFAULT_AGENT = "claude";
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  openclaw: "OpenClaw",
+  opencode: "OpenCode",
+  hermes: "Hermes",
+  pi: "Pi",
+};
 
 const j = (s: string): string => JSON.stringify(s);
 const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
@@ -399,6 +425,17 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
+// Backend PATH detection is only safe in the desktop app, where the UI owns
+// the local backend. A browser loopback URL may be an SSH/local port forward.
+function canUseLocalAgentDetection(base: string): boolean {
+  if (!isTauri) return false;
+  try {
+    return isLoopbackHost(normalizeHost(new URL(base).hostname));
+  } catch {
+    return false;
+  }
+}
+
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
@@ -443,7 +480,18 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
+  const [agent, setAgent] = useState<string>(DEFAULT_AGENT);
+  const [availableAgents, setAvailableAgents] =
+    useState<string[]>(DEFAULT_AGENTS);
+  const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
+  // True once the user has picked an agent themselves; guards the detection
+  // effect below from clobbering that choice if it resolves afterward.
+  const agentPickedByUserRef = useRef(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const base =
+    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+  const localAgentDetection = canUseLocalAgentDetection(base);
   // null while loading; the same setting the General tab exposes (shared cache).
   const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
     null,
@@ -453,6 +501,78 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   useEffect(() => {
     void fetchDeviceType({ force: true });
   }, []);
+
+  // Fetching is the only job of this effect: populate availableAgents/
+  // detectedAgents (or clear them). Which agent gets auto-picked from that
+  // list is derived separately below, so it can react to the loaded model
+  // changing too, not just a fresh fetch.
+  useEffect(() => {
+    // Browser loopback URLs can be SSH/local forwards, so only the desktop app
+    // may use backend PATH checks to mark or auto-pick local agents.
+    if (!localAgentDetection) {
+      setDetectedAgents([]);
+      // A previously auto-picked agent was only ever verified against the
+      // Studio backend's PATH, which is meaningless now that this panel no
+      // longer targets a loopback base -- don't leave it selected, but
+      // never touch a choice the user made by hand.
+      if (!agentPickedByUserRef.current) {
+        setAgent(DEFAULT_AGENT);
+      }
+      return;
+    }
+
+    let cancelled = false;
+    void loadCodingAgents()
+      .then((info) => {
+        if (cancelled) return;
+        setAvailableAgents(info.agents);
+        setDetectedAgents(info.detected);
+      })
+      .catch(() => {
+        // Best-effort: keep the default agent list and let the user pick manually.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [localAgentDetection]);
+
+  // Single source of truth for the auto-picked agent, re-derived whenever
+  // the detected list or the loaded model's GGUF-ness changes -- in either
+  // direction. `codex` needs a GGUF model (unsloth_cli's
+  // _require_gguf_for_codex exits otherwise), so it's only preferred once
+  // the loaded model actually qualifies; loading a GGUF model *after* a
+  // non-GGUF-gated fallback picked something else re-steers back to codex
+  // just as loading a non-GGUF model steers away from it. Never overrides a
+  // choice the user made by hand.
+  // activeGgufVariant alone only covers an HF-repo GGUF pick (a specific
+  // quant variant string) -- a direct local .gguf file (custom folder /
+  // LM Studio / drag-drop) is just as much a GGUF the codex preflight would
+  // accept, but never has a "variant" to report, and would otherwise read as
+  // non-GGUF here. activeNativePathToken covers the drag-drop/picked-file
+  // case; ggufContextLength is only ever populated when the backend's
+  // /api/inference/status last reported is_gguf: true for the active model
+  // (see applyActiveModelStatusToStore), so together these three cover every
+  // path a model can be GGUF through, matching the same is_gguf-or-equivalent
+  // check hasGgufSource applies to a staged pick.
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeNativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  useEffect(() => {
+    if (agentPickedByUserRef.current) return;
+    if (detectedAgents.length === 0) return;
+    const isGguf =
+      activeGgufVariant != null || activeNativePathToken != null || ggufContextLength != null;
+    const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
+    if (preferred) {
+      setAgent(preferred);
+    } else if (agent === "codex" && !isGguf) {
+      // codex was auto-picked while a GGUF model was active and it's the
+      // only detected agent; now that the model isn't GGUF anymore, nothing
+      // detected is actually runnable, so fall back to the default instead
+      // of leaving a codex command unsloth_cli will reject.
+      setAgent(DEFAULT_AGENT);
+    }
+  }, [agent, detectedAgents, activeGgufVariant, activeNativePathToken, ggufContextLength]);
 
   useEffect(() => {
     let cancelled = false;
@@ -470,9 +590,6 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
 
   const model = useLoadedModelName();
   const key = apiKey || KEY_PLACEHOLDER;
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
 
   const autoSwitchOn = autoSwitch?.enabled ?? false;
   const snippets = useMemo(
@@ -481,8 +598,8 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   );
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
-    () => buildAgentCommand(base, key, os),
-    [base, key, os],
+    () => buildAgentCommand(base, key, os, agent),
+    [base, key, os, agent],
   );
 
   const osAware = OS_AWARE[lang];
@@ -558,7 +675,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label={t(
                     "settings.general.modelAutoSwitch.enableDescription",
                   )}
@@ -594,7 +711,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
-                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("settings.apiKeys.secureHttpsHint")}
                     >
                       <HugeiconsIcon
@@ -613,7 +730,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               type="button"
               onClick={handleCopyUrl}
               className={cn(
-                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 !useTunnel && "opacity-50",
               )}
               title={cloudflareUrl}
@@ -642,7 +759,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   onClick={() => setLang(tab.id)}
                   aria-pressed={active}
                   className={cn(
-                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     active
                       ? "hub-tab-toggle-pill text-foreground"
                       : "text-muted-foreground hover:text-foreground",
@@ -661,7 +778,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onClick={() => setOs("unix")}
               aria-pressed={os === "unix"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "unix"
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -674,7 +791,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onClick={() => setOs("windows")}
               aria-pressed={os === "windows"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "windows"
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -688,7 +805,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <button
             type="button"
             onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon
@@ -710,6 +827,42 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <span className="text-[11px] leading-snug text-muted-foreground">
             {t("settings.apiKeys.codingAgentsHint")}
           </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {availableAgents.map((id) => {
+              const installed = detectedAgents.includes(id);
+              const active = agent === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    agentPickedByUserRef.current = true;
+                    setAgent(id);
+                  }}
+                  aria-pressed={active}
+                  title={
+                    installed
+                      ? t("settings.apiKeys.codingAgentDetected")
+                      : undefined
+                  }
+                  className={cn(
+                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    active
+                      ? "hub-tab-toggle-pill text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {AGENT_LABELS[id] ?? id}
+                  {installed ? (
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full bg-emerald-500"
+                    />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
           <div className="relative mt-0.5 min-w-0">
             <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[11px] text-foreground">
               {agentCommand}
@@ -717,7 +870,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             <button
               type="button"
               onClick={handleCopyAgent}
-              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               aria-label={t("settings.apiKeys.copySnippet")}
             >
               <HugeiconsIcon
@@ -727,7 +880,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             </button>
           </div>
           <span className="text-[11px] leading-snug text-muted-foreground">
-            {t("settings.apiKeys.codingAgentsSwap")}
+            {detectedAgents.length > 0
+              ? t("settings.apiKeys.codingAgentsDetectedHint", {
+                  agents: detectedAgents
+                    .map((id) => AGENT_LABELS[id] ?? id)
+                    .join(", "),
+                })
+              : t("settings.apiKeys.codingAgentsSwap")}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
@@ -738,7 +897,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               href={link.href}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-0.5 rounded font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex items-center gap-0.5 rounded font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {link.label}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />

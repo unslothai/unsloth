@@ -263,17 +263,22 @@ type VramInfo = { est: number; status: "fits" | "tight" | "exceeds" } | null;
 function ModelStatusChips({
   isDataset,
   isGguf,
+  chatOnly,
   unslothSupport,
   vramInfo,
 }: {
   isDataset: boolean;
   isGguf: boolean;
+  chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
   const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The format-unsupported chip already explains itself; this one covers the
+  // supported-format model a chat-only host still can't run.
+  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showVram) return null;
+  if (!showUnsupported && !showChatOnly && !showVram) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -317,6 +322,26 @@ function ModelStatusChips({
                 {unslothSupport.reason}
               </span>
             )}
+            <span className="mt-1 block text-[10.5px] font-normal text-white/75">
+              Still downloadable to your Hugging Face cache.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showChatOnly && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="GGUF-only device" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This device has no supported GPU or usable MLX, so only GGUF models
+            can run here.
             <span className="mt-1 block text-[10.5px] font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
@@ -406,6 +431,7 @@ export const ModelInspector = memo(function ModelInspector({
     onSearchHub,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -504,15 +530,19 @@ export const ModelInspector = memo(function ModelInspector({
   const paramsLabel = model.totalParams
     ? formatCompact(model.totalParams)
     : "N/A";
-  const trainingSupported = unslothSupport.status !== "unsupported";
+  const unslothSupported = unslothSupport.status !== "unsupported";
+  // Chat-only hosts (no supported GPU / usable MLX) run inference only through
+  // llama.cpp, so only GGUF is loadable.
   const canRunModel =
-    !isDataset && (model.runtimeCapabilities?.canChat ?? true);
+    !isDataset &&
+    (model.runtimeCapabilities?.canChat ?? true) &&
+    (model.isGguf || (!chatOnly && unslothSupported));
   const canTrainModel =
     !isDataset &&
     (model.runtimeCapabilities?.canTrain ?? false) &&
     model.modelFormat !== "gguf" &&
     model.modelFormat !== "adapter" &&
-    trainingSupported;
+    unslothSupported;
 
   const languages = parseLanguageTags(model.tags);
   const datasetSizeBytes =
@@ -547,7 +577,7 @@ export const ModelInspector = memo(function ModelInspector({
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-[18px] shrink-0 text-primary"
+                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
                 />
               )}
             </div>
@@ -765,6 +795,7 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
+          chatOnly={chatOnly}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
         />

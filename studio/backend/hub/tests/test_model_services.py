@@ -36,6 +36,20 @@ from hub.utils import (
 from hub.workers import hf_download
 
 
+@pytest.fixture(autouse = True)
+def _denylist_inert(monkeypatch):
+    # The browse tests here exercise allowlist containment, symlink safety and
+    # the sensitive-name filter, not the system-directory denylist (which has
+    # its own suite in tests/test_browse_denylist.py). On macOS tmp_path
+    # resolves under /private/var, a denied prefix, so _resolve_browse_target
+    # would 403 the fixture dirs before that logic runs. Keep the denylist inert
+    # so these assertions hold on every platform. folder_browser binds
+    # is_denied_system_path at import, so patch it on that module, not on
+    # scan_folders. The "rejects" cases still 403 via the allowlist/sensitive
+    # checks, and the non-browse tests never call it.
+    monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
+
+
 def _repo(repo_id: str, files: list[SimpleNamespace], repo_path: Path):
     return SimpleNamespace(
         repo_id = repo_id,
@@ -105,6 +119,10 @@ def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
 
 
+def test_repo_id_validation_accepts_max_length_namespaced_repo():
+    assert paths.is_valid_repo_id(f"{'a' * 96}/{'b' * 96}")
+
+
 @pytest.mark.parametrize(
     "repo_id",
     [
@@ -119,6 +137,48 @@ def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
 )
 def test_repo_id_validation_rejects_unsafe_or_invalid_ids(repo_id):
     assert not paths.is_valid_repo_id(repo_id)
+
+
+def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+
+    path = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M")
+
+    assert path is not None
+    assert path.name == "models--owner--repo--variant--q4_k_m.json"
+
+
+@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
+def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    repo_id = f"{'a' * 96}/{'b' * 96}"
+
+    assert paths.is_valid_repo_id(repo_id)
+    assert download_manifest.write_cancel_marker("model", repo_id, variant, "http")
+    assert download_manifest.write_manifest(
+        "model",
+        repo_id,
+        variant,
+        [download_manifest.ExpectedFile(path = "model.gguf", size = 1)],
+        "http",
+    )
+
+    marker_path = state_dir.marker_path("model", repo_id, variant)
+    manifest_path = state_dir.manifest_path("model", repo_id, variant)
+
+    assert marker_path is not None
+    assert manifest_path is not None
+    assert "--sha256-" in marker_path.name
+    assert len(marker_path.name.encode("utf-8")) <= 255
+    assert len(f".{marker_path.name}.tmp-00000000".encode("utf-8")) <= 255
+    assert download_manifest.has_cancel_marker("model", repo_id, variant)
+    assert download_manifest.read_manifest("model", repo_id, variant) is not None
+    assert list(download_manifest.iter_variant_markers("model", repo_id)) == [
+        (variant, marker_path)
+    ]
+    assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
+        (variant, manifest_path)
+    ]
 
 
 class _RecordingLogger:
@@ -182,7 +242,8 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents = True)
     (home / "models").mkdir()
-    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda: [home])
+    # Accept and ignore the optional (media_roots, drive_roots) args the caller now passes.
+    monkeypatch.setattr(folder_browser, "_build_browse_allowlist", lambda *_a, **_k: [home])
 
     response = folder_browser.browse_folders_response(str(home), show_hidden = True)
 

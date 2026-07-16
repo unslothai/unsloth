@@ -18,7 +18,7 @@ import {
   useExternalProvidersStore,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
-import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
+import { HelpCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import type { FC, ReactNode } from "react";
@@ -288,7 +288,7 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
   return (
     <span
       className={cn(
-        "aui-response-model-badge inline-flex min-h-5 max-w-full items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100",
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
         className,
       )}
       title={providerLabel ? `${modelLabel} - ${providerLabel}` : modelLabel}
@@ -341,7 +341,7 @@ export const MessageResponseDetailsSheet: FC<{
         <SheetHeader className="border-b p-4">
           <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
             <HugeiconsIcon
-              icon={FileDatabaseIcon}
+              icon={HelpCircleIcon}
               strokeWidth={1.75}
               className="size-icon text-chat-icon-fg"
             />

@@ -69,6 +69,14 @@ pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
 resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
 
 
+@pytest.fixture(autouse = True)
+def _disable_download_host_fast_path(monkeypatch):
+    # This module exercises the GitHub API enumeration and asset selection against
+    # mocked releases; keep the download-host fast path (real CDN) out of the way.
+    # test_download_host_resolve.py covers the fast path itself.
+    monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+
+
 def load_studio_run_module(monkeypatch):
     logger = types.SimpleNamespace(
         debug = lambda *a, **k: None,
@@ -1629,7 +1637,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1674,7 +1682,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1720,8 +1728,10 @@ class TestResolveInstallAttempts:
         assert approved.release_tag == "llama-prebuilt-latest"
 
     def test_linux_cpu_fork_without_bundle_raises_no_upstream_fallback(self, monkeypatch):
-        # CPU-only Linux on the fork must not fall back to the ggml-org CPU asset; with
-        # no fork CPU bundle the resolver raises rather than reaching upstream.
+        # A CPU-only Linux host on the fork never falls back to the ggml-org CPU
+        # asset. CPU-only Linux now routes to the fork, but if a release manifest
+        # happens to ship no CPU bundle the resolver raises rather than quietly
+        # reaching for an upstream asset.
         host = make_host(
             has_usable_nvidia = False,
             has_physical_nvidia = False,
@@ -1737,7 +1747,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1769,7 +1779,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1818,7 +1828,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1845,6 +1855,151 @@ class TestResolveInstallAttempts:
         assert resolved_tag == "b9000"
         assert attempts[0].name == asset_name
         assert attempts[0].source_label == "published"
+
+    @pytest.mark.parametrize(
+        "system, machine, asset_name, install_kind, bundle_profile",
+        [
+            # CPU-only Linux x64 -> fork linux-cpu (was ggml-org ubuntu-x64).
+            ("Linux", "x86_64", "app-b9625-linux-x64-cpu.tar.gz", "linux-cpu", "linux-cpu-x64"),
+            # CPU-only Linux arm64 -> fork linux-arm64 (was ggml-org ubuntu-arm64).
+            (
+                "Linux",
+                "aarch64",
+                "app-b9625-linux-arm64-cpu.tar.gz",
+                "linux-arm64",
+                "linux-cpu-arm64",
+            ),
+            # CPU-only Windows arm64 -> fork windows-arm64 (was ggml-org win-cpu-arm64).
+            (
+                "Windows",
+                "arm64",
+                "app-b9625-windows-arm64-cpu.zip",
+                "windows-arm64",
+                "windows-cpu-arm64",
+            ),
+        ],
+    )
+    def test_cpu_host_prefers_published_fork_asset(
+        self, monkeypatch, system, machine, asset_name, install_kind, bundle_profile
+    ):
+        # CPU-only hosts now select the fork's CPU bundle from the manifest and
+        # must never query ggml-org upstream assets. Windows x64 CPU is covered
+        # separately by test_windows_cpu_prefers_published_asset.
+        host = make_host(
+            system = system,
+            machine = machine,
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        release = make_release(
+            [
+                make_artifact(
+                    asset_name,
+                    install_kind = install_kind,
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = bundle_profile,
+                    rank = 1000,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9625",
+            assets = {asset_name: f"https://published.example/{asset_name}"},
+        )
+        checksums = make_checksums_with_source(
+            [asset_name],
+            release_tag = release.release_tag,
+            upstream_tag = "b9625",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: (_ for _ in ()).throw(
+                AssertionError("fork CPU host must not query upstream assets")
+            ),
+        )
+
+        _requested_tag, resolved_tag, attempts, _approved = resolve_install_attempts(
+            "latest",
+            host,
+            "unslothai/llama.cpp",
+            "",
+        )
+
+        assert resolved_tag == "b9625"
+        assert attempts[0].name == asset_name
+        assert attempts[0].install_kind == install_kind
+        assert attempts[0].source_label == "published"
+
+    def test_cpu_only_unsupported_arch_source_builds(self, monkeypatch):
+        # A CPU-only Linux host that is neither x86_64 nor arm64 (ppc64le,
+        # riscv64, s390x) has no compatible CPU bundle. It must source-build, not
+        # receive the x86_64 linux-cpu binary (the Linux preflight checks libs,
+        # not ELF arch, so a wrong-arch binary would slip through).
+        host = make_host(
+            machine = "ppc64le",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        assert not host.is_x86_64 and not host.is_arm64
+        x64_asset = "app-b9625-linux-x64-cpu.tar.gz"
+        release = make_release(
+            [
+                make_artifact(
+                    x64_asset,
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = "linux-cpu-x64",
+                    rank = 1000,
+                )
+            ],
+            release_tag = "llama-prebuilt-latest",
+            upstream_tag = "b9625",
+            assets = {x64_asset: f"https://published.example/{x64_asset}"},
+        )
+        checksums = make_checksums_with_source(
+            [x64_asset],
+            release_tag = release.release_tag,
+            upstream_tag = "b9625",
+        )
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "iter_resolved_published_releases",
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                [
+                    INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
+                        bundle = release,
+                        checksums = checksums,
+                    )
+                ]
+            ),
+        )
+
+        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt asset was found"):
+            resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
 
     def test_macos_prefers_published_asset(self, monkeypatch):
         host = make_host(
@@ -1883,7 +2038,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1946,7 +2101,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2009,7 +2164,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         requested_tag, plans = _fork_manifest_release_plans(
@@ -2043,7 +2200,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         _requested_tag, plans = _fork_manifest_release_plans(
@@ -2535,68 +2694,6 @@ class TestBlackwellCuda124Exclusion:
             self._bw_host(), [self._upstream_cuda("12.4"), cpu]
         )
         assert kept == [cpu]
-
-
-# N.1c3. direct_linux_release_plan -- no silent CPU on NVIDIA hosts
-
-
-class TestDirectLinuxNvidiaCpuGate:
-    """A linux-cpu-only release on an NVIDIA host must raise (caller walks back to a usable CUDA line), not silently CPU-install. CPU-only hosts keep the CPU bundle."""
-
-    def _bundle_cpu_only(self):
-        return make_release(
-            [
-                make_artifact(
-                    "llama-b8508-bin-ubuntu-x64.tar.gz",
-                    install_kind = "linux-cpu",
-                    runtime_line = None,
-                    coverage_class = None,
-                    supported_sms = [],
-                    min_sm = None,
-                    max_sm = None,
-                    bundle_profile = None,
-                ),
-            ]
-        )
-
-    def _patch(self, monkeypatch):
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "parse_direct_linux_release_bundle",
-            lambda repo, release: self._bundle_cpu_only(),
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "detected_linux_runtime_lines",
-            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
-        )
-
-    def test_nvidia_host_without_cuda_line_raises_for_walkback(self, monkeypatch):
-        self._patch(monkeypatch)
-        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
-        with pytest.raises(PrebuiltFallback, match = "no compatible Linux prebuilt"):
-            INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-                {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
-            )
-
-    def test_cpu_host_still_gets_cpu_bundle(self, monkeypatch):
-        self._patch(monkeypatch)
-        host = make_host(
-            nvidia_smi = None,
-            driver_cuda_version = None,
-            compute_caps = [],
-            has_physical_nvidia = False,
-            has_usable_nvidia = False,
-        )
-        plan = INSTALL_LLAMA_PREBUILT.direct_linux_release_plan(
-            {"tag_name": "b8508"}, host, "unslothai/llama.cpp", "latest"
-        )
-        assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
 class TestLinuxPublishedAttemptsNvidiaCpuGate:
@@ -3447,8 +3544,9 @@ class TestLinuxArm64ForkFallsBackToSource:
         assert plans == ["plan"]
 
     def test_arm64_cpu_on_ggml_org_is_not_blocked(self, monkeypatch):
-        # CPU-only arm64 routes to ggml-org, so the guard must not fire; it reaches the
-        # iterator (empty here -> generic message).
+        # ggml-org is reachable only via an explicit --published-repo override now,
+        # but the guard must still not fire on arm64 there; it reaches the iterator
+        # (empty here -> generic message).
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_release_payloads_by_time",
@@ -3474,7 +3572,7 @@ class TestLinuxArm64ForkFallsBackToSource:
 
 
 class TestCpuFallback:
-    """--cpu-fallback drops GPU attributes so the host's OS/arch CPU prebuilt is selected, letting an arm64 GPU host install ggml-org's arm64 CPU build when its source build produced no binary."""
+    """--cpu-fallback drops GPU attributes so the host's OS/arch CPU prebuilt is selected, letting an arm64 GPU host install the fork's arm64 CPU bundle when its source build produced no binary."""
 
     _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 
@@ -3553,10 +3651,15 @@ class TestCpuFallback:
 
     def test_setup_sh_has_arm64_cpu_prebuilt_fallback(self):
         source = self._SETUP_SH.read_text(encoding = "utf-8")
-        assert "--cpu-fallback" in source
-        # Fallback targets ggml-org (only repo with an arm64 Linux build), gated on a
-        # degraded arm64 source build.
-        assert "ggml-org/llama.cpp" in source
+        # The arm64 GPU last-resort CPU fallback now pulls the fork's arm64 CPU
+        # bundle (app-<tag>-linux-arm64-cpu.tar.gz), not ggml-org's, and is gated
+        # on a degraded source build for arm64.
+        start = source.index("_ARM64_CPU_CMD=(")
+        end = source.index(")", start)
+        block = source[start:end]
+        assert "--cpu-fallback" in block
+        assert '--published-repo "unslothai/llama.cpp"' in block
+        assert '--published-repo "ggml-org/llama.cpp"' not in block
         assert "_LLAMA_CPP_DEGRADED" in source
 
 

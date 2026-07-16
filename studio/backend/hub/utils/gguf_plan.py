@@ -102,16 +102,17 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
 def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     """The separate MTP drafter to fetch with every variant: the repo-root
     ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery
-    (Gemma 4). Same pick as the loader's drafter resolution (``mtp-`` basename
-    prefix, first in sort order) so download and load resolve the same file;
-    the higher-precision ``MTP/`` subdir copies are for explicit selection and
-    are not auto-fetched. None for repos with the head baked into the main
-    GGUF (Qwen)."""
+    (Gemma 4). Same pick as the loader's drafter resolution (root-level
+    ``mtp-`` prefix, first in sort order) so download and load resolve the same
+    file; the higher-precision ``MTP/`` subdir copies are for explicit
+    selection and are not auto-fetched. None for repos with the head baked into
+    the main GGUF (Qwen)."""
+    # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s)) and name.lower().rsplit("/", 1)[-1].startswith("mtp-")
+            if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("mtp-")
         ),
         key = lambda s: getattr(s, "rfilename"),
     )

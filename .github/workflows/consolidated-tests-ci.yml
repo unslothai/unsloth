@@ -272,6 +272,7 @@ jobs:
             tests/saving/test_export_api_surface.py \
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
+            tests/saving/test_gguf_single_pass_export.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py
@@ -361,10 +362,13 @@ jobs:
             tests/saving/test_export_api_surface.py \
             tests/saving/test_export_dispatch.py \
             tests/saving/test_imatrix_export.py \
+            tests/saving/test_gguf_single_pass_export.py \
             tests/utils/test_attention_masks.py \
             tests/utils/test_trunc_normal_patch.py \
             tests/python/test_fast_language_model_text_only.py \
+            tests/test_bad_mappings_redirect.py \
             tests/test_prefetch_snapshot_scope.py \
+            tests/test_gemma_2b_mapper_key.py \
             --deselect 'tests/utils/test_attention_masks.py::test_run_attention_flash_varlen_receives_window_and_softcap'
           # The deselected test monkeypatches flash_attn_varlen_func, which is
           # only bound on the module when `flash_attn` is importable. flash_attn

@@ -24,7 +24,7 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { File02Icon } from "@hugeicons/core-free-icons";
+import { AudioWave01Icon, File02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { PlusIcon, XIcon } from "lucide-react";
 import {
@@ -120,9 +120,20 @@ const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
   );
 };
 
+const AUDIO_ATTACHMENT_RE = /\.(wav|mp3|m4a|ogg|oga|flac|webm|mp4|aac)$/i;
+
+const isAudioAttachment = (name: string | undefined, contentType: string) =>
+  /^audio\//i.test(contentType) || AUDIO_ATTACHMENT_RE.test(name ?? "");
+
 const AttachmentThumb: FC = () => {
   const src = useAttachmentSrc();
   const name = useAuiState(({ attachment }) => attachment.name);
+  const contentType = useAuiState(
+    ({ attachment }) =>
+      (attachment as { file?: File }).file?.type ??
+      (attachment as { contentType?: string }).contentType ??
+      "",
+  );
 
   if (src) {
     return (
@@ -137,7 +148,7 @@ const AttachmentThumb: FC = () => {
   return (
     <div className="flex h-full w-full items-center justify-center">
       <HugeiconsIcon
-        icon={File02Icon}
+        icon={isAudioAttachment(name, contentType) ? AudioWave01Icon : File02Icon}
         strokeWidth={2}
         className="size-6 text-muted-foreground"
       />
@@ -159,7 +170,12 @@ const AttachmentUI: FC = () => {
       case "document":
         return "Document";
       case "file":
-        return "File";
+        return isAudioAttachment(
+          attachment.name,
+          (attachment as { file?: File }).file?.type ?? "",
+        )
+          ? "Audio"
+          : "File";
       default:
         throw new Error(`Unknown attachment type: ${type as string}`);
     }

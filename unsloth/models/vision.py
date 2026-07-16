@@ -41,7 +41,11 @@ from ._utils import (
     set_task_config_attr,
 )
 from ._utils import *
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
+from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
+    _get_fp8_mode_and_check_settings,
+    _restore_dropped_fp8_scales,
+)
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -743,7 +747,7 @@ class FastBaseModel:
 
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
-                "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
+                "Unsloth: `unsloth_vllm_standby` is True, but environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
             )
 
         if model_types is None:
@@ -1199,6 +1203,17 @@ class FastBaseModel:
                     load_in_8bit = load_in_8bit,
                     offload_embedding = offload_embedding,
                     fast_inference = fast_inference,
+                )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = local_files_only,
+                    token = token,
+                    revision = kwargs.get("revision"),
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
                 )
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
@@ -1814,6 +1829,35 @@ class FastBaseModel:
                 finetune_language_layers = finetune_language_layers,
             )
             target_parameters = get_moe_target_parameters(model, _moe_targets)
+
+        # Per-expert Linear expert layouts (e.g. gpt-oss bnb-4bit) target experts via
+        # target_modules, not fused Parameters. Extend either form PEFT accepts: a leaf
+        # list (explicit) or a regex string (auto / all-linear / scoped). No-op otherwise.
+        _moe_module_detect = _select_moe_detection_targets(
+            _moe_detect_target,
+            target_modules,
+            finetune_mlp_modules = finetune_mlp_modules,
+            finetune_language_layers = finetune_language_layers,
+        )
+        _moe_module_targets = get_moe_target_modules(model, _moe_module_detect)
+        if _moe_module_targets:
+            if isinstance(target_modules, (list, tuple)):
+                target_modules = list(target_modules) + [
+                    target for target in _moe_module_targets if target not in target_modules
+                ]
+            elif isinstance(target_modules, str):
+                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
+                _expert_alt = (
+                    r".*\.experts\.(?:"
+                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
+                    + r")\.\d+"
+                )
+                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            print(
+                f"Unsloth: Detected MoE model with per-expert Linear experts. "
+                f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."
+            )
+            warn_if_zoo_cannot_merge_moe_experts()
 
         if finetune_last_n_layers is not None and layers_to_transform is None:
             _total_layers = _get_total_transformer_layers(model)
