@@ -2190,7 +2190,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
+    # platforms map() is in-process, so keep tokenizer threads on for faster prep.
+    os.environ["TOKENIZERS_PARALLELISM"] = (
+        "true" if sys.platform in ("win32", "darwin") else "false"
+    )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
@@ -3019,11 +3023,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (same flip as the chat worker).
+        _train_load_in_4bit = config["load_in_4bit"]
+        if _train_load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(model_name, hf_token):
+                _train_load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "training load (4-bit is disabled for brand-new architectures)",
+                    model_name,
+                )
+
         try:
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
-                load_in_4bit = config["load_in_4bit"],
+                load_in_4bit = _train_load_in_4bit,
                 full_finetuning = not use_lora,
                 hf_token = hf_token,
                 is_dataset_image = config.get("is_dataset_image", False),

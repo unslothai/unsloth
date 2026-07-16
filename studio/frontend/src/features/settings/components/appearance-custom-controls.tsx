@@ -846,17 +846,6 @@ export function CodeFontSizeRow() {
   );
 }
 
-export function EdgeFadesSwitch() {
-  const edgeFades = useAppearanceCustomStore((s) => s.customization.edgeFades);
-  const patch = useAppearanceCustomStore((s) => s.patch);
-  return (
-    <Switch
-      checked={edgeFades}
-      onCheckedChange={(checked) => patch({ edgeFades: checked })}
-    />
-  );
-}
-
 export function FontSmoothingSwitch() {
   const fontSmoothing = useAppearanceCustomStore(
     (s) => s.customization.fontSmoothing,

@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
-import { useChatRuntimeStore } from "@/features/chat";
+import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import { openModelsDir } from "@/features/native-intents";
 import { emitTrainingRunsChanged } from "@/features/training";
 import {
@@ -80,6 +80,10 @@ const PREFS_KEYS: string[] = [
   "unsloth_settings_active_tab",
   // Chat runtime prefs
   "unsloth_chat_auto_title",
+  "unsloth_chat_permission_mode",
+  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or
+  // a reset would restore the old level instead of the fresh default.
+  "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
   "unsloth_nudge_tool_calls",
@@ -110,6 +114,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  // Voice settings
+  "unsloth_voice_settings",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
@@ -583,6 +589,15 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.permissions.bypassLabel")}
+          description={t("settings.general.permissions.bypassDescription")}
+        >
+          <PermissionModeDropdown />
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
@@ -639,9 +654,10 @@ export function GeneralTab() {
           description={t("settings.general.rag.embeddingModelDescription", {
             defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
           })}
+          className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
         >
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
+            <div className="flex items-center gap-2 max-[360px]:w-full">
               <EmbeddingModelCombobox
                 value={draftEmbeddingModel}
                 onChange={(next) => {
@@ -653,7 +669,7 @@ export function GeneralTab() {
                 disabled={!embeddingModel}
                 placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
                 ariaLabel={t("settings.general.rag.embeddingModel")}
-                className="w-[220px]"
+                className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
               />
               <Button
                 variant="outline"

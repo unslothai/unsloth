@@ -17,6 +17,15 @@ import structlog
 from loggers.handlers import filter_sensitive_data
 
 
+class _DropTorchDtypeDeprecation(logging.Filter):
+    """Drop transformers' once-per-run "`torch_dtype` is deprecated" warning_once.
+    It is emitted via logging (not warnings), so a warnings filter cannot catch it."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("torch_dtype" in msg and "deprecated" in msg)
+
+
 class LogConfig:
     """Structured logging configuration for the application."""
 
@@ -71,5 +80,14 @@ class LogConfig:
             logger_factory = structlog.PrintLoggerFactory(file = sys.stdout),
             cache_logger_on_first_use = True,
         )
+
+        # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see filter).
+        _dtype_filter = _DropTorchDtypeDeprecation()
+        for _name in (
+            "transformers.configuration_utils",
+            "transformers.modeling_utils",
+            "transformers.pipelines.base",
+        ):
+            logging.getLogger(_name).addFilter(_dtype_filter)
 
         return structlog.get_logger(service_name)
