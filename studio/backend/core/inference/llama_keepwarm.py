@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import threading
 import time
 
@@ -218,6 +217,14 @@ def _claim_non_preview_slot() -> None:
 # excludes it and the middleware skips its own end-decrement.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
+# Set by the middleware on a non-preview request's scope when a preview swap advanced
+# the swap counter while the request waited on the lifecycle gate. The local inference
+# path (_maybe_auto_switch_model) rejects such a request rather than silently serving
+# it the preview's swapped-in checkpoint. Deferred to the route -- not a middleware
+# 503 -- so an external-provider request, which untracks itself and returns before
+# reaching that check, is never rejected for a swap it never touches.
+_PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
+
 
 def untrack_current_request(scope) -> None:
     """Drop this request from the in-flight count once the route knows it won't
@@ -293,37 +300,25 @@ class LlamaKeepWarmMiddleware:
         # advances and the request must be rejected (see below).
         swap_gen_at_entry = _preview_swap_gen()
         started = False
-        swapped_while_waiting = False
         try:
             async with _unload_gate():
+                _note_start(is_preview)
+                started = True
                 # A preview swapped in a different checkpoint while this non-preview
-                # request waited on the gate; running it now would silently serve the
-                # preview's model to Studio traffic. Reject so the client retries
-                # against the now-stable model instead.
-                if not is_preview and _preview_swap_gen() != swap_gen_at_entry:
-                    swapped_while_waiting = True
-                else:
-                    _note_start(is_preview)
-                    started = True
+                # request waited on the gate. Flag the scope so the local inference
+                # path (_maybe_auto_switch_model) rejects it before running against the
+                # preview's model. Deferred to the route, not a 503 here, so an
+                # external-provider request -- which untracks itself and returns before
+                # reaching that check -- is not rejected for a swap it never touches.
+                if (
+                    not is_preview
+                    and _preview_swap_gen() != swap_gen_at_entry
+                    and isinstance(scope, dict)
+                ):
+                    scope[_PREVIEW_SWAP_REJECT_SCOPE_KEY] = True
         finally:
             if not started:
                 _note_unpending(is_preview)
-        if swapped_while_waiting:
-            body = json.dumps(
-                {"detail": "A preview is loading a model. Please retry shortly."}
-            ).encode()
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 503,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"retry-after", b"1"),
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": body})
-            return
         ended = {"done": False}
         status = {"code": None}
 
@@ -343,12 +338,24 @@ class LlamaKeepWarmMiddleware:
             if code in (401, 403):
                 _note_untracked_end(is_preview)
                 return
-            _note_end(is_preview)
+            # A preview that did not return 2xx never served tokens from the local
+            # model: rate-limit 429, bad capability token 404 and body-validation 4xx
+            # all exit before load_model_for_preview. Drop it like an untracked end so
+            # repeated rejected public preview POSTs can't refresh the idle timer and
+            # pin an otherwise idle model in VRAM (a loaded-then-failed preview already
+            # stamped activity at load time, so not stamping here is harmless).
+            if is_preview and not (isinstance(code, int) and 200 <= code < 300):
+                _note_untracked_end(is_preview)
+                return
             # A non-preview inference that actually ran (2xx) against the local model
             # adopts it for Studio, so clear preview ownership -- claim on success, so a
             # request a per-route capability check rejected (4xx/5xx) never strands a
             # preview-owned model. count_tokens only tokenizes (no generation), so it
-            # does not claim.
+            # does not claim. Claim BEFORE decrementing in-flight: doing it after opens
+            # a window where a preview for another checkpoint sees no non-preview
+            # traffic and a still-preview-owned slot, swaps its model in, and then this
+            # delayed claim clears ownership on the wrong model. While this request is
+            # still counted in-flight the preview busy guard refuses that swap.
             if (
                 not is_preview
                 and isinstance(code, int)
@@ -356,6 +363,7 @@ class LlamaKeepWarmMiddleware:
                 and not path.endswith("/messages/count_tokens")
             ):
                 _claim_non_preview_slot()
+            _note_end(is_preview)
 
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":

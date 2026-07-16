@@ -1034,21 +1034,56 @@ def _reset_keepwarm_counters():
     llama_keepwarm._preview_inflight = 0
 
 
-def test_studio_request_arriving_during_preview_swap_is_rejected(slot_state, monkeypatch):
-    # A non-preview request that was blocked on the lifecycle gate while a preview swap
-    # loaded a new checkpoint (swap-generation advanced between entry and gate) must be
-    # rejected with 503 instead of running against the swapped-in preview model.
+def test_studio_request_arriving_during_preview_swap_flags_scope(slot_state, monkeypatch):
+    # A non-preview request blocked on the lifecycle gate while a preview swap loaded a
+    # new checkpoint (swap-generation advanced between entry and gate) must not run
+    # against the swapped-in preview model. The middleware flags the scope; the local
+    # inference path (_maybe_auto_switch_model) does the reject. Deferring it to the
+    # route -- not a 503 in the middleware -- lets an external-provider request untrack
+    # and return before the check, so it is never rejected for a swap it never touches.
     _reset_keepwarm_counters()
     gens = iter([5, 6])  # capture=5 before the gate, check=6 after (a swap completed)
     monkeypatch.setattr(llama_keepwarm, "_preview_swap_gen", lambda: next(gens, 6))
 
-    async def _app(scope, receive, send):
-        raise AssertionError("app must not run for a request rejected during a swap")
+    seen = {}
 
-    sent = _run_middleware(_app, "/v1/chat/completions")
-    assert sent[0]["type"] == "http.response.start" and sent[0]["status"] == 503
-    # Counters are balanced: pending was incremented then unpended, never in-flight.
-    assert llama_keepwarm._pending == 0 and llama_keepwarm._inflight == 0
+    async def _app(scope, receive, send):
+        seen["flagged"] = bool(scope.get(llama_keepwarm._PREVIEW_SWAP_REJECT_SCOPE_KEY))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    # The middleware ran the app (no early 503) but flagged the scope so the route
+    # rejects only once external-provider requests have had a chance to untrack.
+    assert seen["flagged"] is True
+    _reset_keepwarm_counters()
+
+
+def test_maybe_auto_switch_rejects_when_preview_swap_flagged():
+    # The deferred half of the swap-race guard: _maybe_auto_switch_model raises 503 when
+    # the middleware flagged the scope (a preview swapped the model out from under this
+    # request while it waited on the gate).
+    from fastapi import HTTPException
+
+    scope = {
+        "type": "http",
+        "path": "/v1/chat/completions",
+        llama_keepwarm._PREVIEW_SWAP_REJECT_SCOPE_KEY: True,
+    }
+    req = _types.SimpleNamespace(scope = scope)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference._maybe_auto_switch_model("some-model", req, "tester"))
+    assert exc.value.status_code == 503
+
+
+def test_maybe_auto_switch_no_reject_without_swap_flag(slot_state):
+    # Without the flag the swap-race guard is inert: an omitted-model request returns
+    # via the normal no-op resident-use path (no 503), so external-provider traffic
+    # during a preview swap is unaffected by a swap it never touches.
+    scope = {"type": "http", "path": "/v1/chat/completions"}
+    req = _types.SimpleNamespace(scope = scope)
+    # Omitted model -> the no-op resident-use path returns without raising.
+    asyncio.run(inference._maybe_auto_switch_model(None, req, "tester"))
 
 
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
@@ -1093,4 +1128,65 @@ def test_middleware_rejected_response_keeps_preview_ownership(slot_state):
 
     _run_middleware(_app, "/v1/chat/completions")
     assert inference._is_preview_resident("/outputs/run/ckpt")  # not claimed on 4xx
+    _reset_keepwarm_counters()
+
+
+def test_slot_claim_happens_before_inflight_decrement(slot_state, monkeypatch):
+    # Codex P2: the middleware must clear preview ownership BEFORE decrementing the
+    # in-flight count. Doing it after opens a window where a preview for another
+    # checkpoint sees no non-preview traffic and a still-preview-owned slot, swaps its
+    # model in, and then the delayed claim clears ownership on the wrong model.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+    observed = {}
+    real_claim = llama_keepwarm._claim_non_preview_slot
+
+    def _spy():
+        observed["inflight_at_claim"] = llama_keepwarm._inflight
+        real_claim()
+
+    monkeypatch.setattr(llama_keepwarm, "_claim_non_preview_slot", _spy)
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    # The request is still counted in-flight when the claim runs, so the preview busy
+    # guard would refuse a concurrent swap; only then is the count decremented.
+    assert observed["inflight_at_claim"] == 1
+    assert llama_keepwarm._inflight == 0  # decremented afterwards
+    _reset_keepwarm_counters()
+
+
+def test_rejected_preview_request_does_not_refresh_idle_timer(slot_state):
+    # Codex P2: a public preview POST rejected before it loads the model (rate-limit
+    # 429, bad capability token 404, body-validation 4xx) never served tokens, so it
+    # must not refresh the idle timer -- otherwise repeated rejected preview POSTs pin
+    # an otherwise idle model in VRAM and idle-unload can never free it.
+    _reset_keepwarm_counters()
+    llama_keepwarm._last_active = 0.0
+
+    async def _rejected(scope, receive, send):
+        await send({"type": "http.response.start", "status": 429, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_rejected, "/p/demo/v1/chat/completions")
+    assert llama_keepwarm._last_active == 0.0  # untracked end -> no activity stamp
+    assert llama_keepwarm._inflight == 0  # still balanced
+    _reset_keepwarm_counters()
+
+
+def test_successful_preview_request_refreshes_idle_timer(slot_state):
+    # Contrast: a preview that actually served (2xx) DOES stamp activity, so a live
+    # preview stream keeps the model warm for its duration.
+    _reset_keepwarm_counters()
+    llama_keepwarm._last_active = 0.0
+
+    async def _ok(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_ok, "/p/demo/v1/chat/completions")
+    assert llama_keepwarm._last_active > 0.0  # _note_end stamped activity
     _reset_keepwarm_counters()

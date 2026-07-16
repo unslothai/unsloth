@@ -2969,6 +2969,23 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     assert "require_vision = _anthropic_request_has_image(" in count_src
 
 
+def test_responses_count_tokens_messages_defer_slot_claim():
+    # Codex P2: openai_responses (streaming 400s in _responses_stream), anthropic
+    # count_tokens (tokenize-only) and anthropic_messages (the image normalizer can
+    # still 400 after the switch) must NOT claim the resident model in the switch hook,
+    # or a rejected/non-generating request strands a preview-owned slot as Studio-owned
+    # and 503s a later public preview for another checkpoint. They pass claim_resident
+    # = False and rely on the keep-warm middleware's claim-on-2xx-success instead.
+    import inspect
+
+    for fn in (
+        inference_route.openai_responses,
+        inference_route.anthropic_count_tokens,
+        inference_route.anthropic_messages,
+    ):
+        assert "claim_resident = False" in inspect.getsource(fn), fn.__name__
+
+
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
 
 
@@ -3008,8 +3025,10 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["require_vision"] = require_vision
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
@@ -3018,6 +3037,10 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    # Codex P2: count_tokens only tokenizes (no generation), so it must NOT adopt the
+    # resident model for Studio -- clearing a preview marker here would 503 a later
+    # public preview for another checkpoint even though Studio never generated.
+    assert captured["claim_resident"] is False
 
 
 def test_audio_generate_is_reload_only(monkeypatch):

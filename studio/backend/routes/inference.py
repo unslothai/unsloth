@@ -3446,7 +3446,24 @@ async def _maybe_auto_switch_model(
         get_last_unloaded_model,
         other_inference_request_count,
         inference_lifecycle_gate,
+        _PREVIEW_SWAP_REJECT_SCOPE_KEY,
     )
+
+    # A preview swapped in a different checkpoint while this non-preview request was
+    # queued on the keep-warm gate (the middleware flags the scope). Running now would
+    # silently serve the preview's model to Studio traffic, so reject and let the
+    # client retry against the now-stable model. Deferred to here rather than a 503 in
+    # the middleware so an external-provider request -- which untracks itself and
+    # returns before reaching this hook -- is never rejected for a swap it never
+    # touches; over-rejecting a local request that would use the resident model is
+    # acceptable, silently serving it the wrong checkpoint is not.
+    _swap_scope = getattr(fastapi_request, "scope", None)
+    if isinstance(_swap_scope, dict) and _swap_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
+        raise HTTPException(
+            status_code = 503,
+            detail = "A preview is loading a model. Please retry shortly.",
+            headers = {"Retry-After": "1"},
+        )
 
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
@@ -11942,6 +11959,11 @@ async def openai_responses(
         request,
         current_subject,
         require_vision = _messages_have_image(messages),
+        # Streaming Responses require a GGUF backend and 400 in _responses_stream
+        # after this switch; claiming here would strand a preview-owned model as
+        # Studio-owned for a request that never generates. Defer to the keep-warm
+        # middleware, which claims the slot on a successful (2xx) response.
+        claim_resident = False,
     )
 
     if payload.stream:
@@ -12132,6 +12154,10 @@ async def anthropic_count_tokens(
         request,
         current_subject,
         require_vision = _anthropic_request_has_image(payload),
+        # count_tokens only tokenizes (no generation), so it must not adopt the
+        # resident model for Studio; the keep-warm middleware likewise excludes
+        # count_tokens from its successful-response claim.
+        claim_resident = False,
     )
 
     llama_backend = get_llama_cpp_backend()
@@ -12305,6 +12331,10 @@ async def anthropic_messages(
         request,
         current_subject,
         require_vision = _anthropic_request_has_image(payload),
+        # The image normalization below can still 400 after this switch, so defer
+        # the claim: the keep-warm middleware claims the slot on a successful (2xx)
+        # response, so a rejected request never strands a preview-owned model.
+        claim_resident = False,
     )
     if not llama_backend.is_loaded:
         raise HTTPException(
