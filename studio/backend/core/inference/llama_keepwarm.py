@@ -31,6 +31,11 @@ _pending = 0
 # Subset of _pending that is /p/ preview traffic, so the busy guard tells a queued
 # Studio request from a queued preview.
 _preview_pending = 0
+# Non-preview requests that passed FastAPI auth and reached the local-inference choke
+# point. The preview busy guard counts these, not raw _inflight, so a pre-auth or
+# unauthenticated request the middleware tracked but that never touches the model can't
+# starve public previews.
+_admitted_inference = 0
 # Bumped when a preview swap loads a new checkpoint. A non-preview request captures this
 # before the lifecycle gate; if it advanced by the time the gate is acquired, a preview
 # swapped the model out from under it and the request is rejected (see the middleware).
@@ -178,6 +183,16 @@ def other_preview_inflight_count(current_request_counted: bool = True) -> int:
         return max(0, active)
 
 
+def other_admitted_inference_count() -> int:
+    """Non-preview requests admitted to local inference (passed auth and reached the
+    _maybe_auto_switch_model / generate_stream choke point). The preview busy guard
+    counts these instead of raw _inflight, so a pre-auth or unauthenticated request the
+    middleware tracked can't block a preview. The current request is always a preview,
+    which is never admitted, so no self-exclusion is needed."""
+    with _lock:
+        return _admitted_inference
+
+
 def other_non_preview_pending_count() -> int:
     """Non-preview requests queued on the lifecycle gate (in _pending, not yet in
     flight). The preview swap guard must count these: a queued Studio request would
@@ -294,6 +309,30 @@ def untrack_current_request(scope) -> None:
     _note_untracked_end(_is_preview_path(scope.get("path") or ""))
 
 
+_ADMITTED_SCOPE_KEY = "_unsloth_keepwarm_admitted"
+
+
+def note_admitted_inference(scope) -> None:
+    """Mark a non-preview request as admitted local inference: it passed FastAPI auth
+    and reached the inference choke point (_maybe_auto_switch_model / generate_stream),
+    so the preview busy guard counts it. Idempotent per scope; a no-op for preview (/p/)
+    paths (they carry their own ownership) and non-dict scopes."""
+    global _admitted_inference
+    if not isinstance(scope, dict) or scope.get(_ADMITTED_SCOPE_KEY):
+        return
+    if _is_preview_path(scope.get("path") or ""):
+        return
+    scope[_ADMITTED_SCOPE_KEY] = True
+    with _lock:
+        _admitted_inference += 1
+
+
+def _note_admitted_end() -> None:
+    global _admitted_inference
+    with _lock:
+        _admitted_inference = max(0, _admitted_inference - 1)
+
+
 def inference_lifecycle_gate():
     """The gate a model swap holds so new inference can't start mid-load. Process-
     wide, so a swap on one loop blocks inference starting on any other loop."""
@@ -386,6 +425,10 @@ class LlamaKeepWarmMiddleware:
             if ended["done"]:
                 return
             ended["done"] = True
+            # Balance note_admitted_inference here (runs in the finally, so it can't
+            # leak on any exit path), before the untracked / 401 early returns.
+            if scope.get(_ADMITTED_SCOPE_KEY):
+                _note_admitted_end()
             if scope.get(_UNTRACKED_SCOPE_KEY):
                 return
             # This middleware runs before FastAPI auth, so a 401/403 reaches here without

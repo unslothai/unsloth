@@ -3474,16 +3474,21 @@ async def _maybe_auto_switch_model(
         get_last_unloaded_model,
         other_inference_request_count,
         inference_lifecycle_gate,
+        note_admitted_inference,
         _PREVIEW_SWAP_REJECT_SCOPE_KEY,
     )
 
+    # This request passed FastAPI auth and reached the local-inference path, so count it
+    # in the admitted-inference tally the preview busy guard uses instead of raw
+    # _inflight (a no-op for preview scopes, which carry their own ownership).
+    _swap_scope = getattr(fastapi_request, "scope", None)
+    note_admitted_inference(_swap_scope)
     # A preview swapped in a different checkpoint while this request was queued on the
     # keep-warm gate (the middleware flags the scope). Running now would serve the
     # preview's model to Studio traffic, so reject and let the client retry. Deferred
     # here (not a middleware 503) so an external-provider request that untracks and
     # returns before this hook is never rejected for a swap it never touched; over-
     # rejecting a local request is acceptable, serving the wrong checkpoint is not.
-    _swap_scope = getattr(fastapi_request, "scope", None)
     if isinstance(_swap_scope, dict) and _swap_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
         raise HTTPException(
             status_code = 503,
@@ -3825,8 +3830,7 @@ async def load_model_for_preview(
         note_preview_swap,
         note_preview_swap_begin,
         note_preview_swap_end,
-        other_inference_request_count,
-        other_preview_inflight_count,
+        other_admitted_inference_count,
         untrack_current_request,
     )
     from utils.transformers_version import sidecar_swap_in_progress
@@ -3865,18 +3869,14 @@ async def load_model_for_preview(
                         headers = {"Retry-After": "10"},
                     )
                 # A same-checkpoint request would still restart a Studio-owned GGUF whose
-                # live settings differ from these bare defaults (#5401), so in-flight
-                # Studio traffic blocks first. Queued (pending) non-preview requests are
-                # deliberately NOT counted: the middleware bumps _pending before auth, so
-                # an unauthenticated probe blocked on the gate would starve previews. A
-                # genuinely queued Studio request is instead protected by the swap reject
-                # (it wakes to a retryable 503 rather than the swapped-in checkpoint).
-                if (
-                    other_inference_request_count(
-                        current_request_counted = True, include_pending = False
-                    )
-                    > other_preview_inflight_count()
-                ):
+                # live settings differ from these bare defaults (#5401), so admitted
+                # (post-auth) Studio inference blocks first. Only admitted local inference
+                # is counted, not raw _inflight: the middleware tracks a POST before
+                # FastAPI auth, so a pre-auth or unauthenticated non-preview request would
+                # otherwise starve previews. Queued (pending) requests are likewise not
+                # counted; a genuinely queued Studio request is protected by the swap
+                # reject (it wakes to a retryable 503 rather than the swapped-in model).
+                if other_admitted_inference_count() > 0:
                     untrack_current_request(scope)
                     raise HTTPException(
                         status_code = 503,
@@ -5617,9 +5617,13 @@ async def generate_stream(
     from core.inference.llama_keepwarm import (
         _PREVIEW_SWAP_REJECT_SCOPE_KEY,
         mark_response_failed,
+        note_admitted_inference,
     )
 
     _gs_scope = getattr(fastapi_request, "scope", None)
+    # Passed auth and reached local inference, so count it in the admitted-inference
+    # tally the preview busy guard uses instead of raw _inflight.
+    note_admitted_inference(_gs_scope)
     if isinstance(_gs_scope, dict) and _gs_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
         raise HTTPException(
             status_code = 503,

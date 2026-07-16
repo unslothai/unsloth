@@ -545,13 +545,9 @@ def fake_slot(slot_state, monkeypatch):
 
     monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
     monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: state["ident"])
+    # The busy guard counts admitted (post-auth) non-preview inference; "busy" drives it.
     monkeypatch.setattr(
-        llama_keepwarm, "other_inference_request_count", lambda **kw: state.get("busy", 0)
-    )
-    monkeypatch.setattr(
-        llama_keepwarm,
-        "other_preview_inflight_count",
-        lambda **kw: state.get("other_previews", 0),
+        llama_keepwarm, "other_admitted_inference_count", lambda: state.get("busy", 0)
     )
     return state
 
@@ -616,11 +612,12 @@ def test_preview_load_refused_on_same_checkpoint_when_studio_busy(fake_slot):
 
 
 def test_preview_waiters_do_not_trip_busy_guard(fake_slot):
-    # Busy traffic fully accounted for by other previews isn't foreign traffic, so
-    # the request proceeds; the same-checkpoint model is then borrowed (no reload).
+    # Preview (/p/) in-flight traffic is never admitted local inference (note_admitted_
+    # inference skips preview scopes), so it does not count toward the busy guard. With
+    # no admitted non-preview inference the request proceeds and borrows the same
+    # checkpoint (no reload). See test_admitted_inference_counter_excludes_previews.
     fake_slot["ident"] = "/outputs/run/ckpt"
-    fake_slot["busy"] = 1
-    fake_slot["other_previews"] = 1
+    fake_slot["busy"] = 0  # no admitted non-preview inference (e.g. only previews in flight)
     asyncio.run(
         inference.load_model_for_preview(
             LoadRequest(model_path = "/outputs/run/ckpt"),
@@ -762,7 +759,7 @@ def test_chat_returns_503_when_model_busy(tmp_path, monkeypatch, slot_state):
 
     monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
     monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: "owner-model")
-    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda **kw: 1)
+    monkeypatch.setattr(llama_keepwarm, "other_admitted_inference_count", lambda: 1)
 
     app = FastAPI()
     app.include_router(preview.router, prefix = "/p")
@@ -951,8 +948,7 @@ def test_preview_reload_failure_restores_prior_ownership(slot_state, monkeypatch
     # 503s.
     resident = {"ident": "/outputs/run/ckpt-A"}
     monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: resident["ident"])
-    monkeypatch.setattr(llama_keepwarm, "other_inference_request_count", lambda **kw: 0)
-    monkeypatch.setattr(llama_keepwarm, "other_preview_inflight_count", lambda **kw: 0)
+    monkeypatch.setattr(llama_keepwarm, "other_admitted_inference_count", lambda: 0)
     llama_keepwarm._pending = 0
     llama_keepwarm._preview_pending = 0
     inference._set_preview_resident("/outputs/run/ckpt-A")  # A is preview-owned
@@ -1429,6 +1425,61 @@ def test_preview_not_blocked_by_pending_non_preview_waiter(fake_slot):
         assert fake_slot["loads"] == ["/outputs/run/ckpt"]  # not blocked by the waiter
     finally:
         kw._note_unpending(is_preview = False)
+
+
+def test_admitted_inference_counter_excludes_previews():
+    # Codex P2 (round 21): the middleware tracks a POST in _inflight before FastAPI auth,
+    # so the busy guard must count only ADMITTED (post-auth) non-preview inference, not
+    # raw _inflight. A request tracked in _inflight but not yet admitted is not counted;
+    # note_admitted_inference counts a non-preview scope and skips a preview scope; the
+    # finish decrement balances it.
+    from core.inference import llama_keepwarm as kw
+
+    # Reset any residue: a direct _maybe_auto_switch_model unit call increments the
+    # counter without the middleware _finish that decrements it in production.
+    kw._admitted_inference = 0
+    kw._inflight += 1  # non-preview request tracked pre-auth (never reached the hook)
+    try:
+        assert kw.other_admitted_inference_count() == 0  # unadmitted in-flight not counted
+        scope = {"path": "/v1/chat/completions"}
+        kw.note_admitted_inference(scope)  # passed auth, reached the inference hook
+        assert kw.other_admitted_inference_count() == 1
+        kw.note_admitted_inference(scope)  # idempotent per scope
+        assert kw.other_admitted_inference_count() == 1
+        # A preview scope is never admitted (it carries its own ownership).
+        kw.note_admitted_inference({"path": "/p/run/v1/chat/completions"})
+        assert kw.other_admitted_inference_count() == 1
+        kw._note_admitted_end()  # middleware _finish balances the admit
+        assert kw.other_admitted_inference_count() == 0
+    finally:
+        kw._inflight = 0
+        kw._admitted_inference = 0
+
+
+def test_preview_not_blocked_by_unadmitted_inflight_request(fake_slot, monkeypatch):
+    # Codex P2 (round 21): a pre-auth / unauthenticated non-preview request sits in
+    # _inflight (middleware tracks before auth) but never calls note_admitted_inference,
+    # so the busy guard (which now counts only admitted inference) must let a preview
+    # proceed. Use the real counter here, not the fake_slot stub.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(
+        llama_keepwarm, "other_admitted_inference_count", kw.other_admitted_inference_count
+    )
+    kw._admitted_inference = 0  # reset residue from prior direct _maybe_auto_switch calls
+    kw._inflight += 1  # unauthenticated non-preview request, tracked but never admitted
+    try:
+        asyncio.run(
+            inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None, scope = {"path": "/p/run/v1/chat/completions"}),
+                "admin",
+            )
+        )
+        assert fake_slot["loads"] == ["/outputs/run/ckpt"]  # not blocked
+    finally:
+        kw._inflight = 0
+        kw._admitted_inference = 0
 
 
 def test_responses_stream_failure_paths_mark_response_failed():
