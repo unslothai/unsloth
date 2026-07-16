@@ -3,7 +3,7 @@
 
 import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS, LR_DEFAULT_CPT, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS, TARGET_MODULES } from "@/config/training";
 import { authFetch } from "@/features/auth";
-import { getHfToken, useHfTokenStore } from "@/features/hub";
+import { getHfToken, mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
@@ -1034,12 +1034,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
   ),
 );
 
-useTrainingConfigStore.setState({ hfToken: getHfToken() });
-const unsubscribeHfTokenMirror = useHfTokenStore.subscribe((state) => {
-  if (useTrainingConfigStore.getState().hfToken !== state.token) {
-    useTrainingConfigStore.setState({ hfToken: state.token });
-  }
-});
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useTrainingConfigStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);
 }
