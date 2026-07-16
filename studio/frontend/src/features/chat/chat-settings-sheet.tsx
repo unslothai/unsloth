@@ -367,9 +367,16 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
   const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
-  const isGguf = isLoadedGguf;
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  // Direct-file / custom-folder GGUFs load without a variant label but still
+  // report a GGUF context, so detect them via the context and the checkpoint
+  // suffix too (mirrors the chat page's activeModelIsGguf). Otherwise Max Tokens
+  // would fall back to params.maxSeqLength instead of the loaded GGUF context.
+  const isGguf =
+    isLoadedGguf ||
+    ggufContextLength != null ||
+    (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
