@@ -860,10 +860,15 @@ def test_generation_paths_rely_on_middleware_claim():
     assert "_PREVIEW_SWAP_REJECT_SCOPE_KEY" in stream_src
 
 
-def test_preview_swap_refused_when_studio_request_queued(fake_slot):
-    # A Studio request queued on the lifecycle gate (in _pending) must block a
-    # preview swap: otherwise the queued request would start against the model the
-    # preview swapped in, not the one resident when Studio queued.
+def test_preview_swap_proceeds_when_studio_request_only_queued(fake_slot):
+    # Codex P2 (round 19): a Studio request merely QUEUED on the lifecycle gate (in
+    # _pending, not yet generating) must NOT block a preview swap. The keep-warm
+    # middleware bumps _pending before FastAPI auth, so counting it would let an
+    # unauthenticated probe starve public previews. The queued request is instead
+    # protected by the swap-reject: when it wakes after the load it sees the swap
+    # generation advance and gets a retryable 503 (in _maybe_auto_switch_model /
+    # generate_stream) rather than running against the swapped-in checkpoint. (In-flight
+    # Studio traffic still blocks -- see test_preview_swap_refused_while_studio_traffic_in_flight.)
     from core.inference import llama_keepwarm as kw
 
     asyncio.run(
@@ -874,26 +879,25 @@ def test_preview_swap_refused_when_studio_request_queued(fake_slot):
         )
     )
     assert inference._is_preview_resident("/outputs/run/ckpt-a")
-    kw._pending = 1  # a queued Studio (non-preview) request
+    kw._pending = 1  # a queued Studio (non-preview) request, not yet in flight
     kw._preview_pending = 0
-
-    async def _run():
-        with pytest.raises(HTTPException) as exc:
-            await inference.load_model_for_preview(
+    try:
+        asyncio.run(
+            inference.load_model_for_preview(
                 LoadRequest(model_path = "/outputs/run/ckpt-b"),
                 SimpleNamespace(app = None, scope = {"path": "/p/b/v1/chat/completions"}),
                 "admin",
             )
-        return exc.value
-
-    exc = asyncio.run(_run())
-    assert exc.status_code == 503
-    assert fake_slot["loads"] == ["/outputs/run/ckpt-a"]  # B never loaded
-    assert inference._is_preview_resident("/outputs/run/ckpt-a")  # not swapped out
-    kw._pending = 0
-    kw._preview_pending = 0
-    kw._inflight = 0
-    kw._preview_inflight = 0
+        )
+        # The swap proceeds: B loads and becomes the preview-owned resident.
+        assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
+        assert inference._is_preview_resident("/outputs/run/ckpt-b")
+        assert not inference._is_preview_resident("/outputs/run/ckpt-a")
+    finally:
+        kw._pending = 0
+        kw._preview_pending = 0
+        kw._inflight = 0
+        kw._preview_inflight = 0
 
 
 def test_claim_slot_for_non_preview_gates_on_preview_path(slot_state):
@@ -1391,6 +1395,42 @@ def test_anthropic_passthrough_non_200_marks_failed():
     # Bound the slice to the non-200 branch (up to the in-band error event it yields).
     branch = src[idx : src.index("yield build_anthropic_sse_event", idx)]
     assert 'mark_response_failed(getattr(request, "scope", None))' in branch
+
+
+def test_admission_cancel_marks_response_failed():
+    # Codex P2 (round 19): a streaming request cancelled before it leases an upstream
+    # returns 200 with no body via the caller's `except LlamaAdmissionCancelled` path,
+    # which never sets _RESPONSE_FAILED_SCOPE_KEY. _raise_if_openai_admission_cancelled
+    # is the single choke point for that cancellation, so it must flag the response
+    # failed -- otherwise the middleware claims a preview-owned slot for a stream that
+    # never ran. (Harmless for non-streaming callers, which surface a non-2xx.)
+    import inspect
+
+    src = inspect.getsource(inference._raise_if_openai_admission_cancelled)
+    # Flagged on both cancellation branches (already-cancelled and pre-header cancel).
+    assert src.count("mark_current_response_failed()") >= 2
+
+
+def test_preview_not_blocked_by_pending_non_preview_waiter(fake_slot):
+    # Codex P2 (round 19): a queued (pending) non-preview request -- possibly an
+    # unauthenticated probe that will 401 and never touch the model, since the
+    # middleware bumps _pending before auth -- must not block a preview. Genuine queued
+    # Studio requests are covered by the swap-reject when they wake, not by the busy
+    # guard counting all pending requests blindly.
+    from core.inference import llama_keepwarm as kw
+
+    kw._note_pending(is_preview = False)  # queued non-preview waiter
+    try:
+        asyncio.run(
+            inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None, scope = {"path": "/p/run/v1/chat/completions"}),
+                "admin",
+            )
+        )
+        assert fake_slot["loads"] == ["/outputs/run/ckpt"]  # not blocked by the waiter
+    finally:
+        kw._note_unpending(is_preview = False)
 
 
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):

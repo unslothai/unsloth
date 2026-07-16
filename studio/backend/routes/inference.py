@@ -1205,10 +1205,21 @@ def _openai_admission_cancelled_error(
 async def _raise_if_openai_admission_cancelled(
     reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
 ) -> None:
+    # A cancellation raised from here aborts the request before it ever leases an
+    # upstream, so the local model was never used. For a streaming request the 200
+    # headers are already flushed and the caller's `except LlamaAdmissionCancelled`
+    # just returns, so flag the response failed: the keep-warm middleware must not
+    # treat that empty 200 as a successful Studio generation and claim a preview-owned
+    # slot. Harmless for the non-streaming callers (they surface a non-2xx, which the
+    # middleware never claims anyway).
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
     if reservation.is_cancelled:
+        mark_current_response_failed()
         raise _openai_admission_cancelled_error(reservation)
     if await _preheader_cancelled(cancel_event, request):
         reservation.cancel()
+        mark_current_response_failed()
         raise _openai_admission_cancelled_error(reservation)
 
 
@@ -3822,7 +3833,6 @@ async def load_model_for_preview(
         note_preview_swap_begin,
         note_preview_swap_end,
         other_inference_request_count,
-        other_non_preview_pending_count,
         other_preview_inflight_count,
         untrack_current_request,
     )
@@ -3863,15 +3873,20 @@ async def load_model_for_preview(
                     )
                 # A same-checkpoint request would still restart a Studio-owned GGUF
                 # whose live settings differ from these bare defaults (#5401), so
-                # busy Studio traffic blocks before any borrow/reload decision. Count
-                # queued (pending) non-preview requests too: one waiting on the gate
-                # would otherwise start against the model this swap just loaded.
+                # in-flight Studio traffic blocks before any borrow/reload decision.
+                # Queued (pending) non-preview requests are deliberately NOT counted
+                # here: the keep-warm middleware bumps _pending before FastAPI auth
+                # runs, so an unauthenticated probe blocked on the gate (it will 401 and
+                # never touch the model) would otherwise starve public previews. A
+                # genuinely queued Studio request is instead protected by the swap
+                # reject -- when it wakes after this load it sees the swap generation
+                # advance and gets a retryable 503 (in _maybe_auto_switch_model /
+                # generate_stream) rather than running against the swapped-in checkpoint.
                 if (
                     other_inference_request_count(
                         current_request_counted = True, include_pending = False
                     )
                     > other_preview_inflight_count()
-                    or other_non_preview_pending_count() > 0
                 ):
                     untrack_current_request(scope)
                     raise HTTPException(
