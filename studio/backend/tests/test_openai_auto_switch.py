@@ -2732,8 +2732,10 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["require_vision"] = require_vision
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -2742,6 +2744,9 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    # Chat defers the resident claim to the middleware (on a successful 2xx response),
+    # so post-switch capability rejections can't strand a preview-owned model.
+    assert captured["claim_resident"] is False
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):

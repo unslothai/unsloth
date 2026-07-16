@@ -3707,13 +3707,20 @@ def _get_preview_resident() -> Optional[str]:
 
 def _same_loaded_identifier(loaded: Optional[str], requested: str) -> bool:
     """Whether a loaded model identifier is the exact one requested, for the
-    already-loaded dedup. Filesystem-aware via os.path.normcase: on a case-sensitive
-    filesystem two checkpoint paths differing only by case are different models, so
-    they must not dedup to the already-loaded fast path (which would keep serving the
-    wrong checkpoint); a case-insensitive filesystem still treats them as the same."""
+    already-loaded dedup.
+
+    Local filesystem paths are compared filesystem-aware via os.path.normcase: on a
+    case-sensitive filesystem two checkpoint paths differing only by case are
+    different models, so they must not dedup to the already-loaded fast path (which
+    would keep serving the wrong checkpoint). Hugging Face repo IDs (e.g. unsloth/Foo)
+    are resolved case-insensitively elsewhere in the loader, so compare those
+    case-insensitively to avoid an unnecessary unload/reload of the same repo."""
     if not loaded:
         return False
-    return os.path.normcase(loaded) == os.path.normcase(requested)
+    # An absolute path on either side means this is a local checkpoint, not a repo id.
+    if os.path.isabs(loaded) or os.path.isabs(requested):
+        return os.path.normcase(loaded) == os.path.normcase(requested)
+    return loaded.lower() == requested.lower()
 
 
 def _should_validate_before_switch() -> bool:
@@ -3763,6 +3770,7 @@ async def load_model_for_preview(
 ) -> None:
     from core.inference.llama_keepwarm import (
         inference_lifecycle_gate,
+        note_preview_swap,
         other_inference_request_count,
         other_non_preview_pending_count,
         other_preview_inflight_count,
@@ -3840,6 +3848,13 @@ async def load_model_for_preview(
                     loaded_ok = True
                 finally:
                     _set_preview_resident(request.model_path if loaded_ok else prior_marker)
+                    # The shared model slot was touched (a partial failure can also
+                    # unload/replace it), so bump the swap counter -- still inside the
+                    # lifecycle gate, before it is released. A non-preview request that
+                    # was blocked on the gate through this load then sees the counter
+                    # advance and is rejected by the middleware rather than running
+                    # against the swapped-in preview checkpoint.
+                    note_preview_swap()
         finally:
             _auto_switch_process_lock.release()
 
@@ -7046,11 +7061,17 @@ async def openai_chat_completions(
             bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
         )
 
+    # Defer the resident claim: chat has several post-switch capability checks that
+    # can still reject (Whisper without audio, n>1 on a non-GGUF backend, tool or
+    # response_format passthrough), so claiming here could strand a preview-owned
+    # model for a request that never generates. The keep-warm middleware instead
+    # claims the slot on a successful (2xx) non-preview response.
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
         require_vision = _needs_vision,
+        claim_resident = False,
     )
 
     llama_backend = get_llama_cpp_backend()

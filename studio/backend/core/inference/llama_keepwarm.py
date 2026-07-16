@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import threading
 import time
 
@@ -31,6 +32,12 @@ _pending = 0
 # Subset of _pending that is /p/ preview traffic (same update sites as _pending), so
 # the preview busy guard can tell a queued Studio request from a queued preview.
 _preview_pending = 0
+# Bumped once each time a preview swap actually loads a new checkpoint. A non-preview
+# request captures this before waiting on the lifecycle gate; if it advanced by the
+# time the request acquires the gate, a preview swapped the model out from under it
+# while it waited, so the request must be rejected instead of silently running against
+# the preview's checkpoint (see the middleware).
+_preview_swap_generation = 0
 _last_active = time.monotonic()
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would
 # otherwise 503 against an empty backend can reload it (set on unload, cleared on
@@ -178,6 +185,35 @@ def other_non_preview_pending_count() -> int:
         return max(0, _pending - _preview_pending)
 
 
+def note_preview_swap() -> None:
+    """Record that a preview swap loaded a new checkpoint. A non-preview request that
+    was blocked on the lifecycle gate through the swap sees this counter advance and
+    is rejected rather than running against the swapped-in preview checkpoint."""
+    global _preview_swap_generation
+    with _lock:
+        _preview_swap_generation += 1
+
+
+def _preview_swap_gen() -> int:
+    with _lock:
+        return _preview_swap_generation
+
+
+def _claim_non_preview_slot() -> None:
+    """A non-preview inference request that actually ran against the local model (a
+    2xx response) adopts it for Studio, so clear preview ownership -- a later preview
+    for another checkpoint then 503s instead of swapping the model out from under an
+    active Studio conversation. Claiming on success (not before) means a request that
+    a per-route capability check rejected never strands a preview-owned model. Lazily
+    imported: routes.inference imports this module."""
+    try:
+        from routes.inference import _set_preview_resident
+
+        _set_preview_resident(None)
+    except Exception as exc:  # never let ownership bookkeeping break a response
+        logger.debug("preview-slot claim on completion failed: %s", exc)
+
+
 # Set on the ASGI scope by a route that proved this request won't touch
 # llama.cpp (e.g. it proxied to an external provider), so the keep-warm count
 # excludes it and the middleware skips its own end-decrement.
@@ -250,16 +286,45 @@ class LlamaKeepWarmMiddleware:
         # cheap and invisible to clients (the response is proxied unchanged).
         # Mark pending before the gate so the idle loop (which holds the gate while
         # unloading) can't free the model while this request is waiting to start.
-        is_preview = _is_preview_path(scope.get("path") or "")
+        path = scope.get("path") or ""
+        is_preview = _is_preview_path(path)
         _note_pending(is_preview)
+        # Capture the preview-swap counter before waiting on the gate: if a preview
+        # swap completes while this non-preview request is blocked, the counter
+        # advances and the request must be rejected (see below).
+        swap_gen_at_entry = _preview_swap_gen()
         started = False
+        swapped_while_waiting = False
         try:
             async with _unload_gate():
-                _note_start(is_preview)
-                started = True
+                # A preview swapped in a different checkpoint while this non-preview
+                # request waited on the gate; running it now would silently serve the
+                # preview's model to Studio traffic. Reject so the client retries
+                # against the now-stable model instead.
+                if not is_preview and _preview_swap_gen() != swap_gen_at_entry:
+                    swapped_while_waiting = True
+                else:
+                    _note_start(is_preview)
+                    started = True
         finally:
             if not started:
                 _note_unpending(is_preview)
+        if swapped_while_waiting:
+            body = json.dumps(
+                {"detail": "A preview is loading a model. Please retry shortly."}
+            ).encode()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"retry-after", b"1"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
         ended = {"done": False}
         status = {"code": None}
 
@@ -275,10 +340,23 @@ class LlamaKeepWarmMiddleware:
             # balance _note_start) but do NOT stamp activity, or repeated
             # unauthenticated probes on an exposed server would keep the model warm
             # and never let idle-unload free VRAM.
-            if status["code"] in (401, 403):
+            code = status["code"]
+            if code in (401, 403):
                 _note_untracked_end(is_preview)
-            else:
-                _note_end(is_preview)
+                return
+            _note_end(is_preview)
+            # A non-preview inference that actually ran (2xx) against the local model
+            # adopts it for Studio, so clear preview ownership -- claim on success, so a
+            # request a per-route capability check rejected (4xx/5xx) never strands a
+            # preview-owned model. count_tokens only tokenizes (no generation), so it
+            # does not claim.
+            if (
+                not is_preview
+                and isinstance(code, int)
+                and 200 <= code < 300
+                and not path.endswith("/messages/count_tokens")
+            ):
+                _claim_non_preview_slot()
 
         async def send_wrapper(message):
             if message.get("type") == "http.response.start":

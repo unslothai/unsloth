@@ -1002,6 +1002,95 @@ def test_same_loaded_identifier_is_filesystem_aware():
     assert inference._same_loaded_identifier("/outputs/Run", "/outputs/Run")
     assert not inference._same_loaded_identifier(None, "/outputs/Run")
     assert not inference._same_loaded_identifier("", "/outputs/Run")
-    # Case-distinct paths dedup only where the filesystem is case-insensitive.
+    # Case-distinct local paths dedup only where the filesystem is case-insensitive.
     expected = os.path.normcase("/outputs/Run") == os.path.normcase("/outputs/run")
     assert inference._same_loaded_identifier("/outputs/Run", "/outputs/run") is expected
+    # Hugging Face repo IDs are resolved case-insensitively, so they still dedup
+    # regardless of case (no unnecessary reload of the same repo).
+    assert inference._same_loaded_identifier("Unsloth/Foo", "unsloth/foo")
+    assert inference._same_loaded_identifier("unsloth/foo", "unsloth/foo")
+    assert not inference._same_loaded_identifier("unsloth/foo", "unsloth/bar")
+
+
+def _run_middleware(app, path):
+    mw = llama_keepwarm.LlamaKeepWarmMiddleware(app)
+    scope = {"type": "http", "method": "POST", "path": path}
+    sent = []
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def _send(msg):
+        sent.append(msg)
+
+    asyncio.run(mw(scope, _receive, _send))
+    return sent
+
+
+def _reset_keepwarm_counters():
+    llama_keepwarm._pending = 0
+    llama_keepwarm._preview_pending = 0
+    llama_keepwarm._inflight = 0
+    llama_keepwarm._preview_inflight = 0
+
+
+def test_studio_request_arriving_during_preview_swap_is_rejected(slot_state, monkeypatch):
+    # A non-preview request that was blocked on the lifecycle gate while a preview swap
+    # loaded a new checkpoint (swap-generation advanced between entry and gate) must be
+    # rejected with 503 instead of running against the swapped-in preview model.
+    _reset_keepwarm_counters()
+    gens = iter([5, 6])  # capture=5 before the gate, check=6 after (a swap completed)
+    monkeypatch.setattr(llama_keepwarm, "_preview_swap_gen", lambda: next(gens, 6))
+
+    async def _app(scope, receive, send):
+        raise AssertionError("app must not run for a request rejected during a swap")
+
+    sent = _run_middleware(_app, "/v1/chat/completions")
+    assert sent[0]["type"] == "http.response.start" and sent[0]["status"] == 503
+    # Counters are balanced: pending was incremented then unpended, never in-flight.
+    assert llama_keepwarm._pending == 0 and llama_keepwarm._inflight == 0
+
+
+def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
+    # A non-preview inference that returns 2xx adopts the resident model for Studio,
+    # so the preview-ownership marker is cleared on completion.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Studio
+    _reset_keepwarm_counters()
+
+
+def test_middleware_preview_response_keeps_ownership(slot_state):
+    # A /p preview response (is_preview) must not claim the slot: the preview keeps its
+    # own ownership so a later preview can still swap it.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/p/demo/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")  # ownership preserved
+    _reset_keepwarm_counters()
+
+
+def test_middleware_rejected_response_keeps_preview_ownership(slot_state):
+    # A non-preview request rejected by a per-route capability check (non-2xx) never
+    # ran against the model, so it must not claim -- the preview keeps ownership.
+    _reset_keepwarm_counters()
+    inference._set_preview_resident("/outputs/run/ckpt")
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 400, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    assert inference._is_preview_resident("/outputs/run/ckpt")  # not claimed on 4xx
+    _reset_keepwarm_counters()
