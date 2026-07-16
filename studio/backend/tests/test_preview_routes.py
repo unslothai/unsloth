@@ -1405,7 +1405,6 @@ def test_admission_cancel_marks_response_failed():
     # failed -- otherwise the middleware claims a preview-owned slot for a stream that
     # never ran. (Harmless for non-streaming callers, which surface a non-2xx.)
     import inspect
-
     src = inspect.getsource(inference._raise_if_openai_admission_cancelled)
     # Flagged on both cancellation branches (already-cancelled and pre-header cancel).
     assert src.count("mark_current_response_failed()") >= 2
@@ -1418,7 +1417,6 @@ def test_preview_not_blocked_by_pending_non_preview_waiter(fake_slot):
     # Studio requests are covered by the swap-reject when they wake, not by the busy
     # guard counting all pending requests blindly.
     from core.inference import llama_keepwarm as kw
-
     kw._note_pending(is_preview = False)  # queued non-preview waiter
     try:
         asyncio.run(

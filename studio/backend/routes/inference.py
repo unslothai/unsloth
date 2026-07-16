@@ -1213,7 +1213,6 @@ async def _raise_if_openai_admission_cancelled(
     # slot. Harmless for the non-streaming callers (they surface a non-2xx, which the
     # middleware never claims anyway).
     from core.inference.llama_keepwarm import mark_current_response_failed
-
     if reservation.is_cancelled:
         mark_current_response_failed()
         raise _openai_admission_cancelled_error(reservation)
