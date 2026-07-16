@@ -3600,7 +3600,7 @@ _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
 # stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
-# PDF cross-reference data is stored at EOF, so extraction needs a larger complete body.
+# PDF cross-reference data lives at EOF, so extraction needs the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
 # Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
@@ -4129,9 +4129,8 @@ def _fetch_url_raw(
             if body_error is not None:
                 return body_error, "", ""
 
-            # A missing or incorrect PDF MIME type is common. Once the initial
-            # text-sized read identifies PDF magic, finish the bounded download
-            # because PDF cross-reference data normally lives at the end.
+            # A missing or wrong PDF MIME type is common: once the initial text-sized
+            # read identifies PDF magic, finish the bounded download to reach the EOF xref.
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
@@ -4168,9 +4167,8 @@ def _fetch_url_raw(
                 return budget_error, "", content_type
             if not pdf_text:
                 pdf_text = "(PDF contains no extractable text)"
-            # Report the true type even for a mislabeled body so the caller's
-            # "html" check routes the extracted text to the plain-text path
-            # instead of running it back through html_to_markdown.
+            # Report the true type even for a mislabeled body so the caller's "html"
+            # check routes the extracted text to the plain-text path, not html_to_markdown.
             return None, pdf_text, "application/pdf"
 
         # Reject known-binary MIME types before decoding. Binary is returned as the
