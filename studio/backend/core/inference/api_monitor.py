@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -17,6 +18,14 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_API_MONITOR_LOGS"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -93,9 +102,14 @@ class ApiMonitorEntry:
 
 
 class ApiMonitor:
-    def __init__(self, max_entries: int = _MAX_ENTRIES):
+    def __init__(
+        self,
+        max_entries: int = _MAX_ENTRIES,
+        enabled: Optional[bool] = None,
+    ):
         self._entries: deque[ApiMonitorEntry] = deque()
         self._max_entries = max(0, max_entries)
+        self.enabled = not _env_bool(_DISABLE_ENV_VAR) if enabled is None else enabled
         self._lock = threading.Lock()
 
     def start(
@@ -107,7 +121,9 @@ class ApiMonitor:
         prompt: str,
         context_length: Optional[int] = None,
         subject: Optional[str] = None,
-    ) -> str:
+    ) -> Optional[str]:
+        if not self.enabled:
+            return None
         now = time.time()
         entry = ApiMonitorEntry(
             id = f"apireq_{uuid.uuid4().hex[:12]}",
