@@ -8232,6 +8232,11 @@ class LlamaCppBackend:
                         if not is_ours:
                             continue
 
+                        # A live parent means a running Studio (or the user's
+                        # shell) still owns it -- not an orphan.
+                        if LlamaCppBackend._pid_parent_is_alive(proc.info["pid"]):
+                            continue
+
                         proc.kill()
                         killed += 1
                         logger.info(
@@ -8282,6 +8287,9 @@ class LlamaCppBackend:
                         binary.is_relative_to(root) for root in resolved_roots
                     )
                     if not owned:
+                        continue
+
+                    if LlamaCppBackend._pid_parent_is_alive(pid):
                         continue
 
                     try:
