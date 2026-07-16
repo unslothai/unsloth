@@ -1340,7 +1340,10 @@ def test_completions_relay_marks_scope_failed_on_sse_error():
     import inspect
 
     src = inspect.getsource(inference.openai_completions)
-    assert "if _monitor_openai_sse_event(" in src
+    # Format-independent: the relay checks the event status for an error and marks the
+    # scope failed (assertions must survive an autoformatter reflow of the condition).
+    assert "_monitor_openai_sse_event(" in src
+    assert '== "error"' in src
     assert 'mark_response_failed(getattr(request, "scope", None))' in src
 
 
