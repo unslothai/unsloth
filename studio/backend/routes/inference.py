@@ -2760,9 +2760,18 @@ def _monitor_openai_sse_event(
     monitor_id: Optional[str],
     event: bytes,
     context_length = None,
-) -> None:
+) -> Optional[str]:
+    # Returns "error" if any line in this event was an upstream error payload (an
+    # HTTP-200 SSE `data: {"error": ...}`), so a relay caller can mark the response
+    # failed and stop the keep-warm middleware claiming the slot on a failed stream.
+    status = None
     for line in event.decode("utf-8", errors = "ignore").splitlines():
-        _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+        result = _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+        if result == "error":
+            status = "error"
+        elif result == "done" and status is None:
+            status = "done"
+    return status
 
 
 def _monitor_anthropic_usage(
@@ -4428,6 +4437,18 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         _prior_preview_marker = _get_preview_resident()
         _set_preview_resident(None)
 
+        def _restore_marker_if_prior_preview_still_resident() -> None:
+            # A failed load can leave the prior preview checkpoint resident even though
+            # the marker was cleared above: a non-GGUF load unloads only the new entry
+            # (InferenceBackend cleans up the failed model), and a GGUF load can raise
+            # before it tears down the old llama-server (so the old preview-owned GGUF is
+            # still resident). Restore its ownership so a later preview for another
+            # checkpoint is not 503'd against a model Studio never actually adopted.
+            # Guarded on the prior model still being the resident slot, so it never
+            # mis-marks a torn-down or replaced model as preview-owned.
+            if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
+                _set_preview_resident(_prior_preview_marker)
+
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
@@ -4649,15 +4670,24 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # falls back to layer split so the checkbox never blocks a model from
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
-            success = await load_with_tensor_fallback(
-                _attempt_gguf_load,
-                requested_tensor = request.tensor_parallel,
-                extra_args = extra_llama_args,
-                label = config.identifier,
-                cancelled = llama_backend.load_cancelled,
-            )
+            try:
+                success = await load_with_tensor_fallback(
+                    _attempt_gguf_load,
+                    requested_tensor = request.tensor_parallel,
+                    extra_args = extra_llama_args,
+                    label = config.identifier,
+                    cancelled = llama_backend.load_cancelled,
+                )
+            except Exception:
+                # A GGUF load can raise before it tears down the old llama-server (e.g.
+                # an update-in-progress guard fires before _kill_process), leaving the
+                # prior preview-owned GGUF resident. Restore its marker so a later
+                # preview for another checkpoint is not 503'd against it.
+                _restore_marker_if_prior_preview_still_resident()
+                raise
 
             if not success:
+                _restore_marker_if_prior_preview_still_resident()
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
@@ -4738,15 +4768,6 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # Resolved before the guard so both size the same load.
         load_in_4bit = effective_load_in_4bit
-
-        def _restore_marker_if_prior_preview_still_resident() -> None:
-            # A failed non-GGUF load unloads only the new entry (InferenceBackend
-            # cleans up the failed model), so the prior preview checkpoint can still be
-            # the resident slot even though the marker was cleared above. Restore its
-            # ownership so a later preview for another checkpoint is not 503'd against a
-            # model Studio never actually adopted.
-            if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
-                _set_preview_resident(_prior_preview_marker)
 
         # Load in a thread so the event loop stays free for download progress
         # polling and other requests.
@@ -10072,6 +10093,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+            from core.inference.llama_keepwarm import mark_response_failed
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
@@ -10109,20 +10131,25 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
-                        _monitor_openai_sse_event(
+                        if _monitor_openai_sse_event(
                             monitor_id,
                             event,
                             llama_backend.context_length,
-                        )
+                        ) == "error":
+                            # Upstream forwarded an HTTP-200 SSE error event: the stream
+                            # failed, so don't let the middleware claim the slot for
+                            # Studio and evict a preview-owned model.
+                            mark_response_failed(getattr(request, "scope", None))
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
                 if not disconnect_event.is_set() and buffer:
-                    _monitor_openai_sse_event(
+                    if _monitor_openai_sse_event(
                         monitor_id,
                         buffer,
                         llama_backend.context_length,
-                    )
+                    ) == "error":
+                        mark_response_failed(getattr(request, "scope", None))
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
                         # Re-add the SSE separator the split consumed, so a final

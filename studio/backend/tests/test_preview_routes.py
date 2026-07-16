@@ -1293,6 +1293,57 @@ def test_non_gguf_load_failure_restores_preview_marker():
     assert src.count("_restore_marker_if_prior_preview_still_resident()") >= 2
 
 
+def test_gguf_load_failure_restores_preview_marker():
+    # Codex P2 (round 17): a GGUF load can raise before it tears down the old
+    # llama-server (e.g. an update-in-progress guard fires before _kill_process),
+    # leaving the prior preview-owned GGUF resident while the marker was already
+    # cleared -- later previews for another checkpoint would then 503 against it.
+    # _load_model_impl restores preview ownership on both the raised and the
+    # falsy-return GGUF load failures, mirroring the non-GGUF path via a shared helper.
+    import inspect
+
+    src = inspect.getsource(inference._load_model_impl)
+    # The restore helper is defined once and shared by the GGUF + non-GGUF paths.
+    assert src.count("def _restore_marker_if_prior_preview_still_resident") == 1
+    # Non-GGUF (2) + GGUF (2) failure sites all restore via the shared helper.
+    assert src.count("_restore_marker_if_prior_preview_still_resident()") >= 5  # incl def
+    # The GGUF load_with_tensor_fallback is wrapped so a raise AND a falsy return both
+    # restore the marker before propagating the failure.
+    gguf_fail_region = src[
+        src.index("load_with_tensor_fallback(") : src.index("Failed to load GGUF model")
+    ]
+    assert "except Exception:" in gguf_fail_region
+    assert "_restore_marker_if_prior_preview_still_resident()" in gguf_fail_region
+
+
+def test_monitor_openai_sse_event_reports_error_status():
+    # Codex P2 (round 17): the legacy /v1/completions relay forwards an upstream
+    # HTTP-200 SSE `data: {"error": ...}` event. _monitor_openai_sse_event must report
+    # "error" so the relay can mark the response failed and stop the keep-warm
+    # middleware claiming a preview-owned slot on a failed completion stream.
+    err = inference._monitor_openai_sse_event(
+        "mon-round17", b'data: {"error": {"message": "boom"}}', None
+    )
+    assert err == "error"
+    done = inference._monitor_openai_sse_event("mon-round17", b"data: [DONE]", None)
+    assert done == "done"
+    normal = inference._monitor_openai_sse_event(
+        "mon-round17", b'data: {"choices": [{"delta": {"content": "hi"}}]}', None
+    )
+    assert normal is None
+
+
+def test_completions_relay_marks_scope_failed_on_sse_error():
+    # The legacy /v1/completions relay must mark the response failed when a relayed
+    # event is an upstream error, so a preview-owned model is not claimed for Studio
+    # after a failed completion stream (the middleware skips its claim on a failed scope).
+    import inspect
+
+    src = inspect.getsource(inference.openai_completions)
+    assert 'if _monitor_openai_sse_event(' in src
+    assert 'mark_response_failed(getattr(request, "scope", None))' in src
+
+
 def test_middleware_claims_slot_on_successful_non_preview_response(slot_state):
     # A non-preview inference that returns 2xx adopts the resident model for Studio,
     # so the preview-ownership marker is cleared on completion.
