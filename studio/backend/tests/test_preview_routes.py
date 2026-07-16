@@ -1063,7 +1063,6 @@ def test_completions_embeddings_defer_claim_to_middleware():
     # a preview-owned checkpoint as Studio-owned; the keep-warm middleware claims on a
     # successful 2xx instead.
     import inspect
-
     for fn in (inference.openai_completions, inference.openai_embeddings):
         assert "_claim_slot_for_non_preview(" not in inspect.getsource(fn), fn.__name__
 
