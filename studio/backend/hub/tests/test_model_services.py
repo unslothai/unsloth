@@ -499,6 +499,7 @@ def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypa
     result = {"cached": cache_inventory._scan_cached_gguf()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["unsloth/bge-small-en-v1.5-GGUF"]
+    assert result["cached"][0]["capabilities"]["can_chat"] is False
 
 
 def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
@@ -569,6 +570,44 @@ def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     result = {"cached": cache_inventory._scan_cached_models()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["user/model-chat"]
+
+
+def test_cached_scans_hide_stale_default_embedder_after_custom_setting(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
+
+    gguf = _repo(
+        "unsloth/bge-small-en-v1.5-GGUF",
+        [_file("bge-small-en-v1.5-f16.gguf", 60_000_000)],
+        tmp_path / "default-gguf",
+    )
+    weights_path = tmp_path / "hub" / "models--unsloth--bge-small-en-v1.5"
+    weights_path.mkdir(parents = True)
+    weights = _repo(
+        "unsloth/bge-small-en-v1.5",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        weights_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [gguf, weights])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
 
 
 def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():

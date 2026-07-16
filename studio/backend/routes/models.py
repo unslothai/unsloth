@@ -806,7 +806,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
         key = lambda item: (item.updated_at or 0),
         reverse = True,
     )
-    return [m for m in models if not _is_hidden_model(m.id, m.path)]
+    return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
 @router.get("/local", response_model = LocalModelListResponse)

@@ -152,6 +152,48 @@ def test_is_hidden_model_matches_repo_ids_exactly(monkeypatch):
     assert models_route._is_hidden_model("ggml-org/models")
 
 
+def test_is_hidden_model_matches_repo_derived_local_paths(monkeypatch):
+    """Match exact repo-derived cache and LM Studio paths."""
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/model-GGUF")
+
+    assert models_route._is_hidden_model(
+        "/cache/models--org--model/snapshots/abc/model.safetensors"
+    )
+    assert models_route._is_hidden_model(
+        r"C:\Users\u\.cache\huggingface\hub\models--org--model-GGUF\snapshots\abc"
+    )
+    assert models_route._is_hidden_model("/lm-studio/org/model-GGUF/model-Q8_0.gguf")
+    assert not models_route._is_hidden_model("/lm-studio/user/model-chat/model-Q8_0.gguf")
+    assert not models_route._is_hidden_model("/cache/models--org--model-instruct")
+
+
+def test_is_hidden_model_prefers_existing_relative_path(monkeypatch, tmp_path):
+    """Prefer an existing relative path over repo-id syntax."""
+    from core.rag import config as rag_config
+
+    embedder = tmp_path / "models" / "embedder"
+    embedder.mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/embedder-GGUF")
+
+    assert models_route._is_hidden_model(str(embedder))
+
+
+def test_is_hidden_model_keeps_stale_default_embedder_hidden(monkeypatch):
+    """Keep default embedders hidden after a settings change."""
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/custom")
+    monkeypatch.setattr(rag_config, "effective_gguf_repo", lambda: "org/custom-GGUF")
+
+    assert models_route._is_hidden_model("unsloth/bge-small-en-v1.5")
+    assert models_route._is_hidden_model("unsloth/bge-small-en-v1.5-GGUF")
+
+
 def test_hidden_models_importable_without_heavy_model_stack():
     """The hub cache scanner imports ``is_hidden_model`` at module scope, so it
     must not drag in ``utils/models/__init__`` (the model-config + checkpoint

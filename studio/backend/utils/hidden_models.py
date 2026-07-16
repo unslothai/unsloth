@@ -22,6 +22,11 @@ _PROBE_REPO_ID = "ggml-org/models"
 # The probe's on-disk filename. Carries the ".gguf" so it stays specific and
 # does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
 _PROBE_FILENAME = "stories260k.gguf"
+# Keep previously cached defaults hidden after settings changes.
+_DEFAULT_EMBEDDING_REPO_IDS = {
+    "unsloth/bge-small-en-v1.5",
+    "unsloth/bge-small-en-v1.5-GGUF",
+}
 
 
 def _safe_resolve(path: Path) -> Optional[str]:
@@ -30,6 +35,31 @@ def _safe_resolve(path: Path) -> Optional[str]:
         return str(path.resolve())
     except OSError:
         return None
+
+
+def _existing_resolved_path(value: str) -> Optional[str]:
+    """Resolve an existing local path."""
+    path = Path(value).expanduser()
+    try:
+        if not path.exists():
+            return None
+    except OSError:
+        return None
+    return _safe_resolve(path)
+
+
+def _path_contains_repo_id(value: str, repo_ids: set[str]) -> bool:
+    """Match exact repo-derived path segments."""
+    parts = [part for part in value.lower().replace("\\", "/").split("/") if part]
+    for repo_id in repo_ids:
+        owner, name = repo_id.split("/", 1)
+        if f"models--{owner}--{name}" in parts:
+            return True
+        if any(
+            parts[index] == owner and parts[index + 1] == name for index in range(len(parts) - 1)
+        ):
+            return True
+    return False
 
 
 def is_hidden_model(*values: str | None) -> bool:
@@ -43,17 +73,23 @@ def is_hidden_model(*values: str | None) -> bool:
     Hub repo ids are matched EXACTLY (case-insensitive full "owner/name"), so a
     custom embedder with a generic basename like "org/model" cannot substring
     hide unrelated cached repos such as "user/model-chat" or "org/model-GGUF".
-    A local-path embedder is matched by exact resolved path, and the probe by
-    its exact on-disk filename."""
+    Existing paths take precedence over the identical ``owner/name`` repo
+    shape. Cache and LM Studio paths use exact repo-derived segments."""
     from core.rag import config as rag_config
 
-    hidden_repo_ids = {_PROBE_REPO_ID.lower()}
+    hidden_repo_ids = {
+        _PROBE_REPO_ID.lower(),
+        *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
+    }
     exact_paths: list[str] = []
     for model in (
         rag_config.effective_embedding_model(),
         rag_config.effective_gguf_repo(),
     ):
-        if _HF_REPO_ID_RE.match(model):
+        existing_path = _existing_resolved_path(model)
+        if existing_path:
+            exact_paths.append(existing_path.lower())
+        elif _HF_REPO_ID_RE.match(model):
             hidden_repo_ids.add(model.lower())
         else:
             resolved = _safe_resolve(Path(model).expanduser())
@@ -75,6 +111,8 @@ def is_hidden_model(*values: str | None) -> bool:
         # both separators so a Windows-style path ("...\\stories260K.gguf") is
         # matched even when this runs on a POSIX interpreter (and vice versa).
         if low.replace("\\", "/").rsplit("/", 1)[-1] == _PROBE_FILENAME:
+            return True
+        if _path_contains_repo_id(v, hidden_repo_ids):
             return True
         if exact_paths:
             resolved = _safe_resolve(Path(v).expanduser())

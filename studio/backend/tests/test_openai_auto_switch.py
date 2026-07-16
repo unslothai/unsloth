@@ -697,6 +697,8 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     normal.write_bytes(b"x" * 32)
     probe = tmp_path / "stories260K.gguf"  # llama.cpp install-validation probe
     probe.write_bytes(b"x" * 32)
+    embedder = tmp_path / "embedding-Q8_0.gguf"
+    embedder.write_bytes(b"x" * 32)
 
     def _info(mid, path):
         return SimpleNamespace(id = mid, path = str(path), model_id = mid, display_name = mid)
@@ -704,7 +706,16 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     monkeypatch.setattr(
         models_route,
         "_scan_models_dir",
-        lambda *a, **k: [_info("org/Normal-GGUF", normal), _info("ggml-org/models", probe)],
+        lambda *a, **k: [
+            _info("org/Normal-GGUF", normal),
+            _info("ggml-org/models", probe),
+            SimpleNamespace(
+                id = str(embedder),
+                path = str(embedder),
+                model_id = "unsloth/bge-small-en-v1.5-GGUF",
+                display_name = "embedding-Q8_0",
+            ),
+        ],
     )
     monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
@@ -713,6 +724,7 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     index = resolver._index()
     assert "org/normal-gguf" in index  # keys are normalized to lowercase
     assert "ggml-org/models" not in index
+    assert "unsloth/bge-small-en-v1.5-gguf" not in index
     # And the hidden probe cannot be auto-switched to by name.
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf("ggml-org/models") is None

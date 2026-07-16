@@ -270,9 +270,10 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_id = repo_info.repo_id
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
+                is_hidden_infra = _is_hidden_infra_repo(repo_id)
                 # Hide infra repos unless the user downloaded a variant via
                 # the Hub; variant state only exists for user downloads.
-                if _is_hidden_infra_repo(repo_id) and not has_variant_state:
+                if is_hidden_infra and not has_variant_state:
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
@@ -301,6 +302,9 @@ def _scan_cached_gguf() -> list[dict]:
                         requires_variant = True,
                     )
                 )
+                # Visible infra variants remain management-only.
+                if is_hidden_infra:
+                    row["capabilities"]["can_chat"] = False
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
             except Exception as e:
