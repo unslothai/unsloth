@@ -36,7 +36,6 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
@@ -519,7 +518,6 @@ export function SharedComposer({
   model2ThreadId?: string;
 }): ReactElement {
   const navigate = useNavigate();
-  const compactSubmenuOffset = useIsMobile() ? -248 : undefined;
   // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
@@ -1347,7 +1345,6 @@ export function SharedComposer({
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
-          sideOffset={compactSubmenuOffset}
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
@@ -1387,7 +1384,6 @@ export function SharedComposer({
           Export chat
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
-          sideOffset={compactSubmenuOffset}
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
@@ -1434,10 +1430,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent
-          sideOffset={compactSubmenuOffset}
-          className="unsloth-plus-menu w-[232px]"
-        >
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
           <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
             New project
@@ -1743,10 +1736,7 @@ export function SharedComposer({
                     <MoreHorizontalIcon className="size-4" />
                     More
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent
-                    sideOffset={compactSubmenuOffset}
-                    className="unsloth-plus-menu w-[248px]"
-                  >
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
                     {overflowPlusItems.map((id) => (
                       <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                     ))}

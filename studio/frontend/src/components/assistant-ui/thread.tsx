@@ -97,7 +97,6 @@ import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-b
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
@@ -2702,7 +2701,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
   const navigate = useNavigate();
-  const compactSubmenuOffset = useIsMobile() ? -248 : undefined;
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
@@ -2892,7 +2890,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
-          sideOffset={compactSubmenuOffset}
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
@@ -2924,7 +2921,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           Export chat
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
-          sideOffset={compactSubmenuOffset}
           collisionPadding={16}
           className="unsloth-plus-menu w-[208px]"
         >
@@ -2980,10 +2976,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
           Projects
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent
-          sideOffset={compactSubmenuOffset}
-          className="unsloth-plus-menu w-[232px]"
-        >
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
           <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
             New project
@@ -3137,10 +3130,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
               <MoreHorizontalIcon className="size-4" />
               More
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent
-              sideOffset={compactSubmenuOffset}
-              className="unsloth-plus-menu w-[248px]"
-            >
+            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
               {overflowPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}

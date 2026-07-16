@@ -20,7 +20,6 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { PermissionModeMenuItems } from "./permission-mode-select";
 
 // "Bypass permissions" entry for the composer "+" -> More menu. Like the MCP
@@ -32,7 +31,6 @@ import { PermissionModeMenuItems } from "./permission-mode-select";
 // driven by the store), so it survives the menu unmounting and the "+"/More
 // popovers don't stay frozen.
 export function BypassPermissionsMenuItem() {
-  const compactSubmenuOffset = useIsMobile() ? -248 : undefined;
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
@@ -48,10 +46,7 @@ export function BypassPermissionsMenuItem() {
         <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
         Bypass permissions
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent
-        sideOffset={compactSubmenuOffset}
-        className="unsloth-plus-menu w-[300px]"
-      >
+      <DropdownMenuSubContent className="unsloth-plus-menu w-[300px]">
         <PermissionModeMenuItems
           // Defer past Radix's menu-close focus restoration: opening the
           // dialog synchronously here lets the dropdown grab focus back and
