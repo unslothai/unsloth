@@ -1561,7 +1561,8 @@ export function AppSidebar() {
                       className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
                     />
                   </div>
-                  <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                  {/* min-w-0 so long names truncate instead of pushing the cog out */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
