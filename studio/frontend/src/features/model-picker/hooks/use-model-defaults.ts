@@ -69,9 +69,10 @@ export function useDefaultChatTemplate(
         if (controller.signal.aborted) {
           return;
         }
-        if (template !== null) {
-          cacheTemplate(cacheKey, template);
-        }
+        // Cache the terminal result, including a null "no default template",
+        // so reopening the viewer for such a model reuses it instead of
+        // re-running the backend/Hugging Face lookup every time.
+        cacheTemplate(cacheKey, template);
         setFetched({
           key: cacheKey,
           state: { template, loading: false, error: null },
