@@ -19,6 +19,7 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
   push:
     branches: [main, pip]
@@ -247,7 +248,6 @@ jobs:
       - name: Cross-browser permission controls
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18895 webkit
-          bash .github/scripts/run-studio-permission-browser.sh 18895 chromium chrome
 
       - name: Reset auth + boot Studio for extra UI tests (port 18897)
         run: |

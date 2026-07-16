@@ -27,6 +27,7 @@ on:
       # The Playwright test files themselves -- a PR that ONLY edits
       # the test must still trigger UI CI.
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-ui-smoke.yml'
   push:
     branches: [main, pip]

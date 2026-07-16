@@ -19,6 +19,7 @@ on:
       - 'install.ps1'
       - 'pyproject.toml'
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
   push:
     branches: [main, pip]
