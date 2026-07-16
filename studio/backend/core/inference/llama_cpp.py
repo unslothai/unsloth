@@ -82,6 +82,7 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -10111,6 +10112,9 @@ class LlamaCppBackend:
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
+                # Collect no-op nudges and flush them after the batch, so a no-op
+                # doesn't abort it and drop the parallel calls that follow.
+                deferred_noop_msgs: list = []
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -10153,14 +10157,14 @@ class LlamaCppBackend:
                                 "provenance": decision.provenance,
                             }
                         completion = tool_controller.record_noop(decision)
-                        conversation.append(completion.model_message())
+                        deferred_noop_msgs.append(completion.model_message())
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
                         logger.info(
                             "Suppressed local GGUF tool call as internal no-op: "
                             f"action={decision.action} tool={decision.tool_name}"
                         )
-                        break
+                        continue
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
@@ -10278,6 +10282,8 @@ class LlamaCppBackend:
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                append_deferred_nudges(conversation, deferred_noop_msgs)
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():
