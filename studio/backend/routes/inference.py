@@ -3887,6 +3887,17 @@ async def load_model_for_preview(
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
+                # Mark the swap in progress BEFORE the admitted-count check below so the two
+                # are atomic against a concurrent non-preview request: preview_swapped_since_
+                # entry() keys on the live _preview_swap_inflight, so a Studio request reaching
+                # _maybe_auto_switch_model after this marker is rejected, while one admitted
+                # before it is caught by the busy check. Setting it only after the check (as
+                # before) left a gap where a Studio request admitted between the check and the
+                # marker ran against the slot this preview is about to replace. A same-target
+                # borrow and a busy 503 both clear it via the finally (no counter bump, so no
+                # spurious swap is recorded). Cleared only after the lifecycle gate releases.
+                note_preview_swap_begin()
+                _swap_begun = True
                 # A same-checkpoint request would still restart a Studio-owned GGUF whose
                 # live settings differ from these bare defaults (#5401), so admitted
                 # (post-auth) Studio inference blocks first. Only admitted local inference
@@ -3909,12 +3920,6 @@ async def load_model_for_preview(
                     # #5401). Ownership is unchanged: Studio's model stays Studio's, a
                     # preview-owned one stays preview-owned.
                     return
-                # Mark the swap in progress before touching the model, so a non-preview
-                # request arriving during the load -- including the window after the
-                # swap counter bumps but before the gate below is released -- is
-                # rejected. Cleared in the finally, after the gate has been released.
-                note_preview_swap_begin()
-                _swap_begun = True
                 # _load_model_impl clears the preview marker mid-load (it reclaims the
                 # slot for Studio). If the load then fails while the prior model is
                 # still resident (e.g. a GPU-selection or pre-spawn error), leaving the
@@ -8289,6 +8294,13 @@ async def openai_chat_completions(
                     },
                     _monitor_context_length(),
                 )
+                # An explicit /inference/cancel breaks this tool drain mid-generation but the
+                # route still returns a JSON 200, so flag the response failed here or the
+                # middleware claims a preview-owned slot for a cancelled completion.
+                if cancel_event.is_set():
+                    from core.inference.llama_keepwarm import mark_current_response_failed
+
+                    mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -9322,6 +9334,13 @@ async def openai_chat_completions(
             _stats = _sf_stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
+            # An explicit /inference/cancel breaks this tool drain mid-generation but the route
+            # still returns a JSON 200, so flag the response failed here or the middleware
+            # claims a preview-owned slot for a cancelled completion.
+            if cancel_event.is_set():
+                from core.inference.llama_keepwarm import mark_current_response_failed
+
+                mark_current_response_failed()
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
             if _reasoning_text:

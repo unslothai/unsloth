@@ -1716,6 +1716,25 @@ def test_native_chat_stream_cancels_mark_response_failed():
         assert "mark_current_response_failed()" in block[guard:finalize], gen
 
 
+def test_non_streaming_tool_cancel_marks_response_failed():
+    # Codex P2 (round 30): the GGUF and safetensors tool drains break mid-generation on an
+    # explicit /inference/cancel but still return a JSON 200, so each must flag the response
+    # failed before returning or the middleware claims a preview-owned slot for a cancelled
+    # completion (round 29 covered their streaming siblings; these are the non-streaming ones).
+    import inspect
+    src = inspect.getsource(inference.openai_chat_completions)
+    sentinel = '"cancelled" if cancel_event.is_set() else "completed"'
+    non_streaming = 0
+    pos = 0
+    while (j := src.find(sentinel, pos)) != -1:
+        pos = j + len(sentinel)
+        # The non-streaming finalizes are the ones whose next statement returns a JSON body.
+        if "return _model_json_response(response)" in src[j : j + 700]:
+            assert "mark_current_response_failed()" in src[max(0, j - 400) : j]
+            non_streaming += 1
+    assert non_streaming >= 2  # GGUF tool drain + safetensors tool drain
+
+
 def test_deferred_claim_load_leaves_new_model_preview_owned():
     # Codex P2 (round 24): a claim_resident=False auto-switch load clears the preview marker
     # mid-load, but the route still runs post-switch checks that can 4xx. On a rejection the
@@ -1836,6 +1855,21 @@ def test_slot_claim_happens_before_admitted_decrement(slot_state, monkeypatch):
     assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Studio
     _reset_keepwarm_counters()
     llama_keepwarm._admitted_inference = 0
+
+
+def test_preview_swap_marked_before_admitted_check():
+    # Codex P2 (round 30): load_model_for_preview must set the swap-in-progress marker BEFORE
+    # reading other_admitted_inference_count(), so the check and marker are atomic. A Studio
+    # request admitted before the marker is caught by the busy check; one admitted after is
+    # rejected by preview_swapped_since_entry (which keys on the live _preview_swap_inflight).
+    # Setting the marker only after the check left a gap where a Studio request admitted
+    # between the two ran against the slot this preview was about to replace.
+    import inspect
+
+    src = inspect.getsource(inference.load_model_for_preview)
+    begin = src.index("note_preview_swap_begin()")
+    check = src.index("other_admitted_inference_count()")
+    assert begin < check, "swap marker must be set before the admitted-count busy check"
 
 
 def test_rejected_preview_request_does_not_refresh_idle_timer(slot_state):
