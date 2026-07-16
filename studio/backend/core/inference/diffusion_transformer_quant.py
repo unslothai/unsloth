@@ -439,10 +439,12 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # (torchao >= 0.13); older versions keep today's behaviour via the signature check.
         import inspect
         from torchao.quantization import PerRow
+
         fp8_kwargs: dict = {"granularity": PerRow()}
-        if "activation_value_lb" in inspect.signature(
-            Float8DynamicActivationFloat8WeightConfig
-        ).parameters:
+        if (
+            "activation_value_lb"
+            in inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
+        ):
             fp8_kwargs["activation_value_lb"] = 1e-12
         try:
             from torchao.float8 import Float8MMConfig
