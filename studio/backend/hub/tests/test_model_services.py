@@ -2753,11 +2753,7 @@ def test_hub_hf_token_header_uses_namespaced_header_only():
         ("request-token", "request-token"),
     ),
 )
-def test_hub_metadata_uses_only_explicit_request_token(
-    monkeypatch,
-    hf_token,
-    expected_api_token,
-):
+def test_hub_metadata_uses_only_explicit_request_token(monkeypatch, hf_token, expected_api_token):
     captured_tokens = []
 
     class _Api:
