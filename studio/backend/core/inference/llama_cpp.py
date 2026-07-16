@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, Collection, Generator, Iterable, List, Mapping, Optional, Union
 
@@ -438,6 +439,9 @@ def _hf_offline_if_dns_dead():
         os.environ.pop("HF_HUB_OFFLINE", None)
         if not transformers_was_set:
             os.environ.pop("TRANSFORMERS_OFFLINE", None)
+
+
+_SLOT_SAVE_MAX_BYTES = int(os.environ.get("UNSLOTH_SLOT_SAVE_MAX_BYTES", str(10 << 30)))
 
 
 def _swa_cache_path() -> Path:
@@ -1691,6 +1695,9 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        self._slot_save_dir: Optional[str] = None
+        self._slot_save_binary: Optional[tuple[str, int]] = None
+        self._prompt_cache_disabled: bool = False
         # True once a probe has completed; cleared on transient failure.
         self._is_audio: bool = False
         self._audio_type: Optional[str] = None
@@ -2255,6 +2262,7 @@ class LlamaCppBackend:
                 "supports_ctx_checkpoints": False,
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
+                "supports_slot_save": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -2274,6 +2282,7 @@ class LlamaCppBackend:
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
         supports_metrics = False
+        supports_slot_save = False
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
@@ -2371,6 +2380,7 @@ class LlamaCppBackend:
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
+            supports_slot_save = _is_real("--slot-save-path")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -2387,6 +2397,7 @@ class LlamaCppBackend:
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
+            "supports_slot_save": supports_slot_save,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -6627,6 +6638,23 @@ class LlamaCppBackend:
                 # when the binary advertises it (older/custom binaries may not).
                 if server_caps.get("supports_metrics"):
                     cmd.append("--metrics")
+                self._slot_save_dir = None
+                self._slot_save_binary = None
+                self._prompt_cache_disabled = False
+                if server_caps.get("supports_slot_save"):
+                    try:
+                        from utils.paths.storage_roots import (  # noqa: WPS433
+                            llama_slot_cache_root,
+                        )
+
+                        slot_dir = llama_slot_cache_root()
+                        slot_dir.mkdir(parents = True, exist_ok = True)
+                        cmd.extend(["--slot-save-path", str(slot_dir)])
+                        self._slot_save_dir = str(slot_dir)
+                        self._slot_save_binary = (binary, int(Path(binary).stat().st_mtime))
+                    except OSError:
+                        self._slot_save_dir = None
+                        self._slot_save_binary = None
                 cmd.extend(
                     self._ctx_integrity_flags(
                         n_parallel,
@@ -6821,6 +6849,7 @@ class LlamaCppBackend:
                         unsupported_cache_flags.append("--ctx-checkpoints")
                     if server_caps.get("supports_no_cache_prompt"):
                         cmd.append("--no-cache-prompt")
+                        self._prompt_cache_disabled = True
                     else:
                         unsupported_cache_flags.append("--no-cache-prompt")
                     if unsupported_cache_flags:
@@ -7837,6 +7866,9 @@ class LlamaCppBackend:
             self._effective_context_length = None
             self._max_context_length = None
             self._reset_effective_parallel_slots()
+            self._slot_save_dir = None
+            self._slot_save_binary = None
+            self._prompt_cache_disabled = False
             self._chat_template = None
             self._chat_template_override = None
             self._supports_reasoning = False
@@ -8343,6 +8375,102 @@ class LlamaCppBackend:
         if self._process is not None and self._process.poll() is not None:
             return False
         return True
+
+    def save_slots_for_resume(self) -> Optional[dict]:
+        if (
+            not self.is_loaded
+            or not self._slot_save_dir
+            or not self._gguf_path
+            or self._prompt_cache_disabled
+        ):
+            return None
+        save_dir = Path(self._slot_save_dir)
+        try:
+            estimate = self._estimate_kv_cache_bytes(
+                self._effective_context_length or self._context_length or 0,
+                self._cache_type_kv,
+                n_parallel = self.effective_parallel_slots,
+            )
+            if shutil.disk_usage(save_dir).free < estimate + (1 << 30):
+                logger.debug("Skipping slot save: insufficient free disk")
+                return None
+        except Exception:
+            pass
+        token = uuid.uuid4().hex[:8]
+        entries: list[dict] = []
+        total_bytes = 0
+        for slot in range(self.effective_parallel_slots):
+            filename = f"resume-{token}-slot{slot}.bin"
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/slots/{slot}",
+                    params = {"action": "save"},
+                    json = {"filename": filename},
+                    headers = self._auth_headers,
+                    timeout = 120.0,
+                    trust_env = False,
+                )
+            except Exception as e:
+                logger.debug(f"slot {slot} save failed: {e}")
+                break
+            if resp.status_code != 200:
+                logger.debug(f"slot {slot} save returned HTTP {resp.status_code}")
+                continue
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+            path = save_dir / filename
+            n_saved = int(body.get("n_saved") or 0)
+            if n_saved <= 0:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                continue
+            n_written = int(body.get("n_written") or 0)
+            if n_written <= 0:
+                try:
+                    n_written = path.stat().st_size
+                except OSError:
+                    n_written = 0
+            total_bytes += n_written
+            entries.append({"id": slot, "filename": filename, "n_saved": n_saved})
+        if not entries:
+            return None
+        if total_bytes > _SLOT_SAVE_MAX_BYTES:
+            logger.debug(
+                "Discarding slot save: %d bytes exceeds cap %d",
+                total_bytes,
+                _SLOT_SAVE_MAX_BYTES,
+            )
+            for entry in entries:
+                with contextlib.suppress(OSError):
+                    (save_dir / entry["filename"]).unlink()
+            return None
+        return {
+            "dir": self._slot_save_dir,
+            "binary": self._slot_save_binary,
+            "gguf": str(self._gguf_path),
+            "slots": entries,
+        }
+
+    def restore_slots_for_resume(self, manifest: dict) -> None:
+        if not self.is_loaded or not self._slot_save_dir:
+            return
+        for entry in manifest.get("slots") or []:
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/slots/{int(entry['id'])}",
+                    params = {"action": "restore"},
+                    json = {"filename": str(entry["filename"])},
+                    headers = self._auth_headers,
+                    timeout = 120.0,
+                    trust_env = False,
+                )
+            except Exception as e:
+                logger.debug(f"slot restore failed: {e}")
+                break
+            if resp.status_code != 200:
+                logger.debug(f"slot {entry.get('id')} restore returned HTTP {resp.status_code}")
 
     def _maybe_recover_from_mtp_crash(self, exc: Optional[BaseException] = None) -> bool:
         """Schedule one background reload without MTP after a mid-generation death.

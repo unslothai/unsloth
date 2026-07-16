@@ -18,6 +18,10 @@ from utils import openai_auto_switch_settings as settings
 
 
 class _FakeBackend:
+    effective_parallel_slots = 1
+    _slot_save_binary = None
+    _gguf_path = None
+
     def __init__(
         self,
         loaded_id = None,
@@ -28,6 +32,12 @@ class _FakeBackend:
         self.is_loaded = loaded_id is not None
         self.hf_variant = hf_variant
         self._openai_advertised_id = advertised_id
+
+    def save_slots_for_resume(self):
+        return None
+
+    def restore_slots_for_resume(self, manifest):
+        return None
 
 
 class _LoadRecorder:
@@ -53,10 +63,15 @@ class _LoadRecorder:
             from fastapi import HTTPException
             raise HTTPException(status_code = 503, detail = "load failed")
         self.backend.model_identifier = request.model_path
+        self.backend.hf_variant = getattr(request, "gguf_variant", None)
+        self.backend._gguf_path = request.model_path
         self.backend.is_loaded = True
         # Mirror _load_model_impl: a load advertises its own id until the
         # auto-switch caller overwrites it with the repo id.
         self.backend._openai_advertised_id = None
+        from core.inference import llama_keepwarm as kw
+
+        kw.note_model_loaded(self.backend)
         return None
 
 
@@ -2888,7 +2903,8 @@ def test_non_gguf_load_clears_reload_stash():
     # branch, so it never lingers until the idle poll (or forever, idle-unload off).
     import inspect
     src = inspect.getsource(inference_route._load_model_impl)
-    assert src.count("note_model_loaded()") >= 2
+    assert src.count("note_model_loaded()") >= 1  # non-GGUF branch
+    assert "to_thread(note_model_loaded, llama_backend)" in src  # GGUF branch
 
 
 def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
@@ -3094,3 +3110,306 @@ def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeyp
         monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
     )
     assert "Model auto-switch" in non_gguf_loaded
+
+
+# ── idle-unload KV persistence (slot save/restore) ──────────────────
+
+
+def _seed_kv_manifest(
+    tmp_path,
+    identity = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+    gguf = "unsloth/A-GGUF",
+):
+    state_file = tmp_path / "resume-abc-slot0.bin"
+    state_file.write_bytes(b"kv")
+    return state_file, {
+        "identity": identity,
+        "dir": str(tmp_path),
+        "binary": ("/bin/llama-server", 111),
+        "gguf": gguf,
+        "slots": [{"id": 0, "filename": state_file.name, "n_saved": 42}],
+    }
+
+
+def _drive_idle_loop(kw, poll_seconds = 0.02, run_for = 0.2):
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = poll_seconds))
+        await asyncio.sleep(run_for)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+
+
+def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    events = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    manifest = {
+        "dir": str(tmp_path),
+        "binary": ("bin", 1),
+        "slots": [{"id": 0, "filename": "f.bin", "n_saved": 42}],
+    }
+
+    def _save():
+        events.append("save")
+        return manifest
+
+    def _unload():
+        events.append("unload")
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    # KV must be saved while the server is still alive, then exactly one unload.
+    assert events == ["save", "unload"]
+    assert kw.get_last_unloaded_model()[:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
+    resume = kw.take_kv_resume()
+    assert resume is not None
+    assert resume["identity"][:2] == ("unsloth/Idle-GGUF", "Q4_K_M")
+    assert resume["slots"][0]["filename"] == "f.bin"
+
+
+def test_idle_save_failure_still_unloads_plain(monkeypatch):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+
+    def _save():
+        raise RuntimeError("slot save exploded")
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert unloads == [1]  # the save failure must not skip the unload
+    assert kw.get_last_unloaded_model() is not None
+    assert kw.take_kv_resume() is None
+
+
+def test_keep_kv_setting_off_skips_save(monkeypatch):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    saves, unloads = [], []
+    backend = _FakeBackend("unsloth/Idle-GGUF")
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = lambda: saves.append(1)
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert saves == []
+    assert unloads == [1]
+    assert kw.take_kv_resume() is None
+
+
+def test_alias_reload_restores_slots_and_deletes_files(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # idle-unload emptied the backend
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("unsloth/A-GGUF", "Q4_K_M"))
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    monkeypatch.setattr(kw, "_kv_resume", manifest)
+
+    _run_hook("gpt-4o-mini")
+    assert len(rec.calls) == 1
+    assert len(restored) == 1  # same model + binary: restore ran
+    assert not state_file.exists()  # state file deleted after the restore
+    assert kw._kv_resume is None
+
+
+def test_no_restore_when_different_model_loads(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(kw, "_inflight", 0)
+    state_file, manifest = _seed_kv_manifest(tmp_path)  # manifest is for model A
+    monkeypatch.setattr(kw, "_kv_resume", manifest)
+
+    _run_hook("unsloth/B-GGUF")
+    assert len(rec.calls) == 1
+    assert restored == []  # different model: never restored
+    assert not state_file.exists()  # but the stale files are gone
+    assert kw._kv_resume is None
+
+
+def test_restore_skipped_when_binary_changed(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
+    backend._gguf_path = "unsloth/A-GGUF"
+    backend._slot_save_binary = ("/bin/llama-server", 222)  # newer mtime
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+
+    kw.restore_kv_resume(backend, manifest)
+    assert restored == []
+    assert not state_file.exists()
+
+
+def test_note_model_unloaded_purges_manifest_and_files(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
+    kw._set_kv_resume(manifest)
+    kw.note_model_unloaded()
+    assert kw.get_last_unloaded_model() is None
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_note_model_loaded_purges_manifest_and_files(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
+    kw._set_kv_resume(manifest)
+    kw.note_model_loaded()
+    assert kw.get_last_unloaded_model() is None
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_new_idle_save_purges_previous_manifest_files(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    old_file, old_manifest = _seed_kv_manifest(tmp_path)
+    kw._set_kv_resume(old_manifest)
+    new_file = tmp_path / "resume-def-slot0.bin"
+    new_file.write_bytes(b"kv2")
+    kw._set_kv_resume(
+        {
+            "identity": ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+            "dir": str(tmp_path),
+            "binary": ("/bin/llama-server", 111),
+            "slots": [{"id": 0, "filename": new_file.name, "n_saved": 7}],
+        }
+    )
+    assert not old_file.exists()  # replaced manifest's files purged
+    assert new_file.exists()
+    assert kw.take_kv_resume()["slots"][0]["filename"] == new_file.name
+
+
+def test_sweep_slot_save_dir_removes_only_resume_files(monkeypatch, tmp_path):
+    from core.inference import llama_keepwarm as kw
+    from utils.paths import storage_roots
+
+    monkeypatch.setattr(storage_roots, "llama_slot_cache_root", lambda: tmp_path)
+    stale = tmp_path / "resume-old-slot0.bin"
+    stale.write_bytes(b"kv")
+    other = tmp_path / "unrelated.txt"
+    other.write_text("keep")
+    kw.sweep_slot_save_dir()
+    assert not stale.exists()
+    assert other.exists()
+
+
+def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+
+    assert settings.get_auto_unload_keep_kv() is True  # default when never stored
+    assert settings.set_openai_auto_switch(True, 60, False)[2] is False
+    assert store[settings.AUTO_UNLOAD_KEEP_KV_SETTING_KEY] is False
+    assert settings.get_auto_unload_keep_kv() is False
+    # None leaves the stored value untouched (older clients can't reset it).
+    assert settings.set_openai_auto_switch(True, 60, None)[2] is False
+    assert store[settings.AUTO_UNLOAD_KEEP_KV_SETTING_KEY] is False
+    with pytest.raises(ValueError, match = "true or false"):
+        settings.set_openai_auto_switch(True, 60, "garbage")
+
+
+def test_load_impl_notes_loaded_with_backend_off_loop():
+    import inspect
+
+    src = inspect.getsource(inference_route._load_model_impl)
+    assert "to_thread(note_model_loaded, llama_backend)" in src
+
+
+def test_restore_matches_gguf_realpath_across_naming(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    blob = tmp_path / "blob.gguf"
+    blob.write_bytes(b"gguf")
+    link = tmp_path / "snapshot.gguf"
+    link.symlink_to(blob)
+
+    backend = _FakeBackend("/hf/snapshots/d7f5", hf_variant = None)
+    backend._gguf_path = str(link)  # reload resolved the symlink spelling
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+    state_file, manifest = _seed_kv_manifest(
+        tmp_path, identity = ("unsloth/A-GGUF", None, "unsloth/A-GGUF"), gguf = str(blob)
+    )
+
+    kw.restore_kv_resume(backend, manifest)
+    assert len(restored) == 1  # names differ, file identical: restore ran
+    assert not state_file.exists()

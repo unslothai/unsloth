@@ -36,8 +36,10 @@ from utils.helper_precache_settings import (
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
+    DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
     get_auto_unload_idle_seconds,
+    get_auto_unload_keep_kv,
     get_model_overrides,
     get_openai_auto_switch_enabled,
     get_stored_auto_unload_idle_seconds,
@@ -90,6 +92,8 @@ class HelperPrecacheResponse(BaseModel):
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
     auto_unload_idle_seconds: int = Field(default = DEFAULT_AUTO_UNLOAD_IDLE_SECONDS, ge = 0)
+    # None = leave the stored value untouched, so older clients can't reset it.
+    auto_unload_keep_kv: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -100,6 +104,7 @@ class OpenAIAutoSwitchResponse(BaseModel):
     # UNSLOTH_MODEL_IDLE_TTL set and nothing stored, this is true even while enabled
     # is false, so the UI can show idle-unload as active instead of "needs enable".
     idle_unload_active: bool = False
+    auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
 
 
 class ModelOverridePayload(BaseModel):
@@ -197,6 +202,7 @@ def get_openai_auto_switch(
         enabled = get_openai_auto_switch_enabled(),
         auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        auto_unload_keep_kv = get_auto_unload_keep_kv(),
     )
 
 
@@ -205,8 +211,8 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds = set_openai_auto_switch(
-            payload.enabled, payload.auto_unload_idle_seconds
+        enabled, idle_seconds, keep_kv = set_openai_auto_switch(
+            payload.enabled, payload.auto_unload_idle_seconds, payload.auto_unload_keep_kv
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -220,6 +226,7 @@ def update_openai_auto_switch(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        auto_unload_keep_kv = keep_kv,
     )
 
 

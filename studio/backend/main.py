@@ -547,8 +547,9 @@ async def lifespan(app: FastAPI):
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
-    from core.inference.llama_keepwarm import idle_unload_loop
+    from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
 
+    sweep_slot_save_dir()
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Initialize RSA key pair for API key encryption (external providers).
