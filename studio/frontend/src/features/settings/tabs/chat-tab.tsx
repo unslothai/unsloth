@@ -412,14 +412,29 @@ export function ChatTab() {
           </>
         }
       >
-        {PLUS_MENU_SETTINGS.filter(
-          // Canvas only appears in the menu when opted in under Canvas below.
-          (item) => item.id !== "canvas" || showCanvasMenuItem,
-        ).map((item) => (
-          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+        {PLUS_MENU_SETTINGS.map((item) => (
+          <SettingsRow
+            key={item.id}
+            label={item.label}
+            icon={item.icon}
+            description={
+              // Canvas toggles visibility, not placement: off removes it
+              // from the menu entirely (the default) instead of moving it
+              // into "More".
+              item.id === "canvas"
+                ? "Off hides Canvas from the menu entirely."
+                : undefined
+            }
+          >
             <Switch
-              checked={plusPins[item.id]}
-              onCheckedChange={() => togglePlusPin(item.id)}
+              checked={
+                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
+              }
+              onCheckedChange={
+                item.id === "canvas"
+                  ? setShowCanvasMenuItem
+                  : () => togglePlusPin(item.id)
+              }
             />
           </SettingsRow>
         ))}
@@ -454,15 +469,6 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
-        <SettingsRow
-          label="Canvas in chat menu"
-          description="Offer the Canvas toggle in chat's + side menu. HTML canvases still render either way."
-        >
-          <Switch
-            checked={showCanvasMenuItem}
-            onCheckedChange={setShowCanvasMenuItem}
-          />
-        </SettingsRow>
         <SettingsRow
           label={t("settings.chat.artifacts.collapseHtmlBlocks")}
           description={t(
