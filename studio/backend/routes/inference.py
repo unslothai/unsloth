@@ -3421,6 +3421,7 @@ async def _maybe_auto_switch_model(
     current_subject: str,
     *,
     require_vision: bool = False,
+    claim_resident: bool = True,
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
@@ -3428,7 +3429,12 @@ async def _maybe_auto_switch_model(
     model different from the loaded one. Unknown names fall through (drop-in
     compat) and no remote download is triggered. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
-    resident vision model only to 400 afterwards.
+    resident vision model only to 400 afterwards. ``claim_resident`` claims a
+    resident model the request adopts (clears the preview marker) at the no-load
+    exits; a route that still has its own capability/backend checks that can reject
+    (e.g. GGUF-only /v1/completions, /audio/generate) passes ``False`` and claims
+    itself only after those checks pass, so a later rejection can't strand a
+    preview-owned model as Studio-owned.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -3447,7 +3453,8 @@ async def _maybe_auto_switch_model(
     if not isinstance(requested_model, str) or not requested_model:
         # Omitted/default model on a non-preview call runs against the resident
         # model, so claim it for Studio (a preview keeps its own ownership).
-        _claim_slot_for_non_preview(fastapi_request)
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
         return
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
@@ -3461,7 +3468,8 @@ async def _maybe_auto_switch_model(
     # requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         # Auto-switch off: this non-preview turn uses the resident model, claim it.
-        _claim_slot_for_non_preview(fastapi_request)
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
         return
 
     # Register by the raw requested model before resolving (which can be slow):
@@ -3494,7 +3502,8 @@ async def _maybe_auto_switch_model(
             ):
                 # Unknown name with a model already resident: the non-preview call
                 # falls through to use it, so claim it for Studio.
-                _claim_slot_for_non_preview(fastapi_request)
+                if claim_resident:
+                    _claim_slot_for_non_preview(fastapi_request)
                 return
             if len(last) == 3:
                 target_id, variant, override_id = last
@@ -3548,7 +3557,8 @@ async def _maybe_auto_switch_model(
         if _already_serving():
             # A non-preview request adopting this model claims it for Studio, so a
             # later preview can't swap it out from under an active OpenAI caller.
-            _set_preview_resident(None)
+            if claim_resident:
+                _set_preview_resident(None)
             _record_serving_alias()
             return
         # An image/audio request naming a different text-only GGUF would load it
@@ -3583,7 +3593,8 @@ async def _maybe_auto_switch_model(
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
                         if _already_serving():
-                            _set_preview_resident(None)
+                            if claim_resident:
+                                _set_preview_resident(None)
                             _record_serving_alias()
                             return
                         # Single slot: refuse a cross-model swap while another inference
@@ -3655,7 +3666,12 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
         model = body.get("model") or _RELOAD_ONLY_MODEL
     else:
         model = None
-    await _maybe_auto_switch_model(model, request, current_subject)
+    # This helper serves the GGUF-only /v1/completions and /v1/embeddings routes,
+    # which still 503 "No GGUF model loaded" after this returns. Don't claim the
+    # resident model here (claim_resident=False); the caller claims it only once it
+    # has confirmed a GGUF is loaded, so that 503 can't strand a preview-owned
+    # non-GGUF model as Studio-owned.
+    await _maybe_auto_switch_model(model, request, current_subject, claim_resident = False)
     return body
 
 
@@ -5804,10 +5820,6 @@ async def generate_audio(
     if not last_user_msg:
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
-    # Studio generating directly against the resident model claims it (see
-    # generate_stream). Gated on the request path: an audio preview reaches here via
-    # openai_chat_completions and must stay preview-owned.
-    _claim_slot_for_non_preview(request)
 
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
@@ -5820,7 +5832,12 @@ async def generate_audio(
     # the client model through the resolver could load a text- or vision-only target
     # and evict the working audio model before the audio backend check fails. Only
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
-    await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
+    # Defer the resident claim: the audio-backend/capability checks below can still
+    # 400 (text-only or no model), and claiming before them would strand a
+    # preview-owned checkpoint as Studio-owned without ever generating.
+    await _maybe_auto_switch_model(
+        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+    )
 
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
@@ -5856,6 +5873,12 @@ async def generate_audio(
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
         )
+
+    # An audio-capable backend is confirmed, so this non-preview request will run
+    # against the resident model: claim it for Studio now (after the modality checks
+    # above that can still reject). Gated on the request path: an audio preview reaches
+    # here via openai_chat_completions and must stay preview-owned.
+    _claim_slot_for_non_preview(request)
 
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
@@ -9882,6 +9905,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
+    # GGUF is loaded and the body is valid, so this non-preview request will run
+    # against the resident model: claim it for Studio now (the switch helper's claim
+    # was deferred so the "No GGUF model loaded" 503 above can't strand a
+    # preview-owned non-GGUF model as Studio-owned).
+    _claim_slot_for_non_preview(request)
+
     _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
     body["max_tokens"] = (
         _resolved_max_tokens
@@ -10104,6 +10133,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    # GGUF is loaded and the body is valid, so this non-preview request will run
+    # against the resident model: claim it for Studio now (the switch helper's claim
+    # was deferred so the "No GGUF model loaded" 503 above can't strand a
+    # preview-owned non-GGUF model as Studio-owned).
+    _claim_slot_for_non_preview(request)
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))

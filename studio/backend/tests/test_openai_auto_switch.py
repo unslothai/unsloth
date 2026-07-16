@@ -3034,8 +3034,10 @@ def test_audio_generate_is_reload_only(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["model"] = model
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
@@ -3045,6 +3047,61 @@ def test_audio_generate_is_reload_only(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+    # The audio route defers the resident claim until after its modality checks.
+    assert captured["claim_resident"] is False
+
+
+def test_audio_generate_text_only_model_preserves_preview_marker(monkeypatch):
+    # A non-preview /audio/generate against a text-only resident model 400s at the
+    # audio-capability check. The claim must be deferred until after that check, so a
+    # preview-owned checkpoint is not stranded as Studio-owned by a request that never
+    # generated.
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    infer = SimpleNamespace(
+        active_model_name = "/outputs/run/ckpt-a",
+        models = {"/outputs/run/ckpt-a": {"is_audio": False}},
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: infer)
+    inference_route._set_preview_resident("/outputs/run/ckpt-a")
+    payload = ChatCompletionRequest(model = "x", messages = [{"role": "user", "content": "hi"}])
+    fake_req = SimpleNamespace(scope = {"path": "/api/inference/audio/generate"})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.generate_audio(payload, fake_req, "tester"))
+    assert exc.value.status_code == 400
+    assert inference_route._is_preview_resident("/outputs/run/ckpt-a")  # claim deferred
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_completions_no_gguf_loaded_preserves_preview_marker(monkeypatch):
+    # A non-preview /v1/completions with a preview-owned non-GGUF (transformers/LoRA)
+    # model resident 503s "No GGUF model loaded". The switch helper's claim is deferred
+    # to after that check, so the failed request cannot strand the preview as
+    # Studio-owned.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)  # llama backend not loaded (a non-GGUF model is resident)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident("/outputs/run/lora-a")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(_json_body_request({"prompt": "hi"}), "tester")
+        )
+    assert exc.value.status_code == 503
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident("/outputs/run/lora-a")  # claim deferred
+    inference_route._set_preview_resident(None)  # cleanup
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):
