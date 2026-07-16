@@ -438,14 +438,16 @@ jobs:
           cache-from: type=gha,scope=studio-${{ matrix.platform }}
           cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          # Both refs are the SAME resolved shas the base build baked (prepare
-          # job), so the Studio tree + its zoo overlay match the base venv even
-          # if the branch moved mid-run. (Prose stays out of build-args --
-          # forwarded lines must be KEY=VALUE only.)
+          # All three pins are the SAME resolved values the base build baked
+          # (prepare job), so the Studio tree, its zoo overlay AND its llama.cpp
+          # bundle match the base image even if a branch or upstream release
+          # moved mid-run. (Prose stays out of build-args -- forwarded lines
+          # must be KEY=VALUE only.)
           build-args: |
             BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}
             UNSLOTH_STUDIO_REF=${{ needs.prepare.outputs.unsloth_ref }}
             UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+            LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
 
       - name: Export digest
         run: |

@@ -60,6 +60,12 @@ ARG UNSLOTH_STUDIO_REF=main
 # Studio builds, so the Studio backend runs the same zoo as the base image and
 # the operator-requested ref instead of always tracking main.
 ARG UNSLOTH_STUDIO_ZOO_REF=main
+# The SAME llama.cpp tag the base image baked (the prepare job resolves it
+# once). install.sh -> setup.sh honours UNSLOTH_LLAMA_TAG; without this pin a
+# dispatch override, or an upstream release landing between the base and
+# Studio jobs, lets the no-GPU Studio build re-resolve "latest" and replace
+# the base's pinned CUDA bundle instead of reusing it.
+ARG LLAMA_PREBUILT_TAG=latest
 ARG TARGETARCH
 
 # Services run as root in this revision (the base image is root-only by
@@ -134,6 +140,7 @@ RUN set -eux \
  && UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
     UNSLOTH_TORCH_INDEX_FAMILY="${TORCH_FAMILY}" \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
+    UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
     UNSLOTH_PYTHON=3.12 \
     bash install.sh --local \
     # Fail loud unless the Studio venv torch EXACTLY matches the base venv

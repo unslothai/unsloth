@@ -137,18 +137,15 @@ RUN python -m venv ${VENV} && ${VENV}/bin/pip install -U pip wheel setuptools
 #     Where torch's +cu128 wheels live, plus the xformers/cu128 URLs referenced
 #     by unsloth's `cu128onlytorch2110` extra.
 #
-# Why the extra is `cu128-ampere-torch2110` (not `cu128-torch2110-ampere`):
-#   The ordering is ampere-then-torch-ver (see the `cu*-ampere-torch2110`
-#   extras in unsloth's pyproject.toml). The torch2110 family pulls
-#   xformers 0.0.35, which does not pin torch and so pairs with the torch
-#   2.11.0 line held below; the older torch2100 extra pins xformers 0.0.34 ->
-#   torch==2.10.0 and would conflict. Needs an unsloth that carries the
-#   torch2110 CUDA extras on main.
-#
-# Why arm64 uses a different extra:
-#   `cu128-ampere-torch2110` transitively pulls `cu128onlytorch2110` whose
-#   xformers wheel URL is hardcoded to manylinux_2_28_x86_64 (the aarch64
-#   wheel gap -- see header), so arm64 takes the plain `huggingface` extra.
+# Why the plain `huggingface` extra plus an EXPLICIT xformers pin (amd64):
+#   The cu128 CUDA extras on main stop at the torch2100 family, which pins
+#   xformers 0.0.34 -> torch==2.10.0 and would conflict with the torch 2.11.0
+#   line held below; a not-yet-existing extra name would only WARN (pip/uv
+#   install plain unsloth) and silently drop xformers until the required-
+#   package check below failed the build. Pinning `xformers==0.0.35` directly
+#   (it does not pin torch, pairing with 2.11.0) keeps this build
+#   self-contained on today's main; arm64 stays xformers-less (no cu128
+#   aarch64 wheel -- see header).
 #
 # Why no `flash-attn` here:
 #   - FA3 is hard-refused on Blackwell (Dao-AILab/flash-attention#1810).
@@ -161,17 +158,18 @@ ARG UNSLOTH_REF=main
 ARG UNSLOTH_ZOO_REF=main
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
-        amd64) UNSLOTH_EXTRA="cu128-ampere-torch2110" ;; \
-        arm64) UNSLOTH_EXTRA="huggingface" ;; \
+        amd64) UNSLOTH_EXTRA="huggingface"; XFORMERS_PIN="xformers==0.0.35" ;; \
+        arm64) UNSLOTH_EXTRA="huggingface"; XFORMERS_PIN="" ;; \
         *)     echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
- && echo ">> TARGETARCH=${TARGETARCH:-amd64}, unsloth extra=[${UNSLOTH_EXTRA}]" \
+ && echo ">> TARGETARCH=${TARGETARCH:-amd64}, unsloth extra=[${UNSLOTH_EXTRA}], xformers=[${XFORMERS_PIN}]" \
  && ${VENV}/bin/pip install uv \
  && ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
         --index-strategy unsafe-best-match \
         --extra-index-url https://download.pytorch.org/whl/cu128 \
         "torch==2.11.0" "torchvision==0.26.0" "torchaudio==2.11.0" \
+        ${XFORMERS_PIN} \
         "triton>=3.6.0" \
         "bitsandbytes>=0.49.2,!=0.46.0,!=0.48.0" \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
