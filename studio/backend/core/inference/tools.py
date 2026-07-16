@@ -743,9 +743,7 @@ def _pyyaml_load_call_is_unsafe(
             return True
         if kw.arg == "Loader":
             loader = kw.value
-    return loader is None or not _pyyaml_loader_is_safe(
-        loader, yaml_aliases, safe_loader_aliases
-    )
+    return loader is None or not _pyyaml_loader_is_safe(loader, yaml_aliases, safe_loader_aliases)
 
 
 # Writer methods that persist to disk without going through open() (numpy.save,
@@ -4545,9 +4543,7 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_Assign(self, node):
-            if _pyyaml_loader_is_safe(
-                node.value, self.yaml_aliases, self.yaml_safe_loader_aliases
-            ):
+            if _pyyaml_loader_is_safe(node.value, self.yaml_aliases, self.yaml_safe_loader_aliases):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         self.yaml_safe_loader_aliases.add(target.id)
