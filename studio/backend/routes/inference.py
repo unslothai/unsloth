@@ -419,9 +419,8 @@ def _openai_stream_error_chunk(exc) -> dict:
 
 
 def _openai_stream_error_sse(error: dict) -> str:
-    # Every OpenAI-family streaming error (local chat/completions/responses, admission
-    # failures, passthrough relays) flows through here after the 200 headers, so flag the
-    # response failed: the middleware must not claim a preview-owned model on a failed stream.
+    # Every OpenAI-family streaming error flows through here after the 200 headers, so flag
+    # the response failed: the middleware must not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
     mark_current_response_failed()
     return f"data: {json.dumps(error)}\n\ndata: [DONE]\n\n"
@@ -617,9 +616,9 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
-    # Called only from stream except-handlers after the 200 headers, so flag failed up
-    # front -- even when we return None for an unclassified error the caller swallows and
-    # finishes normally. The middleware must not claim a preview-owned model on a failed stream.
+    # Called only from stream except-handlers after the 200 headers, so flag failed up front
+    # even when we return None (the caller then swallows and finishes normally): the middleware
+    # must not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
 
     mark_current_response_failed()
@@ -1203,11 +1202,10 @@ def _openai_admission_cancelled_error(
 async def _raise_if_openai_admission_cancelled(
     reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
 ) -> None:
-    # A cancellation raised here aborts before leasing an upstream, so the model was
-    # never used. For a streaming request the 200 headers are flushed and the caller's
-    # `except LlamaAdmissionCancelled` just returns, so flag failed: the middleware must
-    # not treat that empty 200 as a successful generation and claim a preview-owned slot.
-    # Harmless for non-streaming callers (they surface a non-2xx, never claimed anyway).
+    # Cancelled before leasing an upstream, so the model was never used. A streaming caller
+    # has flushed the 200 headers and its `except LlamaAdmissionCancelled` just returns, so
+    # flag failed: the middleware must not treat that empty 200 as a successful generation and
+    # claim a preview-owned slot. Harmless for non-streaming callers (they surface a non-2xx).
     from core.inference.llama_keepwarm import mark_current_response_failed
     if reservation.is_cancelled:
         mark_current_response_failed()
@@ -2768,9 +2766,9 @@ def _monitor_openai_sse_event(
     event: bytes,
     context_length = None,
 ) -> Optional[str]:
-    # Returns "error" if any line in this event was an upstream error payload (an
-    # HTTP-200 SSE `data: {"error": ...}`), so a relay caller can mark the response
-    # failed and stop the keep-warm middleware claiming the slot on a failed stream.
+    # Returns "error" if any line was an upstream error payload (an HTTP-200 SSE
+    # `data: {"error": ...}`), so a relay caller can mark the response failed and stop the
+    # keep-warm middleware claiming the slot on a failed stream.
     status = None
     for line in event.decode("utf-8", errors = "ignore").splitlines():
         result = _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
@@ -3478,18 +3476,16 @@ async def _maybe_auto_switch_model(
         preview_swapped_since_entry,
     )
 
-    # This request passed FastAPI auth and reached the local-inference path, so count it
-    # in the admitted-inference tally the preview busy guard uses instead of raw
-    # _inflight (a no-op for preview scopes, which carry their own ownership).
+    # Passed auth and reached local inference, so count it in the admitted-inference tally
+    # the preview busy guard uses instead of raw _inflight (no-op for preview scopes).
     _swap_scope = getattr(fastapi_request, "scope", None)
     note_admitted_inference(_swap_scope)
-    # A preview swapped a different checkpoint in since this request entered. Running now
-    # would serve the preview's model to Studio traffic, so reject and let the client
-    # retry. Covers a request that waited on the gate through the swap AND one that
-    # passed the gate before the swap but is still pre-admission. Deferred here (not a
-    # middleware 503) so an external-provider request that untracks and returns before
-    # this hook is never rejected for a swap it never touched; over-rejecting a local
-    # request is acceptable, serving the wrong checkpoint is not.
+    # A preview swapped a different checkpoint in since this request entered; running now
+    # would serve the preview's model to Studio, so reject and let the client retry. Covers a
+    # request that waited on the gate through the swap AND one that passed the gate before it
+    # but is still pre-admission. Deferred here (not a middleware 503) so an external-provider
+    # request that untracks and returns before this hook is never rejected for a swap it never
+    # touched; over-rejecting a local request is acceptable, serving the wrong checkpoint is not.
     if preview_swapped_since_entry(_swap_scope):
         raise HTTPException(
             status_code = 503,
@@ -3500,8 +3496,8 @@ async def _maybe_auto_switch_model(
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
     if not isinstance(requested_model, str) or not requested_model:
-        # Omitted/default model on a non-preview call runs against the resident
-        # model, so claim it for Studio (a preview keeps its own ownership).
+        # Omitted/default model on a non-preview call runs against the resident model,
+        # so claim it for Studio (a preview keeps its own ownership).
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
         return
@@ -3511,10 +3507,9 @@ async def _maybe_auto_switch_model(
     if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
-    # The reload-stash path also runs when idle-unload is active on its own (a
-    # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
-    # loop freed is restored on the next request. The resolver-based switch still
-    # requires the auto-switch toggle.
+    # The reload-stash path also runs when idle-unload is active on its own (a standalone
+    # UNSLOTH_MODEL_IDLE_TTL with auto-switch off), restoring an idle-freed model on the next
+    # request. The resolver-based switch still requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
         # Auto-switch off: this non-preview turn uses the resident model, claim it.
         if claim_resident:
@@ -3541,16 +3536,16 @@ async def _maybe_auto_switch_model(
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
             last = get_last_unloaded_model()
-            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
-            # leaves the GGUF slot empty but is the live model, so don't resurrect
-            # the stale GGUF over it (that load would tear the active model down).
+            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload leaves the
+            # GGUF slot empty but is the live model; don't resurrect the stale GGUF over it
+            # (that load would tear the active model down).
             if (
                 not last
                 or get_llama_cpp_backend().is_loaded
                 or getattr(get_inference_backend(), "active_model_name", None)
             ):
-                # Unknown name with a model already resident: the non-preview call
-                # falls through to use it, so claim it for Studio.
+                # Unknown name, model already resident: the non-preview call uses it,
+                # so claim it for Studio.
                 if claim_resident:
                     _claim_slot_for_non_preview(fastapi_request)
                 return
@@ -3590,13 +3585,12 @@ async def _maybe_auto_switch_model(
             return True
 
         def _record_serving_alias() -> None:
-            # When an advertised alias already resolves to the loaded model (e.g. a
-            # model loaded by local path, requested by its repo/LM Studio id), record
-            # the alias as the public id so /v1/models and responses report it (and
-            # mark it loaded) instead of the path-derived basename. Resolver branch
-            # only: the reload-stash override_id can be the bare path, not a repo id.
-            # Lock-free is safe here: an in-flight request blocks any concurrent swap
-            # (single-slot busy guard), so the loaded model can't change under this.
+            # When an advertised alias already resolves to the loaded model (e.g. loaded by
+            # local path, requested by its repo/LM Studio id), record the alias as the public
+            # id so /v1/models and responses report it (marked loaded) instead of the path
+            # basename. Resolver branch only: the reload-stash override_id can be a bare path.
+            # Lock-free is safe: an in-flight request blocks any concurrent swap (single-slot
+            # busy guard), so the loaded model can't change under this.
             if resolved is None or not override_id:
                 return
             b = get_llama_cpp_backend()
@@ -3604,8 +3598,8 @@ async def _maybe_auto_switch_model(
                 b._openai_advertised_id = override_id
 
         if _already_serving():
-            # A non-preview request adopting this model claims it for Studio, so a
-            # later preview can't swap it out from under an active OpenAI caller.
+            # A non-preview request adopting this model claims it for Studio, so a later
+            # preview can't swap it out from under an active OpenAI caller.
             if claim_resident:
                 _set_preview_resident(None)
             _record_serving_alias()
@@ -3715,11 +3709,10 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
         model = body.get("model") or _RELOAD_ONLY_MODEL
     else:
         model = None
-    # This helper serves the GGUF-only /v1/completions and /v1/embeddings routes,
-    # which still 503 "No GGUF model loaded" after this returns. Don't claim the
-    # resident model here (claim_resident=False); the caller claims it only once it
-    # has confirmed a GGUF is loaded, so that 503 can't strand a preview-owned
-    # non-GGUF model as Studio-owned.
+    # Serves the GGUF-only /v1/completions and /v1/embeddings routes, which still 503 "No
+    # GGUF model loaded" after this returns. Don't claim here (claim_resident=False); the
+    # caller claims only once it confirms a GGUF is loaded, so that 503 can't strand a
+    # preview-owned non-GGUF model as Studio-owned.
     await _maybe_auto_switch_model(model, request, current_subject, claim_resident = False)
     return body
 
@@ -3767,12 +3760,8 @@ def _same_loaded_identifier(loaded: Optional[str], requested: str) -> bool:
     if not loaded:
         return False
 
-    # A local checkpoint is an absolute path OR a relative path that exists on disk:
-    # ModelConfig.from_identifier() resolves an existing relative path as a local file,
-    # so two such paths differing only by case (e.g. outputs/Run vs outputs/run) are
-    # different checkpoints on a case-sensitive filesystem and must not take the
-    # already-loaded fast path. Only genuine repo ids fall through to the
-    # case-insensitive compare.
+    # Local checkpoint == absolute path OR an existing relative path (ModelConfig resolves an
+    # existing relative path as a local file). Only genuine repo ids take the lower() compare.
     def _is_local_path(ident: str) -> bool:
         return os.path.isabs(ident) or os.path.exists(ident)
 
@@ -4435,21 +4424,19 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
         )
 
-        # About to actually touch the backend: reclaim the slot for Studio. Capture the
-        # prior marker first so a still-later pre-load check that rejects (the native
-        # vision-companion validation below) can restore preview ownership -- otherwise
-        # a still-resident preview checkpoint is left marked Studio-owned and later
-        # previews 503 against it.
+        # About to touch the backend: reclaim the slot for Studio. Capture the prior marker
+        # first so a still-later pre-load check that rejects (the native vision-companion
+        # validation below) can restore preview ownership, or a still-resident preview
+        # checkpoint is left marked Studio-owned and later previews 503 against it.
         _prior_preview_marker = _get_preview_resident()
         _set_preview_resident(None)
 
         def _restore_marker_if_prior_preview_still_resident() -> None:
-            # A failed load can leave the prior preview checkpoint resident though the
-            # marker was cleared above: a non-GGUF load unloads only the new entry, and a
-            # GGUF load can raise before tearing down the old llama-server. Restore its
-            # ownership so a later preview isn't 503'd against a model Studio never
-            # adopted. Guarded on the prior model still being resident, so it never mis-
-            # marks a torn-down or replaced model as preview-owned.
+            # A failed load can leave the prior preview checkpoint resident though the marker
+            # was cleared above (a non-GGUF load unloads only the new entry; a GGUF load can
+            # raise before tearing down the old llama-server). Restore its ownership so a later
+            # preview isn't 503'd against a model Studio never adopted. Guarded on the prior
+            # model still being resident, so it never mis-marks a torn-down/replaced model.
             if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
                 _set_preview_resident(_prior_preview_marker)
 
@@ -4579,10 +4566,9 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                                 config.gguf_mmproj_file, config.gguf_file, "vision companion"
                             )
                         except HTTPException:
-                            # The resident model has not been torn down yet, so restore
-                            # preview ownership before propagating this reject: the load
-                            # fails here and the still-resident preview checkpoint must
-                            # not be left marked Studio-owned (later previews would 503).
+                            # The resident model isn't torn down yet, so restore preview
+                            # ownership before propagating this reject: the still-resident
+                            # preview checkpoint must not be left Studio-owned (later 503s).
                             if _prior_preview_marker is not None:
                                 _set_preview_resident(_prior_preview_marker)
                             raise
@@ -4683,10 +4669,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     cancelled = llama_backend.load_cancelled,
                 )
             except Exception:
-                # A GGUF load can raise before it tears down the old llama-server (e.g.
-                # an update-in-progress guard fires before _kill_process), leaving the
-                # prior preview-owned GGUF resident. Restore its marker so a later
-                # preview for another checkpoint is not 503'd against it.
+                # A GGUF load can raise before tearing down the old llama-server (e.g. an
+                # update-in-progress guard fires before _kill_process), leaving the prior
+                # preview-owned GGUF resident. Restore its marker so a later preview for
+                # another checkpoint is not 503'd against it.
                 _restore_marker_if_prior_preview_still_resident()
                 raise
 
@@ -5607,14 +5593,12 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
-    # Enforce the preview-swap reject FIRST, before reading any backend state. If a
-    # public preview loaded a different checkpoint (GGUF or Unsloth/LoRA) while this
-    # native Studio request waited on the keep-warm gate, the middleware flagged the
-    # scope; the loaded-model and image-capability checks below would otherwise run
-    # against the swapped-in model and return a hard 400 instead of the intended
-    # retryable 503. generate_stream does not go through _maybe_auto_switch_model,
-    # where this guard otherwise runs. No direct claim is needed: the keep-warm
-    # middleware claims the slot on a successful 2xx.
+    # Enforce the preview-swap reject FIRST, before reading any backend state. If a public
+    # preview loaded a different checkpoint while this native Studio request waited on the
+    # keep-warm gate, the middleware flagged the scope; the loaded-model and image-capability
+    # checks below would otherwise run against the swapped-in model and return a hard 400
+    # instead of the intended retryable 503. generate_stream skips _maybe_auto_switch_model,
+    # where this guard otherwise runs. No claim needed: the middleware claims on a 2xx.
     from core.inference.llama_keepwarm import (
         mark_response_failed,
         note_admitted_inference,
@@ -5704,9 +5688,9 @@ async def generate_stream(
                     # the generator does not signal a subprocess backend, so it would
                     # keep decoding. The finally's reset is guarded, so no double-run.
                     backend.reset_generation_state()
-                    # The 200 stream ends here with no completion (client disconnected,
-                    # maybe before the first token), so flag failed: the middleware must
-                    # not treat this cancelled stream as a success and claim the model.
+                    # 200 stream ends with no completion (client disconnected), so flag
+                    # failed: the middleware must not treat this cancelled stream as a
+                    # success and claim the model.
                     mark_response_failed(_gs_scope)
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
@@ -5726,8 +5710,8 @@ async def generate_stream(
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             # The stream already sent HTTP 200, so signal the failure out-of-band: the
-            # keep-warm middleware must not treat this errored stream as a successful
-            # completion and claim a preview-owned model for Studio.
+            # middleware must not treat this errored stream as a success and claim a
+            # preview-owned model.
             mark_response_failed(_gs_scope)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
@@ -5987,9 +5971,9 @@ async def generate_audio(
     # the client model through the resolver could load a text- or vision-only target
     # and evict the working audio model before the audio backend check fails. Only
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
-    # Defer the resident claim: the audio-backend/capability checks below can still
-    # 400 (text-only or no model), and claiming before them would strand a
-    # preview-owned checkpoint as Studio-owned without ever generating.
+    # Defer the resident claim: the audio-backend/capability checks below can still 400
+    # (text-only or no model), and claiming first would strand a preview-owned checkpoint
+    # as Studio-owned without ever generating.
     await _maybe_auto_switch_model(
         _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
     )
@@ -6029,10 +6013,9 @@ async def generate_audio(
             use_adapter = payload.use_adapter,
         )
 
-    # An audio-capable backend is confirmed. The keep-warm middleware claims the slot
-    # for Studio on a successful 2xx response, so no direct claim here: claiming before
-    # the audio backend runs could strand a preview-owned checkpoint as Studio-owned if
-    # generation then fails.
+    # Audio-capable backend confirmed. The middleware claims the slot on a 2xx, so no claim
+    # here: claiming before the audio backend runs could strand a preview-owned checkpoint
+    # as Studio-owned if generation then fails.
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
     except Exception as e:
@@ -7088,13 +7071,12 @@ async def openai_chat_completions(
                     ),
                 )
 
-    # Reject a system-only chat before any automatic load so an invalid request
-    # never swaps or reloads the resident model (as /responses and /messages
-    # already validate before switching). Gate on every automatic-load trigger,
-    # not just auto-switch, since a standalone idle TTL can also reload here, and
-    # also when the slot is preview-owned: even with both features off the switch
-    # helper claims the slot, so a later-rejected request must not clear that
-    # ownership first. Parse once and reuse below.
+    # Reject a system-only chat before any automatic load so an invalid request never swaps or
+    # reloads the resident model (as /responses and /messages already validate before
+    # switching). Gate on every automatic-load trigger (not just auto-switch: a standalone idle
+    # TTL can also reload here), and on a preview-owned slot: even with both features off the
+    # switch helper claims the slot, so a later-rejected request must not clear that ownership
+    # first. Parse once and reuse below.
     _pre_parsed = None
     _needs_vision = False
     if _should_validate_before_switch():
@@ -7199,11 +7181,11 @@ async def openai_chat_completions(
             bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
         )
 
-    # Defer the resident claim: chat has several post-switch capability checks that
-    # can still reject (Whisper without audio, n>1 on a non-GGUF backend, tool or
-    # response_format passthrough), so claiming here could strand a preview-owned
-    # model for a request that never generates. The keep-warm middleware instead
-    # claims the slot on a successful (2xx) non-preview response.
+    # Defer the resident claim: chat has several post-switch capability checks that can still
+    # reject (Whisper without audio, n>1 on a non-GGUF backend, tool or response_format
+    # passthrough), so claiming here could strand a preview-owned model for a request that
+    # never generates. The middleware instead claims the slot on a successful 2xx non-preview
+    # response.
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
@@ -7364,8 +7346,8 @@ async def openai_chat_completions(
                         while True:
                             if cancel_event.is_set():
                                 cancelled = True
-                                # Cancelled before completion: flag failed so the keep-warm
-                                # middleware does not claim a preview-owned model.
+                                # Cancelled before completion: flag failed so the middleware
+                                # does not claim a preview-owned model.
                                 mark_current_response_failed()
                                 break
                             if await request.is_disconnected():
@@ -10008,9 +9990,9 @@ def _flatten_monitor_prompt(value) -> str:
     return str(value)
 
 
-# Distinguishes an unparseable raw body (defer to the post-switch re-read, which
-# preserves the pre-feature malformed-body error) from a valid JSON body that simply
-# is not an object (e.g. [] or null), which is rejected before the switch.
+# Distinguishes an unparseable raw body (defer to the post-switch re-read, preserving the
+# pre-feature malformed-body error) from a valid JSON body that is simply not an object
+# (e.g. [] or null), which is rejected before the switch.
 _UNPARSEABLE_BODY = object()
 
 
@@ -10034,10 +10016,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     llama_backend = get_llama_cpp_backend()
 
-    # Reject a request with no prompt before any automatic load so an invalid
-    # request never swaps or reloads the resident model (as chat/embeddings already
-    # validate before switching). Gate on every automatic-load trigger, and also on a
-    # preview-owned slot the switch helper would claim even with both features off.
+    # Reject a request with no prompt before any automatic load so an invalid request never
+    # swaps or reloads the resident model (as chat/embeddings already validate before
+    # switching). Gate on every automatic-load trigger, and on a preview-owned slot the switch
+    # helper would claim even with both features off.
     if _should_validate_before_switch():
         try:
             _pre = await request.json()
@@ -10053,10 +10035,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
         elif _pre is not _UNPARSEABLE_BODY:
-            # A valid JSON body that is not an object (e.g. [] or null) is rejected
-            # below as "Request body must be a JSON object"; reject it here, before the
-            # switch, so the slot claim can't convert a preview-owned model to
-            # Studio-owned for a request that never runs.
+            # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
+            # "Request body must be a JSON object"; reject it here, before the switch, so the
+            # slot claim can't convert a preview-owned model to Studio-owned for a request
+            # that never runs.
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
@@ -10073,11 +10055,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    # GGUF is loaded and the body is valid. The keep-warm middleware claims the slot
-    # for Studio on a successful 2xx response, so no direct claim here: llama-server can
-    # still return a non-2xx for a valid body (e.g. a no-pooling error on /v1/embeddings
-    # against a non-embedding GGUF), so claiming before the upstream response would
-    # strand a preview-owned checkpoint as Studio-owned for a request that never ran.
+    # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
+    # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
+    # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
+    # upstream response would strand a preview-owned checkpoint as Studio-owned.
 
     _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
     body["max_tokens"] = (
@@ -10158,9 +10139,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             )
                             == "error"
                         ):
-                            # Upstream forwarded an HTTP-200 SSE error event: the stream
-                            # failed, so don't let the middleware claim the slot for
-                            # Studio and evict a preview-owned model.
+                            # Upstream forwarded an HTTP-200 SSE error event: the stream failed,
+                            # so don't let the middleware claim the slot and evict a
+                            # preview-owned model.
                             mark_response_failed(getattr(request, "scope", None))
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
@@ -10272,11 +10253,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     error (expected).
     """
     llama_backend = get_llama_cpp_backend()
-    # Reject a request with no input before any automatic load so an invalid
-    # request never swaps or reloads the resident model (as chat/responses/messages
-    # already validate before switching). Gate on every automatic-load trigger,
-    # not just auto-switch, since a standalone idle TTL can also reload here, and also
-    # on a preview-owned slot the switch helper would claim even with both features off.
+    # Reject a request with no input before any automatic load so an invalid request never
+    # swaps or reloads the resident model (as chat/responses/messages already validate before
+    # switching). Gate on every automatic-load trigger (not just auto-switch: a standalone idle
+    # TTL can also reload here), and on a preview-owned slot the switch helper would claim even
+    # with both features off.
     if _should_validate_before_switch():
         try:
             _pre = await request.json()
@@ -10292,10 +10273,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
         elif _pre is not _UNPARSEABLE_BODY:
-            # A valid JSON body that is not an object (e.g. [] or null) is rejected
-            # below as "Request body must be a JSON object"; reject it here, before the
-            # switch, so the slot claim can't convert a preview-owned model to
-            # Studio-owned for a request that never runs.
+            # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
+            # "Request body must be a JSON object"; reject it here, before the switch, so the
+            # slot claim can't convert a preview-owned model to Studio-owned for a request
+            # that never runs.
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
     # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
     # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
@@ -10315,11 +10296,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    # GGUF is loaded and the body is valid. The keep-warm middleware claims the slot
-    # for Studio on a successful 2xx response, so no direct claim here: llama-server can
-    # still return a non-2xx for a valid body (e.g. a no-pooling error on /v1/embeddings
-    # against a non-embedding GGUF), so claiming before the upstream response would
-    # strand a preview-owned checkpoint as Studio-owned for a request that never ran.
+    # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
+    # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
+    # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
+    # upstream response would strand a preview-owned checkpoint as Studio-owned.
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
@@ -12116,10 +12096,9 @@ async def openai_responses(
         request,
         current_subject,
         require_vision = _messages_have_image(messages),
-        # Streaming Responses require a GGUF backend and 400 in _responses_stream
-        # after this switch; claiming here would strand a preview-owned model as
-        # Studio-owned for a request that never generates. Defer to the keep-warm
-        # middleware, which claims the slot on a successful (2xx) response.
+        # Streaming Responses require a GGUF backend and 400 in _responses_stream after this
+        # switch; claiming here would strand a preview-owned model as Studio-owned for a
+        # request that never generates. Defer to the middleware, which claims on a 2xx.
         claim_resident = False,
     )
 
@@ -12316,9 +12295,9 @@ async def anthropic_count_tokens(
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
     )
-    # The auto-switch may still have loaded a new GGUF (clearing the preview marker).
-    # Counting never generates, so a tokenize-only switch must re-mark a newly switched-in
-    # model preview-owned so it doesn't block later previews. Only if the slot changed.
+    # The auto-switch may still have loaded a new GGUF (clearing the preview marker). Counting
+    # never generates, so a tokenize-only switch must re-mark a newly switched-in model
+    # preview-owned (only if the slot changed) so it doesn't block later previews.
     _slot_after_count = _loaded_slot_ident()
     if _slot_after_count is not None and _slot_after_count != _slot_before_count:
         _set_preview_resident(_slot_after_count)
@@ -12494,9 +12473,9 @@ async def anthropic_messages(
         request,
         current_subject,
         require_vision = _anthropic_request_has_image(payload),
-        # The image normalization below can still 400 after this switch, so defer
-        # the claim: the keep-warm middleware claims the slot on a successful (2xx)
-        # response, so a rejected request never strands a preview-owned model.
+        # The image normalization below can still 400 after this switch, so defer the claim:
+        # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
+        # model.
         claim_resident = False,
     )
     if not llama_backend.is_loaded:
@@ -13378,9 +13357,9 @@ async def _anthropic_passthrough_stream(
                     resp.status_code,
                     _err_text,
                 )
-                # The outer 200 stream headers are already flushed, so flag the
-                # failure: the keep-warm middleware must not claim a preview-owned model
-                # for Studio on a passthrough whose upstream errored before any SSE.
+                # The outer 200 stream headers are already flushed, so flag the failure: the
+                # middleware must not claim a preview-owned model on a passthrough whose
+                # upstream errored before any SSE.
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
@@ -13424,9 +13403,9 @@ async def _anthropic_passthrough_stream(
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
-                # The stream already sent HTTP 200, so flag the failure: the keep-warm
-                # middleware must not claim a preview-owned model for Studio on a
-                # passthrough stream that errored mid-response.
+                # The stream already sent HTTP 200, so flag the failure: the middleware must
+                # not claim a preview-owned model on a passthrough stream that errored
+                # mid-response.
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
@@ -14204,9 +14183,8 @@ async def _openai_passthrough_stream_admitted(
     _tracker = tracker
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
-    # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is
-    # seen: the keep-warm middleware must not claim a preview-owned model for Studio on
-    # a failed passthrough stream.
+    # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
+    # middleware must not claim a preview-owned model on a failed passthrough stream.
     from core.inference.llama_keepwarm import mark_response_failed
 
     client = None
@@ -14813,9 +14791,9 @@ async def _openai_passthrough_stream_admitted(
                 if not cancel_event.is_set():
                     api_monitor.fail(monitor_id, "Stream interrupted")
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
-                    # 200 headers already flushed and we re-raise without emitting an
-                    # error SSE, so flag the failure: the keep-warm middleware must not
-                    # claim a preview-owned model for Studio on an interrupted stream.
+                    # 200 headers already flushed and we re-raise without an error SSE, so flag
+                    # the failure: the middleware must not claim a preview-owned model on an
+                    # interrupted stream.
                     mark_response_failed(getattr(request, "scope", None))
                     raise
                 api_monitor.finish(monitor_id, "cancelled")

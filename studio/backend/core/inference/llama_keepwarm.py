@@ -23,46 +23,41 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
-# Subset of _inflight that is /p/ preview traffic (same update sites, so no drift).
+# Subset of _inflight that is /p/ preview traffic.
 _preview_inflight = 0
-# Blocked on the unload gate, not yet in _inflight: the idle loop must not unload while
-# one waits (it would unload out from under it).
+# Blocked on the unload gate, not yet in _inflight: the idle loop must not unload while one waits.
 _pending = 0
-# Subset of _pending that is /p/ preview traffic, so the busy guard tells a queued
+# Subset of _pending that is /p/ preview traffic, so the busy guard can tell a queued
 # Studio request from a queued preview.
 _preview_pending = 0
-# Non-preview requests that passed FastAPI auth and reached the local-inference choke
-# point. The preview busy guard counts these, not raw _inflight, so a pre-auth or
-# unauthenticated request the middleware tracked but that never touches the model can't
-# starve public previews.
+# Non-preview requests past FastAPI auth at the local-inference choke point. The preview
+# busy guard counts these, not raw _inflight, so a pre-auth/unauthenticated tracked request
+# that never touches the model can't starve public previews.
 _admitted_inference = 0
-# Bumped when a preview swap loads a new checkpoint. A non-preview request captures this
-# before the lifecycle gate; if it advanced by the time the gate is acquired, a preview
-# swapped the model out from under it and the request is rejected (see the middleware).
+# Bumped when a preview swap loads a new checkpoint. A non-preview request captures it before
+# the lifecycle gate; if it advanced by the time the gate is held, a preview swapped the model
+# out from under it and the request is rejected (see the middleware).
 _preview_swap_generation = 0
-# Non-zero while a preview swap is loading (from before it takes the lifecycle gate
-# until after it releases). Catches a request that captures the counter AFTER the bump
-# but BEFORE the gate releases: the middleware also snapshots this flag at entry and
-# rejects if a swap was in progress.
+# Non-zero while a preview swap is loading (before it takes the lifecycle gate until after it
+# releases). Catches a request that captures the counter AFTER the bump but BEFORE the gate
+# releases: the middleware snapshots this flag at entry and rejects if a swap was in progress.
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
-# The (id, quant) idle-unload last freed, so an alias/unknown request that would
-# otherwise 503 against an empty backend can reload it (set on unload, cleared on
-# reload). Storing the quant means the reload restores the exact freed variant.
+# The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise
+# 503 against an empty backend can reload it (set on unload, cleared on reload). The quant
+# lets the reload restore the exact freed variant.
 _last_unloaded_model = None
-# Guards inflight bumps against the idle-check-then-unload race, and blocks new
-# inference from starting mid-swap. Process-wide, not per-loop: the backend slot is
-# shared across every event loop in the process, so a per-loop gate would let a
-# request on loop B start inference while a swap on loop A tears the model down.
+# Guards inflight bumps against the idle-check-then-unload race and blocks new inference
+# mid-swap. Process-wide, not per-loop: the backend slot is shared across every event loop,
+# so a per-loop gate would let a request on loop B start while a swap on loop A tears it down.
 _lifecycle_lock = threading.Lock()
 
 
 @contextlib.asynccontextmanager
 async def _unload_gate():
-    # Acquire off the loop: non-blocking first (the common uncontended case), else
-    # poll a non-blocking acquire off a short sleep. Polling keeps the wait off this
-    # loop AND cancellation-safe -- a cancel lands during the sleep, when the gate is
-    # not held, so it never leaks (mirrors the auto-switch swap gate).
+    # Non-blocking acquire first (common uncontended case), else poll off a short sleep.
+    # Polling keeps the wait off this loop AND cancellation-safe: a cancel lands during the
+    # sleep, when the gate is not held, so it never leaks (mirrors the auto-switch swap gate).
     while not _lifecycle_lock.acquire(blocking = False):
         await asyncio.sleep(0.02)
     try:
@@ -85,8 +80,8 @@ _INFERENCE_SUFFIXES = (
 
 
 def _is_preview_path(path: str) -> bool:
-    # Public checkpoint preview (/p/{run}/v1/chat/completions) delegates to the
-    # chat handler and streams from the same backend, so protect it from idle unload.
+    # Public checkpoint preview delegates to the chat handler on the same backend,
+    # so protect it from idle unload.
     return path.startswith("/p/") and path.endswith("/v1/chat/completions")
 
 
@@ -113,9 +108,9 @@ def _note_unpending(is_preview: bool = False) -> None:
 
 
 def _note_start(is_preview: bool = False) -> None:
-    # Do not stamp _last_active here: while _inflight > 0 the model is already
-    # protected (see _is_idle), and stamping on start lets an external-provider
-    # request that is later untracked still reset the local idle timer.
+    # Don't stamp _last_active here: while _inflight > 0 the model is already protected
+    # (see _is_idle), and stamping on start would let a later-untracked external-provider
+    # request still reset the local idle timer.
     global _inflight, _pending, _preview_inflight, _preview_pending
     with _lock:
         _pending = max(0, _pending - 1)
@@ -135,8 +130,8 @@ def _note_end(is_preview: bool = False) -> None:
 
 
 def _note_untracked_end(is_preview: bool = False) -> None:
-    # Drop a request that never used the local GGUF without stamping local
-    # activity, so periodic external-provider traffic can't keep the model warm.
+    # Drop a request that never used the local GGUF without stamping activity, so
+    # external-provider traffic can't keep the model warm.
     global _inflight, _preview_inflight
     with _lock:
         _inflight = max(0, _inflight - 1)
@@ -161,11 +156,10 @@ def other_inference_request_count(
 ) -> int:
     """Tracked inference requests other than the current route call.
 
-    The middleware counts OpenAI-compatible requests before route code runs, so
-    the caller is excluded by default. Idle-unload counts pending waiters too (a
-    swap holding the gate would unload out from under them). The swap guard passes
-    include_pending=False: a pending request is blocked in the middleware and has
-    not started inference, so it can't be the request a swap would interrupt.
+    The middleware counts requests before route code runs, so the caller is excluded by
+    default. Idle-unload counts pending waiters too (a swap holding the gate would unload
+    out from under them); the swap guard passes include_pending=False since a pending
+    request is blocked in the middleware and can't be the one a swap would interrupt.
     """
     with _lock:
         active = _inflight
@@ -184,28 +178,28 @@ def other_preview_inflight_count(current_request_counted: bool = True) -> int:
 
 
 def other_admitted_inference_count() -> int:
-    """Non-preview requests admitted to local inference (passed auth and reached the
-    _maybe_auto_switch_model / generate_stream choke point). The preview busy guard
-    counts these instead of raw _inflight, so a pre-auth or unauthenticated request the
-    middleware tracked can't block a preview. The current request is always a preview,
-    which is never admitted, so no self-exclusion is needed."""
+    """Non-preview requests admitted to local inference (passed auth, reached the
+    _maybe_auto_switch_model / generate_stream choke point). The preview busy guard counts
+    these instead of raw _inflight, so a pre-auth/unauthenticated tracked request can't
+    block a preview. The current request is always a preview (never admitted), so no
+    self-exclusion is needed."""
     with _lock:
         return _admitted_inference
 
 
 def other_non_preview_pending_count() -> int:
-    """Non-preview requests queued on the lifecycle gate (in _pending, not yet in
-    flight). The preview swap guard must count these: a queued Studio request would
-    otherwise start against the model a preview swapped in while it waited. The
-    current request is a preview already in flight, so it is not in _pending."""
+    """Non-preview requests queued on the lifecycle gate (_pending, not yet in flight).
+    The preview swap guard must count these: a queued Studio request would otherwise start
+    against the model a preview swapped in while it waited. The current request is a preview
+    already in flight, so not in _pending."""
     with _lock:
         return max(0, _pending - _preview_pending)
 
 
 def note_preview_swap() -> None:
-    """Record that a preview swap loaded a new checkpoint. A non-preview request that
-    was blocked on the lifecycle gate through the swap sees this counter advance and
-    is rejected rather than running against the swapped-in preview checkpoint."""
+    """Record that a preview swap loaded a new checkpoint. A non-preview request blocked on
+    the lifecycle gate through the swap sees this counter advance and is rejected rather than
+    running against the swapped-in preview checkpoint."""
     global _preview_swap_generation
     with _lock:
         _preview_swap_generation += 1
@@ -217,10 +211,10 @@ def _preview_swap_gen() -> int:
 
 
 def note_preview_swap_begin() -> None:
-    """Mark a preview swap in progress. Call before taking the lifecycle gate to load,
-    and pair with note_preview_swap_end() after the gate is released, so a non-preview
-    request that arrives at any point during the swap (including the window after the
-    generation counter is bumped but before the gate releases) is rejected."""
+    """Mark a preview swap in progress. Call before taking the lifecycle gate to load, pair
+    with note_preview_swap_end() after the gate releases, so a non-preview request arriving
+    at any point during the swap (including after the counter bumps but before the gate
+    releases) is rejected."""
     global _preview_swap_inflight
     with _lock:
         _preview_swap_inflight += 1
@@ -238,19 +232,17 @@ def _preview_swap_active() -> bool:
 
 
 def preview_swapped_since_entry(scope) -> bool:
-    """True if a preview swap ran, or is running, since this request entered the
-    middleware. Extends the gate-wait reject flag to catch a non-preview request that
-    passed the gate BEFORE a swap (so it never set _PREVIEW_SWAP_REJECT_SCOPE_KEY) but is
-    still pre-admission when a preview swaps the model out from under it: run at local-
-    inference admission, it would otherwise serve and then claim the swapped-in
-    checkpoint. entry_gen is None only when the middleware never snapshotted it (non-dict
-    scope / non-inference path), so fall back to the swap-in-progress flag alone."""
+    """True if a preview swap ran, or is running, since this request entered the middleware.
+    Extends the gate-wait reject flag to catch a non-preview request that passed the gate
+    BEFORE a swap (so it never set _PREVIEW_SWAP_REJECT_SCOPE_KEY) but is still pre-admission
+    when a preview swaps the model out from under it. entry_gen is None only when the
+    middleware never snapshotted it (non-dict/non-inference scope), so fall back to the
+    swap-in-progress flag alone."""
     if not isinstance(scope, dict):
         return False
-    # A preview request carries its own ownership and is allowed to swap the model in:
-    # load_model_for_preview bumps the generation before serving the preview's own chat,
-    # so the preview must never reject itself. Mirrors the middleware, which only flags
-    # non-preview scopes.
+    # A preview carries its own ownership and may swap the model in (load_model_for_preview
+    # bumps the generation before serving its own chat), so it must never reject itself.
+    # Mirrors the middleware, which only flags non-preview scopes.
     if _is_preview_path(scope.get("path") or ""):
         return False
     if scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
@@ -263,12 +255,11 @@ def preview_swapped_since_entry(scope) -> bool:
 
 
 def _claim_non_preview_slot() -> None:
-    """A non-preview inference request that actually ran against the local model (a
-    2xx response) adopts it for Studio, so clear preview ownership -- a later preview
-    for another checkpoint then 503s instead of swapping the model out from under an
-    active Studio conversation. Claiming on success (not before) means a request that
-    a per-route capability check rejected never strands a preview-owned model. Lazily
-    imported: routes.inference imports this module."""
+    """A non-preview request that ran against the local model (2xx) adopts it for Studio,
+    so clear preview ownership -- a later preview for another checkpoint then 503s instead
+    of swapping the model out from under an active Studio conversation. Claiming on success
+    (not before) means a per-route-rejected request never strands a preview-owned model.
+    Lazily imported: routes.inference imports this module."""
     try:
         from routes.inference import _set_preview_resident
         _set_preview_resident(None)
@@ -276,34 +267,33 @@ def _claim_non_preview_slot() -> None:
         logger.debug("preview-slot claim on completion failed: %s", exc)
 
 
-# Set on the ASGI scope by a route that proved this request won't touch
-# llama.cpp (e.g. it proxied to an external provider), so the keep-warm count
-# excludes it and the middleware skips its own end-decrement.
+# Set on the scope by a route that proved this request won't touch llama.cpp (e.g. it
+# proxied to an external provider), so the keep-warm count excludes it and the middleware
+# skips its end-decrement.
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
-# Set by the middleware on a non-preview request's scope when a preview swap advanced
-# the counter while it waited on the gate. _maybe_auto_switch_model then rejects it
-# rather than serve the swapped-in checkpoint. Deferred to the route (not a middleware
-# 503) so an external-provider request, which untracks and returns before that check,
-# is never rejected for a swap it never touches.
+# Set by the middleware on a non-preview scope when a preview swap advanced the counter
+# while it waited on the gate; _maybe_auto_switch_model then rejects it rather than serve
+# the swapped-in checkpoint. Deferred to the route (not a middleware 503) so an external-
+# provider request that untracks and returns before that check is never rejected.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
 
-# The swap generation snapshot at middleware entry, stored on the scope so local-
-# inference admission can also reject a request that passed the gate BEFORE a swap (so it
-# never got the gate-wait reject flag) but is still pre-auth when a preview swaps in.
+# The swap generation snapshot at middleware entry, on the scope so local-inference
+# admission can also reject a request that passed the gate BEFORE a swap (never got the
+# gate-wait reject flag) but is still pre-auth when a preview swaps in.
 _SWAP_GEN_AT_ENTRY_KEY = "_unsloth_keepwarm_swap_gen_at_entry"
 
-# Set on the ASGI scope by a streaming route that failed after its 200 headers were
-# sent (an SSE error chunk, a passthrough relaying a mid-stream error while HTTP stays
-# 200). The middleware's claim keys off HTTP status alone, so without this a failed
-# stream would adopt a preview-owned model for Studio; the claim skips a flagged response.
+# Set on the scope by a streaming route that failed after its 200 headers (an SSE error
+# chunk, a passthrough relaying a mid-stream error while HTTP stays 200). The claim keys
+# off HTTP status alone, so without this a failed stream would adopt a preview-owned model
+# for Studio; the claim skips a flagged response.
 _RESPONSE_FAILED_SCOPE_KEY = "_unsloth_keepwarm_response_failed"
 
 
 def mark_response_failed(scope) -> None:
-    """Flag a response that returned 2xx headers but then failed, so the keep-warm
-    middleware does not treat it as a successful non-preview completion and claim the
-    slot for Studio. Safe to call more than once; a no-op on a non-dict scope."""
+    """Flag a response that returned 2xx headers but then failed, so the middleware doesn't
+    treat it as a successful non-preview completion and claim the slot for Studio. Safe to
+    call repeatedly; a no-op on a non-dict scope."""
     if isinstance(scope, dict):
         scope[_RESPONSE_FAILED_SCOPE_KEY] = True
 
@@ -321,21 +311,21 @@ def set_current_response_scope(scope) -> None:
 
 
 def mark_current_response_failed() -> None:
-    """Flag the current request's response as failed via the contextvar the middleware
-    set, so an OpenAI-family streaming error emitted deep in a generator (which has no
-    direct scope handle) still prevents the successful-response slot claim."""
+    """Flag the current response failed via the contextvar the middleware set, so an
+    OpenAI-family streaming error emitted deep in a generator (no direct scope handle)
+    still prevents the successful-response slot claim."""
     mark_response_failed(_current_response_scope.get())
 
 
 def untrack_current_request(scope) -> None:
-    """Drop this request from the in-flight count once the route knows it won't
-    use the local GGUF, so unrelated external-provider traffic can't trip the
-    swap busy guard. Idempotent; the middleware then skips its end-decrement."""
+    """Drop this request from the in-flight count once the route knows it won't use the
+    local GGUF, so external-provider traffic can't trip the swap busy guard. Idempotent;
+    the middleware then skips its end-decrement."""
     if not isinstance(scope, dict) or scope.get(_UNTRACKED_SCOPE_KEY):
         return
     scope[_UNTRACKED_SCOPE_KEY] = True
-    # Keep the preview subset aligned with _inflight: a /p/ request untracking
-    # itself must drop from both counters, or the busy guard sees phantom traffic.
+    # Keep the preview subset aligned with _inflight: a /p/ request must drop from both
+    # counters, or the busy guard sees phantom traffic.
     _note_untracked_end(_is_preview_path(scope.get("path") or ""))
 
 
@@ -343,10 +333,10 @@ _ADMITTED_SCOPE_KEY = "_unsloth_keepwarm_admitted"
 
 
 def note_admitted_inference(scope) -> None:
-    """Mark a non-preview request as admitted local inference: it passed FastAPI auth
-    and reached the inference choke point (_maybe_auto_switch_model / generate_stream),
-    so the preview busy guard counts it. Idempotent per scope; a no-op for preview (/p/)
-    paths (they carry their own ownership) and non-dict scopes."""
+    """Mark a non-preview request as admitted local inference (passed auth, reached the
+    _maybe_auto_switch_model / generate_stream choke point), so the preview busy guard
+    counts it. Idempotent per scope; a no-op for preview (/p/) paths (own ownership) and
+    non-dict scopes."""
     global _admitted_inference
     if not isinstance(scope, dict) or scope.get(_ADMITTED_SCOPE_KEY):
         return
@@ -377,10 +367,10 @@ def note_model_loaded() -> None:
 
 
 def note_model_unloaded() -> None:
-    """Record a deliberate (user/API) unload: drop any idle reload stash so the next
-    request can't resurrect the just-unloaded model. The idle loop unloads via the
-    backend directly and then stashes the freed model for an alias reload; an
-    explicit unload instead means "stay unloaded", so it must not stamp activity."""
+    """Record a deliberate (user/API) unload: drop any idle reload stash so the next request
+    can't resurrect the just-unloaded model. Unlike the idle loop (which stashes the freed
+    model for an alias reload), an explicit unload means "stay unloaded", so it must not
+    stamp activity."""
     _set_last_unloaded(None)
 
 
@@ -411,12 +401,10 @@ class LlamaKeepWarmMiddleware:
         ):
             await self.app(scope, receive, send)
             return
-        # Always track in-flight on inference paths, even when the feature is off,
-        # so a stream that starts before idle-unload is enabled can't be unloaded
-        # mid-response if the operator turns it on during that stream. Counting is
-        # cheap and invisible to clients (the response is proxied unchanged).
-        # Mark pending before the gate so the idle loop (which holds the gate while
-        # unloading) can't free the model while this request is waiting to start.
+        # Always track in-flight on inference paths, even when the feature is off, so a
+        # stream that starts before idle-unload is enabled can't be unloaded mid-response if
+        # the operator turns it on. Mark pending before the gate so the idle loop (which
+        # holds the gate while unloading) can't free the model while this request waits.
         path = scope.get("path") or ""
         is_preview = _is_preview_path(path)
         # Expose this scope to deep streaming error helpers (same task, so the contextvar
@@ -438,11 +426,10 @@ class LlamaKeepWarmMiddleware:
             async with _unload_gate():
                 _note_start(is_preview)
                 started = True
-                # A preview swapped in a different checkpoint while this request waited
-                # on the gate. Flag the scope so _maybe_auto_switch_model rejects it
-                # before running against the preview's model. Deferred to the route (not
-                # a 503 here) so an external-provider request that untracks and returns
-                # before that check is not rejected for a swap it never touches.
+                # A preview swapped in a different checkpoint while this request waited on
+                # the gate. Flag the scope so _maybe_auto_switch_model rejects it before
+                # running against the preview's model. Deferred to the route (not a 503 here)
+                # so an external-provider request that untracks before that check isn't rejected.
                 if (
                     not is_preview
                     and (_preview_swap_gen() != swap_gen_at_entry or swap_active_at_entry)

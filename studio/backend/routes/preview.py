@@ -33,12 +33,11 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
-# A shared preview link is a public bearer capability; cap per-request generation
-# so a single call can't tie up the (serialized) preview GPU indefinitely.
+# A shared preview link is a public bearer capability; cap per-request generation so a
+# single call can't tie up the (serialized) preview GPU indefinitely.
 _PREVIEW_MAX_OUTPUT_TOKENS = 1024
 
-# Capability-gated (signed ref required); resolve_preview_checkpoint pins `run`
-# under outputs_root. One model loads at a time, so serialize load+generate.
+# One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
 
 

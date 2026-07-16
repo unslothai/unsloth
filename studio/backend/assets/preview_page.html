@@ -350,8 +350,7 @@
         }
         if (status === 503) {
           // 503 covers both "a different model is loaded" (unload it) and a transient
-          // "busy, try again shortly" state; show the server's own message so a
-          // retryable busy response isn't reported as needing a manual unload.
+          // "busy, retry" state; show the server's message so a busy response isn't misreported.
           out.textContent =
             detailText ||
             "Studio is currently using another model. To chat with this preview, unload that model in Studio, then try again.";
