@@ -1439,7 +1439,6 @@ def test_responses_stream_failure_paths_mark_response_failed():
     # ownership, so every failed-response builder / inline emitter flags the response
     # failed before yielding.
     import inspect
-
     src = inspect.getsource(inference._responses_stream)
     # 2 failure-only builders (admission-failed + failed_response_payload, the latter
     # covering both the transport-error and generic-exception yields) plus 2 inline
