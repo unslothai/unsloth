@@ -6,6 +6,7 @@
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { useToolArgsStatus } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
 import { CodeIcon, CopyIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -18,6 +19,14 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { ToolLiveOutput } from "./tool-live-output";
+import { ToolResultOutput } from "./tool-result-output";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  preferFullToolOutput,
+  toolOutputKey,
+  useToolPaneScope,
+} from "@/features/chat";
 
 interface StructuredResult {
   text: string;
@@ -105,6 +114,7 @@ function isStructuredResult(val: unknown): val is StructuredResult {
 }
 
 const PythonToolUIImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   args,
   result,
   status,
@@ -112,6 +122,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const code = (args as { code?: string })?.code ?? "";
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
+  // Args still streaming = the model is WRITING the code, not running it yet.
+  const { propStatus } = useToolArgsStatus();
+  const isWritingCode = isRunning && propStatus.code === "streaming";
 
   let output: string;
   let images: string[] = [];
@@ -129,10 +142,19 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = "";
   }
 
+  // Show the fuller live stream over a truncated result, keeping its exit
+  // status. Session-transient: after a reload only the result remains.
+  const paneScope = useToolPaneScope();
+  const fullOutput = useChatRuntimeStore(
+    (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  );
+  const displayOutput = preferFullToolOutput(fullOutput, output);
+
   const authToken = getAuthToken();
 
   return (
-    <ToolFallbackRoot>
+    // Open when mounted mid-run so live output shows; collapsed from history.
+    <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
@@ -150,19 +172,21 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 
           {/* Output */}
           {isRunning ? (
-            <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner className="size-3.5" />
-              <span>Running&hellip;</span>
-            </div>
-          ) : output ? (
+            <>
+              <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner className="size-3.5" />
+                <span>{isWritingCode ? "Writing code…" : "Running…"}</span>
+              </div>
+              {/* Live stdout streamed via tool_output SSE events. */}
+              <ToolLiveOutput toolCallId={toolCallId} />
+            </>
+          ) : displayOutput ? (
             <div className="mt-2 border-t border-dashed pt-2">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">output</span>
-                <CopyBtn text={output} />
+                <CopyBtn text={displayOutput} />
               </div>
-              <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
-                {truncate(output)}
-              </pre>
+              <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
 
