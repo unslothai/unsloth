@@ -1731,6 +1731,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # sharegpt+images) and text (alpaca/sharegpt/chatml → "text" column).
     format_type = config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
+    dataset_final_format = ""
     try:
         from utils.datasets import format_and_template_dataset
         def _fmt_progress(status_message = "", **_kw):
@@ -1796,6 +1797,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             if info.get("success", True):
                 dataset = info.get("dataset", dataset)
+            dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
                     eval_dataset,
@@ -1894,6 +1896,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps = eval_steps_val,
     )
 
+    # Also gates the masking skip below, so defined outside the feature-detect block.
+    raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+
     # Feature-detect optional fields so this PR works without the paired zoo bump.
     _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
     if "cast_norm_output_to_input_dtype" in _supported_fields:
@@ -1907,7 +1912,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
         # Studio SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
@@ -1928,29 +1932,27 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("eval_configured")
 
     # ── 7. Apply train_on_responses_only if requested ──
-    if config.get("train_on_completions", False):
+    # Auto-detect markers from the chat template first, manual table as
+    # fallback. Mirror the CUDA skips: raw/CPT text has no chat turns and
+    # Alpaca-rendered text lacks the chat markers. Also check the resolved
+    # format, since format_type="auto" can land on alpaca or raw text.
+    if (
+        config.get("train_on_completions", False)
+        and not raw_text_mode
+        and format_type != "alpaca"
+        and dataset_final_format not in ("alpaca", "raw_text")
+    ):
         _send("status", status_message = "Configuring response-only training...")
-        try:
-            from utils.datasets import (
-                MODEL_TO_TEMPLATE_MAPPER,
-                TEMPLATE_TO_RESPONSES_MAPPER,
-            )
-
-            template_name = MODEL_TO_TEMPLATE_MAPPER.get(model_name.lower())
-            markers = TEMPLATE_TO_RESPONSES_MAPPER.get(template_name) if template_name else None
-            if markers:
-                trainer = train_on_responses_only(
-                    trainer,
-                    instruction_part = markers["instruction"],
-                    response_part = markers["response"],
-                )
-            else:
-                _send(
-                    "status",
-                    status_message = f"train_on_completions skipped (no template for {model_name})",
-                )
-        except Exception as e:
-            _send("status", status_message = f"train_on_completions failed: {e}")
+        # No catch: the helper handles detection failures and double misses, so
+        # an exception here is a real masking failure that must fail the run,
+        # not silently train on full sequences.
+        from utils.datasets.completion_masking import apply_completion_masking
+        trainer, _masking_applied = apply_completion_masking(
+            trainer,
+            model_name,
+            train_on_responses_only,
+            notify = lambda level, message: _send("status", status_message = message),
+        )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -2188,7 +2190,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
+    # platforms map() is in-process, so keep tokenizer threads on for faster prep.
+    os.environ["TOKENIZERS_PARALLELISM"] = (
+        "true" if sys.platform in ("win32", "darwin") else "false"
+    )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
@@ -2576,6 +2582,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         "overrides torch.version.hip auto-detection)",
                         _bnb_rocm_ver,
                     )
+
+            # Setting BNB_ROCM_VERSION makes bitsandbytes log a benign override
+            # notice on import; drop only that record so real errors and mismatch
+            # warnings still show.
+            if os.environ.get("BNB_ROCM_VERSION"):
+                import logging as _logging
+                _logging.getLogger("bitsandbytes.cextension").addFilter(
+                    lambda _r: "environment variable detected" not in _r.getMessage()
+                )
 
             # Parse HIP version for the kernel-fix gate below, falling back to
             # the rocm version embedded in torch.__version__ when version.hip is
@@ -3008,11 +3023,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             ),
             xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
+        # expert weights into unvalidated paths (same flip as the chat worker).
+        _train_load_in_4bit = config["load_in_4bit"]
+        if _train_load_in_4bit:
+            from utils.transformers_version import latest_tier_active_for
+            if latest_tier_active_for(model_name, hf_token):
+                _train_load_in_4bit = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - forcing a 16-bit "
+                    "training load (4-bit is disabled for brand-new architectures)",
+                    model_name,
+                )
+
         try:
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],
-                load_in_4bit = config["load_in_4bit"],
+                load_in_4bit = _train_load_in_4bit,
                 full_finetuning = not use_lora,
                 hf_token = hf_token,
                 is_dataset_image = config.get("is_dataset_image", False),

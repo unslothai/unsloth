@@ -785,6 +785,10 @@ export function VoiceTab() {
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
         audio.volume = ttsVolume;
+        // Some browsers reset playbackRate once metadata loads.
+        audio.addEventListener("loadedmetadata", () => {
+          audio.playbackRate = ttsRate;
+        });
         audio.addEventListener("ended", () => {
           releasePreviewAudio();
           markPreviewing(false);
@@ -792,6 +796,7 @@ export function VoiceTab() {
         audio.addEventListener("error", () => {
           releasePreviewAudio();
           markPreviewing(false);
+          toast.error("TTS preview failed");
         });
         previewAudioRef.current = audio;
         await audio.play();

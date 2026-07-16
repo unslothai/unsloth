@@ -278,6 +278,11 @@ function speakWithStudioModel(
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
+      // Some browsers reset playbackRate to 1 once the source loads; reapply
+      // it on loadedmetadata so the speed setting reliably takes effect.
+      audio.addEventListener("loadedmetadata", () => {
+        if (audio) audio.playbackRate = ttsRate;
+      });
       audio.addEventListener("ended", () => {
         cleanup();
         handleEnd("finished");
@@ -382,7 +387,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
     ) {
       const session = speakWithStudioModel(text, handleEnd, () => {
-        if (res.status.type !== "ended") res.status = { type: "running" };
+        if (res.status.type === "ended") return;
+        // Notify subscribers of the async starting -> running transition;
+        // the adapter contract drives UI state off these subscribe callbacks.
+        res.status = { type: "running" };
+        for (const handler of subscribers) handler();
       });
       cancelImpl = session.cancel;
       return res;

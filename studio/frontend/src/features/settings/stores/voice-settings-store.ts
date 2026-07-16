@@ -370,12 +370,15 @@ export function applyDictationDictionary(
     // Whitespace-tolerant pattern so "jane   doe" still matches.
     const pattern = trimmed.split(/\s+/).map(escapeRegExp).join("\\s+");
     try {
+      // Capture the leading boundary instead of using a lookbehind, which
+      // engines that support dictation but not lookbehind (Safari < 16.4)
+      // cannot compile; the catch below would otherwise skip every entry.
       const regex = new RegExp(
-        `(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`,
+        `(^|[^\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`,
         "giu",
       );
-      // Callback form: a plain string would expand $-patterns ($&, $$).
-      result = result.replace(regex, () => trimmed);
+      // Re-emit the boundary; callback form avoids $-pattern expansion.
+      result = result.replace(regex, (_match, prefix) => `${prefix}${trimmed}`);
     } catch {
       // Skip entries that produce an invalid pattern.
     }

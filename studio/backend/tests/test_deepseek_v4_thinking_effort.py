@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -128,15 +127,13 @@ def _kwargs_for(flags: dict, enable_thinking, reasoning_effort):
     """Drive the real backend method with a shim carrying the detected flags."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    shim = SimpleNamespace(
-        _supports_reasoning = flags["supports_reasoning"],
-        _reasoning_always_on = flags["reasoning_always_on"],
-        _reasoning_style = flags["reasoning_style"],
-        _reasoning_effort_levels = flags["reasoning_effort_levels"],
-        _supports_preserve_thinking = flags["supports_preserve_thinking"],
-    )
-    build = LlamaCppBackend._request_reasoning_kwargs.__get__(shim)
-    return build(enable_thinking, reasoning_effort, None) or {}
+    shim = object.__new__(LlamaCppBackend)
+    shim._supports_reasoning = flags["supports_reasoning"]
+    shim._reasoning_always_on = flags["reasoning_always_on"]
+    shim._reasoning_style = flags["reasoning_style"]
+    shim._reasoning_effort_levels = flags["reasoning_effort_levels"]
+    shim._supports_preserve_thinking = flags["supports_preserve_thinking"]
+    return shim._request_reasoning_kwargs(enable_thinking, reasoning_effort, None) or {}
 
 
 def _flags():

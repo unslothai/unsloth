@@ -88,6 +88,8 @@ export const en = {
       title: "Settings",
       description: "Manage your Unsloth preferences.",
       closeAriaLabel: "Close settings",
+      searchPlaceholder: "Search settings…",
+      searchNoResults: "No settings found.",
     },
     tabs: {
       general: "General",
@@ -309,6 +311,12 @@ export const en = {
         revoked: "All preview links revoked",
         revokeError: "Couldn't revoke preview links",
       },
+      permissions: {
+        sectionTitle: "Permissions",
+        bypassLabel: "Bypass permissions",
+        bypassDescription:
+          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
@@ -372,7 +380,11 @@ export const en = {
       avatarShape: "Profile picture shape",
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
-      chooseSloth: "Or pick a sloth",
+      greetingSloth: "Sloth in greeting",
+      greetingSlothDescription: "Show the sloth in the chat greeting.",
+      chooseSloth: "Or pick a sloth profile picture",
+      noPicture: "No profile picture",
+      noneLabel: "None",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:
@@ -395,16 +407,110 @@ export const en = {
         light: "Light",
         dark: "Dark",
       },
+      palette: {
+        label: "Color palette",
+        description: "Colors used across Unsloth, in light and dark mode.",
+        standard: "Standard",
+        classic: "Classic",
+        minimal: "Minimal",
+      },
+      custom: {
+        reset: "Reset",
+        resetAll: "Reset customization",
+        preferencesTitle: "Preferences",
+        colors: {
+          lightGroup: "Light theme",
+          darkGroup: "Dark theme",
+          accent: "Accent",
+          background: "Background",
+          foreground: "Foreground",
+        },
+        fontDefault: "Default",
+        fontBundledGroup: "Built-in",
+        fontImportedGroup: "Imported",
+        fontDeviceGroup: "On this device",
+        fontFolderGroup: "From folder",
+        fontDeviceLoading: "Looking for device fonts…",
+        fontSearch: "Search fonts…",
+        fontNoResults: "No fonts found.",
+        colorPicker: {
+          hue: "Hue",
+          hex: "Hex color",
+          eyedropper: "Pick a color from the screen",
+        },
+        uiFont: {
+          label: "UI font",
+        },
+        headingFont: {
+          label: "Heading font",
+        },
+        chatFont: {
+          label: "Chat font",
+        },
+        codeFont: {
+          label: "Code font",
+        },
+        importFont: {
+          upload: "Upload",
+          scanFolder: "Select folder",
+          alreadyAvailable:
+            "This font is already available, so the existing copy is used.",
+          folderNoFonts: "No font files found in that folder.",
+          remove: "Remove",
+          errorInvalidType:
+            "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
+          errorTooLarge: "Font file is too large (max 1.5 MB).",
+          errorLimit: "You can import up to 3 fonts.",
+          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
+          errorFailed: "Could not load this font file.",
+        },
+        uiFontSize: {
+          label: "UI font size",
+          description: "Adjust the base size used for the Unsloth UI.",
+        },
+        codeFontSize: {
+          label: "Code font size",
+          description: "Adjust the base size used for code.",
+        },
+        fontSmoothing: {
+          label: "Font smoothing",
+          description: "Use smoothed font anti-aliasing.",
+        },
+        contrast: {
+          label: "Contrast",
+          description: "Strength of borders and secondary text.",
+        },
+        reduceMotion: {
+          label: "Reduce motion",
+          description: "Reduce animations or match your system.",
+          system: "System",
+          on: "On",
+          off: "Off",
+        },
+        pointerCursors: {
+          label: "Use pointer cursors",
+          description:
+            "Change the cursor to a pointer when hovering over interactive elements.",
+        },
+      },
       language: {
         title: "Language",
         label: "Display language",
         description: "The language used by Unsloth.",
+        autoDetect: "Auto detect",
       },
       layout: {
         title: "Layout",
         compactSidebar: "Pin sidebar by default",
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
+      },
+      sidebarMenu: {
+        title: "Sidebar menu",
+        description:
+          "Show, hide, and reorder items in the sidebar profile menu. Settings, Help, Log out, and Shutdown stay fixed.",
+        darkModeToggle: "Dark mode toggle",
+        dragToReorder: "Drag to reorder",
       },
     },
     resources: {
@@ -573,7 +679,8 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap:
+        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
       codingAgentDetected: "Installed on this machine",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
