@@ -453,8 +453,28 @@ class LlamaKeepWarmMiddleware:
             if ended["done"]:
                 return
             ended["done"] = True
-            # Balance note_admitted_inference here (runs in the finally, so it can't
-            # leak on any exit path), before the untracked / 401 early returns.
+            code = status["code"]
+            # A non-preview 2xx that completed cleanly ran against the local model and adopts
+            # it for Studio, so clear preview ownership. Skip on a per-route 4xx/5xx (never
+            # strand a preview-owned model), count_tokens (tokenize only), a failed/cancelled
+            # stream, and an untracked balance-only request. Claim BEFORE dropping the admitted
+            # count (and the in-flight count) below: load_model_for_preview's busy guard keys on
+            # other_admitted_inference_count(), so decrementing first opens a window where a
+            # preview sees no admitted Studio traffic and a still-preview-owned slot, swaps in,
+            # and this delayed claim then clears the wrong checkpoint; while still counted the
+            # guard refuses that swap.
+            if (
+                not is_preview
+                and isinstance(code, int)
+                and 200 <= code < 300
+                and completed["done"]
+                and not path.endswith("/messages/count_tokens")
+                and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
+                and not scope.get(_UNTRACKED_SCOPE_KEY)
+            ):
+                _claim_non_preview_slot()
+            # Balance note_admitted_inference here (runs in the finally, so it can't leak on any
+            # exit path), after the claim above and before the untracked / 401 early returns.
             if scope.get(_ADMITTED_SCOPE_KEY):
                 _note_admitted_end()
             if scope.get(_UNTRACKED_SCOPE_KEY):
@@ -462,7 +482,6 @@ class LlamaKeepWarmMiddleware:
             # This middleware runs before FastAPI auth, so a 401/403 reaches here without
             # touching llama.cpp. Balance _note_start but do NOT stamp activity, or
             # repeated unauthenticated probes would keep the model warm forever.
-            code = status["code"]
             if code in (401, 403):
                 _note_untracked_end(is_preview)
                 return
@@ -473,22 +492,6 @@ class LlamaKeepWarmMiddleware:
             if is_preview and not (isinstance(code, int) and 200 <= code < 300):
                 _note_untracked_end(is_preview)
                 return
-            # A non-preview 2xx that ran against the local model adopts it for Studio, so
-            # clear preview ownership. Skip on a per-route 4xx/5xx (never strand a
-            # preview-owned model) and on count_tokens (tokenize only, no generation).
-            # Claim BEFORE decrementing in-flight: doing it after opens a window where a
-            # preview for another checkpoint sees no non-preview traffic and a still-
-            # preview-owned slot, swaps in, and this delayed claim then clears the wrong
-            # model; while still counted in-flight the busy guard refuses that swap.
-            if (
-                not is_preview
-                and isinstance(code, int)
-                and 200 <= code < 300
-                and not path.endswith("/messages/count_tokens")
-                and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
-                and completed["done"]
-            ):
-                _claim_non_preview_slot()
             _note_end(is_preview)
 
         async def send_wrapper(message):

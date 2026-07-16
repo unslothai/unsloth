@@ -1371,6 +1371,28 @@ def test_gguf_load_failure_restores_preview_marker():
     assert "_restore_marker_if_prior_preview_still_resident()" in gguf_fail_region
 
 
+def test_preload_unload_teardown_restores_preview_marker():
+    # Codex P2 (round 29): before loading the new model each path tears down the other backend's
+    # active model, and that teardown runs after the marker was cleared. If the unload raises
+    # with the prior preview-owned checkpoint still resident, the marker must be restored or a
+    # later preview for another checkpoint is 503'd against a model Studio never adopted.
+    import inspect
+
+    src = inspect.getsource(inference._load_model_impl)
+    # Non-GGUF path: the pre-load llama_backend.unload_model() teardown is wrapped so a raise
+    # restores the marker before propagating.
+    non_gguf = src[src.index("Unloading GGUF model before loading Unsloth model") :]
+    non_gguf = non_gguf[: non_gguf.index("Shut down any export subprocess")]
+    assert "llama_backend.unload_model()" in non_gguf
+    assert "_restore_marker_if_prior_preview_still_resident()" in non_gguf
+    assert "raise" in non_gguf
+    # GGUF path: the pre-load unsloth_backend.unload_model teardown is wrapped the same way.
+    gguf = src[src.index("before loading GGUF") :]
+    gguf = gguf[: gguf.index("Inherit llama_extra_args")]
+    assert "_restore_marker_if_prior_preview_still_resident()" in gguf
+    assert "raise" in gguf
+
+
 def test_monitor_openai_sse_event_reports_error_status():
     # Codex P2 (round 17): the legacy /v1/completions relay forwards an upstream HTTP-200
     # SSE `data: {"error": ...}` event. _monitor_openai_sse_event must report "error" so the
@@ -1673,7 +1695,9 @@ def test_native_chat_stream_cancels_mark_response_failed():
     # Codex P2 (round 24): the GGUF/safetensors chat streaming loops end a 200 with no
     # completion on cancel_event (client disconnect via the watcher, checked first) or on
     # is_disconnected, so each cancel-break and disconnect-return must flag the response failed
-    # or the middleware claims a preview-owned slot for a cancelled stream.
+    # or the middleware claims a preview-owned slot for a cancelled stream. Round 29 adds the
+    # post-loop finalize mark: a cancel observed inside the threaded next() call returns the
+    # sentinel and breaks without hitting the pre-next check, so the finalize marks it too.
     import inspect
     src = inspect.getsource(inference.openai_chat_completions)
     for gen in ("gguf_tool_stream", "gguf_stream_chunks", "sf_tool_stream", "stream_chunks"):
@@ -1683,8 +1707,13 @@ def test_native_chat_stream_cancels_mark_response_failed():
         except ValueError:
             nxt = len(src)
         block = src[start:nxt]
-        # cancel-break + disconnect-return both mark failed.
-        assert block.count("mark_current_response_failed()") >= 2, gen
+        # cancel-break + disconnect-return + post-loop sentinel-break all mark failed.
+        assert block.count("mark_current_response_failed()") >= 3, gen
+        # The post-loop mark sits just before the "completed" finalize, guarding the
+        # sentinel-break exit that the pre-next cancel check cannot catch.
+        finalize = block.index('"cancelled" if cancel_event.is_set() else "completed"')
+        guard = block.rindex("if cancel_event.is_set():", 0, finalize)
+        assert "mark_current_response_failed()" in block[guard:finalize], gen
 
 
 def test_deferred_claim_load_leaves_new_model_preview_owned():
@@ -1775,6 +1804,38 @@ def test_slot_claim_happens_before_inflight_decrement(slot_state, monkeypatch):
     assert observed["inflight_at_claim"] == 1
     assert llama_keepwarm._inflight == 0  # decremented afterwards
     _reset_keepwarm_counters()
+
+
+def test_slot_claim_happens_before_admitted_decrement(slot_state, monkeypatch):
+    # Codex P2 (round 29): the middleware clears preview ownership BEFORE dropping the admitted
+    # count. load_model_for_preview's busy guard keys on other_admitted_inference_count(), so
+    # decrementing first opens a window where a preview sees no admitted Studio traffic and a
+    # still-preview-owned slot, swaps in, and the delayed claim then clears the wrong checkpoint.
+    _reset_keepwarm_counters()
+    llama_keepwarm._admitted_inference = 0
+    inference._set_preview_resident("/outputs/run/ckpt-a")
+    observed = {}
+    real_claim = llama_keepwarm._claim_non_preview_slot
+
+    def _spy():
+        observed["admitted_at_claim"] = llama_keepwarm._admitted_inference
+        real_claim()
+
+    monkeypatch.setattr(llama_keepwarm, "_claim_non_preview_slot", _spy)
+
+    async def _app(scope, receive, send):
+        llama_keepwarm.note_admitted_inference(scope)  # passed auth, reached the inference hook
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    _run_middleware(_app, "/v1/chat/completions")
+    # Still counted admitted when the claim runs, so a concurrent preview's busy guard refuses
+    # the swap; only then is the admit balanced.
+    assert observed["admitted_at_claim"] == 1
+    assert llama_keepwarm._admitted_inference == 0  # decremented afterwards
+    assert not inference._is_preview_resident("/outputs/run/ckpt-a")  # claimed for Studio
+    _reset_keepwarm_counters()
+    llama_keepwarm._admitted_inference = 0
 
 
 def test_rejected_preview_request_does_not_refresh_idle_timer(slot_state):

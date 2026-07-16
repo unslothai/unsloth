@@ -4480,9 +4480,16 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 logger.info(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
-                await asyncio.to_thread(
-                    unsloth_backend.unload_model, unsloth_backend.active_model_name
-                )
+                try:
+                    await asyncio.to_thread(
+                        unsloth_backend.unload_model, unsloth_backend.active_model_name
+                    )
+                except Exception:
+                    # This teardown runs after the marker was cleared above; if it raises
+                    # with the prior preview-owned Unsloth model still resident, restore its
+                    # ownership so a later preview for another checkpoint is not 503'd.
+                    _restore_marker_if_prior_preview_still_resident()
+                    raise
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -4770,7 +4777,14 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+            try:
+                llama_backend.unload_model()
+            except Exception:
+                # This teardown runs after the marker was cleared above; if it raises with
+                # the prior preview-owned GGUF still resident, restore its ownership so a
+                # later preview for another checkpoint is not 503'd against it.
+                _restore_marker_if_prior_preview_still_resident()
+                raise
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -7961,6 +7975,12 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    # A cancel observed inside asyncio.to_thread(next, gen, ...) returns
+                    # the sentinel and breaks the loop without hitting the pre-next mark,
+                    # so flag it here too or the middleware claims the slot for a stream
+                    # the user cancelled.
+                    if cancel_event.is_set():
+                        mark_current_response_failed()
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -8491,6 +8511,12 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    # A cancel observed inside asyncio.to_thread(next, gen, ...) returns
+                    # the sentinel and breaks the loop without hitting the pre-next mark,
+                    # so flag it here too or the middleware claims the slot for a stream
+                    # the user cancelled.
+                    if cancel_event.is_set():
+                        mark_current_response_failed()
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -9218,6 +9244,12 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stats.get("usage"))
+                # A cancel observed inside asyncio.to_thread(next, gen, ...) returns the
+                # sentinel and breaks the loop without hitting the pre-next mark, so flag
+                # it here too or the middleware claims the slot for a stream the user
+                # cancelled.
+                if cancel_event.is_set():
+                    mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -9568,6 +9600,11 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stats.get("usage"))
+                # A cancel observed inside the executor next() call returns the sentinel
+                # and breaks the loop without hitting the pre-next mark, so flag it here
+                # too or the middleware claims the slot for a stream the user cancelled.
+                if cancel_event.is_set():
+                    mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
