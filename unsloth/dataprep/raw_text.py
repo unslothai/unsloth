@@ -151,6 +151,13 @@ class RawTextDataLoader:
             # Tokenizer returned a count; build a range
             tokens = list(range(tokens))
 
+        if len(tokens) == 0:
+            # Empty / whitespace-only text tokenizes to nothing. Emit no chunks
+            # rather than a degenerate sample (a lone-EOS "document", or a
+            # zero-length ``input_ids`` when the tokenizer has no eos_token_id,
+            # which would break a downstream collator/trainer).
+            return []
+
         if len(tokens) <= chunk_size:
             # Fits in a single chunk
             if return_tokenized:
