@@ -163,7 +163,8 @@ def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
 
     def fake_parse(data, *, max_pages = None):
         seen["max_pages"] = max_pages
-        return [Page(text = "x" * 1000, page_number = i, char_count = 1000) for i in range(1, 51)]
+        pages = [Page(text = "x" * 1000, page_number = i, char_count = 1000) for i in range(1, 51)]
+        return pages, 60  # document actually has more pages than the cap
 
     monkeypatch.setattr("core.rag.parsers.parse_pdf_bytes", fake_parse)
     text = tools._extract_pdf_text(b"unused")
@@ -173,13 +174,30 @@ def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
     assert "page processing capped at 50 pages" in text
 
 
+def test_pdf_exactly_at_page_cap_not_marked_capped(monkeypatch):
+    from core.rag.parsers import Page
+
+    # Exactly _MAX_WEB_PDF_PAGES pages are fully read, so no "capped" marker.
+    monkeypatch.setattr(
+        "core.rag.parsers.parse_pdf_bytes",
+        lambda data, *, max_pages = None: (
+            [Page(text = "short", page_number = i, char_count = 5) for i in range(1, 51)],
+            50,
+        ),
+    )
+    text = tools._extract_pdf_text(b"unused")
+    assert "page processing capped" not in text
+    assert "## Page 50\n\nshort" in text
+
+
 def test_pdf_page_cap_does_not_claim_later_pages_are_textless(monkeypatch):
     from core.rag.parsers import Page
     monkeypatch.setattr(
         "core.rag.parsers.parse_pdf_bytes",
-        lambda data, *, max_pages = None: [
-            Page(text = "", page_number = i, char_count = 0) for i in range(1, 51)
-        ],
+        lambda data, *, max_pages = None: (
+            [Page(text = "", page_number = i, char_count = 0) for i in range(1, 51)],
+            60,
+        ),
     )
     assert tools._extract_pdf_text(b"unused") == (
         "(PDF contains no extractable text in the first 50 pages)"

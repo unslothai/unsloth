@@ -3675,8 +3675,8 @@ def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
 
-    pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
-    page_limit_reached = len(pages) == _MAX_WEB_PDF_PAGES
+    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
+    page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
     parts: list[str] = []
     length = 0
     text_limited = False

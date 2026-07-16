@@ -129,7 +129,7 @@ def _pdf(
     source: str | bytes,
     want_images: bool,
     max_pages: int | None = None,
-) -> tuple[list[Page], list[ParsedImage]]:
+) -> tuple[list[Page], list[ParsedImage], int]:
     import fitz  # PyMuPDF
 
     pages: list[Page] = []
@@ -140,8 +140,9 @@ def _pdf(
     try:
         if doc.needs_pass:
             raise ValueError("encrypted PDF requires a password")
+        total_pages = doc.page_count
         page_numbers = range(
-            doc.page_count if max_pages is None else min(doc.page_count, max_pages)
+            total_pages if max_pages is None else min(total_pages, max_pages)
         )
         if not config.PDF_MARKDOWN:
             md = None
@@ -184,13 +185,16 @@ def _pdf(
                         )
     finally:
         doc.close()
-    return pages, images
+    return pages, images, total_pages
 
 
-def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> list[Page]:
-    """Extract PDF pages from an in-memory download using the ingestion parser."""
-    pages, _images = _pdf(data, want_images = False, max_pages = max_pages)
-    return pages
+def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
+    """Extract PDF pages from an in-memory download using the ingestion parser.
+
+    Returns the (capped) pages plus the document's full page count, so a caller
+    that set ``max_pages`` can tell a fully-read short PDF from a truncated one."""
+    pages, _images, total_pages = _pdf(data, want_images = False, max_pages = max_pages)
+    return pages, total_pages
 
 
 def _merge_rects(boxes: list) -> list:
@@ -439,7 +443,7 @@ def parse(path: str, *, want_images: bool = False):
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".pdf":
-        pages, images = _pdf(path, want_images)
+        pages, images, _total = _pdf(path, want_images)
         return (pages, images) if want_images else pages
 
     if ext == ".docx":

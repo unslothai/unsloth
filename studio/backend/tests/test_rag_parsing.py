@@ -61,8 +61,9 @@ def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
     pdf = tmp_path / "table.pdf"
     _table_pdf(pdf)
     from_file = parsers.parse(str(pdf))
-    from_bytes = parsers.parse_pdf_bytes(pdf.read_bytes())
+    from_bytes, total_pages = parsers.parse_pdf_bytes(pdf.read_bytes())
     assert [page.text for page in from_bytes] == [page.text for page in from_file]
+    assert total_pages == len(from_file)
 
 
 def test_pdf_bytes_limit_pages_before_extraction(monkeypatch):
@@ -78,9 +79,10 @@ def test_pdf_bytes_limit_pages_before_extraction(monkeypatch):
     data = doc.tobytes()
     doc.close()
 
-    pages = parsers.parse_pdf_bytes(data, max_pages = 2)
+    pages, total_pages = parsers.parse_pdf_bytes(data, max_pages = 2)
     assert len(pages) == 2
     assert "page two" in pages[-1].text
+    assert total_pages == 3  # full count, not the 2 extracted
 
 
 def test_pdf_markdown_receives_page_limit(monkeypatch):
