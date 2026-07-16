@@ -12,6 +12,7 @@ export type InventoryHintRow = {
   repo_id: string;
   size_bytes: number;
   partial?: boolean;
+  optimistic?: boolean;
 };
 
 export type InventoryHintReconciliation = {
@@ -41,6 +42,7 @@ function optimisticRow(hint: InventoryHint): InventoryHintRow {
     repo_id: hint.repoId,
     size_bytes: hint.bytes ?? 0,
     partial: false,
+    optimistic: true,
   };
 }
 

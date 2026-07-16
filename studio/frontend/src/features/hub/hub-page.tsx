@@ -773,22 +773,17 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // On Device rows come from two sources with different hiding authority:
-  //  - Cached rows are the Hub inventory API (/api/hub/cached-*), which already
-  //    filters infra models (the RAG embedder and llama.cpp probe) server-side
-  //    and re-includes a GGUF infra repo once the user downloads a variant
-  //    through the Hub. Trust that decision: re-hiding by repo id here would
-  //    drop the user-downloaded variant from both the list and the count.
-  //  - Local filesystem rows are not variant-aware, so keep hiding infra models
-  //    (e.g. the RAG embedder bge-small-en-v1.5) client-side like Discover, but
-  //    reveal a row when a query matches it so the user can confirm it is
-  //    already downloaded.
+  // Server cache rows already apply variant-aware infra hiding. Optimistic
+  // rows are not server-confirmed, so apply the client filter first.
   const isVisibleInventoryRow = useCallback(
     (row: CachedInventoryRow | LocalInventoryRow) => {
-      if (row.kind === "cache") return true;
-      // Local rows can have a null repoId and an id that is a hash rather than
-      // the file path/name, so also check path/title (the backend's
-      // _is_hidden_model checks the on-disk path for the same reason).
+      if (row.kind === "cache") {
+        return (
+          !row.optimistic ||
+          !isHiddenModelId(row.id, row.repoId, row.cachePath)
+        );
+      }
+      // Local rows may lack a repo id, so also check path and title.
       return (
         !isHiddenModelId(row.id, row.repoId, row.path, row.title) ||
         (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens))

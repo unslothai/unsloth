@@ -533,6 +533,53 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
+def test_cached_scans_hide_embedders_configured_by_cache_path(monkeypatch, tmp_path):
+    from core.rag import config as rag_config
+
+    gguf_path = tmp_path / "hub" / "models--Org--PathEmbedder-GGUF"
+    gguf_path.mkdir(parents = True)
+    gguf = _repo(
+        "Org/PathEmbedder-GGUF",
+        [_file("model-F16.gguf", 60_000_000)],
+        gguf_path,
+    )
+    model_path = tmp_path / "hub" / "models--Org--PathEmbedder"
+    model_path.mkdir(parents = True)
+    model = _repo(
+        "Org/PathEmbedder",
+        [_file("config.json", 12), _file("model.safetensors", 130_000_000)],
+        model_path,
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_embedding_model",
+        lambda: str(model_path),
+    )
+    monkeypatch.setattr(
+        rag_config,
+        "effective_gguf_repo",
+        lambda: str(gguf_path),
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [gguf, model])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path: False,
+    )
+
+    assert cache_inventory._scan_cached_gguf() == []
+    assert cache_inventory._scan_cached_models() == []
+
+
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch, tmp_path
 ):

@@ -270,7 +270,10 @@ def _scan_cached_gguf() -> list[dict]:
                 repo_id = repo_info.repo_id
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(repo_id)
-                is_hidden_infra = _is_hidden_infra_repo(repo_id)
+                is_hidden_infra = _is_hidden_infra_repo(
+                    repo_id,
+                    str(repo_info.repo_path),
+                )
                 # Hide infra repos unless the user downloaded a variant via
                 # the Hub; variant state only exists for user downloads.
                 if is_hidden_infra and not has_variant_state:
@@ -498,7 +501,7 @@ def _scan_cached_models() -> list[dict]:
                     continue
                 repo_id = repo_info.repo_id
                 # The non-GGUF embedder has no variant downloads; always hide.
-                if _is_hidden_infra_repo(repo_id):
+                if _is_hidden_infra_repo(repo_id, str(repo_info.repo_path)):
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
