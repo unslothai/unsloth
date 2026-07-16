@@ -29,13 +29,17 @@ def _reset_studio_db(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_db, "_schema_ready", False)
 
 
-def _thread(thread_id: str = "thread-1", title: str = "Test Chat") -> dict:
+def _thread(
+    thread_id: str = "thread-1",
+    title: str = "Test Chat",
+    pair_id: str | None = None,
+) -> dict:
     return {
         "id": thread_id,
         "title": title,
         "modelType": "base",
         "modelId": "test-model",
-        "pairId": None,
+        "pairId": pair_id,
         "archived": False,
         "createdAt": 1_700_000_000_000,
     }
@@ -160,6 +164,21 @@ def test_list_chat_attachments_defaults_missing_name(tmp_path, monkeypatch):
     assert studio_db.list_chat_attachments()[0]["name"] == "attachment"
 
 
+def test_list_chat_attachments_sanitizes_structured_metadata(tmp_path, monkeypatch):
+    attachment = {
+        "id": "att-weird",
+        "name": {"nested": "name"},
+        "type": ["image"],
+        "contentType": {"mime": "image/png"},
+        "content": [],
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    record = studio_db.list_chat_attachments()[0]
+    assert record["name"] == "attachment"
+    assert record["type"] is None
+    assert record["contentType"] is None
+
+
 def test_list_chat_attachments_skips_malformed_rows(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
@@ -206,6 +225,17 @@ def test_list_chat_attachments_survives_missing_thread_row(tmp_path, monkeypatch
     records = studio_db.list_chat_attachments()
     assert len(records) == 1
     assert records[0]["threadTitle"] is None
+
+
+def test_list_chat_attachments_includes_compare_pair_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread(pair_id="pair-1"))
+    studio_db.upsert_chat_message(
+        _message("msg-compare", attachments=[_image_attachment()])
+    )
+    record = studio_db.list_chat_attachments()[0]
+    assert record["threadId"] == "thread-1"
+    assert record["pairId"] == "pair-1"
 
 
 def test_list_chat_attachments_gone_after_thread_delete(tmp_path, monkeypatch):

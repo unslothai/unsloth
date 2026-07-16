@@ -233,9 +233,15 @@ export async function archiveAllChatItems(
     toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
   );
 
-  // Every remaining chat is now archived, so if one was open reset to a
-  // fresh thread like archiveChatItem does.
-  if (activeId !== undefined) {
+  // Reset only when this action archived the active single thread or compare
+  // pair. An already-archived chat opened from the archive is not in
+  // toArchive and must stay open.
+  const archivedActive =
+    activeId !== undefined &&
+    toArchive.some(
+      (thread) => thread.id === activeId || thread.pairId === activeId,
+    );
+  if (archivedActive) {
     useChatRuntimeStore.getState().setActiveThreadId(null);
     onSelect?.({ mode: "single", newThreadNonce: crypto.randomUUID() });
   }

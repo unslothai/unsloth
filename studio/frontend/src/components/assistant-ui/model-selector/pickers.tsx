@@ -725,6 +725,7 @@ function GgufVariantExpander({
   sourceOverride,
   variantActions,
   onDevice = false,
+  allowPin = false,
   onHasVision,
 }: {
   repoId: string;
@@ -755,6 +756,9 @@ function GgufVariantExpander({
   /** On Device rows honor the Show all quantizations setting; Recommended and
    *  other browse lists always show every quant. */
   onDevice?: boolean;
+  /** Only managed cached-Hub rows can surface quant pins in the Pinned
+   *  section. Local-path expanders deliberately leave this false. */
+  allowPin?: boolean;
   /** Report GGUF vision support up so the parent row can badge it. */
   onHasVision?: (hasVision: boolean) => void;
 }) {
@@ -1065,7 +1069,7 @@ function GgufVariantExpander({
                 onUpdated={() => setRefreshKey((key) => key + 1)}
               />
             )}
-            {v.downloaded && onDevice && (
+            {v.downloaded && allowPin && (
               <Tooltip delayDuration={0}>
                 <TooltipTrigger asChild={true}>
                   <button
@@ -2083,26 +2087,97 @@ export function HubModelPicker({
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
-  // Pinned quants of repos still in the cache (stale pins stay hidden), in
-  // pin order, filtered by the search query on repo id or quant name.
-  const pinnedQuants = useMemo(() => {
+  // Candidate pins whose repo still exists in the managed cache. Per-quant
+  // validation below is required because deleting one variant can leave a
+  // sibling quant (and therefore the repo row) cached.
+  const pinnedQuantCandidates = useMemo(() => {
     // The existence check ignores the text query (but keeps the format filter)
     // so a pinned quant stays findable by its quant name even when the repo id
     // does not match the query; querying visibleCachedGguf here would drop the
-    // repo before the `${repoId} ${quant}` predicate below could surface it.
+    // repo before the later `${repoId} ${quant}` predicate could surface it.
     const cached = new Set(
       sortedCachedGguf
         .filter((c) => matchesFormatFilter(c.repo_id, true, formatFilter))
         .map((c) => c.repo_id),
     );
+    return pinnedQuantEntries(pinnedIds).filter((entry) =>
+      cached.has(entry.repoId),
+    );
+  }, [pinnedIds, sortedCachedGguf, formatFilter]);
+  const pinnedQuantValidationKey = useMemo(() => {
+    const cacheByRepo = new Map(
+      sortedCachedGguf.map((repo) => [repo.repo_id, repo]),
+    );
+    return pinnedQuantCandidates
+      .map((entry) => {
+        const cached = cacheByRepo.get(entry.repoId);
+        return `${pinKey(entry.repoId, entry.quant)}@${cached?.size_bytes ?? 0}:${cached?.last_modified ?? 0}`;
+      })
+      .join("\u0000");
+  }, [pinnedQuantCandidates, sortedCachedGguf]);
+  const [pinnedQuantValidation, setPinnedQuantValidation] = useState<{
+    key: string;
+    downloaded: ReadonlySet<string>;
+  }>({ key: "", downloaded: new Set() });
+
+  useEffect(() => {
+    let cancelled = false;
+    const repoIds = Array.from(
+      new Set(pinnedQuantCandidates.map((entry) => entry.repoId)),
+    );
+    if (repoIds.length === 0) return;
+
+    void Promise.all(
+      repoIds.map(async (repoId) => {
+        try {
+          const response = await listGgufVariants(
+            repoId,
+            hfToken || undefined,
+          );
+          return normalizeGgufVariantsResponse(response).variants
+            .filter((variant) => variant.downloaded === true)
+            .map((variant) => pinKey(repoId, variant.quant));
+        } catch {
+          // If the backend cannot verify a quant, hiding the direct-load row
+          // is safer than claiming a missing file is downloaded.
+          return [];
+        }
+      }),
+    ).then((groups) => {
+      if (!cancelled) {
+        setPinnedQuantValidation({
+          key: pinnedQuantValidationKey,
+          downloaded: new Set(groups.flat()),
+        });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hfToken, pinnedQuantCandidates, pinnedQuantValidationKey]);
+  const downloadedPinnedQuantKeys = useMemo<ReadonlySet<string>>(
+    () =>
+      pinnedQuantValidation.key === pinnedQuantValidationKey
+        ? pinnedQuantValidation.downloaded
+        : new Set(),
+    [pinnedQuantValidation, pinnedQuantValidationKey],
+  );
+
+  // Verified downloaded quants, in pin order and filtered by repo id or quant.
+  const pinnedQuants = useMemo(() => {
     const q = normalizeForSearch(debouncedQuery.trim());
-    return pinnedQuantEntries(pinnedIds).filter(
+    return pinnedQuantCandidates.filter(
       (entry) =>
-        cached.has(entry.repoId) &&
+        downloadedPinnedQuantKeys.has(pinKey(entry.repoId, entry.quant)) &&
         (!q ||
           normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q)),
     );
-  }, [pinnedIds, sortedCachedGguf, formatFilter, debouncedQuery]);
+  }, [
+    debouncedQuery,
+    downloadedPinnedQuantKeys,
+    pinnedQuantCandidates,
+  ]);
 
   const pinnedCachedModelRows = useMemo(
     () => visibleCachedModelRows.filter((c) => pinnedSet.has(pinKey(c.repo_id))),
@@ -2830,6 +2905,7 @@ export function HubModelPicker({
           <GgufVariantExpander
             repoId={c.repo_id}
             onDevice={true}
+            allowPin={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
             onSelect={onSelect}
             hfToken={hfToken || undefined}
@@ -2847,6 +2923,7 @@ export function HubModelPicker({
                 await deleteCachedModel(c.repo_id, quant);
                 refreshCachedLists();
               },
+              deleteDisabled,
             }}
           />
         )}
@@ -2905,7 +2982,13 @@ export function HubModelPicker({
           }
           successMessage={`Deleted ${c.repo_id}`}
           buttonClassName="mr-1"
-          onConfirm={() => deleteCachedModel(c.repo_id)}
+          disabled={deleteDisabled}
+          onConfirm={async () => {
+            await deleteCachedModel(c.repo_id);
+            if (pinnedSet.has(pinKey(c.repo_id))) {
+              togglePinned(c.repo_id);
+            }
+          }}
           onDeleted={refreshCachedLists}
         />
       </div>
@@ -3850,6 +3933,7 @@ export function HubModelPicker({
                                   await deleteCachedModel(id, quant);
                                   refreshCachedLists();
                                 },
+                                deleteDisabled,
                               }}
                             />
                           )}
@@ -3945,6 +4029,7 @@ export function HubModelPicker({
                                 await deleteCachedModel(id, quant);
                                 refreshCachedLists();
                               },
+                              deleteDisabled,
                             }}
                           />
                         )}
@@ -4042,6 +4127,7 @@ export function HubModelPicker({
                                   await deleteCachedModel(id, quant);
                                   refreshCachedLists();
                                 },
+                                deleteDisabled,
                               }}
                             />
                           )}

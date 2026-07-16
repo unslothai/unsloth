@@ -1739,6 +1739,19 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
     return reconciled
 
 
+def _chat_attachment_metadata_text(value, fallback: Optional[str] = None) -> Optional[str]:
+    """Keep untyped legacy/import metadata safe for SQLite binding."""
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        return value or fallback
+    if isinstance(value, (bool, int, float)):
+        return str(value)
+    # Objects and arrays are not useful display metadata and sqlite3 rejects
+    # binding them directly.
+    return fallback
+
+
 def _chat_attachment_inventory_entries(
     attachments_json: Optional[str],
     content_json: Optional[str],
@@ -1765,9 +1778,13 @@ def _chat_attachment_inventory_entries(
         entries.append(
             {
                 "id": attachment_id,
-                "name": attachment.get("name") or "attachment",
-                "type": attachment.get("type"),
-                "contentType": attachment.get("contentType"),
+                "name": _chat_attachment_metadata_text(
+                    attachment.get("name"), "attachment"
+                ),
+                "type": _chat_attachment_metadata_text(attachment.get("type")),
+                "contentType": _chat_attachment_metadata_text(
+                    attachment.get("contentType")
+                ),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
             }
         )
@@ -2315,7 +2332,7 @@ def list_chat_attachments_page(
             """
             SELECT i.attachment_id, i.name, i.type, i.content_type,
                    i.size_bytes, m.id AS message_id, m.thread_id,
-                   m.created_at, t.title AS thread_title
+                   m.created_at, t.title AS thread_title, t.pair_id
             FROM chat_attachment_inventory i
             JOIN chat_messages m ON m.id = i.message_id
             LEFT JOIN chat_threads t ON t.id = m.thread_id
@@ -2334,6 +2351,7 @@ def list_chat_attachments_page(
             "id": row["attachment_id"],
             "messageId": row["message_id"],
             "threadId": row["thread_id"],
+            "pairId": row["pair_id"],
             "threadTitle": row["thread_title"],
             "name": row["name"],
             "type": row["type"],

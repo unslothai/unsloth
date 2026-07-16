@@ -101,10 +101,19 @@ export function DataTab() {
       setFineTuneAction((a) => (a === "train" ? "export" : a));
     }
   }, [chatOnly]);
-  // The initial subpage handles this request; clear it once Data mounts.
+  // Requests can arrive after Data is already mounted (for example from the
+  // archive-all toast), so always switch before consuming the flag.
   useEffect(() => {
     if (!archivedChatsRequested) return;
-    consumeArchivedChatsRequest();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSubpage("archived");
+      consumeArchivedChatsRequest();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
 
   const confirmDeleteChats = useChatPreferencesStore(

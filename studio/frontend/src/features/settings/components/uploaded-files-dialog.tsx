@@ -173,6 +173,8 @@ interface UploadedFileRow {
   thumb: ReactNode;
   /** Chat rows link back to their thread. */
   threadId?: string | null;
+  /** Compare-chat rows navigate by pair id instead of opening one pane alone. */
+  pairId?: string | null;
   open: () => Promise<void>;
   remove: () => Promise<void>;
   deleteDescription: string;
@@ -241,6 +243,7 @@ function chatAttachmentRow(att: ChatAttachmentRecord): UploadedFileRow {
     sortTime: toSortTime(att.createdAt),
     typeLabel: fileTypeLabel(att.name, att.contentType),
     threadId: att.threadId,
+    pairId: att.pairId,
     thumb: isImage ? (
       <ChatImageThumb messageId={att.messageId} attachmentId={att.id} />
     ) : (
@@ -301,9 +304,14 @@ export function UploadedFilesView() {
 
   // Jump to the chat thread the attachment lives in, closing the settings
   // dialog so the thread is actually visible.
-  function goToThread(threadId: string) {
+  function goToChat(row: UploadedFileRow) {
+    if (!row.threadId) return;
     useSettingsDialogStore.getState().closeDialog();
-    void navigate({ to: "/chat", search: { thread: threadId } });
+    if (row.pairId) {
+      void navigate({ to: "/chat", search: { compare: row.pairId } });
+    } else {
+      void navigate({ to: "/chat", search: { thread: row.threadId } });
+    }
   }
 
   useEffect(() => {
@@ -500,7 +508,7 @@ export function UploadedFilesView() {
               <button
                 type="button"
                 onClick={() =>
-                  row.threadId ? goToThread(row.threadId) : void handleOpen(row)
+                  row.threadId ? goToChat(row) : void handleOpen(row)
                 }
                 title={
                   row.threadId ? `Go to ${row.location}` : `Open ${row.name}`
@@ -536,7 +544,7 @@ export function UploadedFilesView() {
               {row.threadId ? (
                 <button
                   type="button"
-                  onClick={() => goToThread(row.threadId as string)}
+                  onClick={() => goToChat(row)}
                   title={`Go to ${row.location}`}
                   className="order-3 w-full truncate pl-10 text-left text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline sm:order-none sm:w-36 sm:pl-0"
                 >

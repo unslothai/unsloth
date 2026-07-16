@@ -417,6 +417,7 @@ export interface ChatAttachmentRecord {
   id: string;
   messageId: string;
   threadId: string;
+  pairId?: string | null;
   threadTitle?: string | null;
   name: string;
   type?: string | null;

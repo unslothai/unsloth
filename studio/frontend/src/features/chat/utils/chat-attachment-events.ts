@@ -8,6 +8,8 @@
  * that thread) writes it back, undoing the deletion.
  */
 
+import forge from "node-forge";
+
 export type ChatAttachmentDeletedEvent = {
   messageId: string;
   attachmentId: string;
@@ -77,13 +79,27 @@ export function chatContentPartAttachmentSignature(
 export async function chatContentPartAttachmentIdFromSignature(
   signature: string,
 ): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(signature),
-  );
-  const hex = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  let hex: string | null = null;
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    try {
+      const digest = await subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(signature),
+      );
+      hex = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+    } catch {
+      // Fall through to the pure-JS implementation below. Some embedded
+      // browsers expose crypto.subtle but reject it outside a secure context.
+    }
+  }
+  if (hex === null) {
+    const digest = forge.md.sha256.create();
+    digest.update(signature, "utf8");
+    hex = digest.digest().toHex();
+  }
   return `${CONTENT_PART_ID_PREFIX}${hex}`;
 }
 
