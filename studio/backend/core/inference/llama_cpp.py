@@ -1546,9 +1546,15 @@ def _is_external_link(path: Path) -> bool:
 # Map OpenAI-style names to the values the model was trained on. Module-level
 # so duck-typed engine stand-ins in tests do not need the attribute.
 _INKLING_REASONING_EFFORT = {
-    "none": 0.0, "minimal": 0.2, "low": 0.2, "medium": 0.7,
-    "high": 0.9, "xhigh": 0.99, "max": 0.99,
+    "none": 0.0,
+    "minimal": 0.2,
+    "low": 0.2,
+    "medium": 0.7,
+    "high": 0.9,
+    "xhigh": 0.99,
+    "max": 0.99,
 }
+
 
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
@@ -1968,7 +1974,8 @@ class LlamaCppBackend:
         if self._reasoning_style == "reasoning_effort":
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
-                {"reasoning_effort": "high" if enable_thinking else "low"})
+                {"reasoning_effort": "high" if enable_thinking else "low"},
+            )
         return {"enable_thinking": enable_thinking}
 
     def _request_reasoning_kwargs(
