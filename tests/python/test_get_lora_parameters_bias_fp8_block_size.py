@@ -50,3 +50,33 @@ def test_bias_variant_propagates_fp8_block_size_on_disabled_path():
     get_lora_parameters_bias(proj)
 
     assert getattr(weight_scale, "block_size", [128, 128]) == [64, 128]
+
+
+def _make_decompressed_merged_proj():
+    # A merged compressed-tensors layer that was decompressed back to bf16. It keeps
+    # quant_method == "fp8" from the checkpoint metadata, but the live weight is bf16
+    # so there is no quant state to attach a block size to.
+    weight = _Obj()
+    weight.dtype = "bfloat16"
+    base_layer = _Obj()
+    base_layer.weight = weight
+    base_layer.quant_method = "fp8"
+    base_layer.block_size = [128, 128]
+    base_layer.bias = None
+    proj = _Obj()
+    proj.base_layer = base_layer
+    proj.merged = True
+    proj.disable_adapters = True
+    return proj
+
+
+def test_bias_variant_keeps_none_quant_state_for_decompressed_layer():
+    # Such a layer has no quant state, and fast_linear_forward relies on getting
+    # W_quant None back so it can fall back to a plain matmul, so setting the block
+    # size must not assume a quant state is present.
+    get_lora_parameters_bias = _load_function("get_lora_parameters_bias")
+
+    W, W_quant = get_lora_parameters_bias(_make_decompressed_merged_proj())[:2]
+
+    assert W_quant is None
+    assert getattr(W, "block_size", None) == [128, 128]
