@@ -1522,6 +1522,25 @@ def test_responses_stream_failure_paths_mark_response_failed():
     assert src.count('mark_response_failed(getattr(request, "scope", None))') >= 4
 
 
+def test_responses_stream_disconnect_and_error_chunk_mark_failed():
+    # Codex P2 (round 25): _responses_stream's post-loop and except-branch disconnect returns
+    # ended a 200 with no completion, and an upstream HTTP-200 data:{"error"} SSE chunk (no
+    # choices) was treated as a usage-only frame -- both let the middleware claim a preview-owned
+    # slot on a stream that never completed. Mark the disconnect returns failed, and convert the
+    # error chunk to response.failed before any response.completed can fire.
+    import inspect
+
+    src = inspect.getsource(inference._responses_stream)
+    # The two round-20 marks (4) plus the two round-25 disconnect-return marks -> >= 6.
+    assert src.count('mark_response_failed(getattr(request, "scope", None))') >= 6
+    # The chunk loop detects an upstream error payload and converts it to response.failed.
+    assert "_monitor_openai_error_message(chunk_data)" in src
+    err_idx = src.index("_monitor_openai_error_message(chunk_data)")
+    err_branch = src[err_idx : src.index('_apply_usage(chunk_data.get("usage"))', err_idx)]
+    assert "_failed_response_payload(RuntimeError(error_message)" in err_branch
+    assert "return" in err_branch
+
+
 def test_generate_stream_cancel_marks_response_failed():
     # Codex P2 (round 20): generate_stream's `if cancel_event.is_set(): ... break` ends a 200
     # stream with no completion (client disconnect, possibly before the first token) without

@@ -11647,6 +11647,18 @@ async def _responses_stream(
 
                 choices = chunk_data.get("choices", [])
                 if not choices:
+                    error_message = _monitor_openai_error_message(chunk_data)
+                    if error_message:
+                        # Upstream HTTP-200 SSE error payload (data: {"error": ...}) is a failed
+                        # generation, not a usage-only frame. Fail the monitor and convert to
+                        # response.failed (which flags the scope) so a later response.completed
+                        # can't fire and the middleware can't claim a preview-owned slot.
+                        api_monitor.fail(monitor_id, error_message)
+                        yield _sse(
+                            "response.failed",
+                            _failed_response_payload(RuntimeError(error_message), 502),
+                        )
+                        return
                     _apply_usage(chunk_data.get("usage"))
                     continue
 
@@ -11737,6 +11749,7 @@ async def _responses_stream(
                 return
         except Exception as e:
             if disconnect_event.is_set():
+                mark_response_failed(getattr(request, "scope", None))
                 api_monitor.finish(monitor_id, "cancelled")
                 return
             logger.error("responses stream error: %s", e)
@@ -11756,6 +11769,9 @@ async def _responses_stream(
             )
 
         if disconnect_event.is_set():
+            # Client disconnected after the 200 headers: a cancelled generation, not a
+            # success. Flag failed so the middleware doesn't clear preview ownership.
+            mark_response_failed(getattr(request, "scope", None))
             api_monitor.finish(monitor_id, "cancelled")
             return
 
