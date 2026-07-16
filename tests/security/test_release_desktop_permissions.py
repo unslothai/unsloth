@@ -10,7 +10,7 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
 
 
 def _workflow():
-    return yaml.safe_load(WORKFLOW.read_text())
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
 
 
 def test_only_publish_job_can_write_repository_contents():
