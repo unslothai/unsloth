@@ -11,14 +11,14 @@ slug="$browser${channel:+-$channel}"
 artifact_dir="logs/playwright-permissions-$slug"
 server_log="logs/studio-permissions-$slug.log"
 studio_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
-frontend_args=()
+set --
 if [ -n "${STUDIO_PERMISSION_FRONTEND:-}" ]; then
-  frontend_args=(-f "$STUDIO_PERMISSION_FRONTEND")
+  set -- -f "$STUDIO_PERMISSION_FRONTEND"
 fi
 
 mkdir -p "$artifact_dir"
 unsloth studio reset-password
-UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$port" "${frontend_args[@]}" \
+UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$port" "$@" \
   >"$server_log" 2>&1 &
 studio_pid=$!
 
