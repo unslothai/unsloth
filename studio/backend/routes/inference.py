@@ -4724,10 +4724,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # the resident slot even though the marker was cleared above. Restore its
             # ownership so a later preview for another checkpoint is not 503'd against a
             # model Studio never actually adopted.
-            if (
-                _prior_preview_marker is not None
-                and _loaded_slot_ident() == _prior_preview_marker
-            ):
+            if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
                 _set_preview_resident(_prior_preview_marker)
 
         # Load in a thread so the event loop stays free for download progress

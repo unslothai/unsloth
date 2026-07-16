@@ -358,10 +358,7 @@ class LlamaKeepWarmMiddleware:
                 # reaching that check -- is not rejected for a swap it never touches.
                 if (
                     not is_preview
-                    and (
-                        _preview_swap_gen() != swap_gen_at_entry
-                        or swap_active_at_entry
-                    )
+                    and (_preview_swap_gen() != swap_gen_at_entry or swap_active_at_entry)
                     and isinstance(scope, dict)
                 ):
                     scope[_PREVIEW_SWAP_REJECT_SCOPE_KEY] = True
