@@ -47,7 +47,7 @@ from hub.utils.gguf_plan import (
     plan_from_expected_files,
     sibling_sha256,
 )
-from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
+from hub.utils.hf_tokens import hf_token_arg
 from hub.utils.state_dir import RepoType
 
 

@@ -2967,7 +2967,7 @@ def _get_repo_size_cached(repo_id: str) -> int:
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(repo_id, token = None, files_metadata = True)
+        info = hf_model_info(repo_id, token = False, files_metadata = True)
         total = sum(s.size for s in info.siblings if s.size)
         _repo_size_cache[repo_id] = total
         return total

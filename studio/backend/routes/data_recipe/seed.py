@@ -31,6 +31,7 @@ except ImportError:
     normalize_unstructured_text = None
     resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
@@ -88,7 +89,7 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return trimmed if trimmed else None
 
 
-def _list_hf_data_files(*, dataset_name: str, token: str | None) -> list[str]:
+def _list_hf_data_files(*, dataset_name: str, token: HfTokenArg) -> list[str]:
     try:
         from huggingface_hub import HfApi
         from huggingface_hub.utils import HfHubHTTPError
@@ -148,7 +149,7 @@ def _build_stream_load_kwargs(
     dataset_name: str,
     split: str,
     subset: str | None,
-    token: str | None,
+    token: HfTokenArg,
     data_file: str | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
@@ -161,8 +162,7 @@ def _build_stream_load_kwargs(
         kwargs["data_files"] = [data_file]
     if subset:
         kwargs["name"] = subset
-    if token:
-        kwargs["token"] = token
+    kwargs["token"] = token
     return kwargs
 
 
@@ -329,7 +329,7 @@ def inspect_seed_dataset(payload: SeedInspectRequest) -> SeedInspectResponse:
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
-    token = _normalize_optional_text(payload.hf_token)
+    token = hf_token_arg(_normalize_optional_text(payload.hf_token))
     preview_size = int(payload.preview_size)
 
     preview_rows: list[dict[str, Any]] = []

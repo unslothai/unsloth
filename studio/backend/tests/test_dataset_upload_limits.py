@@ -6,6 +6,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -16,6 +17,7 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from routes import datasets as datasets_route  # noqa: E402
+from routes import models as models_route  # noqa: E402
 
 
 class FakeUploadFile:
@@ -61,3 +63,77 @@ def test_dataset_upload_over_configured_cap_removes_partial_file(isolate_upload_
     assert exc.value.status_code == 413
     assert "Maximum is 1MB" in exc.value.detail
     assert list(isolate_upload_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "expected_token"),
+    ((None, False), ("request-token", "request-token")),
+)
+def test_training_dataset_preview_uses_only_request_hf_token(
+    monkeypatch, tmp_path, hf_token, expected_token
+):
+    api_tokens = []
+    load_tokens = []
+
+    class _Api:
+        def list_repo_files(self, *_args, **kwargs):
+            api_tokens.append(kwargs.get("token"))
+            return ["train.jsonl"]
+
+    class _Dataset(list):
+        @classmethod
+        def from_list(cls, rows):
+            return cls(rows)
+
+    def _load_dataset(**kwargs):
+        load_tokens.append(kwargs.get("token"))
+        return _Dataset([{"text": "hello"}])
+
+    monkeypatch.setenv("HF_TOKEN", "operator-secret-token")
+    monkeypatch.setattr(datasets_route, "resolve_dataset_path", lambda _name: tmp_path / "missing")
+    monkeypatch.setattr(
+        datasets_route,
+        "check_dataset_format",
+        lambda *_args, **_kwargs: {
+            "requires_manual_mapping": True,
+            "detected_format": "text",
+            "columns": ["text"],
+        },
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = _Api))
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(Dataset = _Dataset, load_dataset = _load_dataset),
+    )
+
+    datasets_route.check_format(
+        datasets_route.CheckFormatRequest(dataset_name = "Org/Data", hf_token = hf_token),
+        current_subject = "test-user",
+    )
+
+    assert api_tokens == [expected_token]
+    assert load_tokens == [expected_token]
+
+
+def test_legacy_download_progress_metadata_is_explicitly_anonymous(monkeypatch):
+    dataset_tokens = []
+    model_tokens = []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(
+            dataset_info = lambda *_args, **kwargs: dataset_tokens.append(kwargs.get("token"))
+            or SimpleNamespace(siblings = []),
+            model_info = lambda *_args, **kwargs: model_tokens.append(kwargs.get("token"))
+            or SimpleNamespace(siblings = []),
+        ),
+    )
+    datasets_route._dataset_size_cache.clear()
+    models_route._repo_size_cache.clear()
+
+    assert datasets_route._get_dataset_size_cached("Org/Data") == 0
+    assert models_route._get_repo_size_cached("Org/Model") == 0
+    assert dataset_tokens == [False]
+    assert model_tokens == [False]
