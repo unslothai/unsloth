@@ -46,6 +46,54 @@ _remapped_writes: dict = {}
 # on-disk sidecar carries the map across runs. It records only sources the
 # fallback healed, so an unrelated same-basename file is never adopted.
 _REMAP_SIDECAR = ".unsloth_sandbox_remap.json"
+_BLOCKED_NETWORK_MODULES = frozenset({"boto3", "botocore"})
+_import_guard_installed = False
+
+
+def _blocked_network_module(fullname):
+    if not isinstance(fullname, str):
+        return None
+    root = fullname.split(".", 1)[0]
+    return root if root in _BLOCKED_NETWORK_MODULES else None
+
+
+def _network_import_audit(event, args):
+    if event != "import" or not args:
+        return
+    root = _blocked_network_module(args[0])
+    if root is not None:
+        raise ModuleNotFoundError(
+            f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
+        )
+
+
+class _BlockedNetworkModuleFinder:
+    _unsloth_blocked_network_guard = True
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        root = _blocked_network_module(fullname)
+        if root is not None:
+            raise ModuleNotFoundError(
+                f"Blocked: low-level network module {root!r} is unavailable in sandboxed code"
+            )
+        return None
+
+
+def _install_import_guard():
+    global _import_guard_installed
+    if os.environ.get("UNSLOTH_STUDIO_SANDBOXED") != "1":
+        return
+    if not _import_guard_installed:
+        sys.addaudithook(_network_import_audit)
+        _import_guard_installed = True
+    if any(getattr(finder, "_unsloth_blocked_network_guard", False) for finder in sys.meta_path):
+        return
+    sys.meta_path.insert(0, _BlockedNetworkModuleFinder())
 
 
 def _note(subject, original, mapped):
@@ -306,6 +354,11 @@ def _install():
     os.mkdir = _mkdir
     pathlib.Path.mkdir = _path_mkdir
 
+
+try:
+    _install_import_guard()
+except Exception:  # noqa: BLE001 - a broken guard must not break startup
+    pass
 
 try:
     _install()

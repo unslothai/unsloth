@@ -10,6 +10,7 @@ import fnmatch
 import http.client
 import os
 import signal
+from html.parser import HTMLParser
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
@@ -2408,8 +2409,6 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     r"@import|"
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
     r"<script[^>]*\bsrc\s*=|"
-    r"\b(?:src|href|srcset|action|formaction|poster|data|ping)\s*="
-    r"\s*[\"']?\s*(?:https?:|/)|"
     # Self-navigation sinks: location.assign/replace(...), window.open(...), and
     # assigning a URL to (window.)location(.href). location.reload()/history.back
     # do not navigate to a new URL, so they stay static.
@@ -2427,15 +2426,16 @@ _RENDER_HTML_NETWORK_RE = re.compile(
 # an https:// URL and hide a real load.
 _JS_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _RENDER_HTML_GLOBAL_BRACKET_RE = re.compile(
-    r"\b(?:window|self|globalThis|top|parent|frames)\s*\[([^\]]*)\]",
+    r"\b(?:window|self|globalThis|top|parent|frames|this)\s*(?:\?\.\s*)?\[([^\]]*)\]",
     re.IGNORECASE | re.DOTALL,
 )
-_RENDER_HTML_SET_ATTRIBUTE_RE = re.compile(
-    r"""\.\s*setAttribute\s*\(\s*
-    (?P<quote>["'`])
-    (?P<attr>src|href|srcset|action|formaction|poster|data|ping)
-    (?P=quote)\s*,\s*(?P<value>[^)]*)\)""",
-    re.IGNORECASE | re.DOTALL | re.VERBOSE,
+_RENDER_HTML_SET_ATTRIBUTE_START_RE = re.compile(
+    r"\.\s*setAttribute\s*(?:\?\.\s*)?\(",
+    re.IGNORECASE,
+)
+_RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE = re.compile(
+    r"\.\s*(?P<attr>src|href|srcset|action|formaction|poster|data|ping)\s*=(?!=)",
+    re.IGNORECASE,
 )
 _RENDER_HTML_NETWORK_MEMBERS = frozenset(
     {
@@ -2449,6 +2449,11 @@ _RENDER_HTML_NETWORK_MEMBERS = frozenset(
         "serviceworker",
     }
 )
+_RENDER_HTML_NETWORK_ATTRIBUTES = frozenset(
+    {"src", "href", "srcset", "action", "formaction", "poster", "data", "ping"}
+)
+_RENDER_HTML_URL_LIST_ATTRIBUTES = frozenset({"srcset", "ping"})
+_RENDER_HTML_URL_LIST_NETWORK_RE = re.compile(r"(?:^|[\s,])(?:https?:|/)", re.IGNORECASE)
 
 
 def _leading_js_string(expression: str) -> tuple[str, int] | None:
@@ -2482,8 +2487,8 @@ def _leading_js_string(expression: str) -> tuple[str, int] | None:
     return None
 
 
-def _static_js_string(expression: str) -> str | None:
-    """Fold a sequence of JS string literals joined with +."""
+def _static_js_string_prefix(expression: str) -> tuple[str, int] | None:
+    """Fold a leading sequence of JS string literals joined with +."""
     parts: list[str] = []
     offset = 0
     while True:
@@ -2496,10 +2501,89 @@ def _static_js_string(expression: str) -> str | None:
         while offset < len(expression) and expression[offset].isspace():
             offset += 1
         if offset == len(expression):
-            return "".join(parts)
+            return "".join(parts), offset
         if expression[offset] != "+":
-            return None
+            return "".join(parts), offset
         offset += 1
+
+
+def _static_js_string(expression: str) -> str | None:
+    """Fold a complete sequence of JS string literals joined with +."""
+    parsed = _static_js_string_prefix(expression)
+    if parsed is None:
+        return None
+    value, end = parsed
+    if expression[end:].strip():
+        return None
+    return value
+
+
+def _render_html_attribute_reaches_network(name: str, value: str | None) -> bool:
+    if value is None:
+        return False
+    value = value.lstrip()
+    if name in _RENDER_HTML_URL_LIST_ATTRIBUTES:
+        return bool(_RENDER_HTML_URL_LIST_NETWORK_RE.search(value))
+    return value.lower().startswith(("http:", "https:", "/"))
+
+
+class _RenderHtmlAttributeParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs = True)
+        self.reaches_network = False
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            name = name.lower()
+            if name in _RENDER_HTML_NETWORK_ATTRIBUTES and _render_html_attribute_reaches_network(
+                name, value
+            ):
+                self.reaches_network = True
+                return
+
+
+def _render_html_attributes_reach_network(code: str) -> bool:
+    parser = _RenderHtmlAttributeParser()
+    try:
+        parser.feed(code)
+        parser.close()
+    except Exception:
+        return True
+    return parser.reaches_network
+
+
+def _js_call_arguments(code: str, offset: int) -> list[str] | None:
+    arguments: list[str] = []
+    start = offset
+    stack: list[str] = []
+    quote: str | None = None
+    escaped = False
+    pairs = {")": "(", "]": "[", "}": "{"}
+    for i in range(offset, len(code)):
+        char = code[i]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in "\"'`":
+            quote = char
+        elif char in "([{":
+            stack.append(char)
+        elif char in ")]}":
+            if char == ")" and not stack:
+                arguments.append(code[start:i])
+                return arguments
+            if not stack or stack[-1] != pairs[char]:
+                return None
+            stack.pop()
+        elif char == "," and not stack:
+            arguments.append(code[start:i])
+            start = i + 1
+    return None
 
 
 def _render_html_computed_network_access(code: str) -> bool:
@@ -2520,11 +2604,30 @@ def _render_html_computed_network_access(code: str) -> bool:
         if not re.fullmatch(r"\s*\d+\s*", expression):
             return True
 
-    for match in _RENDER_HTML_SET_ATTRIBUTE_RE.finditer(code):
-        value = _static_js_string(match.group("value"))
-        if value is None:
+    for match in _RENDER_HTML_SET_ATTRIBUTE_START_RE.finditer(code):
+        arguments = _js_call_arguments(code, match.end())
+        if arguments is None:
             return True
-        if value.lstrip().lower().startswith(("http:", "https:", "/")):
+        if len(arguments) < 2:
+            continue
+        name = _static_js_string(arguments[0])
+        value = _static_js_string(arguments[1])
+        if name is None:
+            if value is None or _RENDER_HTML_URL_LIST_NETWORK_RE.search(value.lstrip()):
+                return True
+            continue
+        name = name.lower()
+        if name not in _RENDER_HTML_NETWORK_ATTRIBUTES:
+            continue
+        if value is None or _render_html_attribute_reaches_network(name, value):
+            return True
+
+    for match in _RENDER_HTML_PROPERTY_ASSIGNMENT_START_RE.finditer(code):
+        parsed = _static_js_string_prefix(code[match.end() :])
+        if parsed is None:
+            continue
+        value, _ = parsed
+        if _render_html_attribute_reaches_network(match.group("attr").lower(), value):
             return True
     return False
 
@@ -2534,7 +2637,11 @@ def _render_html_reaches_network(arguments: dict) -> bool:
     if not isinstance(code, str):
         return False
     code = _JS_BLOCK_COMMENT_RE.sub("", code)
-    return bool(_RENDER_HTML_NETWORK_RE.search(code) or _render_html_computed_network_access(code))
+    return bool(
+        _RENDER_HTML_NETWORK_RE.search(code)
+        or _render_html_attributes_reach_network(code)
+        or _render_html_computed_network_access(code)
+    )
 
 
 # Tools that are read-only regardless of their arguments, so auto mode never has
@@ -2629,6 +2736,7 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        "UNSLOTH_STUDIO_SANDBOXED": "1",
         # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
@@ -2813,6 +2921,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    env.pop("UNSLOTH_STUDIO_SANDBOXED", None)
     # sitecustomize path shim (see _build_safe_env). Bypass inherits the
     # operator's PYTHONPATH, so prepend rather than replace.
     inherited_pythonpath = env.get("PYTHONPATH", "")
@@ -5249,15 +5358,63 @@ def _check_signal_escape_patterns(code: str):
                     return left + right
             return None
 
+        def _import_namespace(self, node) -> str | None:
+            if isinstance(node, ast.Name):
+                if node.id in self.importlib_aliases:
+                    return "importlib"
+                if node.id in self.builtins_aliases:
+                    return "builtins"
+                return None
+            if isinstance(node, ast.Attribute) and node.attr == "__dict__":
+                return self._import_namespace(node.value)
+            if isinstance(node, ast.Call):
+                if (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "vars"
+                    and len(node.args) == 1
+                ):
+                    return self._import_namespace(node.args[0])
+                if self._is_getattr(node):
+                    name = self._static_string(node.args[1])
+                    if name == "__dict__":
+                        return self._import_namespace(node.args[0])
+            return None
+
+        def _is_getattr(self, node) -> bool:
+            if not isinstance(node, ast.Call) or len(node.args) < 2:
+                return False
+            if isinstance(node.func, ast.Name):
+                return node.func.id == "getattr"
+            return (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "getattr"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in self.builtins_aliases
+            )
+
         def _is_import_loader(self, node) -> bool:
             if isinstance(node, ast.Name):
                 return node.id in self.import_loader_aliases
-            if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
-                return False
-            if node.attr == "import_module":
-                return node.value.id in self.importlib_aliases
-            if node.attr == "__import__":
-                return node.value.id in self.builtins_aliases
+            if isinstance(node, ast.Attribute):
+                namespace = self._import_namespace(node.value)
+                return (namespace, node.attr) in {
+                    ("importlib", "import_module"),
+                    ("builtins", "__import__"),
+                }
+            if self._is_getattr(node):
+                namespace = self._import_namespace(node.args[0])
+                name = self._static_string(node.args[1])
+                return (namespace, name) in {
+                    ("importlib", "import_module"),
+                    ("builtins", "__import__"),
+                }
+            if isinstance(node, ast.Subscript):
+                namespace = self._import_namespace(node.value)
+                name = self._static_string(node.slice)
+                return (namespace, name) in {
+                    ("importlib", "import_module"),
+                    ("builtins", "__import__"),
+                }
             return False
 
         @staticmethod
@@ -5319,8 +5476,14 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_Call(self, node):
-            if node.args and self._is_import_loader(node.func):
-                module_name = self._static_string(node.args[0])
+            if self._is_import_loader(node.func):
+                module_node = node.args[0] if node.args else None
+                if module_node is None:
+                    for keyword in node.keywords:
+                        if keyword.arg == "name":
+                            module_node = keyword.value
+                            break
+                module_name = self._static_string(module_node)
                 if module_name is not None:
                     self._block_low_level_network_module(module_name, node)
 

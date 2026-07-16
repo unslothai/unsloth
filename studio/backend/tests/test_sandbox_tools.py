@@ -4,6 +4,7 @@
 """Tests for the sandboxed-Python AST policy in core/inference/tools.py."""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -138,6 +139,22 @@ class TestLowLevelNetworkModules:
                 "from builtins import __import__ as load; "
                 "loader = load; print(loader('boto3').__name__)"
             ),
+            (
+                "import importlib; "
+                "load = getattr(importlib, 'import_' + 'module'); "
+                "print(load('boto3').__name__)"
+            ),
+            (
+                "import importlib; "
+                "print(getattr(importlib, 'import_module')(name='boto3').__name__)"
+            ),
+            (
+                "import importlib; "
+                "print(importlib.import_module(name='botocore.session').__name__)"
+            ),
+            ("import importlib; print(vars(importlib)['import_module']('httpcore').__name__)"),
+            ("import importlib; print(importlib.__dict__['import_module']('boto3').__name__)"),
+            ("import builtins; print(getattr(builtins, '__import__')('botocore').__name__)"),
         ],
     )
     def test_low_level_client_blocked(self, code):
@@ -150,6 +167,14 @@ class TestLowLevelNetworkModules:
             (
                 "from importlib import import_module as load; "
                 "print(load('statistics').mean([1, 2]))"
+            ),
+            (
+                "import importlib; "
+                "print(getattr(importlib, 'import_module')(name='statistics').mean([1, 2]))"
+            ),
+            (
+                "import importlib; "
+                "print(vars(importlib)['import_module']('statistics').mean([1, 2]))"
             ),
         ],
     )
@@ -331,6 +356,7 @@ class TestSandboxEnvIsolation:
             "TERM",
             "PYTHONIOENCODING",
             "PYTHONPATH",
+            "UNSLOTH_STUDIO_SANDBOXED",
             "VIRTUAL_ENV",
             "SystemRoot",
         }
@@ -340,6 +366,57 @@ class TestSandboxEnvIsolation:
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+        assert env["UNSLOTH_STUDIO_SANDBOXED"] == "1"
+
+    def test_runtime_import_guard_does_not_apply_to_bypass(self, monkeypatch, tmp_path):
+        from core.inference.tools import _build_bypass_env, _build_safe_env
+
+        monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOXED", "1")
+        (tmp_path / "boto3.py").write_text("VALUE = 7\n", encoding = "utf-8")
+        code = (
+            "import sys\n"
+            "sys.meta_path[:] = [f for f in sys.meta_path "
+            "if not getattr(f, '_unsloth_blocked_network_guard', False)]\n"
+            "name = ''.join(['bo', 'to3'])\n"
+            "print(__import__(name).VALUE)"
+        )
+
+        sandboxed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert sandboxed.returncode != 0
+        assert "Blocked: low-level network module 'boto3'" in sandboxed.stderr
+
+        bypass = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd = tmp_path,
+            env = _build_bypass_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert bypass.returncode == 0, bypass.stderr
+        assert bypass.stdout.strip() == "7"
+
+    @pytest.mark.parametrize("module", ["httpx", "requests", "huggingface_hub"])
+    def test_runtime_import_guard_keeps_supported_clients_available(self, tmp_path, module):
+        from core.inference.tools import _build_safe_env
+
+        result = subprocess.run(
+            [sys.executable, "-c", f"import {module}; print({module}.__name__)"],
+            cwd = tmp_path,
+            env = _build_safe_env(str(tmp_path)),
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == module
 
     def test_home_points_at_sandbox_workdir(self, tmp_path):
         from core.inference.tools import _build_safe_env
