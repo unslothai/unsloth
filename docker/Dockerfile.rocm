@@ -4,19 +4,27 @@ FROM $BASE_DOCKER
 # ARG GPU_ARCH=gfx942
 WORKDIR /unsloth-workspace
 
-RUN apt update
-RUN apt install -y zip unzip wget
-RUN apt install -y build-essential cmake
+# Single layer: apt-get update + install must share a RUN (a cached standalone
+# update layer goes stale and later installs hit dead package indexes), and the
+# list cleanup keeps the layer small. --no-install-recommends trims the image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends zip unzip wget build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
 
 ARG COMPUTE_BACKEND="hip"
 ARG BNB_ROCM_ARCHS="gfx942"
 ARG BNB_COMMIT="4b0257482bef447106fcaada67d1c6d081fdc82f"
 ARG BNB_REPO="https://github.com/bitsandbytes-foundation/bitsandbytes.git"
 
-RUN git clone --depth 1 ${BNB_REPO} bitsandbytes \
+# Fetch ONLY the pinned commit (no default-branch clone first): GitHub allows
+# fetching an arbitrary SHA, so init + fetch --depth 1 <commit> downloads the
+# minimum needed for a reproducible build.
+RUN mkdir bitsandbytes \
     && cd bitsandbytes \
+    && git init \
+    && git remote add origin ${BNB_REPO} \
     && git fetch --depth 1 origin ${BNB_COMMIT} \
-    && git checkout ${BNB_COMMIT} \
+    && git checkout FETCH_HEAD \
     && rm -rf .git \
     && cmake -S . -B build \
          -DCOMPUTE_BACKEND=${COMPUTE_BACKEND} \
@@ -44,7 +52,7 @@ RUN git clone --branch ${UNSLOTH_ZOO_BRANCH} --depth 1 ${UNSLOTH_ZOO_REPO} unslo
     && pip install -e .
 
 
-# Display installed packages for verification
-RUN pip show bitsandbytes || (echo "bitsandbytes not installed!" && exit 1)
-RUN pip show unsloth || (echo "unsloth not installed!" && exit 1)
-RUN pip show unsloth-zoo || (echo "unsloth-zoo not installed!" && exit 1)
+# Verify the stack landed -- one layer for all three probes.
+RUN for pkg in bitsandbytes unsloth unsloth-zoo; do \
+        pip show "$pkg" >/dev/null || { echo "$pkg not installed!"; exit 1; }; \
+    done
