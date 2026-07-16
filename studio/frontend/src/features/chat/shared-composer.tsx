@@ -8,6 +8,7 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -22,6 +23,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import {
+  describeMediaError,
+  describeSpeechError,
+  isMissingDeviceError,
+} from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
+import {
+  applyDictationDictionary,
+  recordRecentDictation,
+  resolveDictationLanguage,
+  useVoiceSettingsStore,
+} from "@/features/settings/stores/voice-settings-store";
 import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isMultimodalResponse } from "./types/api";
@@ -148,18 +160,6 @@ const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   </svg>
 );
 
-const MicIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 256 256"
-    fill="currentColor"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M128,176a48.05,48.05,0,0,0,48-48V64a48,48,0,0,0-96,0v64A48.05,48.05,0,0,0,128,176ZM96,64a32,32,0,0,1,64,0v64a32,32,0,0,1-64,0Zm40,143.6V232a8,8,0,0,1-16,0V207.6A80.11,80.11,0,0,1,48,128a8,8,0,0,1,16,0,64,64,0,0,0,128,0,8,8,0,0,1,16,0A80.11,80.11,0,0,1,136,207.6Z" />
-  </svg>
-);
-
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -214,7 +214,17 @@ function useDictation(
   const [isDictating, setIsDictating] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
-  const start = useCallback(() => {
+  const streamRef = useRef<MediaStream | null>(null);
+  const startingRef = useRef(false);
+  // Guards the getUserMedia await so a mic opened after unmount is released.
+  const disposedRef = useRef(false);
+
+  const releaseStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }, []);
+
+  const start = useCallback(async () => {
     const SpeechRecognitionAPI =
       typeof window !== "undefined" &&
       (window.SpeechRecognition ??
@@ -226,43 +236,136 @@ function useDictation(
     if (!SpeechRecognitionAPI) {
       return;
     }
+    if (startingRef.current || recognitionRef.current) return;
+    startingRef.current = true;
+
+    // Open the microphone chosen in Voice settings, matching the main chat
+    // adapter, so Compare dictation honors the same device selection.
+    let audioTrack: MediaStreamTrack | undefined;
+    const { micDeviceId } = useVoiceSettingsStore.getState();
+    if (navigator.mediaDevices?.getUserMedia) {
+      try {
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio:
+              micDeviceId && micDeviceId !== "default"
+                ? { deviceId: { exact: micDeviceId } }
+                : true,
+          });
+        } catch (error) {
+          // Saved mic may be unplugged; fall back to the default device.
+          if (micDeviceId !== "default" && isMissingDeviceError(error)) {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+          } else {
+            throw error;
+          }
+        }
+        streamRef.current = stream;
+        audioTrack = stream.getAudioTracks()[0];
+      } catch (error) {
+        // Permission/security failure: report it and stop instead of silently
+        // recording from a different default device, matching the main adapter.
+        startingRef.current = false;
+        releaseStream();
+        setIsDictating(false);
+        toast.error(describeMediaError(error));
+        return;
+      }
+    }
+
+    if (disposedRef.current) {
+      releaseStream();
+      startingRef.current = false;
+      return;
+    }
+
     const recognition = new SpeechRecognitionAPI() as SpeechRecognition;
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
+    recognition.lang = resolveDictationLanguage();
+    let sessionTranscript = "";
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const last = event.resultIndex;
-      const result = event.results[last];
-      if (!result?.isFinal) return;
-      const transcript = result[0]?.transcript?.trim();
-      if (transcript) {
+      // Iterate every result from resultIndex; a single event can carry more
+      // than one finalized phrase and dropping the rest loses dictated words.
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (!result?.isFinal) continue;
+        const transcript = applyDictationDictionary(
+          result[0]?.transcript?.trim() ?? "",
+        );
+        if (!transcript) continue;
+        sessionTranscript = sessionTranscript
+          ? `${sessionTranscript} ${transcript}`
+          : transcript;
         setText((prev) => (prev ? `${prev} ${transcript}` : transcript));
       }
     };
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
+      // Report speech-service failures like the main adapter; aborted is a
+      // normal stop, not an error.
+      const errorEvent = event as SpeechRecognitionErrorEvent;
+      if (errorEvent.error !== "aborted") {
+        toast.error(describeSpeechError(errorEvent.error, errorEvent.message));
+      }
       setIsDictating(false);
     };
     recognition.onend = () => {
-      setIsDictating(false);
+      // A stop()+immediate restart can install a new recognizer before this
+      // old one ends; only tear down shared refs when we are still current.
+      if (recognitionRef.current === recognition) {
+        releaseStream();
+        recognitionRef.current = null;
+        setIsDictating(false);
+      }
+      if (sessionTranscript) {
+        recordRecentDictation(sessionTranscript);
+        sessionTranscript = "";
+      }
     };
-    recognition.start();
+    try {
+      if (audioTrack) {
+        try {
+          recognition.start(audioTrack);
+        } catch {
+          // No start(track) overload: recognition captures from the default
+          // device, so release the selected-device stream.
+          releaseStream();
+          recognition.start();
+        }
+      } else {
+        recognition.start();
+      }
+    } catch {
+      startingRef.current = false;
+      releaseStream();
+      return;
+    }
     recognitionRef.current = recognition;
+    startingRef.current = false;
     setIsDictating(true);
-  }, [setText]);
+  }, [setText, releaseStream]);
 
   const stop = useCallback(() => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
+    releaseStream();
     setIsDictating(false);
-  }, []);
+  }, [releaseStream]);
 
   useEffect(() => {
+    disposedRef.current = false;
     return () => {
+      disposedRef.current = true;
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     };
   }, []);
 
@@ -510,6 +613,7 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
@@ -1308,7 +1412,8 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -1319,7 +1424,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
@@ -1787,6 +1892,7 @@ export function SharedComposer({
                     type="button"
                     disabled={reasoningDisabled}
                     className="unsloth-thinking-pill"
+                    data-pill-label="Thinking settings"
                     data-active={thinkingActiveLook ? "true" : "false"}
                     aria-label={thinkEffortAriaLabel({
                       modelLoaded,
@@ -1796,7 +1902,7 @@ export function SharedComposer({
                   >
                     <BulbIcon className="size-[15.5px]" />
                     {thinkingActiveLook ? (
-                      <span>
+                      <span className="unsloth-thinking-label">
                         {isEffort
                           ? `Thinking · ${formatReasoningEffortLabel(
                               reasoningEffort,
@@ -1805,7 +1911,7 @@ export function SharedComposer({
                           : "Thinking"}
                       </span>
                     ) : null}
-                    <ArrowDownStandardIcon className="size-[15px]" />
+                    <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
@@ -1952,6 +2058,7 @@ export function SharedComposer({
                   }
                 }}
                 className="unsloth-thinking-pill"
+                data-pill-label="Thinking"
                 data-active={thinkingActiveLook ? "true" : "false"}
                 aria-label={thinkToggleAriaLabel({
                   reasoningLockedOn,
@@ -1963,7 +2070,9 @@ export function SharedComposer({
                 <PillGlyph>
                   <BulbIcon className="size-[15.5px]" />
                 </PillGlyph>
-                {thinkingActiveLook ? <span>Thinking</span> : null}
+                {thinkingActiveLook ? (
+                  <span className="unsloth-thinking-label">Thinking</span>
+                ) : null}
               </button>
             )
           ) : null}

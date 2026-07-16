@@ -23,6 +23,7 @@ import {
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
 import { useExternalProvidersStore } from "./external-providers-store";
+import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
@@ -31,6 +32,8 @@ export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
+  "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -357,6 +360,24 @@ function saveBool(key: string, value: boolean): void {
   }
 }
 
+// The visibility flag shipped after the menu pins, so when it is absent,
+// profiles that had explicitly pinned Canvas keep it visible.
+function loadShowCanvasMenuItem(): boolean {
+  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
+  if (stored !== null) return stored;
+  if (!canUseStorage()) return false;
+  try {
+    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
+    if (raw === null) return false;
+    const parsed = JSON.parse(raw) as {
+      state?: { pins?: { canvas?: boolean } };
+    };
+    return parsed.state?.pins?.canvas === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * "full" is intentionally not restorable: it disables the sandbox and every
  * confirmation gate, so it must be re-enabled (through the warning dialog)
@@ -642,6 +663,8 @@ type ChatRuntimeStore = {
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   artifactsEnabled: boolean;
+  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
@@ -701,6 +724,13 @@ type ChatRuntimeStore = {
    */
   webFetchToolsEnabled: boolean;
   toolStatus: string | null;
+  /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
+   *  appended by tool_output, cleared on tool_end or run end. */
+  toolLiveOutput: Record<string, string>;
+  /** Full live output of finished tools whose result was truncated for the
+   *  model, keyed by toolCallId. Set from tool_end; finished cards prefer it
+   *  over the truncated result. Session-transient. */
+  toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
   nudgeToolCalls: boolean;
@@ -811,6 +841,7 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
+  setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
@@ -836,6 +867,13 @@ type ChatRuntimeStore = {
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
+  appendToolLiveOutput: (toolCallId: string, text: string) => void;
+  /** Clear one tool's live output, or all when no id is given. */
+  clearToolLiveOutput: (toolCallId?: string) => void;
+  /** Preserve a finished tool's full live-streamed output for display. */
+  setToolFullOutput: (toolCallId: string, text: string) => void;
+  /** Drop a stale preserved full output (a new run is reusing the id). */
+  clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
@@ -1133,6 +1171,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -1166,6 +1205,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
   ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
+  toolLiveOutput: {},
+  toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
@@ -1415,6 +1456,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      toolLiveOutput: {},
+      toolFullOutput: {},
       activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -1485,6 +1528,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       return { artifactsEnabled };
+    }),
+  setShowCanvasMenuItem: (showCanvasMenuItem) =>
+    set(() => {
+      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
+      return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set((state) => {
@@ -1638,6 +1686,43 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { ragCaptionFigures };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  appendToolLiveOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolLiveOutput: {
+        ...state.toolLiveOutput,
+        [toolCallId]: (state.toolLiveOutput[toolCallId] ?? "") + text,
+      },
+    })),
+  setToolFullOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolFullOutput: {
+        ...state.toolFullOutput,
+        [toolCallId]: text,
+      },
+    })),
+  clearToolFullOutput: (toolCallId) =>
+    set((state) => {
+      if (!(toolCallId in state.toolFullOutput)) {
+        return {};
+      }
+      const next = { ...state.toolFullOutput };
+      delete next[toolCallId];
+      return { toolFullOutput: next };
+    }),
+  clearToolLiveOutput: (toolCallId) =>
+    set((state) => {
+      if (toolCallId === undefined) {
+        return Object.keys(state.toolLiveOutput).length
+          ? { toolLiveOutput: {} }
+          : {};
+      }
+      if (!(toolCallId in state.toolLiveOutput)) {
+        return {};
+      }
+      const next = { ...state.toolLiveOutput };
+      delete next[toolCallId];
+      return { toolLiveOutput: next };
+    }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),

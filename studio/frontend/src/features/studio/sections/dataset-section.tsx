@@ -680,11 +680,7 @@ export function DatasetSection() {
         title={t("studio.dataset.title")}
         description={t("studio.dataset.description")}
         accent="indigo"
-        className={`dark:shadow-border ${
-          advancedOpen || (datasetSource === "upload" && uploadedFile)
-            ? "min-h-studio-config-column"
-            : "h-studio-config-column"
-        }`}
+        className="dark:shadow-border min-h-studio-config-column"
       >
         <div className="flex min-w-0 flex-col gap-4">
           {(() => {
