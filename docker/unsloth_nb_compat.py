@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 """Per-notebook transformers version activation for the Unsloth Docker image.
 
 Problem: unslothai/notebooks pin many different transformers versions in their

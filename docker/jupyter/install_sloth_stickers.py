@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 """Install the Unsloth Studio sloth stickers for the JupyterLab login screen.
 
 The branded login page (login.html) shows a different sloth sticker on each

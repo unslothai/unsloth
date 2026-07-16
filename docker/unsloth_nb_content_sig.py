@@ -1,26 +1,7 @@
 #!/usr/bin/env python3
-# Compare the *content* of two Unsloth notebooks, ignoring the auto-generated
-# top/bottom boilerplate that update_all_notebooks.py stamps on every notebook.
-#
-# Every generated notebook has the same shape:
-#   - a "top" of boilerplate: the "To run this, press Runtime" announcement, the
-#     "### News" / Unsloth Studio announcement cells, and the %%capture install
-#     cell. These churn constantly (new pip pins, new announcements, new links).
-#   - the "middle": the actual tutorial (data prep, train, inference, save).
-#   - a "bottom": the "And we're done ... licensed LGPL-3.0" footer cell.
-#
-# The boot-time notebook refresh uses this to avoid rewriting a user's notebook
-# when only that boilerplate moved upstream. We hash ONLY the middle (the cells
-# that are not install/announcement/footer) and compare. Outputs, execution
-# counts, cell ids and metadata are ignored, so merely running a notebook never
-# changes the signature.
-#
-# Usage:
-#   unsloth_nb_content_sig.py <a.ipynb> <b.ipynb>   -> prints SAME | DIFF | ERR
-#   unsloth_nb_content_sig.py <a.ipynb>             -> prints the middle digest
-#
-# Exit code is always 0; the decision is the printed word. On any parse problem
-# we print ERR / nothing so the caller can fall back to its whole-file logic.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 import hashlib
 import json
 import sys

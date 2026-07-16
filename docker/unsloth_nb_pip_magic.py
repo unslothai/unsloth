@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 """Route notebook `%pip` / `%uv` / `python -m pip` installs through the shim.
 
 The PATH shim (/opt/unsloth-nb/bin/{pip,pip3,uv} -> unsloth_pip_shim.py) only

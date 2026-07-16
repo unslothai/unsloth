@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 """Cross-platform validation of the Unsloth Docker JupyterLab/notebook features.
 
 Runs WITHOUT Docker or a GPU, so it can execute on the Linux/macOS/Windows CI

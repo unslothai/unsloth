@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 # Build a categorized, Colab-like folder VIEW of the Unsloth notebooks.
 #
 # The canonical notebooks live under DEST/nb/<file>.ipynb (a mirror of

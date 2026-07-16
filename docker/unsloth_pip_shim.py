@@ -1,4 +1,7 @@
 #!/opt/unsloth-venv/bin/python
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
+
 """pip / uv shim for the Unsloth Docker notebook environment.
 
 Installed earlier on PATH than the real tools so a notebook's `!pip install ...`
