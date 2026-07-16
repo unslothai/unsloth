@@ -697,7 +697,8 @@ RUN set -eux \
  && mkdir -p /opt/unsloth-nb/ipython/profile_default/startup \
  && cp /opt/unsloth-nb/unsloth_ipython_startup.py /opt/unsloth-nb/ipython/profile_default/startup/00-unsloth-nb.py \
  && chmod -R a+rX /opt/unsloth-nb/ipython \
- && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat, unsloth_colab_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
+ && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat, unsloth_colab_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))" \
+ && /opt/unsloth-venv/bin/python /opt/unsloth-nb/unsloth_pip_shim.py --unsloth-selfcheck-value-flags
 # Shim dir AHEAD of the venv bin so `!pip`/`!uv` resolve to the shim, not the real tool.
 ENV PATH=/opt/unsloth-nb/bin:${PATH}
 # Load the notebook startup hook (sidecar activation + %pip/%uv magic re-point)

@@ -722,6 +722,16 @@ def _value_flags_from_help(cmd):
     return flags
 
 
+# The help-derived drift guards are OPT-IN: repo CI runs whatever pip/uv are
+# current that week, so a hard assert here turns every upstream flag addition
+# into an unrelated red PR. The authoritative check runs at image BUILD time
+# against the exact baked tools (`unsloth_pip_shim.py
+# --unsloth-selfcheck-value-flags` in the Dockerfile verify step); set
+# UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1 to run these locally.
+_DRIFT_OPT_IN = os.environ.get("UNSLOTH_SHIM_FLAG_DRIFT_CHECK") == "1"
+
+
+@pytest.mark.skipif(not _DRIFT_OPT_IN, reason = "opt-in: UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1")
 def test_pip_help_value_flags_all_classified(shim):
     # Drift guard: every value-taking flag `pip install --help` documents must
     # be classified as value-taking by the shim, or its VALUE is misread as an
@@ -731,8 +741,38 @@ def test_pip_help_value_flags_all_classified(shim):
     assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"
 
 
-@pytest.mark.skipif(not __import__("shutil").which("uv"), reason = "uv not installed")
+@pytest.mark.skipif(
+    not _DRIFT_OPT_IN or not __import__("shutil").which("uv"),
+    reason = "opt-in: UNSLOTH_SHIM_FLAG_DRIFT_CHECK=1 (and uv installed)",
+)
 def test_uv_help_value_flags_all_classified(shim):
     known = shim._VALUE_FLAGS | shim._DROP_VALUE_FLAGS
     missing = _value_flags_from_help(["uv", "pip", "install", "--help"]) - known
     assert not missing, f"value flags missing from _VALUE_FLAGS: {sorted(missing)}"
+
+
+# --------------------------------------------------------------------------
+# Item 3592947879 -- a VCS @ref may itself contain a slash (@feature/foo);
+# the ref must be stripped from the PATH before the last-segment split, or
+# `git+https://github.com/unslothai/unsloth.git@feature/foo` canonicalizes as
+# "foo" and a protected repo installed from a branch dodges _KEEP.
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("git+https://github.com/unslothai/unsloth.git@feature/foo", id="https-slash-ref"),
+        pytest.param("git+ssh://git@github.com/unslothai/unsloth.git@feature/foo", id="ssh-userinfo-and-slash-ref"),
+        pytest.param("git+https://github.com/unslothai/unsloth.git@v2026.7", id="plain-tag-ref"),
+        pytest.param("git+https://github.com/unslothai/unsloth.git", id="no-ref"),
+    ],
+)
+def test_vcs_slash_ref_still_protected(shim, url):
+    execd, _ = _run(shim, "pip", [url, "peft"])
+    assert execd == ["peft"], execd
+
+
+def test_vcs_slash_ref_unprotected_kept(shim):
+    url = "git+https://github.com/someorg/sometool.git@feature/foo"
+    execd, _ = _run(shim, "pip", [url])
+    assert execd == [url], execd

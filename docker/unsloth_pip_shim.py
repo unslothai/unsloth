@@ -114,6 +114,9 @@ _VALUE_FLAGS = {
     "--refresh-package",
     "--resolution",
     "--torch-backend",
+    # newer uv (0.10+):
+    "--no-editable-package",
+    "--upgrade-group",
     # pip:
     "--build-constraint",
     "--cert",
@@ -133,6 +136,11 @@ _VALUE_FLAGS = {
     "--trusted-host",
     "--use-deprecated",
     "--use-feature",
+    # newer pip (26+):
+    "--all-releases",
+    "--only-final",
+    "--requirements-from-script",
+    "--uploaded-prior-to",
 }
 # Of those value-flags, the ones whose VALUE is itself an install target: a
 # requirements file pulls real requirements. An index-url / find-links /
@@ -261,8 +269,20 @@ def _canon(token):
         # _KEEP. A non-protected repo returns its basename and the caller keeps
         # the token as a normal target either way.
         if re.match(r"^[a-z]+\+", token):
-            _seg = token.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
-            _seg = _seg.split("@", 1)[0]  # drop a @branch / @tag / @commit ref
+            _rest = token.split("#", 1)[0].split("?", 1)[0]
+            # Drop the @ref from the PATH portion BEFORE taking the last path
+            # segment: a ref may itself contain a slash (@feature/foo), which
+            # would otherwise become the "basename" and dodge _KEEP. Split the
+            # path off the authority first so an SSH userinfo @ (git+ssh://
+            # git@github.com/...) is never mistaken for the ref separator;
+            # like pip's own parser, the ref is everything after the LAST @.
+            if "://" in _rest:
+                _authority, _slash, _path = _rest.partition("://")[2].partition("/")
+                if "@" in _path:
+                    _path = _path.rsplit("@", 1)[0]
+                _rest = _path if _slash else _authority
+            _seg = _rest.rstrip("/").rsplit("/", 1)[-1]
+            _seg = _seg.split("@", 1)[0]  # schemeless fallback: drop a plain @ref
             if _seg.endswith(".git"):
                 _seg = _seg[:-4]
             _seg = _seg.strip().lower().replace("_", "-")
@@ -585,9 +605,50 @@ def _protected_constraints_file():
         return None
 
 
+def _selfcheck_value_flags():
+    """Assert every value-taking flag the REAL pip/uv document is classified.
+
+    A value flag missing from _VALUE_FLAGS makes the scanner misread its VALUE
+    (see --torch-backend in the header of the added block above). Run at image
+    build time against the BAKED tools -- the exact versions the shim fronts --
+    so a pip/uv bump that adds a value flag fails the build, not a user's cell.
+    Exits 0 when clean, 1 with the missing flags listed.
+    """
+    import subprocess
+
+    known = _VALUE_FLAGS | _DROP_VALUE_FLAGS
+    missing = {}
+    for label, cmd in (
+        ("pip", [REAL["pip"], "install", "--help"]),
+        ("uv", [REAL["uv"], "pip", "install", "--help"]),
+    ):
+        try:
+            out = subprocess.run(cmd, capture_output = True, text = True).stdout
+        except OSError:
+            continue  # tool absent (e.g. a pip-only environment)
+        flags = set()
+        for m in re.finditer(r"^\s+(-\w)?,?\s*(--[\w-]+)[= ]<", out, re.M):
+            if m.group(1):
+                flags.add(m.group(1))
+            flags.add(m.group(2))
+        for m in re.finditer(r"^\s+(-\w) <", out, re.M):
+            flags.add(m.group(1))
+        gap = flags - known
+        if gap:
+            missing[label] = sorted(gap)
+    if missing:
+        print(f"[unsloth-nb] value flags missing from _VALUE_FLAGS: {missing}", file = sys.stderr)
+        sys.exit(1)
+    print("[unsloth-nb] value-flag selfcheck OK")
+    sys.exit(0)
+
+
 def main():
     tool = "uv" if os.path.basename(sys.argv[0]).startswith("uv") else "pip"
     argv = sys.argv[1:]
+
+    if argv[:1] == ["--unsloth-selfcheck-value-flags"]:
+        _selfcheck_value_flags()
 
     # Only intercept inside a notebook kernel (UNSLOTH_NB_SHIM is set by the baked
     # IPython startup and by `unsloth-run`). EVERYWHERE else -- install.sh during
