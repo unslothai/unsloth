@@ -250,8 +250,8 @@ _STUDIO_INSTALL_ID_RE = _re.compile(r"^[0-9a-f]{64}$")
 def _read_studio_install_id() -> str:
     """Per-install opaque id at $STUDIO_HOME/share/studio_install_id.
 
-    Returns "" when absent or not a 64-char lowercase-hex token; then
-    /api/health emits "" and the launcher accepts any healthy backend.
+    Returns "" when absent or not a 64-char lowercase-hex token; current
+    launchers restore missing ids before starting Studio.
     Carries no install-path info (matters when Studio runs -H 0.0.0.0)."""
     try:
         token = (_STUDIO_ROOT_RESOLVED / "share" / "studio_install_id").read_text().strip()
@@ -266,8 +266,7 @@ _STUDIO_ROOT_ID_CACHE: str = _read_studio_install_id()
 def _studio_root_id() -> str:
     """Same-install discriminator for /api/health (cached at import).
 
-    Empty when no installer token is present; the launcher treats "" as
-    "accept any healthy backend"."""
+    Empty when no installer token is present."""
     return _STUDIO_ROOT_ID_CACHE
 
 

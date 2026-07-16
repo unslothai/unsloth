@@ -607,7 +607,16 @@ create_studio_shortcuts() {
     _css_id_dir="$STUDIO_HOME/share"
     mkdir -p "$_css_id_dir"
     _css_id_file="$_css_id_dir/studio_install_id"
-    if [ ! -s "$_css_id_file" ]; then
+    _css_existing_id=""
+    [ -f "$_css_id_file" ] && _css_existing_id=$(cat "$_css_id_file" 2>/dev/null || true)
+    _css_existing_id_valid=false
+    if [ "${#_css_existing_id}" -eq 64 ]; then
+        case "$_css_existing_id" in
+            *[!0-9a-f]*) ;;
+            *) _css_existing_id_valid=true ;;
+        esac
+    fi
+    if [ "$_css_existing_id_valid" != "true" ]; then
         if [ -r /dev/urandom ]; then
             _css_new_id=$(od -An -N32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
         fi
@@ -625,6 +634,7 @@ create_studio_shortcuts() {
         chmod 600 "$_css_id_file" 2>/dev/null || true
         unset _css_new_id _css_id_tmp
     fi
+    unset _css_existing_id _css_existing_id_valid
     _css_studio_root_id=$(cat "$_css_id_file" 2>/dev/null)
     if [ -z "$_css_studio_root_id" ]; then
         echo "[WARN] Cannot create launcher: failed to read $_css_id_file" >&2
@@ -655,6 +665,42 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     echo "Error: UNSLOTH_EXE not set or not executable. Re-run the installer." >&2
     exit 1
 fi
+
+# Restore a missing install id before health checks.
+_ensure_studio_install_id() {
+    [ -n "$_EXPECTED_STUDIO_ROOT_ID" ] || return 0
+    [ "${#_EXPECTED_STUDIO_ROOT_ID}" -eq 64 ] || return 0
+    case "$_EXPECTED_STUDIO_ROOT_ID" in
+        *[!0-9a-f]*) return 0 ;;
+    esac
+
+    _exe_dir=$(dirname "$UNSLOTH_EXE")
+    _studio_home=$(CDPATH= cd -P -- "$_exe_dir/../.." 2>/dev/null && pwd -P) || return 0
+    _id_dir="$_studio_home/share"
+    _id_file="$_id_dir/studio_install_id"
+    _id_current=""
+    [ -f "$_id_file" ] && _id_current=$(cat "$_id_file" 2>/dev/null || true)
+
+    if [ "$_id_current" = "$_EXPECTED_STUDIO_ROOT_ID" ]; then
+        return 0
+    fi
+    if [ "${#_id_current}" -eq 64 ]; then
+        case "$_id_current" in
+            *[!0-9a-f]*) ;;
+            *) return 0 ;;
+        esac
+    fi
+
+    mkdir -p "$_id_dir" 2>/dev/null || return 0
+    _id_tmp="$_id_file.$$.tmp"
+    if printf '%s' "$_EXPECTED_STUDIO_ROOT_ID" > "$_id_tmp" 2>/dev/null; then
+        mv "$_id_tmp" "$_id_file" 2>/dev/null || rm -f "$_id_tmp" 2>/dev/null || true
+        chmod 600 "$_id_file" 2>/dev/null || true
+    else
+        rm -f "$_id_tmp" 2>/dev/null || true
+    fi
+}
+_ensure_studio_install_id
 
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
