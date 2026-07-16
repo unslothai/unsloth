@@ -7354,6 +7354,8 @@ async def openai_chat_completions(
                         _await_disconnect_then_cancel(request, cancel_event)
                     )
                     try:
+                        from core.inference.llama_keepwarm import mark_current_response_failed
+
                         yield _chat_role_chunk(completion_id, created, model_name)
 
                         gen = audio_input_generate()
@@ -7362,10 +7364,14 @@ async def openai_chat_completions(
                         while True:
                             if cancel_event.is_set():
                                 cancelled = True
+                                # Cancelled before completion: flag failed so the keep-warm
+                                # middleware does not claim a preview-owned model.
+                                mark_current_response_failed()
                                 break
                             if await request.is_disconnected():
                                 cancel_event.set()
                                 api_monitor.finish(monitor_id, "cancelled")
+                                mark_current_response_failed()
                                 return
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
@@ -7388,8 +7394,6 @@ async def openai_chat_completions(
                         api_monitor.fail(monitor_id, _friendly_error(e))
                         # In-band error after 200 headers: flag the response failed so
                         # the keep-warm middleware does not claim a preview-owned model.
-                        from core.inference.llama_keepwarm import mark_current_response_failed
-
                         mark_current_response_failed()
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
@@ -12855,10 +12859,15 @@ async def _anthropic_tool_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
+        from core.inference.llama_keepwarm import mark_response_failed
+
         try:
             while True:
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
+                    # Cancelled before completion: flag failed so the middleware does not
+                    # claim a preview-owned model for a stream that never finished.
+                    mark_response_failed(getattr(request, "scope", None))
                     return
                 event = await asyncio.to_thread(next, gen, _sentinel)
                 if event is _sentinel:
@@ -12954,10 +12963,15 @@ async def _anthropic_plain_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
+        from core.inference.llama_keepwarm import mark_response_failed
+
         try:
             while True:
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
+                    # Cancelled before completion: flag failed so the middleware does not
+                    # claim a preview-owned model for a stream that never finished.
+                    mark_response_failed(getattr(request, "scope", None))
                     return
                 cumulative = await asyncio.to_thread(next, gen, _sentinel)
                 if cumulative is _sentinel:

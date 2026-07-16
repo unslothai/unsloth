@@ -1509,9 +1509,43 @@ def test_preview_swapped_since_entry_catches_pre_admission_swap():
         assert kw.preview_swapped_since_entry({kw._PREVIEW_SWAP_REJECT_SCOPE_KEY: True}) is True
         # A non-dict scope is never rejected.
         assert kw.preview_swapped_since_entry(None) is False
+        # Codex P1 (round 23): a preview scope is NEVER rejected -- load_model_for_preview
+        # bumps the generation before serving the preview's own chat, so the preview must
+        # not reject itself after loading (cold or checkpoint-switching previews).
+        kw._preview_swap_inflight = 1
+        kw._preview_swap_generation = 42
+        prev = {"path": "/p/run/v1/chat/completions", kw._SWAP_GEN_AT_ENTRY_KEY: 5}
+        assert kw.preview_swapped_since_entry(prev) is False
     finally:
         kw._preview_swap_generation = 0
         kw._preview_swap_inflight = 0
+
+
+def test_anthropic_stream_cancel_marks_response_failed():
+    # Codex P2 (round 23): _anthropic_tool_stream / _anthropic_plain_stream return on
+    # cancel_event / disconnect with a 200 and no completion, so they must flag the
+    # response failed or the middleware claims a preview-owned model for a cancelled stream.
+    import inspect
+
+    for fn in (inference._anthropic_tool_stream, inference._anthropic_plain_stream):
+        src = inspect.getsource(fn)
+        idx = src.index("cancel_event.is_set() or await request.is_disconnected()")
+        branch = src[idx : src.index("_sentinel)", idx)]
+        assert 'mark_response_failed(getattr(request, "scope", None))' in branch, fn.__name__
+
+
+def test_audio_input_stream_cancel_marks_response_failed():
+    # Codex P2 (round 23): the audio-input streaming path's cancel_event break and
+    # disconnect return end a 200 with no completion, so both must flag the response
+    # failed (alongside the existing exception path) or a cancelled audio stream claims
+    # a preview-owned model.
+    import inspect
+
+    src = inspect.getsource(inference.openai_chat_completions)
+    assert "async def audio_input_stream()" in src
+    a_src = src[src.index("async def audio_input_stream()") :]
+    # cancel_event break + disconnect return + except path all mark failed.
+    assert a_src.count("mark_current_response_failed()") >= 3
 
 
 def test_responses_stream_failure_paths_mark_response_failed():

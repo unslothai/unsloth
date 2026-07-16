@@ -247,6 +247,12 @@ def preview_swapped_since_entry(scope) -> bool:
     scope / non-inference path), so fall back to the swap-in-progress flag alone."""
     if not isinstance(scope, dict):
         return False
+    # A preview request carries its own ownership and is allowed to swap the model in:
+    # load_model_for_preview bumps the generation before serving the preview's own chat,
+    # so the preview must never reject itself. Mirrors the middleware, which only flags
+    # non-preview scopes.
+    if _is_preview_path(scope.get("path") or ""):
+        return False
     if scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
         return True
     entry_gen = scope.get(_SWAP_GEN_AT_ENTRY_KEY)
