@@ -23,26 +23,22 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
-# Subset of _inflight that is /p/ preview traffic; same update sites as _inflight
-# so it can't drift out of sync with it.
+# Subset of _inflight that is /p/ preview traffic (same update sites, so no drift).
 _preview_inflight = 0
-# Requests blocked on the unload gate but not yet counted in _inflight: the idle
-# loop must not unload while one is waiting (it would unload out from under it).
+# Blocked on the unload gate, not yet in _inflight: the idle loop must not unload while
+# one waits (it would unload out from under it).
 _pending = 0
-# Subset of _pending that is /p/ preview traffic (same update sites as _pending), so
-# the preview busy guard can tell a queued Studio request from a queued preview.
+# Subset of _pending that is /p/ preview traffic, so the busy guard tells a queued
+# Studio request from a queued preview.
 _preview_pending = 0
-# Bumped once each time a preview swap actually loads a new checkpoint. A non-preview
-# request captures this before waiting on the lifecycle gate; if it advanced by the
-# time the request acquires the gate, a preview swapped the model out from under it
-# while it waited, so the request must be rejected instead of silently running against
-# the preview's checkpoint (see the middleware).
+# Bumped when a preview swap loads a new checkpoint. A non-preview request captures this
+# before the lifecycle gate; if it advanced by the time the gate is acquired, a preview
+# swapped the model out from under it and the request is rejected (see the middleware).
 _preview_swap_generation = 0
-# Non-zero while a preview swap is loading a checkpoint (from before it takes the
-# lifecycle gate until after it releases it). The generation counter alone can't reject
-# a request that captures it AFTER the swap bumped it but BEFORE the gate releases, so
-# the middleware also captures this flag at entry: if a swap was in progress when the
-# request arrived, reject it rather than let it run against the swapped-in checkpoint.
+# Non-zero while a preview swap is loading (from before it takes the lifecycle gate
+# until after it releases). Catches a request that captures the counter AFTER the bump
+# but BEFORE the gate releases: the middleware also snapshots this flag at entry and
+# rejects if a swap was in progress.
 _preview_swap_inflight = 0
 _last_active = time.monotonic()
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would
@@ -246,19 +242,16 @@ def _claim_non_preview_slot() -> None:
 _UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_untracked"
 
 # Set by the middleware on a non-preview request's scope when a preview swap advanced
-# the swap counter while the request waited on the lifecycle gate. The local inference
-# path (_maybe_auto_switch_model) rejects such a request rather than silently serving
-# it the preview's swapped-in checkpoint. Deferred to the route -- not a middleware
-# 503 -- so an external-provider request, which untracks itself and returns before
-# reaching that check, is never rejected for a swap it never touches.
+# the counter while it waited on the gate. _maybe_auto_switch_model then rejects it
+# rather than serve the swapped-in checkpoint. Deferred to the route (not a middleware
+# 503) so an external-provider request, which untracks and returns before that check,
+# is never rejected for a swap it never touches.
 _PREVIEW_SWAP_REJECT_SCOPE_KEY = "_unsloth_keepwarm_preview_swap_reject"
 
-# Set on the ASGI scope by a streaming route that encoded a failure after its 200
-# headers were already sent (e.g. generate_stream yields an SSE error chunk, or a
-# llama-server passthrough relays a mid-stream error while the HTTP status stays 200).
-# The middleware's successful-response claim keys off the HTTP status alone, so without
-# this a failed stream would still adopt a preview-owned model for Studio and 503 later
-# previews for another checkpoint; the claim skips a response flagged here.
+# Set on the ASGI scope by a streaming route that failed after its 200 headers were
+# sent (an SSE error chunk, a passthrough relaying a mid-stream error while HTTP stays
+# 200). The middleware's claim keys off HTTP status alone, so without this a failed
+# stream would adopt a preview-owned model for Studio; the claim skips a flagged response.
 _RESPONSE_FAILED_SCOPE_KEY = "_unsloth_keepwarm_response_failed"
 
 
@@ -271,9 +264,8 @@ def mark_response_failed(scope) -> None:
 
 
 # The current request's ASGI scope, set by the middleware so deep streaming error
-# helpers can flag a failure without threading the scope through every yield site.
-# The middleware runs in the same task as the (same-task) streaming body, so the
-# contextvar propagates to the generators that emit the error SSE.
+# helpers can flag a failure without threading the scope through every yield site. The
+# middleware shares the streaming body's task, so the contextvar reaches those generators.
 _current_response_scope: contextvars.ContextVar = contextvars.ContextVar(
     "_unsloth_current_response_scope", default = None
 )
@@ -358,16 +350,13 @@ class LlamaKeepWarmMiddleware:
         # unloading) can't free the model while this request is waiting to start.
         path = scope.get("path") or ""
         is_preview = _is_preview_path(path)
-        # Expose this request's scope to deep streaming error helpers (same task, so
-        # the contextvar propagates to the response body generators), so an SSE error
-        # emitted after the 200 headers can flag the response failed.
+        # Expose this scope to deep streaming error helpers (same task, so the contextvar
+        # reaches the body generators) so a post-200 SSE error can flag the response failed.
         set_current_response_scope(scope)
         _note_pending(is_preview)
-        # Capture the preview-swap state before waiting on the gate: if a preview swap
-        # completes while this non-preview request is blocked, the counter advances; if
-        # one is already in progress when the request arrives (the counter may have
-        # already been bumped but the gate not yet released), the in-progress flag is
-        # set. Either way the request must be rejected (see below).
+        # Snapshot the swap state before the gate: the counter advances if a swap
+        # completes while this request is blocked, and the in-progress flag catches a
+        # swap already underway (counter bumped, gate not yet released). Either rejects.
         swap_gen_at_entry = _preview_swap_gen()
         swap_active_at_entry = _preview_swap_active()
         started = False
@@ -375,12 +364,11 @@ class LlamaKeepWarmMiddleware:
             async with _unload_gate():
                 _note_start(is_preview)
                 started = True
-                # A preview swapped in a different checkpoint while this non-preview
-                # request waited on the gate. Flag the scope so the local inference
-                # path (_maybe_auto_switch_model) rejects it before running against the
-                # preview's model. Deferred to the route, not a 503 here, so an
-                # external-provider request -- which untracks itself and returns before
-                # reaching that check -- is not rejected for a swap it never touches.
+                # A preview swapped in a different checkpoint while this request waited
+                # on the gate. Flag the scope so _maybe_auto_switch_model rejects it
+                # before running against the preview's model. Deferred to the route (not
+                # a 503 here) so an external-provider request that untracks and returns
+                # before that check is not rejected for a swap it never touches.
                 if (
                     not is_preview
                     and (_preview_swap_gen() != swap_gen_at_entry or swap_active_at_entry)
@@ -400,33 +388,27 @@ class LlamaKeepWarmMiddleware:
             ended["done"] = True
             if scope.get(_UNTRACKED_SCOPE_KEY):
                 return
-            # This middleware runs before FastAPI auth, so a 401/403 reaches here
-            # without ever touching llama.cpp. Decrement the in-flight count (to
-            # balance _note_start) but do NOT stamp activity, or repeated
-            # unauthenticated probes on an exposed server would keep the model warm
-            # and never let idle-unload free VRAM.
+            # This middleware runs before FastAPI auth, so a 401/403 reaches here without
+            # touching llama.cpp. Balance _note_start but do NOT stamp activity, or
+            # repeated unauthenticated probes would keep the model warm forever.
             code = status["code"]
             if code in (401, 403):
                 _note_untracked_end(is_preview)
                 return
-            # A preview that did not return 2xx never served tokens from the local
-            # model: rate-limit 429, bad capability token 404 and body-validation 4xx
-            # all exit before load_model_for_preview. Drop it like an untracked end so
-            # repeated rejected public preview POSTs can't refresh the idle timer and
-            # pin an otherwise idle model in VRAM (a loaded-then-failed preview already
-            # stamped activity at load time, so not stamping here is harmless).
+            # A preview that did not return 2xx never served tokens (429, bad-token 404,
+            # body-validation 4xx all exit before load_model_for_preview). Drop it like
+            # an untracked end so rejected public POSTs can't refresh the idle timer and
+            # pin the model in VRAM (a loaded-then-failed preview already stamped at load).
             if is_preview and not (isinstance(code, int) and 200 <= code < 300):
                 _note_untracked_end(is_preview)
                 return
-            # A non-preview inference that actually ran (2xx) against the local model
-            # adopts it for Studio, so clear preview ownership -- claim on success, so a
-            # request a per-route capability check rejected (4xx/5xx) never strands a
-            # preview-owned model. count_tokens only tokenizes (no generation), so it
-            # does not claim. Claim BEFORE decrementing in-flight: doing it after opens
-            # a window where a preview for another checkpoint sees no non-preview
-            # traffic and a still-preview-owned slot, swaps its model in, and then this
-            # delayed claim clears ownership on the wrong model. While this request is
-            # still counted in-flight the preview busy guard refuses that swap.
+            # A non-preview 2xx that ran against the local model adopts it for Studio, so
+            # clear preview ownership. Skip on a per-route 4xx/5xx (never strand a
+            # preview-owned model) and on count_tokens (tokenize only, no generation).
+            # Claim BEFORE decrementing in-flight: doing it after opens a window where a
+            # preview for another checkpoint sees no non-preview traffic and a still-
+            # preview-owned slot, swaps in, and this delayed claim then clears the wrong
+            # model; while still counted in-flight the busy guard refuses that swap.
             if (
                 not is_preview
                 and isinstance(code, int)

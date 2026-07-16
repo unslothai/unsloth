@@ -420,9 +420,8 @@ def _openai_stream_error_chunk(exc) -> dict:
 
 def _openai_stream_error_sse(error: dict) -> str:
     # Every OpenAI-family streaming error (local chat/completions/responses, admission
-    # failures, and passthrough relays) is emitted through here after the 200 headers
-    # are already sent, so flag the response failed: the keep-warm middleware must not
-    # claim a preview-owned model for Studio on a stream that errored.
+    # failures, passthrough relays) flows through here after the 200 headers, so flag the
+    # response failed: the middleware must not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
     mark_current_response_failed()
     return f"data: {json.dumps(error)}\n\ndata: [DONE]\n\n"
@@ -618,10 +617,9 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
-    # Called only from stream except-handlers, after the 200 headers were flushed, so
-    # flag the response failed up front -- even when we return None for an unclassified
-    # error the caller swallows (it then finishes the stream normally). The keep-warm
-    # middleware must not claim a preview-owned model for Studio on a stream that errored.
+    # Called only from stream except-handlers after the 200 headers, so flag failed up
+    # front -- even when we return None for an unclassified error the caller swallows and
+    # finishes normally. The middleware must not claim a preview-owned model on a failed stream.
     from core.inference.llama_keepwarm import mark_current_response_failed
 
     mark_current_response_failed()
@@ -1205,13 +1203,11 @@ def _openai_admission_cancelled_error(
 async def _raise_if_openai_admission_cancelled(
     reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
 ) -> None:
-    # A cancellation raised from here aborts the request before it ever leases an
-    # upstream, so the local model was never used. For a streaming request the 200
-    # headers are already flushed and the caller's `except LlamaAdmissionCancelled`
-    # just returns, so flag the response failed: the keep-warm middleware must not
-    # treat that empty 200 as a successful Studio generation and claim a preview-owned
-    # slot. Harmless for the non-streaming callers (they surface a non-2xx, which the
-    # middleware never claims anyway).
+    # A cancellation raised here aborts before leasing an upstream, so the model was
+    # never used. For a streaming request the 200 headers are flushed and the caller's
+    # `except LlamaAdmissionCancelled` just returns, so flag failed: the middleware must
+    # not treat that empty 200 as a successful generation and claim a preview-owned slot.
+    # Harmless for non-streaming callers (they surface a non-2xx, never claimed anyway).
     from core.inference.llama_keepwarm import mark_current_response_failed
     if reservation.is_cancelled:
         mark_current_response_failed()
@@ -3481,14 +3477,12 @@ async def _maybe_auto_switch_model(
         _PREVIEW_SWAP_REJECT_SCOPE_KEY,
     )
 
-    # A preview swapped in a different checkpoint while this non-preview request was
-    # queued on the keep-warm gate (the middleware flags the scope). Running now would
-    # silently serve the preview's model to Studio traffic, so reject and let the
-    # client retry against the now-stable model. Deferred to here rather than a 503 in
-    # the middleware so an external-provider request -- which untracks itself and
-    # returns before reaching this hook -- is never rejected for a swap it never
-    # touches; over-rejecting a local request that would use the resident model is
-    # acceptable, silently serving it the wrong checkpoint is not.
+    # A preview swapped in a different checkpoint while this request was queued on the
+    # keep-warm gate (the middleware flags the scope). Running now would serve the
+    # preview's model to Studio traffic, so reject and let the client retry. Deferred
+    # here (not a middleware 503) so an external-provider request that untracks and
+    # returns before this hook is never rejected for a swap it never touched; over-
+    # rejecting a local request is acceptable, serving the wrong checkpoint is not.
     _swap_scope = getattr(fastapi_request, "scope", None)
     if isinstance(_swap_scope, dict) and _swap_scope.get(_PREVIEW_SWAP_REJECT_SCOPE_KEY):
         raise HTTPException(
@@ -3870,17 +3864,13 @@ async def load_model_for_preview(
                         detail = "Studio already has a different model loaded. Unload it before using this preview.",
                         headers = {"Retry-After": "10"},
                     )
-                # A same-checkpoint request would still restart a Studio-owned GGUF
-                # whose live settings differ from these bare defaults (#5401), so
-                # in-flight Studio traffic blocks before any borrow/reload decision.
-                # Queued (pending) non-preview requests are deliberately NOT counted
-                # here: the keep-warm middleware bumps _pending before FastAPI auth
-                # runs, so an unauthenticated probe blocked on the gate (it will 401 and
-                # never touch the model) would otherwise starve public previews. A
-                # genuinely queued Studio request is instead protected by the swap
-                # reject -- when it wakes after this load it sees the swap generation
-                # advance and gets a retryable 503 (in _maybe_auto_switch_model /
-                # generate_stream) rather than running against the swapped-in checkpoint.
+                # A same-checkpoint request would still restart a Studio-owned GGUF whose
+                # live settings differ from these bare defaults (#5401), so in-flight
+                # Studio traffic blocks first. Queued (pending) non-preview requests are
+                # deliberately NOT counted: the middleware bumps _pending before auth, so
+                # an unauthenticated probe blocked on the gate would starve previews. A
+                # genuinely queued Studio request is instead protected by the swap reject
+                # (it wakes to a retryable 503 rather than the swapped-in checkpoint).
                 if (
                     other_inference_request_count(
                         current_request_counted = True, include_pending = False
@@ -4453,14 +4443,12 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         _set_preview_resident(None)
 
         def _restore_marker_if_prior_preview_still_resident() -> None:
-            # A failed load can leave the prior preview checkpoint resident even though
-            # the marker was cleared above: a non-GGUF load unloads only the new entry
-            # (InferenceBackend cleans up the failed model), and a GGUF load can raise
-            # before it tears down the old llama-server (so the old preview-owned GGUF is
-            # still resident). Restore its ownership so a later preview for another
-            # checkpoint is not 503'd against a model Studio never actually adopted.
-            # Guarded on the prior model still being the resident slot, so it never
-            # mis-marks a torn-down or replaced model as preview-owned.
+            # A failed load can leave the prior preview checkpoint resident though the
+            # marker was cleared above: a non-GGUF load unloads only the new entry, and a
+            # GGUF load can raise before tearing down the old llama-server. Restore its
+            # ownership so a later preview isn't 503'd against a model Studio never
+            # adopted. Guarded on the prior model still being resident, so it never mis-
+            # marks a torn-down or replaced model as preview-owned.
             if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
                 _set_preview_resident(_prior_preview_marker)
 
@@ -5710,9 +5698,8 @@ async def generate_stream(
                     # keep decoding. The finally's reset is guarded, so no double-run.
                     backend.reset_generation_state()
                     # The 200 stream ends here with no completion (client disconnected,
-                    # possibly before the first token), so flag the failure: the
-                    # keep-warm middleware must not treat this cancelled stream as a
-                    # successful Studio generation and claim a preview-owned model.
+                    # maybe before the first token), so flag failed: the middleware must
+                    # not treat this cancelled stream as a success and claim the model.
                     mark_response_failed(_gs_scope)
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
@@ -11096,9 +11083,8 @@ async def _responses_stream(
         raise _openai_admission_http_exception(exc, status_code = 429)
 
     def _responses_admission_failed_sse(exc: Exception, *, status_code: int) -> str:
-        # Emitted in-band after the 200 stream headers, so flag the response failed:
-        # the keep-warm middleware must not treat this failed stream as a successful
-        # Studio generation and claim a preview-owned model.
+        # Emitted in-band after the 200 headers, so flag failed: the middleware must not
+        # treat this failed stream as a success and claim a preview-owned model.
         mark_response_failed(getattr(request, "scope", None))
         return (
             "event: response.failed\n"
@@ -11485,8 +11471,7 @@ async def _responses_stream(
 
         def _failed_response_payload(exc: Exception, status_code: int) -> dict:
             # Built only for in-band response.failed events after the 200 headers, so
-            # flag the response failed: the keep-warm middleware must not treat this
-            # failed stream as a successful Studio generation and claim the slot.
+            # flag failed: the middleware must not treat a failed stream as a success.
             mark_response_failed(getattr(request, "scope", None))
             return {
                 "type": "response.failed",
@@ -12316,16 +12301,13 @@ async def anthropic_count_tokens(
         request,
         current_subject,
         require_vision = _anthropic_request_has_image(payload),
-        # count_tokens only tokenizes (no generation), so it must not adopt the
-        # resident model for Studio; the keep-warm middleware likewise excludes
-        # count_tokens from its successful-response claim.
+        # count_tokens only tokenizes (no generation), so it must not adopt the resident
+        # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
     )
-    # The auto-switch may still have loaded a new GGUF via _load_model_impl, which
-    # clears the preview marker to reclaim the slot for Studio. Counting never
-    # generates, so a tokenize-only switch must not leave that model Studio-owned:
-    # mark a newly switched-in model preview-owned so it does not block later previews
-    # for other checkpoints. Only when the switch actually changed the resident slot.
+    # The auto-switch may still have loaded a new GGUF (clearing the preview marker).
+    # Counting never generates, so a tokenize-only switch must re-mark a newly switched-in
+    # model preview-owned so it doesn't block later previews. Only if the slot changed.
     _slot_after_count = _loaded_slot_ident()
     if _slot_after_count is not None and _slot_after_count != _slot_before_count:
         _set_preview_resident(_slot_after_count)
