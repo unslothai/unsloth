@@ -26,6 +26,52 @@ def _blocked(code: str, *, expect_phrase: str):
     assert expect_phrase in msg, (expect_phrase, msg)
 
 
+class TestPyYamlDeserialization:
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import yaml\n"
+                "yaml.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=yaml.Loader"
+                ")"
+            ),
+            (
+                "import yaml as y\n"
+                "y.load("
+                "'!!python/object/apply:os.system [\"echo pwned\"]', "
+                "Loader=y.Loader"
+                ")"
+            ),
+            (
+                "from yaml import load, Loader\n"
+                "load('!!python/object/apply:os.system [\"echo pwned\"]', Loader=Loader)"
+            ),
+            (
+                "import yaml\n"
+                "yaml.unsafe_load('!!python/object/apply:os.system [\"echo pwned\"]')"
+            ),
+            "import yaml\nloader = get_loader()\nyaml.load('a: 1', Loader=loader)",
+        ],
+    )
+    def test_unsafe_pyyaml_loaders_blocked(self, code):
+        _blocked(code, expect_phrase = "Unsafe PyYAML deserialization")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "import yaml\nyaml.safe_load('a: 1')",
+            "import yaml\nyaml.load('a: 1', Loader=yaml.SafeLoader)",
+            "import yaml\nyaml.load('a: 1', yaml.CSafeLoader)",
+            "from yaml import load, SafeLoader\nload('a: 1', Loader=SafeLoader)",
+            "import yaml\nSafe = yaml.SafeLoader\nyaml.load('a: 1', Loader=Safe)",
+        ],
+    )
+    def test_safe_pyyaml_loaders_allowed(self, code):
+        _ok(code)
+
+
 class TestMetadataHostDenylist:
     def test_aws_imds_literal_blocked(self):
         _blocked(

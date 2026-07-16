@@ -355,6 +355,12 @@ def test_terminal_classifier(command, unsafe):
         ("from builtins import open as w\nw('x', 'w')", True),
         ("globals()['open']('x', 'w')", True),  # dynamic open lookup
         ("import pickle\npickle.loads(b'')", True),  # code exec on load
+        (
+            "import yaml\n"
+            "yaml.load('!!python/object/apply:os.system [\"echo pwned\"]', Loader=yaml.Loader)",
+            True,
+        ),  # PyYAML unsafe object construction can execute code
+        ("import yaml\nyaml.safe_load('a: 1')", False),  # safe YAML parser stays read-only
         ("import io\nio.FileIO('out', 'w')", True),  # raw write handle
         (
             "import zipfile\nprint(zipfile.ZipFile('a').open('n.txt', 'r'))",

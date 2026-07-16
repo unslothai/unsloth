@@ -701,6 +701,53 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # Pickle-backed loaders that can execute code embedded in the file; gated by
 # receiver module (torch.load, joblib.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle"})
+# PyYAML's safe/base loaders do not construct arbitrary Python objects. Treat
+# yaml.load with any other loader (or a dynamic/missing loader) as unsafe.
+_PYYAML_SAFE_LOADERS = frozenset({"BaseLoader", "CBaseLoader", "SafeLoader", "CSafeLoader"})
+
+
+def _pyyaml_loader_is_safe(node, yaml_aliases: set[str], safe_loader_aliases: set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in safe_loader_aliases
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr in _PYYAML_SAFE_LOADERS
+        and isinstance(node.value, ast.Name)
+        and node.value.id in yaml_aliases
+    )
+
+
+def _pyyaml_load_call_is_unsafe(
+    call,
+    yaml_aliases: set[str],
+    load_aliases: set[str],
+    unsafe_load_aliases: set[str],
+    safe_loader_aliases: set[str],
+) -> bool:
+    func = call.func
+    is_load = False
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        if func.value.id in yaml_aliases and func.attr == "unsafe_load":
+            return True
+        is_load = func.value.id in yaml_aliases and func.attr == "load"
+    elif isinstance(func, ast.Name):
+        if func.id in unsafe_load_aliases:
+            return True
+        is_load = func.id in load_aliases
+    if not is_load:
+        return False
+
+    loader = call.args[1] if len(call.args) >= 2 else None
+    for kw in call.keywords or []:
+        if kw.arg is None:
+            return True
+        if kw.arg == "Loader":
+            loader = kw.value
+    return loader is None or not _pyyaml_loader_is_safe(
+        loader, yaml_aliases, safe_loader_aliases
+    )
+
+
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -4334,12 +4381,14 @@ def _check_signal_escape_patterns(code: str):
             "error": f"SyntaxError: {e}",
             "signal_tampering": [],
             "exception_catching": [],
+            "unsafe_deserializations": [],
             "warnings": [],
         }
 
     signal_tampering = []
     exception_catching = []
     shell_escapes = []
+    unsafe_deserializations = []
     warnings = []
 
     def _ast_name_matches(node, names):
@@ -4432,6 +4481,10 @@ def _check_signal_escape_patterns(code: str):
             self.signal_aliases = {"signal"}
             self.os_aliases = {"os"}
             self.subprocess_aliases = {"subprocess"}
+            self.yaml_aliases = {"yaml"}
+            self.yaml_load_aliases: set[str] = set()
+            self.yaml_unsafe_load_aliases: set[str] = set()
+            self.yaml_safe_loader_aliases = set(_PYYAML_SAFE_LOADERS)
             # Bare name -> fully-qualified form for from-import tracking
             # (e.g. "system" -> "os.system").
             self.shell_exec_aliases: dict[str, str] = {}
@@ -4447,6 +4500,8 @@ def _check_signal_escape_patterns(code: str):
                     self.os_aliases.add(alias.asname or "os")
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.name == "yaml":
+                    self.yaml_aliases.add(alias.asname or "yaml")
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -4474,6 +4529,28 @@ def _check_signal_escape_patterns(code: str):
                     fq = f"{node.module}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
+            elif node.module == "yaml":
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    if alias.name == "*":
+                        self.yaml_load_aliases.add("load")
+                        self.yaml_unsafe_load_aliases.add("unsafe_load")
+                        self.yaml_safe_loader_aliases.update(_PYYAML_SAFE_LOADERS)
+                    elif alias.name == "load":
+                        self.yaml_load_aliases.add(bound)
+                    elif alias.name == "unsafe_load":
+                        self.yaml_unsafe_load_aliases.add(bound)
+                    elif alias.name in _PYYAML_SAFE_LOADERS:
+                        self.yaml_safe_loader_aliases.add(bound)
+            self.generic_visit(node)
+
+        def visit_Assign(self, node):
+            if _pyyaml_loader_is_safe(
+                node.value, self.yaml_aliases, self.yaml_safe_loader_aliases
+            ):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.yaml_safe_loader_aliases.add(target.id)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -4632,6 +4709,23 @@ def _check_signal_escape_patterns(code: str):
                                     ),
                                 }
                             )
+
+            if _pyyaml_load_call_is_unsafe(
+                node,
+                self.yaml_aliases,
+                self.yaml_load_aliases,
+                self.yaml_unsafe_load_aliases,
+                self.yaml_safe_loader_aliases,
+            ):
+                unsafe_deserializations.append(
+                    {
+                        "type": "unsafe_pyyaml_deserialization",
+                        "line": node.lineno,
+                        "description": (
+                            "Unsafe PyYAML deserialization via yaml.load()/unsafe_load()"
+                        ),
+                    }
+                )
 
             self.generic_visit(node)
 
@@ -5252,6 +5346,7 @@ def _check_signal_escape_patterns(code: str):
         len(signal_tampering) == 0
         and len(exception_catching) == 0
         and len(shell_escapes) == 0
+        and len(unsafe_deserializations) == 0
         and len(network_calls) == 0
         and len(sensitive_file_reads) == 0
     )
@@ -5259,6 +5354,7 @@ def _check_signal_escape_patterns(code: str):
         "signal_tampering": signal_tampering,
         "exception_catching": exception_catching,
         "shell_escapes": shell_escapes,
+        "unsafe_deserializations": unsafe_deserializations,
         "network_calls": network_calls,
         "sensitive_file_reads": sensitive_file_reads,
         "warnings": warnings,
@@ -5282,13 +5378,23 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
+        deserialize_reasons = [
+            item.get("description", "") for item in info.get("unsafe_deserializations", [])
+        ]
         network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
         all_reasons = [
             r
-            for r in reasons + shell_reasons + exception_reasons + network_reasons + file_reasons
+            for r in (
+                reasons
+                + shell_reasons
+                + exception_reasons
+                + deserialize_reasons
+                + network_reasons
+                + file_reasons
+            )
             if r
         ]
         if all_reasons:
