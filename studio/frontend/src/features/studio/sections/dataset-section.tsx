@@ -54,7 +54,7 @@ import {
 // Imported directly from the store module rather than the "@/features/training"
 // barrel to avoid an import cycle (the barrel re-exports this section's siblings).
 import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
-import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useDebouncedValue } from "@/hooks";
 import { translate, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -397,9 +397,6 @@ export function DatasetSection() {
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
   });
-
-  const { error: tokenValidationError, isChecking: isCheckingToken } =
-    useHfTokenValidation(hfToken);
 
   const hfResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
@@ -1005,9 +1002,9 @@ export function DatasetSection() {
                   </ComboboxContent>
                 </Combobox>
               </div>
-              {(tokenValidationError ?? hfSearchError) && (
+              {hfSearchError && (
                 <p className="text-xs text-destructive">
-                  {tokenValidationError ?? hfSearchError}
+                  {hfSearchError}
                   {" — "}
                   <a
                     href="https://huggingface.co/settings/tokens"
@@ -1017,11 +1014,6 @@ export function DatasetSection() {
                   >
                     {t("studio.dataset.getOrUpdateToken")}
                   </a>
-                </p>
-              )}
-              {isCheckingToken && (
-                <p className="text-xs text-muted-foreground">
-                  {t("studio.dataset.checkingToken")}
                 </p>
               )}
               {pickerTab !== activeSourceTab && (
