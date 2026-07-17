@@ -136,13 +136,13 @@ function serializedMapEntrySize(key: string, value: StoredMap[string]): number {
 
 function deleteOldestEvictableEntry(
   map: StoredMap,
-  protectedKey?: string,
+  protectedKeys?: ReadonlySet<string>,
 ): { key: string; value: StoredMap[string] } | null {
   for (const key of Object.keys(map)) {
     // Never evict a future-schema entry an older client cannot interpret,
     // matching the save/delete guards.
     if (
-      key === protectedKey ||
+      protectedKeys?.has(key) ||
       storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION
     ) {
       continue;
@@ -154,17 +154,20 @@ function deleteOldestEvictableEntry(
   return null;
 }
 
-function enforceStorageBudget(map: StoredMap, protectedKey?: string): boolean {
+function enforceStorageBudget(
+  map: StoredMap,
+  protectedKeys?: ReadonlySet<string>,
+): boolean {
   let entryCount = Object.keys(map).length;
   while (entryCount > MAX_ENTRIES) {
-    if (!deleteOldestEvictableEntry(map, protectedKey)) {
+    if (!deleteOldestEvictableEntry(map, protectedKeys)) {
       return false;
     }
     entryCount -= 1;
   }
   let bytes = serializedMapSize(map);
   while (bytes > MAX_PER_MODEL_CONFIG_STORAGE_BYTES) {
-    const removed = deleteOldestEvictableEntry(map, protectedKey);
+    const removed = deleteOldestEvictableEntry(map, protectedKeys);
     if (!removed) {
       return false;
     }
@@ -219,8 +222,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
 function mergeLegacyEntries(
   map: StoredMap,
   legacy: Record<string, unknown>,
-): boolean {
-  let changed = false;
+): string[] {
+  const addedKeys: string[] = [];
   for (const [legacyKey, value] of Object.entries(legacy)) {
     if (!value || typeof value !== "object") {
       continue;
@@ -235,9 +238,9 @@ function mergeLegacyEntries(
       continue;
     }
     map[key] = toStoredConfig(migrated);
-    changed = true;
+    addedKeys.push(key);
   }
-  return changed;
+  return addedKeys;
 }
 
 function migrateLegacyLoadSettingsOnce(): void {
@@ -260,11 +263,21 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
-    if (!mergeLegacyEntries(map, legacy as Record<string, unknown>)) {
+    const migratedKeys = mergeLegacyEntries(
+      map,
+      legacy as Record<string, unknown>,
+    );
+    if (migratedKeys.length === 0) {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    enforceStorageBudget(map);
+    // Protect the just-migrated entries during eviction. If the budget cannot
+    // fit them (e.g. storage is full of future-schema records an older client
+    // cannot evict), leave the flag unset so migration retries once space frees
+    // up rather than marking it complete and dropping the migrated config.
+    if (!enforceStorageBudget(map, new Set(migratedKeys))) {
+      return;
+    }
     if (writeMap(map)) {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
     }
@@ -473,7 +486,15 @@ function loadPerModelConfig(
 ): PerModelConfig | null {
   const map = readMap();
   const key = findConfigKeyForModelVariant(map, modelId, ggufVariant);
-  return key ? normalize(map[key]) : null;
+  if (!key) {
+    return null;
+  }
+  // Never apply a future-schema record an older client cannot interpret,
+  // matching the save/delete/evict guards.
+  if (storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
+    return null;
+  }
+  return normalize(map[key]);
 }
 
 export function isDefaultConfig(config: PerModelConfig): boolean {
@@ -516,7 +537,7 @@ export function savePerModelConfig(
   const [key] = storageKeysForModelVariant(modelId, ggufVariant);
   deleteConfigEntriesForModelVariant(map, modelId, ggufVariant);
   map[key] = toStoredConfig(normalized);
-  if (!enforceStorageBudget(map, key)) {
+  if (!enforceStorageBudget(map, new Set([key]))) {
     return false;
   }
   return writeMap(map);
