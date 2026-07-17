@@ -297,10 +297,22 @@ def read_default_chat_template(
     resolved = resolve_cached_repo_id_case(name)
 
     try:
-        for snapshot in iter_hf_cache_snapshots(resolved):
-            template = _chat_template_from_dir(snapshot, gguf_variant)
+        # Sidecar tokenizer templates (chat_template.jinja / tokenizer_config.json)
+        # supersede a GGUF's embedded copy globally, not just within one snapshot.
+        # Check every cached snapshot for a maintained sidecar before falling back
+        # to any snapshot's embedded GGUF template, so a newer GGUF-only revision
+        # cannot win over an older revision's sidecar (snapshots are newest-first).
+        snapshots = list(iter_hf_cache_snapshots(resolved))
+        for snapshot in snapshots:
+            template = _chat_template_from_tokenizer_dir(snapshot)
             if template:
                 return template
+        for snapshot in snapshots:
+            gguf = _find_gguf_in_dir(snapshot, gguf_variant)
+            if gguf is not None:
+                template = read_gguf_chat_template(str(gguf))
+                if template:
+                    return template
     except Exception as exc:
         logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
 
