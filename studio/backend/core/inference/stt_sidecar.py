@@ -261,7 +261,6 @@ def is_model_downloaded(model: Optional[str]) -> bool:
     """True when a usable Whisper snapshot exists in the local HF cache."""
     try:
         from huggingface_hub import snapshot_download
-
         snapshot = Path(
             snapshot_download(
                 repo_id = resolve_model_repo(resolve_model_id(model)),
