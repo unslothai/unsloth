@@ -12,8 +12,9 @@ UNSLOTH_STUDIO_MCP_TOKEN='use-a-local-secret' \
 unsloth studio
 ```
 
-The endpoint is `http://127.0.0.1:8888/mcp` when Studio uses its default port.
-Use the actual Studio port when it is configured differently.
+The endpoint is `http://127.0.0.1:8888/mcp/` when Studio uses its default port
+(a request to `/mcp` redirects to the canonical `/mcp/`). Use the actual Studio
+port when it is configured differently.
 
 The high-impact tools are:
 

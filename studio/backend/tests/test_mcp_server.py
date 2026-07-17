@@ -140,6 +140,17 @@ def test_bearer_token_middleware_requires_non_empty_token():
             BearerTokenMiddleware(app, bad)
 
 
+def test_bearer_token_middleware_rejects_non_ascii_token():
+    async def app(scope, receive, send):
+        pass
+
+    # non-ASCII tokens cannot be transmitted in an HTTP header by a standard
+    # client, so they are rejected at construction instead of locking out.
+    for bad in ("töken", "\U0001F600"):
+        with pytest.raises(ValueError):
+            BearerTokenMiddleware(app, bad)
+
+
 def test_bearer_token_middleware_passes_through_non_http_scopes():
     events = []
 

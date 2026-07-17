@@ -22,6 +22,10 @@ class BearerTokenMiddleware:
     def __init__(self, app: Any, token: str) -> None:
         if not token or not token.strip():
             raise ValueError("Studio MCP bearer token must be a non-empty value")
+        if not token.isascii():
+            # HTTP header values are ASCII; a non-ASCII token cannot be sent by a
+            # standard client, so reject it here instead of silently locking out.
+            raise ValueError("Studio MCP bearer token must contain ASCII characters only")
         self.app = app
         # Keep the expected token as bytes and compare against the raw header
         # bytes: a client can send any byte value (including non-ASCII), and
