@@ -1886,12 +1886,22 @@ export function ChatPage({
           hasGgufSource(selection) &&
           !selection.isDownloaded);
       if (wantManagerStage) {
-        setPendingHubAutoLoad({
-          selection,
-          contextKey: chatContextKey,
-          originCheckpoint: store.params.checkpoint,
-          originGgufVariant: store.activeGgufVariant,
-        });
+        setPendingHubAutoLoad((current) =>
+          current &&
+          current.selection.id === selection.id &&
+          (current.selection.ggufVariant ?? null) ===
+            (selection.ggufVariant ?? null) &&
+          current.contextKey === chatContextKey &&
+          current.originCheckpoint === store.params.checkpoint &&
+          current.originGgufVariant === store.activeGgufVariant
+            ? current
+            : {
+                selection,
+                contextKey: chatContextKey,
+                originCheckpoint: store.params.checkpoint,
+                originGgufVariant: store.activeGgufVariant,
+              },
+        );
         return;
       }
       setPendingHubAutoLoad(null);
@@ -2561,12 +2571,27 @@ export function ChatPage({
 
         const state = useChatRuntimeStore.getState();
         const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        const selectWithConfig = async (
+          selection: Pick<SelectedModelInput, "id" | "isLora">,
+        ) => {
+          const previousConfig = currentRuntimePerModelConfig({
+            includeMaxSeqLength: true,
+          });
+          const hasAppliedConfig = applyModelLoadConfigToRuntime(
+            rememberedConfigFor(selection),
+          );
+          await selectModelRef.current({
+            ...selection,
+            ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
+            previousConfig,
+          });
+        };
         if (targetLora) {
           console.info("[chat-handoff] loading lora", {
             id: targetLora.id,
             baseModel: targetLora.baseModel,
           });
-          await selectModelRef.current({ id: targetLora.id, isLora: true });
+          await selectWithConfig({ id: targetLora.id, isLora: true });
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
@@ -2583,10 +2608,7 @@ export function ChatPage({
           console.info("[chat-handoff] no lora match, loading base", {
             id: handoff.baseModel,
           });
-          await selectModelRef.current({
-            id: handoff.baseModel,
-            isLora: false,
-          });
+          await selectWithConfig({ id: handoff.baseModel, isLora: false });
           if (canceled) return;
         } else {
           console.warn("[chat-handoff] no lora/base match found", {
@@ -2606,7 +2628,7 @@ export function ChatPage({
     return () => {
       canceled = true;
     };
-  }, [active, navigate]);
+  }, [active, navigate, rememberedConfigFor]);
 
   const tourSteps = useMemo(
     () =>

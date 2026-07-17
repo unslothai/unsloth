@@ -32,6 +32,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
+export const CONTEXT_LENGTH_MIN = 128;
 
 export const KV_CACHE_DTYPES = ["bf16", "q8_0", "q5_1", "q4_1"] as const;
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
@@ -356,7 +357,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
       partial.customContextLength > 0
-        ? Math.floor(partial.customContextLength)
+        ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     kvCacheDtype:

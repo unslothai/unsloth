@@ -14,7 +14,7 @@ from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import iter_hf_cache_snapshots
+from hub.utils.gguf import extract_quant_label, iter_hf_cache_snapshots
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -28,7 +28,7 @@ from utils.paths.path_utils import (
     resolve_cached_repo_id_case,
 )
 
-from .schemas import ValidateChatTemplateResponse
+from .schemas import MAX_CHAT_TEMPLATE_BYTES, ValidateChatTemplateResponse
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,8 @@ def _chat_template_from_jinja_file(
         if not template_file.exists() or not _leaf_inside_allowlist(template_file, allow_roots):
             continue
         try:
+            if template_file.stat().st_size > MAX_CHAT_TEMPLATE_BYTES:
+                continue
             template = template_file.read_text(encoding = "utf-8")
         except Exception:
             continue
@@ -216,6 +218,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 def _variant_matches(relative_path: str, needle: str) -> bool:
     quant = _extract_quant_label(relative_path).lower()
     if quant == needle:
+        return True
+    if extract_quant_label(relative_path).lower() == needle:
         return True
     prefix = f"{needle}-"
     if not quant.startswith(prefix):

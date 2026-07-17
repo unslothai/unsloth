@@ -12,6 +12,7 @@ from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
 
 from ..schemas import (
+    MAX_CHAT_TEMPLATE_BYTES,
     ModelTemplateResponse,
     ValidateChatTemplateRequest,
     ValidateChatTemplateResponse,
@@ -39,4 +40,6 @@ async def get_default_chat_template_route(
     template = await asyncio.to_thread(
         read_default_chat_template, model_name, hf_token, gguf_variant
     )
+    if template is not None and len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+        template = None
     return ModelTemplateResponse(model_name = model_name, chat_template = template)

@@ -319,9 +319,14 @@ def _scan_cached_gguf() -> list[dict]:
                 if _repo_has_mmproj(repo_info):
                     row["capabilities"]["supports_vision"] = True
                 if _prefer_cache_row(row, existing):
+                    if existing and existing["capabilities"].get("supports_vision"):
+                        row["capabilities"]["supports_vision"] = True
                     seen_lower[key] = row
-                elif last_modified > existing.get("last_modified", 0.0):
-                    existing["last_modified"] = last_modified
+                else:
+                    if last_modified > existing.get("last_modified", 0.0):
+                        existing["last_modified"] = last_modified
+                    if row["capabilities"].get("supports_vision"):
+                        existing["capabilities"]["supports_vision"] = True
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
                 logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")

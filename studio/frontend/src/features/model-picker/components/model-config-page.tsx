@@ -29,6 +29,7 @@ import {
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
 import {
+  CONTEXT_LENGTH_MIN,
   DEFAULT_PER_MODEL_CONFIG,
   KV_CACHE_DTYPES,
   MAX_SEQ_LENGTH_MAX,
@@ -431,7 +432,7 @@ export function ModelConfigPage({
       : null);
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  const minContext = 128;
+  const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
     Math.max(
@@ -572,6 +573,13 @@ export function ModelConfigPage({
                   max={maxContext}
                   step={1}
                   onChange={setContextLength}
+                  displayValue={
+                    config.customContextLength == null &&
+                    nativeContextLength == null &&
+                    activeLoadedContext == null
+                      ? "Auto"
+                      : undefined
+                  }
                   ariaLabel="Context Length"
                   className={NUMBER_INPUT_CLASS}
                   size={8}

@@ -190,6 +190,11 @@ class CachedModelsResponse(BaseModel):
     cached: List[CachedModelRepo] = Field(default_factory = list)
 
 
+class HiddenModelsResponse(BaseModel):
+    needles: List[str] = Field(default_factory = list)
+    exact_paths: List[str] = Field(default_factory = list)
+
+
 class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 

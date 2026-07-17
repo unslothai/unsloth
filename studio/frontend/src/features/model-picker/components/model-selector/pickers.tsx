@@ -753,10 +753,6 @@ function GgufVariantExpander({
 
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
-      // Only seed the staged context for picks whose weights are already on
-      // disk. The staging effect short-circuits on a known contextLength
-      // (pendingHasContext) before starting the download, so attaching it to an
-      // undownloaded quant from a partially cached repo would skip the download.
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
