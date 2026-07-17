@@ -78,6 +78,12 @@ class DiffusionFamily:
     # path resolves a scheme with a hosted checkpoint, the loader fetches the already-quantized
     # weights instead of the dense bf16 (lower load VRAM + smaller download). Empty -> unchanged.
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Hosted checkpoints for NON-DEFAULT bases of the family, as (base_repo, scheme, repo_id)
+    # triples with base_repo lowercased. One family entry covers several published variants
+    # (flux.1: schnell/dev/Krea-dev) whose weights differ, so each variant needs its own baked
+    # checkpoint; the loader's base_model_id validation correctly refuses the default entry for
+    # them. Resolution prefers an exact variant match, then falls back to ``prequant_repos``.
+    prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF
     # is shared with diffusers; sd-cli also needs a single-file VAE + text encoder(s) (the base repo
     # ships those sharded). Each is a (repo_id, filename); ``sd_cpp_text_encoders`` carries a trailing
@@ -119,6 +125,15 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/FLUX.1-schnell-FP8"),
             ("fp8", "unsloth/FLUX.1-schnell-FP8"),
+        ),
+        # Gate-validated checkpoints baked from the dev / Krea-dev weights (same arch, different
+        # weights): without these entries the default schnell checkpoint is refused for those
+        # bases and every int8/fp8 load pays the dense download + on-the-fly quantise.
+        prequant_variant_repos = (
+            ("black-forest-labs/flux.1-dev", "int8", "unsloth/FLUX.1-dev-FP8"),
+            ("black-forest-labs/flux.1-dev", "fp8", "unsloth/FLUX.1-dev-FP8"),
+            ("black-forest-labs/flux.1-krea-dev", "int8", "unsloth/FLUX.1-Krea-dev-FP8"),
+            ("black-forest-labs/flux.1-krea-dev", "fp8", "unsloth/FLUX.1-Krea-dev-FP8"),
         ),
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated.
@@ -493,8 +508,20 @@ def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
     return _GENERATION_DEFAULT_FALLBACK
 
 
-def family_prequant_repo(fam: DiffusionFamily, scheme: str) -> Optional[str]:
-    """The hosted pre-quantized transformer repo for ``scheme`` in this family, or None."""
+def family_prequant_repo(
+    fam: DiffusionFamily, scheme: str, base_repo: Optional[str] = None
+) -> Optional[str]:
+    """The hosted pre-quantized transformer repo for ``scheme`` in this family, or None.
+
+    ``base_repo`` (when known) selects a variant-specific checkpoint first: a checkpoint is
+    baked from ONE base's weights and the loader refuses it for any other base, so a variant
+    without its own entry still returns the family default (harmless: the base_model_id
+    validation then falls back to dense-quantise, exactly as before this table existed)."""
+    base = (base_repo or "").strip().lower()
+    if base:
+        for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
+            if entry_base == base and entry_scheme == scheme:
+                return repo_id
     for entry_scheme, repo_id in fam.prequant_repos:
         if entry_scheme == scheme:
             return repo_id

@@ -105,7 +105,11 @@ def _patch_selector(
     )
     import core.inference.diffusion_prequant as pq
 
-    monkeypatch.setattr(pq, "resolve_prequant_source", lambda fam, s, path_override = None: prequant)
+    monkeypatch.setattr(
+        pq,
+        "resolve_prequant_source",
+        lambda fam, s, path_override = None, base_repo = None: prequant,
+    )
     # Neutralize the cache-disk gate by default so resolution tests are independent of the
     # runner's free space (a small CI disk otherwise drops the candidate). The two disk-gate
     # tests re-patch this after calling the helper to exercise the gate explicitly.
