@@ -1356,14 +1356,12 @@ def run_server(
 
     import asyncio
 
-    # nest_asyncio exists for Colab/IPython, where the main thread already runs an
-    # event loop that the blocking waits below would otherwise collide with. Apply
-    # it only when a loop is actually running (a plain CLI start has nothing to
-    # nest) AND only on Python <= 3.13. On 3.14+ asyncio moved task tracking into C
-    # and nest_asyncio's Task patch leaves asyncio.current_task() returning None;
-    # apply() patches globally, so it also breaks the background uvicorn loop below
-    # and every request 500s, for notebook/embedded starts too, not just the CLI.
-    # nest_asyncio is archived upstream, so no 3.14 fix is coming; skip it there.
+    # nest_asyncio is for Colab/IPython, where the main thread already runs a loop
+    # the blocking waits below would collide with. Apply it only with a loop running
+    # (a plain CLI start has nothing to nest) and only on Python <= 3.13: on 3.14+
+    # its global Task patch leaves asyncio.current_task() None (tracking moved into
+    # C), which also breaks the background uvicorn loop and 500s every request. It
+    # is archived upstream, so no 3.14 fix is coming; skip it there.
     if sys.version_info < (3, 14):
         try:
             asyncio.get_running_loop()
