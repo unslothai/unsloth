@@ -17,6 +17,7 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import shutil
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
@@ -367,16 +368,14 @@ def fix_sentencepiece_tokenizer(
             # This will only work for older SentencePiece versions <= 3.20.3
             from transformers.utils import sentencepiece_model_pb2
 
-    if not os.path.exists(temporary_location):
-        os.makedirs(temporary_location)
-
-    # Clear any stale tokenizer.model left in this reusable directory by an earlier
-    # call. A fast-only tokenizer writes no tokenizer.model, so without this the guard
-    # below could pass on a previous sentencepiece tokenizer's file and patch the wrong
-    # model (e.g. mixing models in one process, like a long-running server).
-    old_model_path = f"{temporary_location}/tokenizer.model"
-    if os.path.isfile(old_model_path):
-        os.remove(old_model_path)
+    # Empty this reusable scratch directory so it only holds the current tokenizer.
+    # The final AutoTokenizer.from_pretrained reads the whole directory, and a
+    # fast-only tokenizer writes no tokenizer.model, so a stale file from an earlier
+    # call could pass the guard below or leak into the reload (e.g. mixing models in
+    # one process, like a long-running server).
+    if os.path.exists(temporary_location):
+        shutil.rmtree(temporary_location, ignore_errors = True)
+    os.makedirs(temporary_location, exist_ok = True)
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)

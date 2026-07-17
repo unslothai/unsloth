@@ -157,3 +157,22 @@ def test_stale_model_from_a_previous_call_does_not_poison_a_fast_only_call(tmp_p
     )
 
     assert result is new_fast
+
+
+def test_reused_directory_is_emptied_so_stale_artifacts_do_not_leak(tmp_path, monkeypatch):
+    """The reload reads the whole reusable directory, so a leftover file from a
+    previous tokenizer that the next save does not overwrite must not survive.
+    """
+    _stub_auto_tokenizer(monkeypatch)
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+    os.makedirs(location, exist_ok = True)
+
+    # An artifact from a previous tokenizer that the next save does not regenerate.
+    stale = os.path.join(location, "added_tokens.json")
+    with open(stale, "w") as f:
+        f.write('{"<stale>": 999}')
+
+    old, new = _tokenizers()
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert not os.path.isfile(stale), "stale artifact from a previous call was not cleared"
