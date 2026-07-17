@@ -176,3 +176,56 @@ def test_reused_directory_is_emptied_so_stale_artifacts_do_not_leak(tmp_path, mo
     fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
 
     assert not os.path.isfile(stale), "stale artifact from a previous call was not cleared"
+
+
+class _CopyFromSubdirTokenizer:
+    """A slow tokenizer whose sentencepiece source lives in a subdirectory, like
+    the tokenizers convert_to_fast_tokenizer produces under {location}/{name}.
+    save_pretrained copies that source up to the destination, as HF slow
+    tokenizers copy their vocab_file.
+    """
+
+    def __init__(self, source_model_path):
+        self.eos_token = "</s>"
+        self.pad_token = "<pad>"
+        self._source_model_path = source_model_path
+
+    def save_pretrained(self, location):
+        os.makedirs(location, exist_ok = True)
+        if os.path.isfile(self._source_model_path):
+            with open(self._source_model_path, "rb") as src:
+                data = src.read()
+            with open(os.path.join(location, "tokenizer.model"), "wb") as dst:
+                dst.write(data)
+
+    def __call__(self, texts, add_special_tokens = False):
+        class _Encoded:
+            pass
+
+        encoded = _Encoded()
+        encoded.input_ids = [[2] for _ in texts]
+        return encoded
+
+
+def test_clearing_keeps_the_converted_tokenizer_source_subdirectory(tmp_path, monkeypatch):
+    """convert_to_fast_tokenizer stores a converted tokenizer's source vocab under a
+    {location}/{name} subdirectory. Clearing the reusable directory must not delete
+    that subtree, or old_tokenizer.save_pretrained cannot copy tokenizer.model and the
+    sentencepiece rename is silently lost.
+    """
+    _stub_auto_tokenizer(monkeypatch)
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+    subdir = os.path.join(location, "some_model")
+    os.makedirs(subdir, exist_ok = True)
+
+    pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL), ("</s>", 0.0, CONTROL)]
+    source_model = os.path.join(subdir, "tokenizer.model")
+    with open(source_model, "wb") as f:
+        f.write(_spm_bytes(pieces))
+
+    old = _CopyFromSubdirTokenizer(source_model)
+    new = _FakeTokenizer("new")
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert os.path.isfile(source_model), "converted tokenizer source subdirectory was deleted"
+    assert "<|im_end|>" in _read_pieces(f"{location}/tokenizer.model")

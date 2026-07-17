@@ -17,7 +17,6 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
-import shutil
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
@@ -368,14 +367,21 @@ def fix_sentencepiece_tokenizer(
             # This will only work for older SentencePiece versions <= 3.20.3
             from transformers.utils import sentencepiece_model_pb2
 
-    # Empty this reusable scratch directory so it only holds the current tokenizer.
-    # The final AutoTokenizer.from_pretrained reads the whole directory, and a
-    # fast-only tokenizer writes no tokenizer.model, so a stale file from an earlier
-    # call could pass the guard below or leak into the reload (e.g. mixing models in
-    # one process, like a long-running server).
-    if os.path.exists(temporary_location):
-        shutil.rmtree(temporary_location, ignore_errors = True)
-    os.makedirs(temporary_location, exist_ok = True)
+    if not os.path.exists(temporary_location):
+        os.makedirs(temporary_location)
+
+    # Remove stale top-level files from an earlier call so the final
+    # AutoTokenizer.from_pretrained(temporary_location), which reads this whole
+    # directory, only sees the current tokenizer. A fast-only tokenizer writes no
+    # tokenizer.model, so without this a stale file could pass the guard below or leak
+    # into the reload (e.g. mixing models in one process, like a long-running server).
+    # Subdirectories are kept: convert_to_fast_tokenizer stores a converted tokenizer's
+    # source vocab under {temporary_location}/{name}, and old_tokenizer.save_pretrained
+    # copies tokenizer.model from there.
+    for entry in os.listdir(temporary_location):
+        entry_path = os.path.join(temporary_location, entry)
+        if os.path.isfile(entry_path) or os.path.islink(entry_path):
+            os.remove(entry_path)
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
