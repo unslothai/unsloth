@@ -45,9 +45,9 @@ def test_sidebar_account_block_uses_leading_tight():
     assert matches, "could not find sidebar account-block parent div"
     for cls in matches:
         assert "leading-tight" in cls, f"sidebar account-block must use leading-tight, got: {cls}"
-        assert "leading-none" not in cls, (
-            f"leading-none must not coexist with leading-tight here: {cls}"
-        )
+        assert (
+            "leading-none" not in cls
+        ), f"leading-none must not coexist with leading-tight here: {cls}"
 
 
 def test_no_truncate_plus_leading_none_in_changed_files():
