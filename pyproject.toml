@@ -108,9 +108,12 @@ base = [
     "unsloth[huggingface]",
 ]
 # Gefen-X optimizer (gefenx / gefenx_muon). Opt-in extra — gefen-x is a
-# CUDA-only, lazily-imported optional dependency, so the base install is
-# untouched. See unsloth/optimizers/gefenx.py.
+# CUDA-only, lazily-imported optional dependency, so a bare `pip install unsloth`
+# is untouched. The extra pulls in a normal Core (`base`) install so that
+# `pip install "unsloth[gefenx]"` is self-sufficient and `GefenXConfig` can be
+# imported through unsloth. See unsloth/optimizers/gefenx.py.
 gefenx = [
+    "unsloth[base]",
     "gefen-x>=0.2.0",
 ]
 cu118only = [
