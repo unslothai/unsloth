@@ -198,7 +198,11 @@ class _CopyFromSubdirTokenizer:
             with open(os.path.join(location, "tokenizer.model"), "wb") as dst:
                 dst.write(data)
 
-    def __call__(self, texts, add_special_tokens = False):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
         class _Encoded:
             pass
 
