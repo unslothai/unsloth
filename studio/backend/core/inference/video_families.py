@@ -79,6 +79,15 @@ class VideoFamily:
     vae_force_fp32: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
+    # Hosted pre-quantized DiT checkpoints as (scheme, repo_id) pairs, resolved by the same
+    # ``resolve_prequant_source`` machinery as the image families (metadata-validated,
+    # refuse-to-dense). A dual-expert family's repo carries BOTH experts per scheme
+    # (<Model>-<SCHEME>.pt + <Model>-<SCHEME>-2.pt); the loader engages prequant only when
+    # every expert's checkpoint resolves. Empty -> the quant path stays dense+quantise.
+    prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Per-base variants, mirroring DiffusionFamily.prequant_variant_repos (unused by the
+    # current video entries -- the resolution helper reads the attribute, so it must exist).
+    prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # True when the pipeline REQUIRES a conditioning image (WanImageToVideoPipeline): the
     # generate path decodes/resizes the request's init_image and refuses a run without one;
     # the UI shows the source-image control only for these families.
@@ -137,6 +146,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        # Gate-validated hosted checkpoints (int8 + fp8-with-condition_embedder-exclude).
+        prequant_repos = (
+            ("int8", "unsloth/Wan2.2-TI2V-5B-FP8"),
+            ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
+        ),
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both
     # transformer + transformer_2 are WanTransformer3DModel with boundary_ratio 0.875; the pipeline
@@ -170,6 +184,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
         # No gguf_repo: community GGUFs split the experts, and a single-file load covers only one.
+        # The prequant repo DOES cover both experts (<Model>-<SCHEME>.pt + -2.pt pair).
+        prequant_repos = (
+            ("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),
+            ("fp8", "unsloth/Wan2.2-T2V-A14B-FP8"),
+        ),
     ),
     # Wan2.2-I2V-A14B (diffusers >= 0.35, verified on 0.39): the image-to-video dual-expert MoE.
     # Same DiT pair as T2V-A14B (boundary_ratio 0.9 vs T2V's 0.875, read from the pipeline
@@ -202,6 +221,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
         # No gguf_repo: community I2V GGUFs split the experts, and a single-file load covers only one.
+        # The prequant repo DOES cover both experts (<Model>-<SCHEME>.pt + -2.pt pair).
+        prequant_repos = (
+            ("int8", "unsloth/Wan2.2-I2V-A14B-FP8"),
+            ("fp8", "unsloth/Wan2.2-I2V-A14B-FP8"),
+        ),
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL text encoder + ByT5 glyph
     # encoder. Three quirks: (1) __call__ has NO guidance kwarg; CFG on the ``guider``
@@ -229,6 +253,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832), (624, 624)),
         # DiT fp32 on disk (32.0 -> 16.6 bf16); VAE (4.7 -> 2.4); Qwen2.5-VL TE bf16 14.0 + ByT5 0.8.
         bf16_components_gb = (16.6, 14.8, 2.4),
+        # int8 only: fp8/mxfp8/nvfp4 are family-denied (measured; see _FAMILY_SCHEME_DENY).
+        prequant_repos = (("int8", "unsloth/HunyuanVideo-1.5-480p-FP8"),),
     ),
     # The 720p t2v repack: same architecture/quirks/footprint as the 480p entry; only the
     # trained resolution differs. Own family so a 720p load defaults to 720p sizes. Its full-path
@@ -250,6 +276,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
+        # int8 only, like the 480p entry; a separate repo because the 720p DiT weights differ.
+        prequant_repos = (("int8", "unsloth/HunyuanVideo-1.5-720p-FP8"),),
     ),
 )
 

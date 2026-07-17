@@ -335,3 +335,43 @@ def test_hv15_generation_defaults():
     assert default_video_generation_params(
         None, "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
     ) == (50, 6.0)
+
+
+def test_video_prequant_repo_wiring():
+    # Every wired repo resolves through the shared family_prequant_repo helper (duck-typed
+    # over VideoFamily), and only the schemes the family's deny table allows are wired:
+    # Wan carries int8 + fp8 (condition_embedder excluded at build), HunyuanVideo-1.5 is
+    # int8-only (fp8 measured broken), and the 720p repack has its OWN repo (different
+    # trained weights than 480p).
+    from core.inference.diffusion_families import family_prequant_repo
+
+    wan5b = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert family_prequant_repo(wan5b, "int8") == "unsloth/Wan2.2-TI2V-5B-FP8"
+    assert family_prequant_repo(wan5b, "fp8") == "unsloth/Wan2.2-TI2V-5B-FP8"
+    a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert family_prequant_repo(a14b, "int8") == "unsloth/Wan2.2-T2V-A14B-FP8"
+    i2v = detect_video_family("Wan-AI/Wan2.2-I2V-A14B-Diffusers")
+    assert family_prequant_repo(i2v, "fp8") == "unsloth/Wan2.2-I2V-A14B-FP8"
+    hv480 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
+    assert family_prequant_repo(hv480, "int8") == "unsloth/HunyuanVideo-1.5-480p-FP8"
+    assert family_prequant_repo(hv480, "fp8") is None
+    hv720 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v")
+    assert family_prequant_repo(hv720, "int8") == "unsloth/HunyuanVideo-1.5-720p-FP8"
+    assert family_prequant_repo(hv720, "int8") != family_prequant_repo(hv480, "int8")
+    # LTX has no measured quant recipe -> deliberately unwired.
+    ltx = detect_video_family("unsloth/LTX-2.3-GGUF")
+    assert family_prequant_repo(ltx, "int8") is None
+
+
+def test_video_prequant_dual_expert_resolution():
+    # The A14B repo carries the whole expert pair per scheme; the second expert's file
+    # takes the -2 suffix and the transformer_2_ legacy fallback.
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    fam = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    first = resolve_prequant_source(fam, "int8", expert = "transformer")
+    second = resolve_prequant_source(fam, "int8", expert = "transformer_2")
+    assert first.location == second.location == "unsloth/Wan2.2-T2V-A14B-FP8"
+    assert first.filename == "Wan2.2-T2V-A14B-INT8.pt"
+    assert second.filename == "Wan2.2-T2V-A14B-INT8-2.pt"
+    assert second.fallback_filename == "transformer_2_int8.pt"

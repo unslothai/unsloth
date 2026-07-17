@@ -88,7 +88,12 @@ from .diffusion_speed import (
     snapshot_backend_flags,
 )
 from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
+from .diffusion_prequant import (
+    load_prequantized_transformer,
+    resolve_prequant_source,
+)
 from .diffusion_transformer_quant import (
+    DEFAULT_MIN_LINEAR_FEATURES,
     TQ_AUTO,
     dense_transformer_supported,
     is_int8_memory_fallback,
@@ -149,6 +154,40 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     if not gguf_filename:
         return "pipeline"
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
+
+
+def _predownload_may_skip_denoiser(
+    fam: Optional[VideoFamily], kind: str, transformer_quant: Optional[str]
+) -> bool:
+    """Whether the scoped pre-download can skip the DiT weight shards because the hosted
+    prequant checkpoints will supply the quantised expert(s) instead.
+
+    Conservative on purpose: only an EXPLICIT int8/fp8 request (auto may legitimately land
+    on dense) with the family wired for that exact scheme. Should the shortcut still fall
+    through at load time (offload plan, refused checkpoint), the build resolves from the
+    hub id and the dense shards download then -- slower, never wrong."""
+    if kind != "pipeline" or fam is None:
+        return False
+    mode = normalize_transformer_quant(transformer_quant)
+    if mode in (None, TQ_AUTO):
+        return False
+    return any(
+        entry_scheme == mode for entry_scheme, _ in getattr(fam, "prequant_repos", ())
+    )
+
+
+def _snapshot_has_denoiser_weights(local_dir: str) -> bool:
+    """True when the pre-downloaded snapshot carries DiT weight shards (a ``transformer*/``
+    subfolder with at least one ``.safetensors``). A prequant-scoped pre-download skips
+    them; when the shortcut then falls through, the build must resolve from the hub."""
+    try:
+        root = Path(local_dir)
+        for sub in root.glob("transformer*"):
+            if sub.is_dir() and any(sub.glob("*.safetensors")):
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def _is_trusted_video_repo(repo_id: str) -> bool:
@@ -790,7 +829,18 @@ class VideoBackend:
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
                             self._loading.expected_bytes = expected
-            base_local = self._predownload_base(base, kwargs.get("hf_token"), kind, ltx23 = ltx23)
+            base_local = self._predownload_base(
+                base,
+                kwargs.get("hf_token"),
+                kind,
+                ltx23 = ltx23,
+                # Skip the DiT weight shards when the hosted prequant checkpoints will replace
+                # them (explicit int8/fp8 with a wired repo); the download progress estimate
+                # deliberately stays un-shrunk (an over-estimate finishes early, never hangs).
+                skip_denoiser = _predownload_may_skip_denoiser(
+                    fam, kind, kwargs.get("transformer_quant")
+                ),
+            )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base
             # VAEs), so it only gets the warmed cache; generic paths get the full local snapshot.
             kwargs["_base_local_dir"] = None if ltx23 else base_local
@@ -877,6 +927,7 @@ class VideoBackend:
         kind: str,
         *,
         ltx23: bool = False,
+        skip_denoiser: bool = False,
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -901,6 +952,14 @@ class VideoBackend:
             if "/" not in name and name.endswith(".safetensors"):
                 continue
             if kind != "pipeline" and name.startswith("transformer/"):
+                continue
+            # A prequant-scoped pull skips every expert's weight shards (the hosted
+            # checkpoints replace them) but keeps the configs for the meta-init.
+            if (
+                skip_denoiser
+                and name.startswith(("transformer/", "transformer_2/"))
+                and not name.endswith("config.json")
+            ):
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
                 continue
@@ -943,6 +1002,7 @@ class VideoBackend:
         kind: str,
         *,
         ltx23: bool = False,
+        skip_denoiser: bool = False,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
 
@@ -959,7 +1019,9 @@ class VideoBackend:
             from huggingface_hub import HfApi
 
             info = HfApi(token = hf_token or None).model_info(base, files_metadata = True)
-            files = self._base_download_files(info, kind, ltx23 = ltx23)
+            files = self._base_download_files(
+                info, kind, ltx23 = ltx23, skip_denoiser = skip_denoiser
+            )
             if not any(name == "model_index.json" for name, _ in files):
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -1232,6 +1294,77 @@ class VideoBackend:
                     plan = replanned
                     quant_replanned = True
 
+        # ── hosted prequant shortcut (pipeline kind): when the resolved quant scheme has a
+        # hosted checkpoint for EVERY expert, load those instead of materialising the dense
+        # DiT(s) inside from_pretrained -- no dense transient in RAM/VRAM and, when the
+        # pre-download skipped the DiT shards, ~half the transformer download. Mirrors the
+        # image loader's prequant path (metadata-validated; any miss falls back to
+        # dense+quantise below). Resident plans only (quant never engages under offload), and
+        # the same dense-preference that gates the in-place auto-quant below applies here, so
+        # prequant cannot engage where auto-quant would have declined.
+        prequant_scheme: Optional[str] = None
+        prequant_transformers: dict[str, Any] = {}
+        if (
+            kind == "pipeline"
+            and normalize_transformer_quant(transformer_quant) is not None
+            and dense_transformer_supported(target)
+            and plan.offload_policy == "none"
+            and not (
+                normalize_transformer_quant(transformer_quant) == TQ_AUTO
+                and bf16_plan.offload_policy == "none"
+                and is_int8_memory_fallback(target, fam.name)
+            )
+        ):
+            scheme_candidate = select_transformer_quant_scheme(
+                target, transformer_quant, family = fam.name
+            )
+            if scheme_candidate is not None:
+                expert_attrs = ["transformer"]
+                if fam.is_moe and fam.transformer2_class:
+                    expert_attrs.append("transformer_2")
+                sources = []
+                for attr in expert_attrs:
+                    src = resolve_prequant_source(
+                        fam, scheme_candidate, base_repo = base, expert = attr
+                    )
+                    if src is None:
+                        sources = []
+                        break
+                    sources.append((attr, src))
+                if sources:
+                    transformer_cls = getattr(diffusers, fam.transformer_class)
+                    loaded: dict[str, Any] = {}
+                    for attr, src in sources:
+                        module = load_prequantized_transformer(
+                            transformer_cls,
+                            # The HUB id, not the pre-download dir: the checkpoint's baked
+                            # base_model_id is compared against this (a snapshot path's
+                            # <sha> tail never matches), and the expert config it meta-inits
+                            # from is already in the HF cache from the scoped pre-download.
+                            base,
+                            src,
+                            device = device,
+                            dtype = dtype,
+                            hf_token = hf_token,
+                            scheme = scheme_candidate,
+                            # Same Linear filter as runtime quant, so prequant == quantize_.
+                            min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                            # The expert's config subfolder (transformer_2 for the second DiT).
+                            subfolder = attr,
+                            logger = logger,
+                        )
+                        if module is None:
+                            loaded = {}
+                            break
+                        loaded[attr] = module
+                    if loaded:
+                        prequant_transformers = loaded
+                        prequant_scheme = scheme_candidate
+                    else:
+                        # All-or-none: a partial expert pair must not ship (mismatched
+                        # precision between experts); free anything loaded and go dense.
+                        clear_gpu_cache()
+
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
@@ -1246,7 +1379,27 @@ class VideoBackend:
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub (its sweep would
             # also pull root checkpoints + duplicate shards); hub id when pre-download was skipped.
-            pipe = pipeline_cls.from_pretrained(_base_local_dir or repo_id, **pipe_kwargs)
+            if prequant_transformers:
+                # Already-quantised experts ride in as component overrides; from_pretrained
+                # loads everything else and never touches the dense DiT shards.
+                pipe = pipeline_cls.from_pretrained(
+                    _base_local_dir or repo_id, **pipe_kwargs, **prequant_transformers
+                )
+            else:
+                build_source = _base_local_dir or repo_id
+                if (
+                    _base_local_dir
+                    # Only a prequant-scoped pre-download deliberately omits the DiT shards;
+                    # any other snapshot without them is the caller's responsibility (tests
+                    # pass bare dirs) and must be used as-is.
+                    and _predownload_may_skip_denoiser(fam, kind, transformer_quant)
+                    and not _snapshot_has_denoiser_weights(_base_local_dir)
+                ):
+                    # The pre-download skipped the DiT shards expecting the prequant shortcut,
+                    # which then fell through: resolve from the hub id instead (cached
+                    # companions are reused; only the dense shards download now).
+                    build_source = repo_id
+                pipe = pipeline_cls.from_pretrained(build_source, **pipe_kwargs)
         else:
             transformer_cls = getattr(diffusers, fam.transformer_class)
             # checkpoint_path was resolved (and downloaded) by the memory-planning branch above.
@@ -1299,6 +1452,10 @@ class VideoBackend:
         # bf16 only; best-effort. Quant must precede compile (eager dynamic quant is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
         quant_skipped_for_offload = False
+        if prequant_scheme is not None:
+            # The hosted checkpoints already carry the quantised experts (all of them, or the
+            # shortcut would not have engaged); nothing to quantise in place.
+            transformer_quant_engaged = prequant_scheme
         # Auto-quant lands on int8 for fp8-denied families (HunyuanVideo-1.5), but on a B200
         # int8 is ~7% slower AND less accurate than dense bf16 + regional compile (fp8, the
         # only quant that also speeds up, is black-framed there). int8's sole benefit is
@@ -1308,7 +1465,8 @@ class VideoBackend:
         # excludes consumer / Ampere / fp8 families), only when dense provably fits -- so no
         # new OOM risk and fp8 families (Wan / LTX) still quantise for their speed win.
         quant_skipped_for_dense = (
-            kind == "pipeline"
+            prequant_scheme is None
+            and kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) == TQ_AUTO
             and dense_transformer_supported(target)
             and bf16_plan.offload_policy == "none"
@@ -1321,7 +1479,8 @@ class VideoBackend:
                 fam.name,
             )
         elif (
-            kind == "pipeline"
+            prequant_scheme is None
+            and kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
             and plan.offload_policy != "none"
@@ -1338,7 +1497,8 @@ class VideoBackend:
             )
             quant_skipped_for_offload = True
         elif (
-            kind == "pipeline"
+            prequant_scheme is None
+            and kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
             and dense_transformer_supported(target)
         ):

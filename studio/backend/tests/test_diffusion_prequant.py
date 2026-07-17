@@ -59,6 +59,34 @@ def test_prequant_repo_filename_convention():
     assert prequant_repo_filename("unsloth/Qwen-Image-2512-INT8", "int8") == "Qwen-Image-2512-INT8.pt"
     assert prequant_repo_filename("org/Some-Model-quantized", "fp8") == "Some-Model-FP8.pt"
     assert prequant_repo_filename("org/PlainRepo", "int8") == "PlainRepo-INT8.pt"
+    # Dual-expert pipelines: the second DiT's checkpoint carries the attribute's numeric
+    # suffix; the default expert (or None) keeps the plain name.
+    assert (
+        prequant_repo_filename("unsloth/Wan2.2-T2V-A14B-FP8", "int8", expert = "transformer_2")
+        == "Wan2.2-T2V-A14B-INT8-2.pt"
+    )
+    assert (
+        prequant_repo_filename("unsloth/Wan2.2-T2V-A14B-FP8", "fp8", expert = "transformer")
+        == "Wan2.2-T2V-A14B-FP8.pt"
+    )
+
+
+def test_resolve_expert_sources_and_path_override_gate():
+    from core.inference.diffusion_prequant import prequant_filename
+
+    fam = _fam(prequant_repos = (("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),))
+    # Second expert resolves to the -2 file with the legacy transformer_2_ fallback.
+    src = resolve_prequant_source(fam, "int8", expert = "transformer_2")
+    assert src.kind == "repo" and src.filename == "Wan2.2-T2V-A14B-INT8-2.pt"
+    assert src.fallback_filename == "transformer_2_int8.pt"
+    assert prequant_filename("int8", expert = "transformer_2") == "transformer_2_int8.pt"
+    # A local path override names ONE file, never an expert pair: the expert request must
+    # resolve None so the caller goes dense for all experts instead of mixing precision.
+    assert (
+        resolve_prequant_source(fam, "int8", path_override = "/tmp/x.pt", expert = "transformer_2")
+        is None
+    )
+    assert resolve_prequant_source(fam, "int8", path_override = "/tmp/x.pt") is not None
 
 
 def test_resolve_variant_base_picks_variant_repo():

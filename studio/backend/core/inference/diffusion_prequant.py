@@ -99,21 +99,32 @@ class PrequantSource:
     fallback_filename: Optional[str] = None
 
 
-def prequant_filename(scheme: str) -> str:
-    """The legacy checkpoint filename for ``scheme`` inside a Hub repo."""
+def prequant_filename(scheme: str, expert: Optional[str] = None) -> str:
+    """The legacy checkpoint filename for ``scheme`` inside a Hub repo. ``expert`` names a
+    non-default denoiser attribute for multi-DiT pipelines ("transformer_2" ->
+    transformer_2_<scheme>.pt)."""
+    if expert and expert != "transformer":
+        return f"{expert}_{scheme}.pt"
     return f"transformer_{scheme}.pt"
 
 
-def prequant_repo_filename(repo_id: str, scheme: str) -> str:
+def prequant_repo_filename(repo_id: str, scheme: str, expert: Optional[str] = None) -> str:
     """The model-name checkpoint filename for ``scheme`` in ``repo_id``: the hosted repos are
     named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<SCHEME>.pt files, e.g.
-    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt."""
+    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt.
+
+    ``expert`` names a non-default denoiser attribute for dual-DiT pipelines (Wan2.2-A14B's
+    ``transformer_2``): its checkpoint carries the attribute's numeric suffix,
+    <Model>-<SCHEME>-2.pt, so one repo holds the whole expert pair per scheme."""
     model = repo_id.rsplit("/", 1)[-1]
     for suffix in ("-fp8", "-int8", "-quantized"):
         if model.lower().endswith(suffix):
             model = model[: -len(suffix)]
             break
-    return f"{model}-{scheme.upper()}.pt"
+    tail = ""
+    if expert and expert != "transformer":
+        tail = "-" + expert.rsplit("_", 1)[-1]
+    return f"{model}-{scheme.upper()}{tail}.pt"
 
 
 def resolve_prequant_source(
@@ -122,15 +133,22 @@ def resolve_prequant_source(
     *,
     path_override: Optional[str] = None,
     base_repo: Optional[str] = None,
+    expert: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
 
     Priority: (1) explicit local ``path_override``; (2) the family's hosted repo for
     ``scheme`` (variant-specific when ``base_repo`` names a base with its own baked
-    checkpoint); (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
+    checkpoint); (3) None -> no pre-quant, caller quantises dense. ``expert`` selects the
+    checkpoint of a non-default denoiser attribute in a dual-DiT pipeline (Wan2.2-A14B's
+    ``transformer_2``); a path override never carries an expert pair, so an expert request
+    with an override resolves None (the caller falls back to dense for ALL experts).
+    Pure: no IO, no torch.
     """
     override = (path_override or "").strip()
     if override:
+        if expert and expert != "transformer":
+            return None
         return PrequantSource(kind = "path", location = override, filename = None)
     try:
         from .diffusion_families import family_prequant_repo
@@ -141,8 +159,8 @@ def resolve_prequant_source(
         return PrequantSource(
             kind = "repo",
             location = repo_id,
-            filename = prequant_repo_filename(repo_id, scheme),
-            fallback_filename = prequant_filename(scheme),
+            filename = prequant_repo_filename(repo_id, scheme, expert = expert),
+            fallback_filename = prequant_filename(scheme, expert = expert),
         )
     return None
 
@@ -178,9 +196,13 @@ def load_prequantized_transformer(
     scheme: str,
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
+    subfolder: str = "transformer",
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``subfolder`` names the config subfolder in ``base`` for the meta-init (the second
+    expert of a dual-DiT pipeline initialises from ``transformer_2``).
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -217,7 +239,7 @@ def load_prequantized_transformer(
             return None
         state_dict = ckpt["state_dict"]
 
-        config = transformer_cls.load_config(base, subfolder = "transformer", token = hf_token)
+        config = transformer_cls.load_config(base, subfolder = subfolder, token = hf_token)
         from accelerate import init_empty_weights
 
         with init_empty_weights():

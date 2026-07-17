@@ -2413,3 +2413,105 @@ def test_explicit_magcache_hard_errors_when_disable_fails(fake_runtime, monkeypa
         backend.generate(prompt = "a sloth", steps = 30)
     assert reapplied == []  # never stacked a new cache over the un-removable one
     backend.unload()
+
+
+def test_prequant_shortcut_loads_all_experts_and_skips_inplace_quant(fake_runtime, monkeypatch):
+    # With hosted checkpoints resolving for BOTH A14B experts, the load must ride the
+    # prequant modules into from_pretrained (component overrides), never call the in-place
+    # quantize helper, and still report the engaged scheme.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    # The real selector runs a CUDA quantise smoke test; pin the scheme on CPU.
+    monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda t, req, family = None: "int8")
+    loaded, quantised = [], []
+
+    def _fake_prequant_load(cls, base, source, **kw):
+        loaded.append((source.filename, kw.get("subfolder")))
+        return object()
+
+    monkeypatch.setattr(video_mod, "load_prequantized_transformer", _fake_prequant_load)
+    monkeypatch.setattr(
+        video_mod, "quantize_transformer", lambda *a, **k: quantised.append(a) or "int8"
+    )
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+    )
+    assert loaded == [
+        ("Wan2.2-T2V-A14B-INT8.pt", "transformer"),
+        ("Wan2.2-T2V-A14B-INT8-2.pt", "transformer_2"),
+    ]
+    assert quantised == []
+    assert status["transformer_quant"] == "int8"
+
+
+def test_prequant_shortcut_partial_pair_falls_back_dense(fake_runtime, monkeypatch):
+    # All-or-none: when the second expert's checkpoint fails to load, NOTHING prequant ships
+    # (mixed-precision experts would corrupt the boundary handoff) and the dense in-place
+    # quant path runs for both experts instead.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    # The real selector runs a CUDA quantise smoke test; pin the scheme on CPU.
+    monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda t, req, family = None: "int8")
+    calls = []
+
+    def _fake_prequant_load(cls, base, source, **kw):
+        calls.append(kw.get("subfolder"))
+        return object() if kw.get("subfolder") == "transformer" else None
+
+    monkeypatch.setattr(video_mod, "load_prequantized_transformer", _fake_prequant_load)
+    quantised = []
+    monkeypatch.setattr(
+        video_mod, "quantize_transformer", lambda view, *a, **k: quantised.append(view) or "int8"
+    )
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+    )
+    assert calls == ["transformer", "transformer_2"]
+    assert len(quantised) == 2  # dense fallback quantised both experts in place
+    assert status["transformer_quant"] == "int8"
+
+
+def test_prequant_shortcut_not_taken_for_unwired_family(fake_runtime, monkeypatch):
+    # LTX-2 (no prequant_repos) must never consult the prequant loader.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod,
+        "load_prequantized_transformer",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("prequant consulted for LTX")),
+    )
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "int8")
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", transformer_quant = "int8"
+    )
+    assert status["loaded"] is True
+
+
+def test_predownload_may_skip_denoiser_gating():
+    # Only an explicit wired scheme skips the DiT shards; auto or an unwired scheme keeps them.
+    from core.inference.video import _predownload_may_skip_denoiser
+    from core.inference.video_families import detect_video_family
+
+    a14b = detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    hv = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v")
+    assert _predownload_may_skip_denoiser(a14b, "pipeline", "int8") is True
+    assert _predownload_may_skip_denoiser(a14b, "pipeline", "fp8") is True
+    assert _predownload_may_skip_denoiser(a14b, "pipeline", "auto") is False
+    assert _predownload_may_skip_denoiser(a14b, "pipeline", None) is False
+    assert _predownload_may_skip_denoiser(a14b, "gguf", "int8") is False
+    assert _predownload_may_skip_denoiser(hv, "pipeline", "fp8") is False  # fp8 unwired
+    assert _predownload_may_skip_denoiser(hv, "pipeline", "int8") is True
+    assert _predownload_may_skip_denoiser(None, "pipeline", "int8") is False

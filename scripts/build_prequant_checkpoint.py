@@ -36,6 +36,12 @@ def main(argv = None) -> int:
     p.add_argument("--family", required = True, help = "diffusion family name/alias (e.g. z-image)")
     p.add_argument("--scheme", required = True, help = "quant scheme: int8 | fp8 | nvfp4 | mxfp8")
     p.add_argument("--out", required = True, help = "output .pt path for the checkpoint")
+    p.add_argument(
+        "--subfolder",
+        default = "transformer",
+        help = "transformer config/weights subfolder in the base repo; a dual-expert video "
+        "pipeline's second DiT builds from transformer_2",
+    )
     p.add_argument("--min-features", type = int, default = 512)
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
@@ -72,15 +78,21 @@ def main(argv = None) -> int:
         return 2
     fam = detect_family(args.base, override = args.family)
     if fam is None:
+        # Video families (Wan / HunyuanVideo) register in their own module; same duck-typed
+        # surface (name / transformer_class), so the rest of the build is family-agnostic.
+        from core.inference.video_families import detect_video_family
+
+        fam = detect_video_family(args.base, override = args.family)
+    if fam is None:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
 
     print(f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}) ==", flush = True)
-    print(f"  loading dense transformer from {args.base} (subfolder=transformer) ...", flush = True)
+    print(f"  loading dense transformer from {args.base} (subfolder={args.subfolder}) ...", flush = True)
     t0 = time.time()
     transformer = transformer_cls.from_pretrained(
-        args.base, subfolder = "transformer", torch_dtype = torch.bfloat16, token = args.hf_token
+        args.base, subfolder = args.subfolder, torch_dtype = torch.bfloat16, token = args.hf_token
     ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
     # Mirror the runtime path EXACTLY (offline == runtime, LPIPS-0 invariant): int8 skips the
