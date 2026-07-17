@@ -40,12 +40,16 @@ class _DummyModel:
 def _install_fake_mlx(monkeypatch):
     mlx_pkg = types.ModuleType("mlx")
     mlx_core = types.ModuleType("mlx.core")
+    mlx_utils = types.ModuleType("mlx.utils")
     mlx_core.metal = _DummyMetal()
     mlx_core.set_wired_limit = _DummyMX.set_wired_limit
     mlx_core.device_info = _DummyMX.device_info
+    mlx_utils.tree_unflatten = dict
     mlx_pkg.core = mlx_core
+    mlx_pkg.utils = mlx_utils
     monkeypatch.setitem(sys.modules, "mlx", mlx_pkg)
     monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    monkeypatch.setitem(sys.modules, "mlx.utils", mlx_utils)
 
 
 def _install_fake_fast_mlx(monkeypatch, calls):
@@ -66,6 +70,97 @@ def _install_fake_fast_mlx(monkeypatch, calls):
     monkeypatch.setitem(sys.modules, "unsloth_zoo", unsloth_zoo_pkg)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", mlx_pkg)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", mlx_loader)
+
+
+class _AdapterTree:
+    def __init__(self, modules):
+        self.modules = dict(modules)
+
+    def named_modules(self):
+        return list(self.modules.items())
+
+    def update_modules(self, modules):
+        self.modules.update(modules)
+
+
+def test_temporary_mlx_adapter_state_bypasses_and_restores_wrappers(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import _temporary_mlx_adapter_state
+
+    base = object()
+    wrapper = SimpleNamespace(lora_a = object(), lora_b = object(), linear = base, m = object())
+    model = _AdapterTree({"model.layers.0.proj": wrapper})
+
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        with _temporary_mlx_adapter_state(model, False):
+            assert model.modules["model.layers.0.proj"] is base
+            raise RuntimeError("generation failed")
+    assert model.modules["model.layers.0.proj"] is wrapper
+
+
+def test_temporary_mlx_adapter_state_validates_requests():
+    from core.inference.mlx_inference import _temporary_mlx_adapter_state
+
+    wrapper = SimpleNamespace(lora_a = object(), lora_b = object(), embedding = object())
+    model = _AdapterTree({"embed_tokens": wrapper})
+    with _temporary_mlx_adapter_state(model, True):
+        assert model.modules["embed_tokens"] is wrapper
+    with pytest.raises(NotImplementedError, match = "named adapter"):
+        with _temporary_mlx_adapter_state(model, "other"):
+            pass
+
+    base_model = _AdapterTree({"proj": object()})
+    with _temporary_mlx_adapter_state(base_model, None):
+        pass
+    with _temporary_mlx_adapter_state(base_model, True):
+        pass
+
+    unsupported = _AdapterTree({"proj": SimpleNamespace(lora_a = object(), lora_b = object())})
+    with pytest.raises(RuntimeError, match = "without their base modules"):
+        with _temporary_mlx_adapter_state(unsupported, False):
+            pass
+
+
+def test_temporary_mlx_adapter_state_uses_real_mlx_module_tree():
+    nn = pytest.importorskip("mlx.nn")
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models.switch_layers import SwitchLinear
+    from mlx_lm.tuner.dora import DoRALinear
+    from mlx_lm.tuner.lora import LoRAEmbedding, LoRALinear, LoRASwitchLinear
+
+    from core.inference.mlx_inference import _temporary_mlx_adapter_state
+
+    class _Layer(nn.Module):
+        def __init__(self):
+            super().__init__()
+            quantized = nn.QuantizedLinear.from_linear(nn.Linear(32, 32), group_size = 32, bits = 4)
+            self.quantized_proj = LoRALinear.from_base(quantized)
+            self.dora_proj = DoRALinear.from_base(nn.Linear(4, 4))
+
+    class _Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = [_Layer()]
+            self.embed_tokens = LoRAEmbedding.from_base(nn.Embedding(16, 4))
+            self.experts = LoRASwitchLinear.from_base(SwitchLinear(4, 4, 2))
+
+    model = _Model()
+    wrappers = {
+        path: module
+        for path, module in model.named_modules()
+        if hasattr(module, "lora_a") and hasattr(module, "lora_b")
+    }
+    bases = {
+        path: getattr(module, "linear", getattr(module, "embedding", None))
+        for path, module in wrappers.items()
+    }
+
+    with _temporary_mlx_adapter_state(model, False):
+        live = dict(model.named_modules())
+        assert all(live[path] is base for path, base in bases.items())
+
+    restored = dict(model.named_modules())
+    assert all(restored[path] is wrapper for path, wrapper in wrappers.items())
 
 
 def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):

@@ -8,12 +8,70 @@ instead of torch/transformers for model loading and generation.
 import json
 import os
 import threading
+from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def _mlx_adapter_modules(model):
+    """Return ``(path, wrapper, base)`` entries for live MLX adapters."""
+    adapters = []
+    unsupported = []
+    for path, module in model.named_modules():
+        if not path or not (hasattr(module, "lora_a") and hasattr(module, "lora_b")):
+            continue
+        base = getattr(module, "linear", None)
+        if base is None:
+            base = getattr(module, "embedding", None)
+        if base is None:
+            unsupported.append(path)
+        else:
+            adapters.append((path, module, base))
+    if unsupported:
+        raise RuntimeError(
+            "Unsloth MLX: cannot disable adapter layers without their base modules: "
+            + ", ".join(unsupported[:5])
+        )
+    return adapters
+
+
+@contextmanager
+def _temporary_mlx_adapter_state(model, use_adapter):
+    """Select base or adapter modules for one request, then restore the tree."""
+    if use_adapter is None:
+        yield
+        return
+    if isinstance(use_adapter, str):
+        raise NotImplementedError(
+            "Unsloth MLX: named adapter selection is not supported; use True for "
+            "the loaded adapter or False for the base model."
+        )
+    if use_adapter is not True and use_adapter is not False:
+        raise TypeError("Unsloth MLX: use_adapter must be None, True, False, or a string.")
+
+    adapters = _mlx_adapter_modules(model)
+    if use_adapter is True:
+        if not adapters:
+            logger.warning("MLX adapter requested, but the active model has no adapter layers")
+        yield
+        return
+    if not adapters:
+        yield
+        return
+
+    from mlx.utils import tree_unflatten
+
+    base_modules = tree_unflatten([(path, base) for path, _, base in adapters])
+    adapter_modules = tree_unflatten([(path, wrapper) for path, wrapper, _ in adapters])
+    try:
+        model.update_modules(base_modules)
+        yield
+    finally:
+        model.update_modules(adapter_modules)
 
 
 def _mlx_vlm_model_config(model):
