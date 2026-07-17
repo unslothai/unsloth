@@ -257,33 +257,38 @@ function SttModelPicker({
               {t("settings.voice.dictation.sttModelNoResults")}
             </div>
           ) : (
-            items.map((model) => (
-              <button
-                key={model}
-                type="button"
-                onClick={() => void selectModel(model)}
-                className={`flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
-                  model === value ? "bg-muted/60" : ""
-                }`}
-              >
-                <span className="min-w-0 flex-1 truncate">
-                  <span className="block truncate text-xs">
-                    {sttModelName(model)}
+            items.map((model) => {
+              // A custom repo's name is its id; those rows are one line and
+              // keep a pill shape, two-line rows use a subtler radius.
+              const twoLines = sttModelSource(model) !== sttModelName(model);
+              return (
+                <button
+                  key={model}
+                  type="button"
+                  onClick={() => void selectModel(model)}
+                  aria-selected={model === value}
+                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+                    twoLines ? "rounded-sm" : "rounded-full"
+                  } ${model === value ? "bg-accent font-medium" : ""}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    <span className="block truncate text-xs">
+                      {sttModelName(model)}
+                    </span>
+                    {twoLines ? (
+                      <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
+                        {sttModelSource(model)}
+                      </span>
+                    ) : null}
                   </span>
-                  {/* A custom repo's name is its id; skip the duplicate line. */}
-                  {sttModelSource(model) !== sttModelName(model) ? (
-                    <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
-                      {sttModelSource(model)}
+                  {sttModelSize(model) ? (
+                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                      {sttModelSize(model)}
                     </span>
                   ) : null}
-                </span>
-                {sttModelSize(model) ? (
-                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                    {sttModelSize(model)}
-                  </span>
-                ) : null}
-              </button>
-            ))
+                </button>
+              );
+            })
           )}
         </div>
       </PopoverContent>
