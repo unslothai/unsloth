@@ -1130,6 +1130,7 @@ class ResearchSupervisor:
             f"   Search snippet: {source.get('snippet') or '(none)'}"
             for index, source in enumerate(sources, 1)
         )
+        evidence_text = "\n\n".join(notes)
         report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
             run,
             [
@@ -1143,7 +1144,7 @@ class ResearchSupervisor:
                         f"</approved_plan>\n\n"
                         f"<source_catalog>\n{source_catalog or '(no web sources gathered)'}\n"
                         f"</source_catalog>\n\n"
-                        f"<untrusted_evidence>\n{'\n\n'.join(notes)}\n"
+                        f"<untrusted_evidence>\n{evidence_text}\n"
                         f"</untrusted_evidence>"
                     ),
                 },
