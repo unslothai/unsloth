@@ -1823,6 +1823,8 @@ tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
 
 _MIGRATED=false
+# Empty so an inherited value can never masquerade as a probed torch version.
+_PREV_TORCH_VER=""
 
 if [ -x "$VENV_DIR/bin/python" ]; then
     # why: matching guard to the .venv branch below -- in env-mode
@@ -1840,6 +1842,12 @@ if [ -x "$VENV_DIR/bin/python" ]; then
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
         exit 1
     fi
+    # Record the existing venv's torch BEFORE the replacement moves it aside: a re-run
+    # rebuilds the venv for clean state, but must keep the torch release the user
+    # already has (see _previous_torch_pin below). Last line only: sitecustomize or
+    # import-hook noise on stdout must not corrupt the version.
+    _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
+        "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."
     _start_studio_venv_replacement "$VENV_DIR"
@@ -2189,6 +2197,35 @@ _torch_flavor_tag() {
     esac
 }
 
+# Whether a re-run should keep the previous venv's torch: echo "torch==X.Y.Z" when the
+# probed previous version ($1) has a flavor tag matching the freshly chosen cu*/cpu index
+# leaf ($2), else "". Re-running `curl | sh` rebuilds the venv for clean state, but a
+# healthy torch the user already validated must not be silently moved to a newer release
+# (2.10 -> 2.11); a flavor change (cpu <-> cuda, cu126 -> cu130) still installs the
+# correct new build, and rocm leaves keep their floors (rocm7.2 must land 2.11 for the
+# Strix _grouped_mm fix). Opt out with UNSLOTH_TORCH_UPGRADE=1 to get the newest release.
+_previous_torch_pin() {
+    _ptp_ver="$1"
+    _ptp_leaf="$2"
+    [ -n "$_ptp_ver" ] || { echo ""; return; }
+    [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
+    case "$_ptp_leaf" in
+        cu[0-9]*|cpu) ;;
+        *) echo ""; return ;;
+    esac
+    _ptp_base="${_ptp_ver%%+*}"
+    # The base must look like a release (probe noise / garbage must never become a pin).
+    case "$_ptp_base" in
+        [0-9]*.[0-9]*) ;;
+        *) echo ""; return ;;
+    esac
+    if [ "$(_torch_flavor_tag "$_ptp_ver")" = "$_ptp_leaf" ]; then
+        echo "torch==$_ptp_base"
+    else
+        echo ""
+    fi
+}
+
 # Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
 # rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
 _expected_torch_flavor_tag() {
@@ -2490,6 +2527,21 @@ case "$_torch_index_leaf" in
     rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
     cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
 esac
+
+# Re-run over an existing install: keep the previous venv's torch release instead of
+# resolving the newest in range. The range stays in _PREV_FALLBACK_CONSTRAINT so the
+# install can fall back when the exact release is not on the chosen index (custom
+# mirrors may prune old wheels). Skipped for --no-torch (no previous probe runs).
+_PREV_TORCH_PIN=""
+_PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
+if [ "$SKIP_TORCH" = false ]; then
+    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_torch_index_leaf")
+    if [ -n "$_prev_pin" ]; then
+        _PREV_TORCH_PIN="$_prev_pin"
+        TORCH_CONSTRAINT="$_prev_pin"
+        substep "existing install has torch $_PREV_TORCH_VER -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
+    fi
+fi
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
@@ -2961,8 +3013,20 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --default-index "$TORCH_INDEX_URL"
+        if [ -n "$_PREV_TORCH_PIN" ]; then
+            # Kept previous release: fall back to the supported range if the exact
+            # release is not resolvable from the chosen index (pruned mirror).
+            if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --default-index "$TORCH_INDEX_URL"; then
+                substep "[WARN] $_PREV_TORCH_PIN is not installable from $TORCH_INDEX_URL -- installing the newest supported release instead" "$C_WARN"
+                TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
+                run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+                    --default-index "$TORCH_INDEX_URL"
+            fi
+        else
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+                --default-index "$TORCH_INDEX_URL"
+        fi
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
     # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
