@@ -1083,6 +1083,10 @@ _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+# Idle window before a local tool-loop stream emits an SSE keepalive comment
+# (e.g. prompt prefill between tool iterations). A second layer atop the
+# tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
+_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -1693,6 +1697,9 @@ from models.inference import (
     CompletionUsage,
     ValidateModelRequest,
     ValidateModelResponse,
+    TransformersUpgradeInfo,
+    InstallLatestTransformersRequest,
+    InstallLatestTransformersResponse,
     TextContentPart,
     ImageContentPart,
     ImageUrl,
@@ -2061,6 +2068,59 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
+def _permission_mode_confirm(payload) -> bool:
+    """Effective confirm-gate intent for Studio's own local tool loop.
+
+    Honors the documented default that an unset permission_mode behaves as
+    "ask". An explicit confirm_tool_calls (True or False) wins; explicit
+    ask/auto always engage the gate (a non-streaming one is then rejected, since
+    it cannot prompt); off/full never prompt. An unset mode defaults to ask, but
+    that is only realizable on a streaming request, so a non-streaming unset
+    request keeps the legacy run-without-gate behavior instead of 400ing. Used
+    at the pre-switch guard and the per-backend tool paths so a forced tool loop
+    (CLI --enable-tools) with the default mode still gates streaming requests.
+    """
+    if payload.confirm_tool_calls is not None:
+        return bool(payload.confirm_tool_calls)
+    mode = getattr(payload, "permission_mode", None)
+    if mode in ("ask", "auto"):
+        return True
+    if mode in ("off", "full"):
+        return False
+    return bool(getattr(payload, "stream", False))
+
+
+def _confirm_gate_needs_stream(payload) -> bool:
+    """Whether Studio's local tool-loop confirm gate still requires stream=true.
+
+    The gate can only prompt while streaming, so a non-streaming request that will
+    prompt must 400 up front. auto ("Approve for me") only prompts for a call the
+    classifier flags, so an auto request whose confirm is derived from the mode
+    (not an explicit confirm_tool_calls=true) and whose selectable tools are all
+    always-safe (web_search / RAG) never prompts and needs no stream. ask,
+    an explicit confirm flag, MCP tools, and an unrestricted or unsafe selection
+    still require streaming.
+    """
+    if not _permission_mode_confirm(payload):
+        return False
+    if getattr(payload, "permission_mode", None) != "auto":
+        return True
+    if payload.confirm_tool_calls is True:
+        return True
+    if getattr(payload, "mcp_enabled", False):
+        return True
+    enabled = getattr(payload, "enabled_tools", None)
+    if enabled is None:
+        return True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
+    if not enabled:
+        # An explicit empty selection runs no built-in tool (_select_request_tools
+        # skips the loop), so there is nothing to prompt and no stream is needed.
+        return False
+    from core.inference.tools import is_always_safe_tool
+
+    return not all(is_always_safe_tool(t) for t in enabled)
+
+
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts so
 # is_disconnected() never fires. POST /inference/cancel looks up in-flight
 # cancel_events here by cancel_id (per-run) or session_id / completion_id
@@ -2240,6 +2300,36 @@ async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
         await watcher
     except (asyncio.CancelledError, Exception):
         pass
+
+
+async def _drain_pending_next_task(task, cancel_event) -> None:
+    """Wait for a pending ``asyncio.to_thread(next, gen, ...)`` task to finish
+    before its generator is closed.
+
+    On disconnect a ``next(gen)`` call may still run in a worker thread;
+    cancelling the awaiting task does NOT stop it, and ``gen.close()`` mid-
+    ``next(gen)`` raises ``ValueError: generator already executing``, leaking the
+    generator's cleanup. So re-set the cancel flag (the generator polls it) and
+    shield the task until the worker returns. No-op when there is no pending task.
+    """
+    if task is None:
+        return
+    if cancel_event is not None:
+        cancel_event.set()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            continue
+        except Exception:
+            break
+    if task.done():
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
@@ -3811,6 +3901,17 @@ _NOT_SUPPORTED_HINTS = (
     "does not support",
 )
 
+_NVFP4_INFERENCE_UNSUPPORTED_MESSAGE = (
+    "We are working on supporting NVFP4 inference. For now it is not supported"
+)
+
+
+def _is_unsupported_nvfp4_inference_error(msg: str) -> bool:
+    """Whether ``msg`` is the verbose MLX per-module metadata error emitted
+    while loading an NVFP4 checkpoint."""
+    lower_msg = msg.lower()
+    return "nvfp4" in lower_msg and "per-module mlx quantization metadata" in lower_msg
+
 
 def _maybe_unsupported_message(msg: str) -> str:
     """Rewrite a load/validate error into the friendly "not supported yet"
@@ -3836,16 +3937,34 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    # A sidecar install that has reserved the swap must not lose to a load that
+    # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
+    # install can reserve while this request queues on the gate, so the pre-gate
+    # check alone is only a fast path.
+    from core.inference.llama_keepwarm import inference_lifecycle_gate
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    _swap_409 = HTTPException(
+        status_code = 409,
+        detail = "A transformers installation is in progress. Retry when it completes.",
+    )
+    if sidecar_swap_in_progress():
+        raise _swap_409
     # Hold the lifecycle gate across the load so idle auto-unload can't unload the
     # model mid-load. Auto-switch calls _load_model_impl directly since it already
     # holds this gate.
-    from core.inference.llama_keepwarm import inference_lifecycle_gate
     async with inference_lifecycle_gate():
+        if sidecar_swap_in_progress():
+            raise _swap_409
         return await _load_model_impl(request, fastapi_request, current_subject)
 
 
 async def _load_model_impl(request: LoadRequest, fastapi_request: Request, current_subject: str):
     from core.inference.llama_cpp import LlamaServerNotFoundError
+
+    # A new load starts here; arm the progress throttle so this load's first
+    # sampled step logs even if it reports 100% immediately (cached/small load).
+    _reset_load_progress_step()
 
     native_grant_backed = False
     model_log_label = request.model_path
@@ -4037,6 +4156,17 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
+        # Latest-sidecar models load 16-bit (worker refuses bnb 4-bit); size the guard
+        # to match. Off-loop: tier resolution reads configs.
+        if effective_load_in_4bit and not config.is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+            if await asyncio.to_thread(latest_tier_active_for, config.identifier, request.hf_token):
+                effective_load_in_4bit = False
+                logger.info(
+                    f"Latest-transformers sidecar active for '{model_log_label}' - "
+                    "sizing and loading in 16-bit (4-bit is disabled for brand-new "
+                    "architectures)"
+                )
 
         # Refuse a load that would OOM active training, before the unload step below
         # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
@@ -4454,8 +4584,17 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
     except HTTPException:
         raise
     except ValueError as e:
+        redacted_msg = redact_native_paths(str(e))
+        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+            logger.warning(
+                "NVFP4 inference is not supported yet while loading '%s'",
+                model_log_label,
+            )
+            raise HTTPException(
+                status_code = 500,
+                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+            )
         if native_grant_backed:
-            redacted_msg = redact_native_paths(str(e))
             logger.warning(
                 "Rejected inference selection for native model %s: %s",
                 model_log_label,
@@ -4464,15 +4603,29 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             raise HTTPException(status_code = 400, detail = redacted_msg)
         logger.warning("Rejected inference GPU selection: %s", e)
         # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
-        raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
+        raise HTTPException(status_code = 400, detail = redacted_msg)
     except LlamaServerNotFoundError as e:
         # Missing GGUF runtime: 400 with the install message, not a generic 500.
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        from utils.transformers_version import SidecarSwapInProgress
+
+        if isinstance(e, SidecarSwapInProgress):
+            # Lost the spawn-time race to a sidecar install/repair: retryable 409.
+            raise HTTPException(status_code = 409, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
+        redacted_msg = redact_native_paths(str(e))
+        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+            logger.warning(
+                "NVFP4 inference is not supported yet while loading '%s'",
+                model_log_label,
+            )
+            raise HTTPException(
+                status_code = 500,
+                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+            )
         if native_grant_backed:
-            redacted_msg = redact_native_paths(str(e))
             logger.error(
                 "Error loading native model %s: %s",
                 model_log_label,
@@ -4484,7 +4637,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 detail = f"Failed to load native model {model_log_label}: {msg}",
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = _maybe_unsupported_message(redact_native_paths(str(e)))
+        msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
@@ -4598,16 +4751,6 @@ async def validate_model(
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-        )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
@@ -4624,16 +4767,69 @@ async def validate_model(
         security_targets = list(dict.fromkeys(security_targets))
 
         is_gguf = getattr(config, "is_gguf", False)
-        # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
-        # mixed repo are inert for this load, so gating on them is a false positive. Only
-        # run the remote-code/security preflight for non-GGUF loads.
+        # Does a newer transformers ship this model_type? Static overlay first, cached
+        # PyPI/main snapshot only for unknown types. Never fails validation; run before
+        # the training guard so an installable upgrade sizes as 16-bit.
+        transformers_upgrade: Optional[TransformersUpgradeInfo] = None
+        if not is_gguf:
+            from utils.transformers_latest import check_upgrade_for_model
+
+            # Cover [adapter, base]: the worker activates transformers for the base model.
+            for _target in security_targets:
+                _upgrade = await asyncio.to_thread(
+                    check_upgrade_for_model, _target, request.hf_token
+                )
+                if _upgrade is not None:
+                    transformers_upgrade = TransformersUpgradeInfo(**_upgrade)
+                    break
+
+        # Whether the model can load on the CURRENT transformers through its own remote
+        # code (auto_map, or the YAML trust default). Computed before the 16-bit flip
+        # because a model with this fallback still loads 4-bit without the offered install,
+        # exactly as /load does.
         requires_trust_remote_code = False
-        requires_security_review = False
         if not is_gguf:
             requires_trust_remote_code = any(
                 _requires_trust_remote_code_for_model(_t, request.hf_token)
                 for _t in security_targets
             )
+
+        # Mirror /load's latest-sidecar 16-bit flip so the guard sizes it the same way. An
+        # ALREADY-ACTIVE latest sidecar always forces 16-bit (the worker will). A merely
+        # OFFERED (not yet installed) upgrade forces 16-bit only when the model has NO
+        # custom-code fallback: with auto_map it still loads 4-bit on the current
+        # transformers (as /load does without a successful install), and the install route
+        # refuses while training is active, so sizing 16-bit here would 409 the only viable
+        # 4-bit path. /load re-sizes 16-bit after a successful install and re-guards there.
+        if effective_load_in_4bit and not is_gguf:
+            from utils.transformers_version import latest_tier_active_for
+            _install_only_upgrade = (
+                transformers_upgrade is not None
+                and transformers_upgrade.supported_in_pypi
+                and transformers_upgrade.pypi_version
+                and not requires_trust_remote_code
+            )
+            if _install_only_upgrade or await asyncio.to_thread(
+                latest_tier_active_for, config.identifier, request.hf_token
+            ):
+                effective_load_in_4bit = False
+        # Off-loop: guard does sync nvidia-smi / HF work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
+            config,
+            model_identifier = model_identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = effective_load_in_4bit,
+            max_seq_length = request.max_seq_length,
+            requested_gpu_ids = effective_gpu_ids,
+        )
+
+        # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
+        # mixed repo are inert for this load, so gating on them is a false positive. Only
+        # run the security preflight for non-GGUF loads (requires_trust_remote_code was
+        # already resolved above for the sizing flip).
+        requires_security_review = False
+        if not is_gguf:
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             )
@@ -4676,6 +4872,8 @@ async def validate_model(
             requires_trust_remote_code = requires_trust_remote_code,
             requires_security_review = requires_security_review,
             context_length = context_length,
+            requires_transformers_upgrade = transformers_upgrade is not None,
+            transformers_upgrade = transformers_upgrade,
         )
 
     except HTTPException:
@@ -4685,8 +4883,17 @@ async def validate_model(
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        redacted_msg = redact_native_paths(str(e))
+        if _is_unsupported_nvfp4_inference_error(redacted_msg):
+            logger.warning(
+                "NVFP4 inference is not supported yet while validating '%s'",
+                model_log_label,
+            )
+            raise HTTPException(
+                status_code = 400,
+                detail = _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE,
+            )
         if native_grant_backed:
-            redacted_msg = redact_native_paths(str(e))
             logger.error(
                 "Error validating native model %s: %s",
                 model_log_label,
@@ -4707,7 +4914,7 @@ async def validate_model(
         # Path-redact for safety and keep any other exception type generic so an
         # unexpected internal error never leaks its details to the client.
         if isinstance(e, (RuntimeError, ValueError)):
-            msg = redact_native_paths(str(e)).strip()
+            msg = redacted_msg.strip()
             if msg:
                 msg = _maybe_unsupported_message(msg)
                 raise HTTPException(
@@ -4718,6 +4925,217 @@ async def validate_model(
             status_code = 400,
             detail = "Invalid model",
         )
+
+
+# studio_router only: admin action, kept off the OpenAI-compatible /v1 mount.
+@studio_router.post(
+    "/install-latest-transformers", response_model = InstallLatestTransformersResponse
+)
+async def install_latest_transformers_route(
+    request: InstallLatestTransformersRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Consented install of the latest transformers release into the persistent
+    .venv_t5_latest sidecar.
+
+    Called after the user confirms the transformers-upgrade dialog raised by /validate
+    (requires_transformers_upgrade). The requested version must match the current latest
+    PyPI release (re-verified server-side); the sidecar then participates in routing on
+    this and every future start. A pip install runs off-loop, so this can take a minute.
+    """
+    from utils.transformers_latest import install_latest_transformers
+    from utils.transformers_version import end_sidecar_swap, try_begin_sidecar_swap
+
+    # The install stage-and-swaps .venv_t5_latest in place; a live worker would
+    # lazy-import from the new version mid-run, mixing incompatible modules. Gate on
+    # worker LIVENESS not tier (no HF token here, so tier re-resolution is unreliable
+    # for gated repos): training and export are refused, the chat model unloaded.
+    # Reserve the swap FIRST, before any await: training/export starts check this
+    # reservation, so raising it after the gate wait would let a worker slip in.
+    if not try_begin_sidecar_swap():
+        raise HTTPException(
+            status_code = 409,
+            detail = "A transformers installation is already in progress.",
+        )
+    # Until the installer thread takes over, this coroutine owns the reservation
+    # and must release it on any early exit (the 409 refusals below).
+    owns_reservation = True
+    try:
+        from core.export import get_export_backend
+        from core.training import get_training_backend
+
+        if get_training_backend().is_training_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "A training run is active. Wait for it to finish before "
+                    "installing a new transformers version."
+                ),
+            )
+        _export = get_export_backend()
+        if _export.is_export_active():
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An export is running. Wait for it to finish before "
+                    "installing a new transformers version."
+                ),
+            )
+        # A loaded (idle) export checkpoint would be torn down by the pre-swap
+        # cleanup; if the swap then failed, that state would be silently lost
+        # with no rollback signal. Make the user unload it deliberately first.
+        if getattr(_export, "current_checkpoint", None):
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An export checkpoint is loaded. Unload it from the Export "
+                    "page before installing a new transformers version."
+                ),
+            )
+        # In-flight streams passed the middleware already, so the lifecycle gate can't
+        # protect them and the swap's unload would kill them mid-stream; mirror the
+        # auto-switch busy check. This route is not middleware-counted and pending
+        # requests stay blocked in the middleware, so neither is subtracted here.
+        from core.inference.llama_keepwarm import (
+            inference_lifecycle_gate,
+            note_model_unloaded,
+            other_inference_request_count,
+        )
+
+        if other_inference_request_count(current_request_counted = False, include_pending = False) > 0:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "Another inference request is in progress. Wait for it to "
+                    "finish before installing a new transformers version."
+                ),
+            )
+
+        # Hold the lifecycle gate /load holds so no HF worker can start (or be mid-load
+        # with active_model_name unset) while the sidecar is swapped. Teardown runs via
+        # before_swap, only once the staged install succeeded: a failed pip/compat check
+        # must not leave the user with their model gone. GGUF stays loaded (llama-server
+        # never imports transformers).
+        backend = get_inference_backend()
+        export_backend = get_export_backend()
+
+        unloaded_chat = {"v": False}
+
+        def _unload_before_swap() -> None:
+            # Runs on the install thread, inside the gate held by _gated_install. Any
+            # failure raises so the previous sidecar stays untouched (a worker that did
+            # not tear down cleanly may still lazy-import from it). Export teardown runs
+            # FIRST so its failure aborts while the chat model is still loaded;
+            # cleanup_memory shuts the subprocess down even when its command fails, so
+            # judge by worker liveness, not its return value.
+            export_backend.cleanup_memory()
+            export_alive = getattr(export_backend, "is_worker_alive", None)
+            if callable(export_alive) and export_alive():
+                raise RuntimeError("Export worker still alive before the transformers swap")
+            active = getattr(backend, "active_model_name", None)
+            if active:
+                if not backend.unload_model(active):
+                    # A failed unload still clears the orchestrator's model state,
+                    # so the model is gone from the parent's view even though the
+                    # swap aborts: report it so the client rolls back instead of
+                    # pointing at an unloaded model.
+                    if getattr(backend, "active_model_name", None) != active:
+                        unloaded_chat["v"] = True
+                        note_model_unloaded()
+                    raise RuntimeError(f"Could not unload '{active}' before the transformers swap")
+                note_model_unloaded()
+                unloaded_chat["v"] = True
+                logger.info(
+                    "Unloaded '%s' before swapping in transformers %s",
+                    active,
+                    request.version,
+                )
+            # A failed load can leave a live worker with no active model that
+            # still holds sidecar modules (and blocks the rename on Windows).
+            worker_alive = getattr(backend, "is_worker_alive", None)
+            if callable(worker_alive) and worker_alive():
+                # _shutdown_subprocess keeps the handle when the worker outlives SIGKILL,
+                # so both its False result and the liveness recheck catch a survivor
+                # rather than the recheck being fooled by a nulled handle.
+                stopped = backend._shutdown_subprocess()
+                if not stopped or worker_alive():
+                    raise RuntimeError("Inference worker still alive before the transformers swap")
+
+        def _run_install() -> dict:
+            # Owns the reservation from here: releasing in the thread, not the route,
+            # keeps it held if the request is cancelled while the install still stages.
+            try:
+                return install_latest_transformers(request.version, _unload_before_swap, True)
+            finally:
+                end_sidecar_swap()
+
+        # Snapshot before waiting on the gate: a /load already holding it can
+        # complete meanwhile (including a same-model reload with new settings),
+        # and the installer must not unload a model whose successful LoadResponse
+        # the client is about to render. The generation counter catches reloads
+        # the name alone would miss.
+        active_before_gate = (
+            getattr(backend, "active_model_name", None),
+            getattr(backend, "load_generation", 0),
+        )
+
+        async def _gated_install() -> dict:
+            # Held by THIS task, not the request coroutine: a cancelled POST unwinding an
+            # `async with` here would drop the only guard /load honors mid-install.
+            async with inference_lifecycle_gate():
+                _active_now = (
+                    getattr(backend, "active_model_name", None),
+                    getattr(backend, "load_generation", 0),
+                )
+                if _active_now != active_before_gate:
+                    end_sidecar_swap()
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "A model load completed while the install was waiting. "
+                            "Retry the install."
+                        ),
+                    )
+                # Recheck under the gate: new streams bump their in-flight count while
+                # holding it, so once held nothing slips past (the pre-gate check is only
+                # a fast path and can be outlasted by a wait on a long /load).
+                if (
+                    other_inference_request_count(
+                        current_request_counted = False, include_pending = False
+                    )
+                    > 0
+                ):
+                    end_sidecar_swap()
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            "Another inference request is in progress. Wait for "
+                            "it to finish before installing a new transformers "
+                            "version."
+                        ),
+                    )
+                return await asyncio.to_thread(_run_install)
+
+        install_task = asyncio.ensure_future(_gated_install())
+        owns_reservation = False
+        # shield: a cancelled request stops waiting, but the installer runs to
+        # completion (holding the gate) instead of being torn down mid-swap.
+        result = await asyncio.shield(install_task)
+    finally:
+        if owns_reservation:
+            end_sidecar_swap()
+    if not result["success"]:
+        if result.get("latest_version"):
+            # Structured failure so the dialog can update to the newer release
+            # and offer a retry that can actually succeed.
+            return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
+        if unloaded_chat["v"]:
+            # The chat model is already gone even though the swap failed; return a
+            # structured failure (not a bare 400) so the client can restore its
+            # model state instead of pointing at an unloaded model.
+            return InstallLatestTransformersResponse(**result, model_unloaded = True)
+        raise HTTPException(status_code = 400, detail = result["message"])
+    return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
 
 
 @router.post("/unload", response_model = UnloadResponse)
@@ -5153,6 +5571,33 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         raise HTTPException(status_code = 500, detail = "Failed to get status")
 
 
+_load_progress_lock = threading.Lock()
+_last_load_progress_step = -1
+
+
+def _log_load_progress_step(fraction, phase):
+    """One inference_load_progress line per 10% step, so a model load shows
+    progress without a line per poll. Reset per load by _reset_load_progress_step."""
+    global _last_load_progress_step
+    step = int(max(0.0, min(float(fraction), 1.0)) * 10)
+    with _load_progress_lock:
+        prev = _last_load_progress_step
+        if step == prev:
+            return
+        _last_load_progress_step = step
+        if step < prev:
+            return  # load regressed/restarted mid-poll; resync without logging
+    logger.info("inference_load_progress", phase = phase or "", percent = step * 10)
+
+
+def _reset_load_progress_step():
+    """Arm the throttle for a new load so its first sampled step always logs,
+    even a cached load that already reports fraction=1.0 on the first poll."""
+    global _last_load_progress_step
+    with _load_progress_lock:
+        _last_load_progress_step = -1
+
+
 @router.get("/load-progress", response_model = LoadProgressResponse)
 async def get_load_progress(current_subject: str = Depends(get_current_subject)):
     """
@@ -5171,7 +5616,9 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
         progress = llama_backend.load_progress()
         if progress is None:
             return LoadProgressResponse()
-        return LoadProgressResponse(**progress)
+        resp = LoadProgressResponse(**progress)
+        _log_load_progress_step(resp.fraction, resp.phase)
+        return resp
     except Exception as e:
         logger.warning(f"Error sampling load progress: {e}")
         return LoadProgressResponse()
@@ -6322,25 +6769,52 @@ async def openai_chat_completions(
             )
         # Reject confirm-without-stream local tool requests before the switch: the
         # local tool path requires stream=true for the confirm gate, so this shape
-        # is invalid and must not evict the resident model first. Mirror that path's
-        # enablement exactly (_effective_enable_tools honors a CLI --enable-tools
-        # policy hard-override; mcp_enabled opens the tool loop on its own but still
-        # defers to a CLI --disable-tools policy), or an mcp_enabled/policy-forced
-        # request would slip past this guard and only 400 after the swap.
-        from state.tool_policy import get_tool_policy as _get_confirm_tool_policy
+        # is invalid and must not evict the resident model first.
+        #
+        # Enter the local-loop arm exactly when the passthrough router below would
+        # run Studio's own tool loop. That gate is `_tools_on or _mcp_allowed`
+        # (see the use_tools block): _effective_enable_tools (which lets a
+        # process-wide --enable-tools policy force the loop on) plus mcp_enabled
+        # honoring --disable-tools, and tool_choice="none" disabling it unless the
+        # request explicitly asked. enabled_tools never enters loop entry (it only
+        # filters which tools run), so it is not a signal here.
+        #
+        # But a policy-forced loop must not steal client-tool passthrough: when the
+        # request did not explicitly ask for the loop (enable_tools/mcp) and carries
+        # client tools, the router forwards to the provider branch, so only treat it
+        # as the local loop when the request explicitly asked OR there is no client
+        # passthrough to defer to.
+        from state.tool_policy import get_tool_policy as _get_tool_policy_pre
 
-        _confirm_cli_policy = _get_confirm_tool_policy()
+        _cli_policy_pre = _get_tool_policy_pre()
+        _use_tools_intent = _effective_enable_tools(payload) or (
+            bool(payload.mcp_enabled) and _cli_policy_pre is not False
+        )
+        if payload.tool_choice == "none" and not _explicit_studio_tool_loop_requested(payload):
+            _use_tools_intent = False
+        _client_tool_passthrough = (
+            bool(payload.tools)
+            or bool(payload.openai_code_exec_container_id)
+            or bool(payload.anthropic_code_exec_container_id)
+            # A JSON-schema response_format is guided-decoding structured output the
+            # router forwards to the llama-server passthrough, not Studio's tool
+            # loop, so a --enable-tools policy must not 400 it as a local-confirm
+            # request under ask/auto.
+            or bool(_extract_response_format(payload))
+        )
+        # permission_mode only implies the confirm gate for that local loop.
+        # Client-tool passthrough forwards to the provider branch and the validator
+        # intentionally leaves confirm_tool_calls unset there, so only an explicit
+        # confirm_tool_calls=True should force the local-confirm rejection for it.
+        _studio_local_tool_loop = bool(_use_tools_intent) and (
+            _explicit_studio_tool_loop_requested(payload) or not _client_tool_passthrough
+        )
         if (
-            payload.confirm_tool_calls
-            and not payload.bypass_permissions
+            not payload.bypass_permissions
             and not payload.stream
             and (
-                _effective_enable_tools(payload)
-                or (bool(payload.mcp_enabled) and _confirm_cli_policy is not False)
-                or bool(payload.enabled_tools)
-                or bool(payload.tools)
-                or bool(payload.openai_code_exec_container_id)
-                or bool(payload.anthropic_code_exec_container_id)
+                (_confirm_gate_needs_stream(payload) and _studio_local_tool_loop)
+                or (payload.confirm_tool_calls is True and _client_tool_passthrough)
             )
         ):
             raise HTTPException(
@@ -6855,9 +7329,23 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
+            # permission_mode ask/auto require the confirm gate for Studio's own
+            # tool loop. The request validator self-enables confirm only for
+            # request-level tool signals (enable_tools/enabled_tools/mcp_enabled);
+            # when a CLI policy (--enable-tools) forces the loop on without those,
+            # derive confirm here so the mode still gates the call (and a
+            # non-stream ask/auto request is rejected below rather than running
+            # unprompted). off/full never prompt, so they are excluded.
+            _effective_confirm = _permission_mode_confirm(payload)
             # Bypass Permissions suppresses confirm, so the stream requirement
-            # (the gate needs streaming to prompt) no longer applies.
-            if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
+            # (the gate needs streaming to prompt) no longer applies. auto with an
+            # always-safe-only selection never prompts, so it needs no stream even
+            # though _effective_confirm stays true for the loop's per-call gate.
+            if (
+                _confirm_gate_needs_stream(payload)
+                and not payload.bypass_permissions
+                and not payload.stream
+            ):
                 raise _reject(
                     400,
                     openai_error_body(
@@ -6934,9 +7422,9 @@ async def openai_chat_completions(
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
-                    confirm_tool_calls = bool(payload.confirm_tool_calls)
-                    and not bool(payload.bypass_permissions),
+                    confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
+                    permission_mode = payload.permission_mode,
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -7008,12 +7496,34 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _tool_sentinel)
                         )
                         try:
-                            event = await asyncio.shield(next_task)
+                            # Stall-timeout wait: keepalive while the generator stays
+                            # silent (e.g. prefill between tool iterations). asyncio.wait
+                            # never cancels next_task, matching the finally-drain shield.
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            event = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
                         if event is _tool_sentinel:
                             break
+
+                        if event["type"] == "heartbeat":
+                            # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
+
+                        if event["type"] in ("tool_output", "tool_args"):
+                            # Live stdout/stderr or tool-call arguments, forwarded
+                            # verbatim for the UI. Final result still arrives in tool_end.
+                            yield f"data: {json.dumps(event)}\n\n"
+                            continue
 
                         if event["type"] == "status":
                             # Empty status marks an iteration boundary in the
@@ -7564,7 +8074,18 @@ async def openai_chat_completions(
                             asyncio.to_thread(next, gen, _gguf_sentinel)
                         )
                         try:
-                            cumulative = await asyncio.shield(next_task)
+                            # Stall-timeout wait: keepalive while the generator stays
+                            # silent (e.g. no-tool prefill). asyncio.wait never cancels
+                            # next_task, matching the finally-drain shield (see GGUF stream).
+                            while True:
+                                done_tasks, _ = await asyncio.wait(
+                                    {next_task},
+                                    timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                                )
+                                if done_tasks:
+                                    break
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            cumulative = next_task.result()
                         finally:
                             if next_task.done():
                                 next_task = None
@@ -8150,9 +8671,20 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
+        # permission_mode ask/auto require the confirm gate for Studio's own tool
+        # loop; when a CLI policy (--enable-tools) forces the loop on without a
+        # request-level tool signal, derive confirm here so the mode still gates
+        # the call (matching the GGUF path). off/full never prompt.
+        _sf_effective_confirm = _permission_mode_confirm(payload)
         # Bypass Permissions suppresses confirm, so the stream requirement
-        # (the gate needs streaming to prompt) no longer applies.
-        if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
+        # (the gate needs streaming to prompt) no longer applies. auto with an
+        # always-safe-only selection never prompts, so it needs no stream even
+        # though _sf_effective_confirm stays true for the loop's per-call gate.
+        if (
+            _confirm_gate_needs_stream(payload)
+            and not payload.bypass_permissions
+            and not payload.stream
+        ):
             raise _reject(
                 400,
                 openai_error_body(
@@ -8230,9 +8762,9 @@ async def openai_chat_completions(
                 rag_scope = payload.rag_scope,
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
-                confirm_tool_calls = bool(payload.confirm_tool_calls)
-                and not bool(payload.bypass_permissions),
+                confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -8244,6 +8776,7 @@ async def openai_chat_completions(
 
         async def sf_tool_stream():
             gen = None
+            _sf_next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -8275,9 +8808,34 @@ async def openai_chat_completions(
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
-                    event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    # Stall keepalive (see GGUF tool stream): silent backend segments
+                    # must not leave the SSE stream idle past proxy timeouts.
+                    _sf_next_task = asyncio.create_task(
+                        asyncio.to_thread(next, gen, _sf_tool_sentinel)
+                    )
+                    while True:
+                        _sf_done, _ = await asyncio.wait(
+                            {_sf_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _sf_done:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    event = _sf_next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _sf_next_task = None
                     if event is _sf_tool_sentinel:
                         break
+
+                    if event["type"] == "heartbeat":
+                        # Tool-execution wrapper heartbeat -> SSE keepalive.
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+
+                    if event["type"] in ("tool_output", "tool_args"):
+                        # Live stdout/stderr, or tool-call arguments as the model writes them.
+                        yield f"data: {json.dumps(event)}\n\n"
+                        continue
 
                     if event["type"] == "status":
                         if not event["text"]:
@@ -8370,9 +8928,15 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing: closing
+                # mid-next(gen) raises ValueError('generator already executing') and
+                # skips the generator's cleanup finally. Matches the GGUF tool stream.
+                await _drain_pending_next_task(_sf_next_task, cancel_event)
                 if gen is not None:
                     try:
-                        gen.close()
+                        # Offload the close so the generator's cleanup runs off the event
+                        # loop (matches the GGUF SSE path); a disconnect can't stall the loop.
+                        await asyncio.to_thread(gen.close)
                     except (RuntimeError, ValueError):
                         pass
                 _sf_tracker.__exit__(None, None, None)
@@ -8562,6 +9126,8 @@ async def openai_chat_completions(
         _tracker.__enter__()
 
         async def stream_chunks():
+            gen = None
+            _next_task = None
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
@@ -8576,23 +9142,30 @@ async def openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
-                # Run the sync generator in a thread pool to avoid blocking the
-                # event loop. Critical for compare mode: two SSE requests arrive
-                # concurrently but the orchestrator serializes them via
-                # _gen_lock; without run_in_executor the second request's
-                # blocking lock acquisition would freeze the entire event loop,
-                # stalling both streams.
+                # Run the sync generator in a worker thread so it can't block the event
+                # loop. Critical for compare mode: a second request's blocking _gen_lock
+                # acquisition would otherwise freeze the loop and stall both streams.
                 _DONE = object()  # sentinel for generator exhaustion
-                loop = asyncio.get_event_loop()
                 gen = generate()
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
                         break
-                    # next(gen, _DONE) returns _DONE instead of raising
-                    # StopIteration -- StopIteration can't propagate through
-                    # asyncio futures (Python limitation).
-                    cumulative = await loop.run_in_executor(None, next, gen, _DONE)
+                    # Stall keepalive (see safetensors tool stream) each window while
+                    # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
+                    # than raising StopIteration (which can't cross asyncio futures).
+                    _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    while True:
+                        _done_tasks, _ = await asyncio.wait(
+                            {_next_task},
+                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                        )
+                        if _done_tasks:
+                            break
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative = _next_task.result()
+                    # Done; drop the reference so the finally-block drain no-ops.
+                    _next_task = None
                     if cumulative is _DONE:
                         break
                     if await request.is_disconnected():
@@ -8715,6 +9288,17 @@ async def openai_chat_completions(
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+                # Drain a still-running next(gen) worker before closing: closing
+                # mid-next(gen) raises ValueError('generator already executing') and
+                # skips the generator's cleanup finally. Matches the safetensors stream.
+                await _drain_pending_next_task(_next_task, cancel_event)
+                if gen is not None:
+                    try:
+                        # Offload the close so the generator's cleanup runs off the event
+                        # loop (matches the GGUF SSE path); a disconnect can't stall the loop.
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
                 _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(
@@ -11248,6 +11832,13 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "python": "python",
     "terminal": "terminal",
 }
+# Server tools that never need a confirmation prompt (read-only / non code-
+# executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
+# Any other selected tool (terminal, python, render_html) can require the gate
+# this channel has no way to present, so an omitted permission_mode ("ask") only
+# asks then. render_html is excluded because a networked canvas prompts in auto,
+# and this channel invokes the loop without confirm; auto/ask reject, off/full run.
+_ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
 
 
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
@@ -11508,6 +12099,53 @@ async def anthropic_messages(
             ),
         )
 
+    # Reject an unsupported confirm-gated permission mode for Studio's own
+    # ("server") Anthropic tools before the switch, mirroring the malformed- and
+    # mixed-tool checks above. ask always wants a per-call pause this passthrough
+    # cannot offer, so it 400s whenever server tools are selected. auto only needs
+    # the gate for an unsafe call, so (like the omitted default) it runs for a
+    # safe-only selection (web_search/RAG) and 400s when a gate-needing tool is
+    # selected (local terminal/python, or render_html whose networked canvas
+    # prompts and cannot be gated on this channel). Rejecting must happen before the
+    # switch so an invalid request never evicts the resident model; it is
+    # determined from the requested tools alone (backend tool support is only known
+    # post-switch); an image request can never take the server-tool path, so it is
+    # excluded as in the server_tools gate below. off/full and an explicit
+    # confirm_tool_calls=False opt-out always pass.
+    _enable_pre = _effective_enable_tools(payload)
+    _server_tools_requested_pre = (
+        _enable_pre or (_enable_pre is None and bool(requested_studio_tools))
+    ) and not _anthropic_request_has_image(payload)
+    if _server_tools_requested_pre:
+        from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
+
+        _selected_pre = _select_anthropic_server_tools(
+            _ALL_TOOLS_PRE, requested_studio_tools, payload.enabled_tools
+        )
+        _perm_mode_pre = getattr(payload, "permission_mode", None)
+        _confirm_opt_out_pre = getattr(payload, "confirm_tool_calls", None) is False
+        _gated_tool_selected_pre = any(
+            tool["function"]["name"] not in _ANTHROPIC_UNPROMPTED_SAFE_TOOLS
+            for tool in _selected_pre
+        )
+        # An explicit confirm_tool_calls=False opts out of the gate entirely (it
+        # wins over the mode, mirroring _permission_mode_confirm and the GGUF path),
+        # so it never rejects -- not even under ask.
+        if not _confirm_opt_out_pre and (
+            _perm_mode_pre == "ask"
+            or (_perm_mode_pre in ("auto", None) and _gated_tool_selected_pre)
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = anthropic_error_body(
+                    "permission_mode 'ask' has no confirmation channel for Anthropic "
+                    "Messages server tools, and 'auto' (or the omitted default) cannot "
+                    "gate a local 'terminal'/'python' tool here; set 'off' or 'full'.",
+                    status = 400,
+                    err_type = "invalid_request_error",
+                ),
+            )
+
     # require_vision rejects a swap to a text-only target before it runs, so an
     # image request can't evict the resident vision model only to hit the vision
     # guard (_normalize_anthropic_openai_images) below after the load.
@@ -11707,6 +12345,10 @@ async def anthropic_messages(
             )
         from core.inference.tools import ALL_TOOLS
 
+        # ask/auto (and an omitted mode selecting a gate-needing terminal/python
+        # tool) were already rejected before the auto-switch above, so an invalid
+        # confirm-gated request never evicts the resident model; the selection
+        # here just picks the tools for the actual server-tool loop.
         openai_tools = _select_anthropic_server_tools(
             ALL_TOOLS,
             requested_studio_tools,
@@ -11762,6 +12404,7 @@ async def anthropic_messages(
                 rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
+                permission_mode = getattr(payload, "permission_mode", None),
             )
 
         if payload.stream:
@@ -11865,8 +12508,12 @@ async def _anthropic_tool_stream(
         ends_on_tool_use = False
         tool_blocks_emitted = 0
         drop_until_tool_end = False
+        # Last drop-branch keepalive, seeded to stream start so a chatty tool busy
+        # past the stall window still gets a keepalive though its events are dropped.
+        _last_drop_keepalive = time.monotonic()
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # events, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -11877,13 +12524,42 @@ async def _anthropic_tool_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                event = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see GGUF tool stream): silent backend segments
+                # must not leave the SSE stream idle past proxy timeouts.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                event = _next_task.result()
+                # Done; drop the reference so the finally-block drain no-ops.
+                _next_task = None
                 if event is _sentinel:
                     break
                 etype = event.get("type")
+                if etype == "heartbeat":
+                    # Tool-wrapper heartbeat -> SSE keepalive, checked BEFORE the drop
+                    # skip: a dropped tool still runs server-side and its events keep the
+                    # stall keepalive from firing, so dropping heartbeats would go silent.
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if etype in ("tool_output", "tool_args"):
+                    # Live stdout / arg streaming have no Anthropic Messages equivalent
+                    # (the full call/result follow in tool_use / tool_result), so drop them.
+                    # They keep the stall keepalive from firing, so a chatty tool would go
+                    # silent past the ~100s proxy cap; emit a rate-limited keepalive instead.
+                    _now = time.monotonic()
+                    if _now - _last_drop_keepalive >= _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+                        _last_drop_keepalive = _now
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
                 if drop_until_tool_end:
-                    # disable_parallel_tool_use: a later tool call is being
-                    # dropped — skip every event until (and including) its tool_end.
+                    # disable_parallel_tool_use: skip every event until (and
+                    # including) this dropped tool call's tool_end.
                     if etype == "tool_end":
                         drop_until_tool_end = False
                     continue
@@ -11924,12 +12600,24 @@ async def _anthropic_tool_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server crash,
+            # decode OOM, dropped socket) still emits an SSE error and returns, instead
+            # of a normal message_stop that masks a truncated turn as a clean finish.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker before closing, so a mid-prefill
+            # disconnect releases the thread/generator/tool resources. Closing first
+            # would race into ValueError('generator already executing').
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use
@@ -11966,6 +12654,7 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
+        _next_task = None
         # Watcher to cancel on disconnect: the in-loop poll fires only between
         # chunks, so a mid-prefill disconnect would otherwise hold the decode slot.
         disconnect_watcher = asyncio.create_task(
@@ -11976,7 +12665,20 @@ async def _anthropic_plain_stream(
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
-                cumulative = await asyncio.to_thread(next, gen, _sentinel)
+                # Stall keepalive (see Anthropic tool stream) each window while
+                # next(gen) runs in a worker.
+                _next_task = asyncio.create_task(asyncio.to_thread(next, gen, _sentinel))
+                while True:
+                    _done_tasks, _ = await asyncio.wait(
+                        {_next_task},
+                        timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
+                    )
+                    if _done_tasks:
+                        break
+                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                cumulative = _next_task.result()
+                # Done; drop the reference so the finally-block drain no-ops.
+                _next_task = None
                 if cumulative is _sentinel:
                     break
                 if isinstance(cumulative, dict):
@@ -11992,12 +12694,24 @@ async def _anthropic_plain_stream(
                     yield line
         except Exception as e:
             logger.error("anthropic_messages stream error: %s", e)
-            _error_event = _anthropic_stream_error_event(e)
+            # force = True so an unclassified mid-stream failure (llama-server crash,
+            # decode OOM, dropped socket) still emits an SSE error and returns, instead
+            # of a normal message_stop that masks a truncated turn as a clean finish.
+            _error_event = _anthropic_stream_error_event(e, force = True)
             if _error_event is not None:
                 yield _error_event
                 return
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+            # Drain a still-running next(gen) worker before closing, so a mid-prefill
+            # disconnect releases the thread/generator/model resources. Closing first
+            # would race into ValueError('generator already executing').
+            await _drain_pending_next_task(_next_task, cancel_event)
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
         stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):

@@ -248,7 +248,7 @@ def scan_checkpoints(
         # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)
 
-        logger.info(f"Found {len(models)} training runs in {outputs_dir}")
+        logger.debug(f"Found {len(models)} training runs in {outputs_dir}")
         return models
 
     except Exception as e:

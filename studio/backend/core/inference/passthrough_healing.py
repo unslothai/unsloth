@@ -41,6 +41,9 @@ _HEAL_SIGNALS = (
     "<|tool_call>",
     "<function=",
     "[TOOL_CALLS]",
+    # TML Inkling native call marker (leaks as text when the server-side
+    # parser misses a narration-then-call turn).
+    "<|content_invoke_tool_json|>",
 )
 
 

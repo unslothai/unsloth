@@ -104,6 +104,7 @@ export const ja = {
       connections: "接続",
       apiKeys: "API",
       about: "情報",
+      voice: "音声",
     },
     general: {
       title: "一般",
@@ -320,10 +321,6 @@ export const ja = {
         fontSmoothing: {
           label: "フォントスムージング",
           description: "滑らかなアンチエイリアスを使用します。",
-        },
-        edgeFades: {
-          label: "エッジのフェード",
-          description: "パネル端でコンテンツをフェードします。オフにすると細い区切り線を表示します。",
         },
         contrast: {
           label: "コントラスト",
