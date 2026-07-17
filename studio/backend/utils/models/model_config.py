@@ -1145,11 +1145,12 @@ def _is_mmproj(filename: str) -> bool:
 _DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
 
 # Exclude quant and precision suffixes when deriving the target model name.
-_GGUF_QUANT_TAG_RE = re.compile(
-    r"^(?:ud-)?(?:mxfp\d+(?:_[a-z0-9]+)*|iq\d+_[a-z]+(?:_[a-z0-9]+)?|tq\d+_\d+"
-    r"|q\d+_k(?:_[a-z]+)?|q\d+_\d+|q\d+_k|bf16|f16|f32|fp16)$",
-    re.IGNORECASE,
+_GGUF_QUANT_TAG_PATTERN = (
+    r"(?:ud-)?(?:mxfp\d+(?:_[a-z0-9]+)*|iq\d+_[a-z]+(?:_[a-z0-9]+)?|tq\d+_\d+"
+    r"|q\d+_k(?:_[a-z]+)?|q\d+_\d+|q\d+_k|bf16|f16|f32|fp16)"
 )
+_GGUF_QUANT_TAG_RE = re.compile(rf"^{_GGUF_QUANT_TAG_PATTERN}$", re.IGNORECASE)
+_GGUF_QUANT_SUFFIX_RE = re.compile(rf"[-_.]{_GGUF_QUANT_TAG_PATTERN}$", re.IGNORECASE)
 
 
 def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) -> bool:
@@ -1161,11 +1162,11 @@ def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) 
     m = _DFLASH_DRAFTER_RE.search(stem)
     if not m:
         return False
-    candidates = [
-        c
-        for c in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_."))
-        if c and not _GGUF_QUANT_TAG_RE.match(c)
-    ]
+    candidates = []
+    for candidate in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_.")):
+        candidate = _GGUF_QUANT_SUFFIX_RE.sub("", candidate)
+        if candidate and not _GGUF_QUANT_TAG_RE.match(candidate):
+            candidates.append(candidate)
     if weight_basename is None:
         return True
     weight = weight_basename.lower()

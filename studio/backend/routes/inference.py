@@ -991,6 +991,8 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_draft_offloaded_to_cpu,
+        _extra_args_mtp_draft_path,
         _extra_args_requests_dflash,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -1032,6 +1034,8 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_draft_offloaded_to_cpu,
+        _extra_args_mtp_draft_path,
         _extra_args_requests_dflash,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
@@ -3754,6 +3758,7 @@ def _remote_gguf_companion_bytes(
     *,
     hf_token: Optional[str],
     include_mmproj: bool,
+    include_mtp: bool = True,
     include_dflash: bool = True,
     dflash_precedes_mtp: bool = False,
     weight_name: Optional[str] = None,
@@ -3776,9 +3781,9 @@ def _remote_gguf_companion_bytes(
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if (is_root_mtp and not (dflash_precedes_mtp and dflash is not None)) or (
-                include_mmproj and "mmproj" in base
-            ):
+            if (
+                include_mtp and is_root_mtp and not (dflash_precedes_mtp and dflash is not None)
+            ) or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
         # Count only the DFlash build the loader selects.
         if dflash is not None:
@@ -3834,14 +3839,21 @@ def _estimate_gguf_required_gb(
     try:
         total_bytes = 0
         user_owns_spec_type = _extra_args_set_spec_type(llama_extra_args)
-        if user_owns_spec_type:
-            dflash_engages = _extra_args_requests_dflash(llama_extra_args, env = {})
-            auto_dflash_engages = False
-        else:
-            auto_dflash_engages = (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
-            dflash_engages = auto_dflash_engages
-        dflash_engages = dflash_engages and dflash_supported
-        auto_dflash_engages = auto_dflash_engages and dflash_supported
+        manual_dflash_engages = bool(
+            user_owns_spec_type and _extra_args_requests_dflash(llama_extra_args, env = {})
+        )
+        auto_dflash_engages = bool(
+            not user_owns_spec_type
+            and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+            and dflash_supported
+        )
+        manual_dflash_bytes = 0
+        if manual_dflash_engages and not _extra_args_draft_offloaded_to_cpu(
+            llama_extra_args, env = os.environ
+        ):
+            manual_dflash_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
+            if manual_dflash_path and Path(manual_dflash_path).is_file():
+                manual_dflash_bytes = LlamaCppBackend._get_gguf_size_bytes(str(manual_dflash_path))
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
@@ -3859,15 +3871,17 @@ def _estimate_gguf_required_gb(
         for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
             if attr == "gguf_mmproj_file" and not _cfg_is_vision:
                 continue
-            if attr == "gguf_mtp_file" and local_dflash_wins:
+            if attr == "gguf_mtp_file" and (local_dflash_wins or manual_dflash_engages):
                 continue
-            if attr == "gguf_dflash_file" and (_cfg_is_vision or not dflash_engages):
+            if attr == "gguf_dflash_file" and (
+                manual_dflash_engages or _cfg_is_vision or not auto_dflash_engages
+            ):
                 continue
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
-            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+            return (total_bytes + manual_dflash_bytes) / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
 
@@ -3887,11 +3901,12 @@ def _estimate_gguf_required_gb(
                 repo,
                 hf_token = hf_token,
                 include_mmproj = remote_is_vision,
-                include_dflash = dflash_engages and not remote_is_vision,
+                include_mtp = not manual_dflash_engages,
+                include_dflash = auto_dflash_engages and not remote_is_vision,
                 dflash_precedes_mtp = auto_dflash_engages and not remote_is_vision,
                 weight_name = selected_variant.filename,
             )
-            return (selected_variant.size_bytes + companions) / (1024**3)
+            return (selected_variant.size_bytes + companions + manual_dflash_bytes) / (1024**3)
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")

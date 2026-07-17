@@ -112,6 +112,7 @@ def test_dflash_pairs_weight_by_model_name():
 
     assert _dflash_pairs_weight("Qwen3-8B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
     assert _dflash_pairs_weight("dflash-Qwen3-8B.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
+    assert _dflash_pairs_weight("dflash-Qwen3-8B-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
     assert _dflash_pairs_weight("Qwen3-4B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
     assert _dflash_pairs_weight("dflash-Qwen.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
     assert _dflash_pairs_weight("OtherModel-DFlash-q8_0.gguf", "Q8_0.gguf") is False

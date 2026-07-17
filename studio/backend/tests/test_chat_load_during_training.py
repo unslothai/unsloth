@@ -671,9 +671,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             main = root / "model.gguf"
             mtp = root / "mtp-model.gguf"
             dflash = root / "model-DFlash-q8_0.gguf"
+            manual_dflash = root / "manual-DFlash-q8_0.gguf"
             main.write_bytes(b"m" * 100)
             mtp.write_bytes(b"t" * 20)
             dflash.write_bytes(b"d" * 30)
+            manual_dflash.write_bytes(b"u" * 40)
             cfg = SimpleNamespace(
                 gguf_file = str(main),
                 gguf_mmproj_file = None,
@@ -685,9 +687,20 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
                 auto_gb = self.route._estimate_gguf_required_gb(cfg)
                 unsupported_gb = self.route._estimate_gguf_required_gb(cfg, dflash_supported = False)
+                manual_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    llama_extra_args = [
+                        "--spec-type",
+                        "draft-dflash",
+                        "--model-draft",
+                        str(manual_dflash),
+                    ],
+                    dflash_supported = False,
+                )
 
         self.assertAlmostEqual(auto_gb, 130 / (1024**3), places = 12)
         self.assertAlmostEqual(unsupported_gb, 120 / (1024**3), places = 12)
+        self.assertAlmostEqual(manual_gb, 140 / (1024**3), places = 12)
 
     def test_local_adds_kv_cache(self):
         import tempfile
