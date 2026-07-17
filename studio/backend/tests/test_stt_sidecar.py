@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import gc
 import io
 import sys
 import threading
 import time
 import wave
+import weakref
 from types import SimpleNamespace
 
 import numpy as np
@@ -32,6 +34,7 @@ from core.inference.stt_sidecar import (
 
 _REAL_DECODE_AUDIO_BOUNDED = stt_sidecar_module._decode_audio_bounded
 _REAL_ENSURE_STT_AVAILABLE = stt_sidecar_module.ensure_stt_available
+_REAL_SNAPSHOT_IS_COMPLETE = stt_sidecar_module._snapshot_is_complete
 
 
 @pytest.fixture(autouse = True)
@@ -46,6 +49,9 @@ def stub_audio_decoder(monkeypatch):
         "huggingface_hub.snapshot_download",
         lambda **_kwargs: "/cached/model",
     )
+    # The stubbed snapshot path holds no files; snapshot-integrity tests
+    # restore the real check.
+    monkeypatch.setattr(stt_sidecar_module, "_snapshot_is_complete", lambda _snapshot: True)
     # transcribe() gates on the runtime up front; treat it as present so these
     # orchestration tests run without PyTorch/Transformers/PyAV installed.
     # The runtime-specific tests restore the real check.
@@ -954,6 +960,7 @@ def test_is_model_downloaded_is_false_for_a_cache_miss(monkeypatch):
 def test_sharded_snapshot_with_missing_shard_is_not_downloaded(monkeypatch, tmp_path):
     import json
 
+    monkeypatch.setattr(stt_sidecar_module, "_snapshot_is_complete", _REAL_SNAPSHOT_IS_COMPLETE)
     snap = tmp_path / "snapshots" / "rev"
     snap.mkdir(parents = True)
     (snap / "config.json").write_bytes(b"{}")
@@ -976,3 +983,50 @@ def test_sharded_snapshot_with_missing_shard_is_not_downloaded(monkeypatch, tmp_
     # Completing the second shard flips the verdict.
     (snap / "model-00002-of-00002.safetensors").write_bytes(b"w" * 8)
     assert stt_sidecar_module.is_model_downloaded("unsloth/whisper-small") is True
+
+
+@pytest.mark.parametrize("model_id", ["small", "openai/whisper-medium"])
+def test_preflight_rejects_partial_snapshot(monkeypatch, tmp_path, model_id):
+    # A resolvable snapshot with metadata but no weights must fail preflight,
+    # not survive until load() after the audio has already been decoded.
+    monkeypatch.setattr(stt_sidecar_module, "_snapshot_is_complete", _REAL_SNAPSHOT_IS_COMPLETE)
+    (tmp_path / "config.json").write_text('{"model_type": "whisper"}')
+    monkeypatch.setattr("huggingface_hub.snapshot_download", lambda **_kwargs: str(tmp_path))
+
+    with pytest.raises(SttModelNotDownloadedError, match = "not downloaded"):
+        WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(model_id)
+
+    # Completing the snapshot clears the preflight.
+    (tmp_path / "preprocessor_config.json").write_text("{}")
+    (tmp_path / "model.safetensors").write_bytes(b"w" * 8)
+    WhisperSttSidecar(keep_alive_seconds = 0)._ensure_model_downloaded(model_id)
+
+
+def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
+    _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(stt_sidecar_module, "_pick_device", lambda: ("mps", "float16"))
+
+    class Marker:
+        pass
+
+    seen = {}
+
+    def fake_build(self, repo, device, dtype, cancel_event):
+        if device != "cpu":
+            # The frame local stands in for a partly loaded accelerator model
+            # kept alive only through the raised traceback.
+            marker = Marker()
+            seen["ref"] = weakref.ref(marker)
+            raise RuntimeError("accelerator load failed")
+        gc.collect()
+        seen["alive_during_retry"] = seen["ref"]() is not None
+        return (_FakeModel(), object())
+
+    monkeypatch.setattr(WhisperSttSidecar, "_build_model", fake_build)
+    sidecar = WhisperSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("small")
+
+    # The failed attempt must be collectable before the CPU model loads, or
+    # its accelerator memory stays stranded for the whole retry.
+    assert seen["alive_during_retry"] is False
+    assert sidecar.device == "cpu"

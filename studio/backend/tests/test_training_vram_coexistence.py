@@ -102,7 +102,24 @@ def _fake_stt_sidecar(
 def _patch_stt(sidecar):
     stt_module = types.ModuleType("core.inference.stt_sidecar")
     stt_module.get_stt_sidecar = lambda: sidecar
-    return patch.dict(sys.modules, {"core.inference.stt_sidecar": stt_module})
+    # A fresh import of the GGUF sidecar pulls names from the fake module
+    # above and fails; fake it too so test ordering cannot break that import.
+    ggml_module = types.ModuleType("core.inference.stt_ggml_sidecar")
+    empty_ggml = SimpleNamespace(loaded_model = None, unload = MagicMock())
+    ggml_module.get_ggml_stt_sidecar = lambda: empty_ggml
+    return patch.dict(
+        sys.modules,
+        {
+            "core.inference.stt_sidecar": stt_module,
+            "core.inference.stt_ggml_sidecar": ggml_module,
+        },
+    )
+
+
+def _patch_ggml_stt(sidecar):
+    ggml_module = types.ModuleType("core.inference.stt_ggml_sidecar")
+    ggml_module.get_ggml_stt_sidecar = lambda: sidecar
+    return patch.dict(sys.modules, {"core.inference.stt_ggml_sidecar": ggml_module})
 
 
 # ── summarize_resident_chat ──────────────────────────────────────────────────
@@ -513,6 +530,18 @@ class TestFreeSttModel(_GpuCacheResetMixin, unittest.TestCase):
         sidecar.wait_for_load_to_settle.assert_called_once()
         sidecar.unload.assert_called_once()
         self.assertEqual(freed, ["stt:loading"])
+
+    def test_cancelled_load_still_unloads_gguf_sidecar(self):
+        # Cancelling a Transformers load must not skip the GGUF sidecar; both
+        # engines can hold memory at once (engine switch or direct load calls).
+        sidecar = _fake_stt_sidecar(loading = True)
+        ggml = SimpleNamespace(loaded_model = "small")
+        ggml.unload = MagicMock()
+        with _patch_stt(sidecar), _patch_ggml_stt(ggml):
+            freed = tv.free_stt_model_for_training(reason = "test")
+        sidecar.cancel_pending_load.assert_called_once()
+        ggml.unload.assert_called_once()
+        self.assertEqual(freed, ["stt:loading", "stt:small"])
 
     def test_leaves_empty_sidecar_alone(self):
         sidecar = _fake_stt_sidecar()

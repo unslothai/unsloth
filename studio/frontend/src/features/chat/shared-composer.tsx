@@ -225,8 +225,10 @@ function useDictation(
     let session: StudioDictationSession;
     try {
       // Routes to the engine chosen in Voice settings (browser or STT model),
-      // honoring the selected microphone, language, and dictionary.
-      session = new StudioDictationAdapter().listen();
+      // honoring the selected microphone, language, and dictionary. Compare
+      // feeds two panes, so recent dictations must not link the unrelated
+      // single-chat active thread.
+      session = new StudioDictationAdapter({ chatId: null }).listen();
     } catch {
       startingRef.current = false;
       notifyStudioDictationUnavailable();

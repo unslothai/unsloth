@@ -205,7 +205,6 @@ export const ChatDictationBar: FC = () => {
           aria-label="Discard recording"
           variant="ghost"
           onClick={discard}
-          disabled={transcribing}
           className="size-8 rounded-full text-muted-foreground hover:text-foreground"
         >
           <XIcon className="size-5" />

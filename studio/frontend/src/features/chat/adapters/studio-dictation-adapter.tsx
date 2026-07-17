@@ -37,6 +37,14 @@ function usesModelRecording(dictationEngine: DictationEngine): boolean {
 }
 
 export class StudioDictationAdapter implements DictationAdapter {
+  // Chat linked in Recent dictations. undefined follows the active single
+  // chat; null records no chat (composers outside it, e.g. Compare).
+  private readonly chatId: string | null | undefined;
+
+  constructor(options: { chatId?: string | null } = {}) {
+    this.chatId = options.chatId;
+  }
+
   static isSupported(
     dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
       .dictationEngine,
@@ -64,14 +72,14 @@ export class StudioDictationAdapter implements DictationAdapter {
     const { dictationEngine } = useVoiceSettingsStore.getState();
     if (usesModelRecording(dictationEngine)) {
       if (StudioModelDictationAdapter.isSupported()) {
-        return new StudioModelDictationAdapter().listen();
+        return new StudioModelDictationAdapter({ chatId: this.chatId }).listen();
       }
       throw new Error(
         "Local model dictation is not supported in this browser.",
       );
     }
     if (StudioWebSpeechDictationAdapter.isSupported()) {
-      return new StudioWebSpeechDictationAdapter().listen();
+      return new StudioWebSpeechDictationAdapter({ chatId: this.chatId }).listen();
     }
     throw new Error("Browser dictation is not supported in this browser.");
   }

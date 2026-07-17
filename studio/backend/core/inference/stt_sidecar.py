@@ -227,13 +227,38 @@ def _is_missing_local_model_error(exc: BaseException) -> bool:
     return False
 
 
-def is_model_downloaded(model: Optional[str]) -> bool:
-    """True when a usable Whisper snapshot exists in the local HF cache.
+def _snapshot_is_complete(snapshot: Path) -> bool:
+    """True when a cached snapshot holds every file loading actually needs.
 
     An aborted download can leave a snapshot directory holding only small
     metadata files, and an offline cache lookup cannot know the repository's
-    full file list -- so verify the files loading actually needs.
+    full file list -- so verify config, preprocessor, and weights directly.
+    is_file() follows the cache symlinks, so a link left behind by an
+    interrupted blob download does not count.
     """
+    index = snapshot / "model.safetensors.index.json"
+    if index.is_file():
+        # Sharded checkpoint: one present shard is not enough; every
+        # shard in the index must exist.
+        weight_map = _read_json_object(index).get("weight_map")
+        if not isinstance(weight_map, dict) or not weight_map:
+            return False
+        has_weights = all((snapshot / shard).is_file() for shard in set(weight_map.values()))
+    else:
+        has_weights = any(
+            p.is_file()
+            for pattern in ("*.safetensors", "pytorch_model*.bin")
+            for p in snapshot.glob(pattern)
+        )
+    return (
+        has_weights
+        and (snapshot / "config.json").is_file()
+        and (snapshot / "preprocessor_config.json").is_file()
+    )
+
+
+def is_model_downloaded(model: Optional[str]) -> bool:
+    """True when a usable Whisper snapshot exists in the local HF cache."""
     try:
         from huggingface_hub import snapshot_download
 
@@ -243,27 +268,7 @@ def is_model_downloaded(model: Optional[str]) -> bool:
                 local_files_only = True,
             )
         )
-        # is_file() follows the cache symlinks, so a link left behind by an
-        # interrupted blob download does not count.
-        index = snapshot / "model.safetensors.index.json"
-        if index.is_file():
-            # Sharded checkpoint: one present shard is not enough; every
-            # shard in the index must exist.
-            weight_map = _read_json_object(index).get("weight_map")
-            if not isinstance(weight_map, dict) or not weight_map:
-                return False
-            has_weights = all((snapshot / shard).is_file() for shard in set(weight_map.values()))
-        else:
-            has_weights = any(
-                p.is_file()
-                for pattern in ("*.safetensors", "pytorch_model*.bin")
-                for p in snapshot.glob(pattern)
-            )
-        return (
-            has_weights
-            and (snapshot / "config.json").is_file()
-            and (snapshot / "preprocessor_config.json").is_file()
-        )
+        return _snapshot_is_complete(snapshot)
     except Exception:
         return False
 
@@ -654,10 +659,18 @@ class WhisperSttSidecar:
                 ) from exc
             raise
 
+        snapshot_path = Path(snapshot)
+        # A resolvable snapshot can still be partial (aborted download); fail
+        # here so callers do not decode audio before load() hits missing files.
+        if not _snapshot_is_complete(snapshot_path):
+            raise SttModelNotDownloadedError(
+                f"STT model '{model_id}' is not downloaded. "
+                "Download it in Settings, then Voice, before loading it."
+            )
+
         if model_id in STT_MODELS:
             return True
 
-        snapshot_path = Path(snapshot)
         if not _is_whisper_config(_read_json_object(snapshot_path / "config.json")):
             raise SttModelCompatibilityError(
                 f"STT model '{model_id}' is not a compatible Transformers Whisper model."
@@ -711,8 +724,10 @@ class WhisperSttSidecar:
                     # Retry on CPU when the accelerator cannot load the model.
                     if device != "cpu":
                         logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
-                        # Free whatever the failed accelerator load reserved so it
-                        # is not stranded once the model is marked CPU-resident.
+                        # The traceback pins frames that still reference the
+                        # partly loaded accelerator model; drop it so the cache
+                        # clear can release that memory before the CPU retry.
+                        exc = exc.with_traceback(None)
                         _clear_device_cache(device)
                         try:
                             candidate = self._build_model(

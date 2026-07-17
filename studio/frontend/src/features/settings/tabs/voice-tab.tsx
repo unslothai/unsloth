@@ -395,8 +395,9 @@ function DictationTest() {
     let session: StudioDictationSession;
     try {
       // Routes to the browser or STT-model engine; the adapter applies the
-      // dictionary and saves the result to Recent dictations.
-      session = new StudioDictationAdapter().listen();
+      // dictionary and saves the result to Recent dictations. A settings test
+      // belongs to no chat, so never link whichever chat is open behind it.
+      session = new StudioDictationAdapter({ chatId: null }).listen();
     } catch {
       startingRef.current = false;
       toast.error(t("settings.voice.dictation.micOpenFailed"));

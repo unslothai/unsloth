@@ -18,6 +18,17 @@ export function activeDictationChatId(): string | undefined {
   return useChatRuntimeStore.getState().activeThreadId ?? undefined;
 }
 
+/**
+ * Resolve the chat a saved dictation links to. undefined falls back to the
+ * active single chat; null (composers without one, e.g. Compare) means none.
+ */
+export function resolveDictationChatId(
+  chatId: string | null | undefined,
+): string | undefined {
+  if (chatId === undefined) return activeDictationChatId();
+  return chatId ?? undefined;
+}
+
 // Reused id so repeated network failures replace, not stack, the same toast.
 const NETWORK_TOAST_ID = "dictation-network-offline";
 
@@ -97,18 +108,21 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   private readonly language: string | undefined;
   private readonly continuous: boolean;
   private readonly interimResults: boolean;
+  private readonly chatId: string | null | undefined;
 
   constructor(
     options: {
       language?: string;
       continuous?: boolean;
       interimResults?: boolean;
+      chatId?: string | null;
     } = {},
   ) {
     // Resolved from Voice settings at listen() time unless overridden.
     this.language = options.language;
     this.continuous = options.continuous ?? true;
     this.interimResults = options.interimResults ?? true;
+    this.chatId = options.chatId;
   }
 
   static isSupported(): boolean {
@@ -262,7 +276,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         for (const callback of speechCallbacks) {
           callback({ transcript, isFinal: true });
         }
-        recordRecentDictation(transcript, activeDictationChatId());
+        recordRecentDictation(transcript, resolveDictationChatId(this.chatId));
       }
       // assistant-ui uses this standard lifecycle callback to leave dictation
       // mode. It is required even for silence and cancelled recordings.

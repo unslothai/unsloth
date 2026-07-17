@@ -84,7 +84,8 @@ export function isSttModelLanguageCompatible(
     return true;
   }
   const normalized = language.trim().replaceAll("_", "-").toLowerCase();
-  return normalized !== "auto" && normalized.split("-", 1)[0] === "en";
+  // Auto sends no forced language, which English-only checkpoints accept.
+  return normalized === "auto" || normalized.split("-", 1)[0] === "en";
 }
 
 export type DictationEngine = "browser" | "model";

@@ -14,8 +14,8 @@ import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
 import {
   type StudioDictationSession,
-  activeDictationChatId,
   isMissingDeviceError,
+  resolveDictationChatId,
 } from "./studio-web-speech-dictation-adapter";
 
 // Finer timeslice inside a segment so the buffer is ready the moment a segment
@@ -244,6 +244,12 @@ export function unloadSttModel(): Promise<void> {
  * either action releases the microphone immediately.
  */
 export class StudioModelDictationAdapter implements DictationAdapter {
+  private readonly chatId: string | null | undefined;
+
+  constructor(options: { chatId?: string | null } = {}) {
+    this.chatId = options.chatId;
+  }
+
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
@@ -352,7 +358,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         for (const callback of speechCallbacks) {
           callback({ transcript: corrected, isFinal: true });
         }
-        recordRecentDictation(corrected, activeDictationChatId());
+        recordRecentDictation(corrected, resolveDictationChatId(this.chatId));
       }
       for (const callback of speechEndCallbacks) {
         callback({ transcript: corrected });

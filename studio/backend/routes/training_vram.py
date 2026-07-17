@@ -375,6 +375,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     try:
         from core.inference.stt_sidecar import get_stt_sidecar
 
+        freed: List[str] = []
         sidecar = get_stt_sidecar()
         if sidecar.is_loading() and sidecar.cancel_pending_load():
             logger.info("Cancelling STT model load for training (%s)", reason)
@@ -386,13 +387,15 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             # model; unload it so training actually gets the memory back.
             if sidecar.loaded_model:
                 sidecar.unload()
-            return ["stt:loading"]
-        freed: List[str] = []
-        model = sidecar.loaded_model
-        if model:
-            logger.info("Unloading STT model '%s' for training (%s)", model, reason)
-            sidecar.unload()
-            freed.append(f"stt:{model}")
+            freed.append("stt:loading")
+        else:
+            model = sidecar.loaded_model
+            if model:
+                logger.info("Unloading STT model '%s' for training (%s)", model, reason)
+                sidecar.unload()
+                freed.append(f"stt:{model}")
+        # Check the GGUF sidecar even after a cancelled Transformers load; both
+        # engines can hold memory at once (engine switch or direct load calls).
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
 
         ggml = get_ggml_stt_sidecar()
