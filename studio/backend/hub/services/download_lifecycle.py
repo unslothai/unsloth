@@ -76,6 +76,10 @@ def spawn_worker(
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
+    # No token in Studio settings: fall back to the backend's own HF_TOKEN so
+    # private repos stay downloadable (needed while inkling repos are private).
+    if not hf_token:
+        hf_token = os.environ.get("HF_TOKEN") or None
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0" if hf_token else "1"
     # hf_transfer's parallel Range chunks can leave sparse partials even in
     # "http" mode; disable so the worker's writer is always sequential.

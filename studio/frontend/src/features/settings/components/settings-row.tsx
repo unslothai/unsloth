@@ -24,6 +24,7 @@ export function SettingsRow({
 }) {
   return (
     <div
+      data-settings-label={label}
       className={cn(
         "flex justify-between gap-6 py-3",
         alignTop ? "items-start" : "items-center",

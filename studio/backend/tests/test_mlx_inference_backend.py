@@ -333,6 +333,118 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
         ), f"{name!r} must default to None so existing callers stay valid"
 
 
+def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    calls = {"generic": [], "model": [], "stream": []}
+    state = {"generic": "serialized", "model": "<image> model-aware"}
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_args, **kwargs: (
+            calls["model"].append(kwargs) or state["model"]
+        ),
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+    mlx_vlm.stream_generate = lambda *_args, **kwargs: (
+        calls["stream"].append((_args, kwargs))
+        or iter([SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)])
+    )
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+
+    def generic(_target, _messages, **kwargs):
+        calls["generic"].append(kwargs)
+        if isinstance(state["generic"], Exception):
+            raise state["generic"]
+        if state["generic"] == "serialized":
+            return f"User: {_messages[0]['content']}"
+        return state["generic"]
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        generic,
+    )
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    tools = [{"function": {"name": "search"}}]
+    assert list(backend._generate_vlm(*args)) == ["ok"]
+    assert calls["model"][0]["num_images"] == 1
+    assert calls["stream"][0][0][2] == "<image> model-aware"
+    with pytest.raises(RuntimeError, match = "dropping requested tools"):
+        list(backend._generate_vlm(*args, tools = tools))
+    with pytest.raises(RuntimeError, match = "dropping requested tools or reasoning"):
+        list(backend._generate_vlm(*args, enable_thinking = False))
+    backend._processor = SimpleNamespace(chat_template = "template")
+    state["generic"] = "<image> healthy generic"
+    assert list(backend._generate_vlm(*args, tools = tools, enable_thinking = False)) == ["ok"]
+    assert calls["generic"][-1]["enable_thinking"] is False
+    assert calls["stream"][-1][0][2] == "<image> healthy generic"
+    state["generic"] = "generic prompt"
+    text_messages = [{"role": "user", "content": "hello"}]
+    assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
+    assert calls["generic"][-1]["tools"] == tools
+    assert calls["stream"][-1][0][2] == "generic prompt"
+    two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
+    with pytest.raises(RuntimeError, match = "2 structured image item"):
+        list(backend._generate_vlm(*((two_images,) + args[1:]), tools = tools))
+    state["generic"] = "serialized"
+    tool_history = args[0] + [{"role": "assistant", "tool_calls": [{"id": "call-1"}]}]
+    with pytest.raises(RuntimeError, match = "tool-call history"):
+        list(backend._generate_vlm(*((tool_history,) + args[1:]), tools = tools))
+    state["generic"] = ValueError("generic rendering failed")
+    state["model"] = f"User: {args[0][0]['content']}"
+    with pytest.raises(ValueError, match = "generic rendering failed"):
+        list(backend._generate_vlm(*args))
+
+
+def test_mlx_vlm_image_injection_reuses_media_aliases(monkeypatch):
+    from core.inference.mlx_inference import MLXInferenceBackend, _prompt_serializes_vlm_media
+
+    media = [{"type": "image"}]
+    quoted = [{"role": "user", "content": media}, {"role": "user", "content": f"Explain {media}"}]
+    assert _prompt_serializes_vlm_media(f"<image>\n{media[0]}", quoted[:1])
+    assert not _prompt_serializes_vlm_media(f"<image>\nExplain {media}", quoted)
+    assert _prompt_serializes_vlm_media(f"User: {media}\nExplain {media}", quoted)
+    quoted[1]["content"] = [{"type": "text", "text": f'Explain "this" {media}'}]
+    assert not _prompt_serializes_vlm_media(f'<image>\nExplain "this" {media}', quoted)
+    json_media = [{"type": "image_url"}]
+    json_repr = '{"type": "image_url"}'
+    assert _prompt_serializes_vlm_media(f"<image>\n{json_repr}", [{"content": json_media}])
+    assert not _prompt_serializes_vlm_media(
+        f"<image>\nExplain {json_repr}",
+        [{"content": json_media}, {"content": f"Explain {json_repr}"}],
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, *_args, **_kwargs: (
+        captured.append(messages) or iter(())
+    )
+    messages = [{"role": "user", "content": [{"type": "image_url"}]}]
+    list(backend.generate_chat_response(messages, image = object()))
+    assert captured[0][0]["content"] == [{"type": "image_url"}]
+
+
+def test_mlx_vlm_model_config_prefers_config_with_model_type():
+    from core.inference.mlx_inference import _mlx_vlm_model_config
+
+    # config present but missing model_type must fall back to _config
+    m = SimpleNamespace(config = {}, _config = {"model_type": "deepseek_vl_v2"})
+    assert _mlx_vlm_model_config(m) == ({"model_type": "deepseek_vl_v2"}, "deepseek_vl_v2")
+    # an object config whose model_type is None also falls back
+    m = SimpleNamespace(config = SimpleNamespace(model_type = None), _config = {"model_type": "qwen2_vl"})
+    assert _mlx_vlm_model_config(m)[1] == "qwen2_vl"
+    # a config that already carries a model_type is preferred and returned unchanged
+    assert _mlx_vlm_model_config(SimpleNamespace(config = {"model_type": "gemma3"})) == (
+        {"model_type": "gemma3"},
+        "gemma3",
+    )
+
+
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""

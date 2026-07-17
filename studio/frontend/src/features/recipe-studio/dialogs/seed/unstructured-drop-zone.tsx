@@ -211,7 +211,7 @@ export function UnstructuredDropZone({
       <div
         className={`nodrag flex cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-primary bg-primary/5"
+            ? "border-ring-strong bg-primary/5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
         } ${disabled ? "pointer-events-none opacity-50" : ""}`}
         onDrop={handleDrop}

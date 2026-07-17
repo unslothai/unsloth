@@ -168,9 +168,9 @@ function ModelSelectorTrigger({
           // Suppress the pill's hover background while the eject hit area is
           // hovered, so only the dot's own circle reacts.
           variant === "outline" &&
-            "rounded-full border border-border/60 hover:bg-[#ececec] has-[[data-eject-hit]:hover]:!bg-transparent dark:hover:bg-[#2d2e32]",
+            "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
-            "rounded-full hover:bg-[#ececec] has-[[data-eject-hit]:hover]:!bg-transparent dark:hover:bg-[#2d2e32]",
+            "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the
