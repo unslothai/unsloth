@@ -146,6 +146,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
         ),
         aliases = ("flux2-klein",),
+        # LoRA training via the DiT trainer (QLoRA nf4 by default); klein-4B is not gated.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/FLUX.2-klein-4B",),
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference"
         # workflow atop text-to-image. It has an inpaint pipeline (no img2img) -> inpaint + extend.
         reference = True,
@@ -173,6 +176,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/FLUX.2-dev-FP8"),
         ),
         aliases = ("flux2-dev", "flux2dev"),
+        # LoRA training via the DiT trainer (QLoRA nf4 by default); the base repo is gated, so
+        # training requires an HF token with the FLUX.2-dev license accepted.
+        trainable = True,
+        train_base_repos = ("black-forest-labs/FLUX.2-dev",),
         sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (

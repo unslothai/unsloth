@@ -887,6 +887,169 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# ── FLUX.2 (dev + Klein) ──────────────────────────────────────────────────────
+# Both variants share Flux2Transformer2DModel and the packing/forward conventions of the
+# upstream DreamBooth references (train_dreambooth_lora_flux2[_klein].py); they differ only
+# in the conditioning stack (dev: Mistral-3-Small via Flux2Pipeline; Klein: Qwen3 via
+# Flux2KleinPipeline) and size. Latents train in the PATCHIFIED, batch-norm-normalised space
+# the references use (space-to-depth then (x - bn_mean) / bn_std from the VAE's running
+# stats), from the posterior MODE (deterministic, so the latent cache stores the final
+# latent and skips the per-step draw).
+_FLUX2_TARGETS = (
+    # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
+    "to_k",
+    "to_q",
+    "to_v",
+    "to_out.0",
+    # Single-stream blocks: the fused qkv+mlp input projection carries the bulk of the
+    # capacity. Their out proj is a PLAIN Linear named to_out whose suffix would also match
+    # the double-stream ModuleList container (which peft cannot wrap), and the upstream
+    # scripts enumerate it per block index (a variant-dependent count), so it stays dense.
+    "to_qkv_mlp_proj",
+)
+# The references train dev with its guidance-distillation vector at 3.5 (Klein applies it
+# only when the variant's config carries guidance_embeds).
+_FLUX2_TRAIN_GUIDANCE = 3.5
+
+
+def _flux2_load_conditioners(cfg, device, weight_dtype):
+    from diffusers import Flux2Pipeline
+    return _load_pipe_without_transformer(Flux2Pipeline, cfg, device)
+
+
+def _flux2_klein_load_conditioners(cfg, device, weight_dtype):
+    from diffusers import Flux2KleinPipeline
+    return _load_pipe_without_transformer(Flux2KleinPipeline, cfg, device)
+
+
+def _flux2_load_transformer(cfg, device, weight_dtype, base_precision):
+    from diffusers import Flux2Transformer2DModel
+    return _load_dit_transformer(Flux2Transformer2DModel, cfg, device, base_precision)
+
+
+def _flux2_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            # encode_prompt pads to max_sequence_length (padding="max_length"), so the
+            # embeds are fixed-length and text_ids are per-caption [1, txt_len, 4]. The
+            # per-class text_encoder_out_layers defaults differ (dev (10,20,30) vs Klein
+            # (9,18,27)) and are left to the pipeline.
+            pe, text_ids = pipe.encode_prompt(
+                prompt = cap,
+                device = device,
+                num_images_per_prompt = 1,
+                max_sequence_length = 512,
+            )
+            out.append((pe.cpu(), text_ids.cpu()))
+    return out
+
+
+def _flux2_encode_latents(vae, pixel_values):
+    import torch
+    from diffusers import Flux2Pipeline
+
+    with torch.no_grad():
+        lat = vae.encode(pixel_values.to(torch.float32)).latent_dist.mode()
+    lat = Flux2Pipeline._patchify_latents(lat)
+    # The FLUX.2 VAE normalises latents with its BatchNorm running stats, not
+    # shift/scaling_factor (mirrors the upstream reference).
+    mean = vae.bn.running_mean.view(1, -1, 1, 1).to(lat)
+    std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(lat)
+    return (lat - mean) / std
+
+
+def _flux2_encode_latent_stats(vae, pixel_values):
+    # FLUX.2 trains from the posterior mode (deterministic): the cached entry is the final
+    # latent itself; B is None and the loop skips the per-step sampling draw.
+    return _flux2_encode_latents(vae, pixel_values), None
+
+
+def _flux2_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    import torch
+
+    # Fixed-length embeds (padding="max_length" in encode_prompt) -> plain concat;
+    # text_ids are PER-SAMPLE [1, txt_len, 4] (unlike FLUX.1's shared grid), so they batch
+    # by concat too. ``pad_to`` is moot because the shapes are static.
+    pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
+    text_ids = torch.cat([e[1] for e in entries]).to(device = device, dtype = torch.float32)
+    return (pe, text_ids)
+
+
+# Step-invariant FLUX.2 position ids, keyed on (batch, patched h, patched w, device): the ids
+# derive only from the latent shape, so rebuilding them every step is allocator churn.
+_FLUX2_STATIC: dict[tuple, Any] = {}
+
+
+def _flux2_static_img_ids(latents, device):
+    from diffusers import Flux2Pipeline
+
+    key = (latents.shape[0], latents.shape[-2], latents.shape[-1], str(device))
+    hit = _FLUX2_STATIC.get(key)
+    if hit is None:
+        hit = _FLUX2_STATIC[key] = Flux2Pipeline._prepare_latent_ids(latents).to(device = device)
+    return hit
+
+
+def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    import torch
+    from diffusers import Flux2Pipeline
+
+    pe, text_ids = embeds_batch
+    # ``noisy`` is already in the patchified normalised space (_flux2_encode_latents), so
+    # packing is the [B,C,H,W] -> [B, H*W, C] flatten the pipeline uses.
+    packed = Flux2Pipeline._pack_latents(noisy)
+    img_ids = _flux2_static_img_ids(noisy, device)
+    guidance = None
+    if getattr(transformer.config, "guidance_embeds", False):
+        guidance = torch.full(
+            (noisy.shape[0],), _FLUX2_TRAIN_GUIDANCE, device = device, dtype = torch.float32
+        )
+    pred = transformer(
+        hidden_states = packed,
+        timestep = timesteps / 1000,
+        guidance = guidance,
+        encoder_hidden_states = pe,
+        txt_ids = text_ids,
+        img_ids = img_ids,
+        return_dict = False,
+    )[0]
+    pred = pred[:, : packed.size(1)]
+    # _unpack_latents_with_ids scatters per sample; diffusers 0.39 stacks the per-sample
+    # tensors itself (its list annotation is stale), older/newer builds may hand back the
+    # list. Same-resolution training batches align either way with target = noise - latents.
+    unpacked = Flux2Pipeline._unpack_latents_with_ids(pred, img_ids)
+    if isinstance(unpacked, (list, tuple)):
+        unpacked = torch.stack(unpacked)
+    return unpacked
+
+
+def _flux2_save(pipe_cls, out_dir, transformer_lora_layers):
+    from diffusers import Flux2Pipeline
+    Flux2Pipeline.save_lora_weights(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+    )
+
+
+def _flux2_klein_save(pipe_cls, out_dir, transformer_lora_layers):
+    from diffusers import Flux2KleinPipeline
+    Flux2KleinPipeline.save_lora_weights(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+    )
+
+
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
         family = "flux.1",
@@ -944,13 +1107,46 @@ _SPECS: dict[str, _FamilySpec] = {
         forward = _krea2_forward,
         save = _krea2_save,
     ),
+    "flux.2-klein": _FamilySpec(
+        family = "flux.2-klein",
+        lora_targets = _FLUX2_TARGETS,
+        # The upstream references train in bf16; fp16 is unvalidated on the FLUX.2 stack.
+        force_bf16 = True,
+        dense_bf16_gb = 8.1,
+        load_conditioners = _flux2_klein_load_conditioners,
+        load_transformer = _flux2_load_transformer,
+        encode_prompts = _flux2_encode_prompts,
+        encode_latents = _flux2_encode_latents,
+        encode_latent_stats = _flux2_encode_latent_stats,
+        collate = _flux2_collate,
+        forward = _flux2_forward,
+        save = _flux2_klein_save,
+    ),
+    "flux.2-dev": _FamilySpec(
+        family = "flux.2-dev",
+        lora_targets = _FLUX2_TARGETS,
+        force_bf16 = True,
+        # 32B DiT; the Mistral conditioning stack (~46 GB bf16) is loaded, encoded, and
+        # freed BEFORE this lands on the device (the shared phased load).
+        dense_bf16_gb = 64.5,
+        load_conditioners = _flux2_load_conditioners,
+        load_transformer = _flux2_load_transformer,
+        encode_prompts = _flux2_encode_prompts,
+        encode_latents = _flux2_encode_latents,
+        encode_latent_stats = _flux2_encode_latent_stats,
+        collate = _flux2_collate,
+        forward = _flux2_forward,
+        save = _flux2_save,
+    ),
 }
 
 
 # HF repos that gate access behind a license acceptance: training needs a token whose account
 # accepted the license. Checked by name (no network) so a missing token fails fast with an
 # actionable message instead of a confusing 401 mid-load.
-_GATED_TRAIN_REPOS = frozenset({"black-forest-labs/flux.1-dev"})
+_GATED_TRAIN_REPOS = frozenset(
+    {"black-forest-labs/flux.1-dev", "black-forest-labs/flux.2-dev"}
+)
 
 
 def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
@@ -1194,7 +1390,7 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1-dev / Qwen-Image / Z-Image) and export it."""
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2) and export it."""
     cfg = config.normalized()
     spec = _SPECS.get(cfg.resolved_family)
     if spec is None:
