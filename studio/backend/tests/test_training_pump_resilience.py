@@ -498,7 +498,7 @@ def test_startup_flag_reports_training_active_before_proc():
     # Between freeing VRAM and _proc going live, a concurrent STT load must see
     # training as active so it does not grab the just-freed GPU.
     b = TrainingBackend()
-    b._starting = True
+    b._spawn_in_progress = True
     assert b.is_training_active() is True
 
 
@@ -521,5 +521,5 @@ def test_before_spawn_runs_inside_active_window(monkeypatch):
 
     assert active_during_free["value"] is True
     # The transient flag clears, but the live proc keeps training active.
-    assert b._starting is False
+    assert b._spawn_in_progress is False
     assert b.is_training_active() is True
