@@ -129,16 +129,19 @@ def _strip_index_url_credentials(url: str) -> str:
 
 _URL_USERINFO_RE = re.compile(r"(https?://)[^/@\s`]+@")
 _URL_QUERY_VALUE_RE = re.compile(r"([?&][^=\s&`]+)=[^&#\s`]+")
+# URL-anchored so a bare "#..." (a shell comment in tool output) is never touched.
+_URL_FRAGMENT_RE = re.compile(r"(https?://[^\s`#]+)#[^\s`]+")
 
 
 def _redact_install_output(output: "bytes | str") -> str:
-    """Redact index-URL credentials (userinfo + query values) from captured installer
-    output before printing. uv/pip failure text embeds the failing --index-url verbatim,
-    which can carry a user:token@ or ?token= secret. MUST match install.sh / setup.ps1 /
-    install.ps1's output sanitizers."""
+    """Redact index-URL credentials (userinfo + query values + fragments) from captured
+    installer output before printing. uv/pip failure text embeds the failing --index-url
+    verbatim, which can carry a user:token@, ?token= or #token= secret. MUST match
+    install.sh / setup.ps1 / install.ps1's output sanitizers."""
     text = output.decode(errors = "replace") if isinstance(output, bytes) else output
     text = _URL_USERINFO_RE.sub(r"\1<redacted>@", text)
-    return _URL_QUERY_VALUE_RE.sub(r"\1=<redacted>", text)
+    text = _URL_QUERY_VALUE_RE.sub(r"\1=<redacted>", text)
+    return _URL_FRAGMENT_RE.sub(r"\1#<redacted>", text)
 
 
 def _trim_index_path_slashes(url: str) -> str:
@@ -1168,9 +1171,15 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
     same three pin-leaf cases as _ensure_rocm_torch. A same-family pin is NOT a mismatch.
     """
     leaf = _torch_index_leaf(pin_url)
-    # Pinned ROCm version (rocmX.Y leaf).
-    _pin_rocm = re.match(r"^rocm(\d+)\.(\d+)", leaf)
-    _pin_ver = (int(_pin_rocm.group(1)), int(_pin_rocm.group(2))) if _pin_rocm else None
+    # Pinned ROCm version. The family classifier accepts a major-only rocm<d> leaf too,
+    # so parse the minor as optional; a major-only pin compares on the major alone.
+    _pin_rocm = re.match(r"^rocm(\d+)(?:\.(\d+))?", leaf)
+    _pin_major = int(_pin_rocm.group(1)) if _pin_rocm else None
+    _pin_ver = (
+        (int(_pin_rocm.group(1)), int(_pin_rocm.group(2)))
+        if _pin_rocm and _pin_rocm.group(2) is not None
+        else None
+    )
     # Installed +rocmX.Y version; a THREE-part +rocmA.B.C tag is the AMD per-arch
     # (repo.amd.com/gfx*) signature vs a two-part pytorch.org wheel.
     _inst_rocm = re.search(r"\+rocm(\d+)\.(\d+)", installed_ver)
@@ -1191,6 +1200,16 @@ def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
             return not (_inst_is_211 and _inst_is_perarch)
         # Non-2.11 gfx leaf (<2.11 specs): mismatch on an untagged wheel or torch 2.11+.
         return (not _inst_has_rocm) or _inst_is_211
+
+    # Major-only rocm pin (rocm7): compare majors only -- a +rocm6.4 wheel under a rocm7
+    # pin is a mismatch, any +rocm7.x wheel satisfies it (there is no pinned minor to
+    # compare, and the 2.11-line fallback below would invert both verdicts).
+    if _pin_major is not None and _pin_ver is None:
+        if _inst_ver is not None:
+            return _inst_ver[0] != _pin_major
+        # Untagged wheel never satisfies a ROCm pin; a +rocm tag with an unreadable
+        # version is accepted (matches the lenient unreadable fallback below).
+        return not _inst_has_rocm
 
     # rocmX.Y pin. Only KNOWN-2.11 rocm is the 2.11 line (no speculative floor).
     _pin_is_211 = _pin_ver in _ROCM_KNOWN_TORCH211_VERSIONS if _pin_ver is not None else False

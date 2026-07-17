@@ -673,6 +673,32 @@ class TestPinnedIndexClearsUvEnvParity:
             "Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec" in text
         ), "setup.ps1's CUDA branch must install via the bounded spec variables"
 
+    def test_setup_ps1_bounds_pinned_cpu_torch(self):
+        """setup.ps1's CPU branch must bound the trio under an explicit pin (parity with
+        _CPU_TORCH_PKG_SPEC): the /cpu index serves newer torch, and _ensure_cpu_torch
+        keeps any CPU build, so a bare pinned trio could land an unsupported version.
+        An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        for spec in (
+            '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
+            '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
+            '$cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"',
+        ):
+            assert spec in text, f"setup.ps1 must bound the pinned CPU trio: {spec}"
+        assert (
+            "if ($TorchIndexPinned) {" in text
+        ), "the CPU trio bounds must be gated on an explicit pin"
+        assert (
+            "Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce" in text
+        ), "setup.ps1's CPU branch must install via the spec variables"
+        # The ceilings mirror the Python repair spec exactly.
+        stack = STACK_PY.read_text(encoding = "utf-8")
+        spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
+        assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
+            "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
+            "ceiling the setup.ps1 pinned CPU branch mirrors"
+        )
+
     def test_setup_ps1_stale_check_requires_rocm_digit(self):
         """The stale-venv check must use the same EXACT rocm/gfx gate as the install
         selection (Test-PipRocmFamilyLeaf), or a custom rocm-* / suffixed rocm7.2-private

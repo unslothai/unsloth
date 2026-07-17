@@ -452,7 +452,9 @@ function Redact-InstallOutput {
     param([string]$Text)
     if (-not $Text) { return $Text }
     $Text = $Text -replace '(https?://)[^/@\s`]+@', '$1<redacted>@'
-    return $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
+    $Text = $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
+    # URL-anchored fragment redaction: a #token=... fragment is as sensitive as a query.
+    return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
 }
 
 # AMD per-arch leaves needing the torch 2.11 floor (the _grouped_mm <2.11 bug). MUST
@@ -498,6 +500,8 @@ function Get-RocmPinStaleTags {
     param([string]$PinLeaf, [string]$TorchVersion)
     $_pinRocm = [regex]::Match($PinLeaf, '^rocm(\d+)\.(\d+)')
     $_pinVer = if ($_pinRocm.Success) { "$($_pinRocm.Groups[1].Value).$($_pinRocm.Groups[2].Value)" } else { $null }
+    # The family classifier accepts a major-only rocm<d> leaf too (rocm7).
+    $_pinMajorOnly = [regex]::Match($PinLeaf, '^rocm(\d+)$')
     # Installed rocm version and whether the wheel is a per-arch (three-part) build.
     $_instRocm = [regex]::Match($TorchVersion, '\+rocm(\d+)\.(\d+)')
     $_instVer = if ($_instRocm.Success) { "$($_instRocm.Groups[1].Value).$($_instRocm.Groups[2].Value)" } else { $null }
@@ -523,6 +527,22 @@ function Get-RocmPinStaleTags {
             Expected  = "rocm(torch<2.11)"
             Installed = $installed
         }
+    }
+
+    # Major-only rocm pin (rocm7): compare majors only -- a +rocm6.4 wheel under a rocm7
+    # pin is stale, any +rocm7.x wheel satisfies it (no pinned minor to compare, and the
+    # 2.11-line fallback below would invert both verdicts). Mirrors _rocm_pin_family_mismatch.
+    if ($_pinMajorOnly.Success) {
+        $_pinMaj = [int]$_pinMajorOnly.Groups[1].Value
+        if ($_instVer) {
+            $_instMaj = [int]$_instRocm.Groups[1].Value
+            $expected = if ($_instMaj -eq $_pinMaj) { "rocm$_instVer" } else { "rocm$_pinMaj.x" }
+            return @{ Expected = $expected; Installed = "rocm$_instVer" }
+        }
+        # Untagged wheel never satisfies a ROCm pin; a +rocm tag with an unreadable
+        # version is accepted (matches the lenient unreadable fallback below).
+        $installed = if ($_instHasRocm) { "rocm" } else { "not-rocm" }
+        return @{ Expected = "rocm"; Installed = $installed }
     }
 
     # rocmX.Y pin.
@@ -3142,12 +3162,22 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # --force-reinstall on a pin change: a stale +cu / +rocm wheel still satisfies the CPU
     # torch>= range, so uv would keep it and only swap companions.
     if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
+    # A PINNED cpu index installs the bounded trio (parity with _CPU_TORCH_PKG_SPEC in
+    # install_python_stack.py): the /cpu index serves newer torch, and _ensure_cpu_torch
+    # keeps any CPU build, so a bare trio could land an unsupported version under the pin.
+    # Unpinned CPU hosts keep the bare trio (unchanged pre-pin behavior).
+    $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
+    if ($TorchIndexPinned) {
+        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
+        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
+        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+    }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl
+        Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url $TorchInstallIndexUrl | Out-String
+        $output = Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce --index-url $TorchInstallIndexUrl | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {

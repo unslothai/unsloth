@@ -483,6 +483,23 @@ class TestRedactInstallOutput:
         )
         assert out == "url https://host/whl/cu128?token=<redacted>&channel=<redacted> unreachable"
 
+    def test_fragment_redacted(self):
+        out = stack_mod._redact_install_output(
+            "ERROR: could not fetch https://mirror.local/whl/cu128#token=SECRET123 (403)"
+        )
+        assert out == "ERROR: could not fetch https://mirror.local/whl/cu128#<redacted> (403)"
+
+    def test_query_and_fragment_both_redacted(self):
+        out = stack_mod._redact_install_output("https://host/whl/cu128?token=abc#sig=xyz done")
+        assert out == "https://host/whl/cu128?token=<redacted>#<redacted> done"
+
+    def test_bare_hash_comment_untouched(self):
+        # The fragment redaction is URL-anchored: a shell comment in tool output survives.
+        assert (
+            stack_mod._redact_install_output("# retrying with --no-cache-dir")
+            == "# retrying with --no-cache-dir"
+        )
+
     def test_plain_line_untouched(self):
         assert (
             stack_mod._redact_install_output("Resolved 42 packages in 1.2s")
@@ -491,9 +508,11 @@ class TestRedactInstallOutput:
 
     def test_no_secret_substring_survives(self):
         out = stack_mod._redact_install_output(
-            "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET"
+            "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET"
         )
-        assert "s3cr3t" not in out and "SUPERSECRET" not in out
+        assert (
+            "s3cr3t" not in out and "SUPERSECRET" not in out and "ALSOSECRET" not in out
+        )
 
 
 class TestTrimIndexPathSlashes:

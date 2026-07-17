@@ -58,6 +58,8 @@ Check "path slash trimmed, query kept"   ((Trim-IndexPathSlashes "https://h/whl/
 Write-Host "Redact-InstallOutput (install.ps1 parity: credential redaction)"
 Check "userinfo redacted"                ((Redact-InstallOutput "ERROR https://alice:s3cr3t@download.pytorch.org/whl/cu128") -eq "ERROR https://<redacted>@download.pytorch.org/whl/cu128")
 Check "query value redacted"             ((Redact-InstallOutput "https://host/whl/cu128?token=abcd1234&channel=beta") -eq "https://host/whl/cu128?token=<redacted>&channel=<redacted>")
+Check "fragment token redacted"          ((Redact-InstallOutput "ERROR https://mirror.local/whl/cu128#token=SECRET123 (403)") -eq "ERROR https://mirror.local/whl/cu128#<redacted> (403)")
+Check "bare hash comment untouched"      ((Redact-InstallOutput "# retrying with --no-cache-dir") -eq "# retrying with --no-cache-dir")
 Check "plain line untouched"             ((Redact-InstallOutput "Resolved 42 packages in 1.2s") -eq "Resolved 42 packages in 1.2s")
 
 Write-Host ""

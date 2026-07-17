@@ -91,6 +91,13 @@ Check "gfx90a pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx90a" "2.10.0
 Check "gfx120x-all pin + 2.11.0+rocm7.2 (generic) -> stale" (IsStale "gfx120x-all" "2.11.0+rocm7.2")
 Check "gfx120x-all pin + 2.10.0 (untagged) -> stale"        (IsStale "gfx120x-all" "2.10.0")
 
+# Major-only rocm pin (rocm7): majors compared alone; mirrors _rocm_pin_family_mismatch.
+Check "rocm7 pin + 2.10.0+rocm6.4 -> stale"           (IsStale "rocm7" "2.10.0+rocm6.4")
+Check "rocm7 pin + 2.11.0+rocm7.2 -> not stale"       (-not (IsStale "rocm7" "2.11.0+rocm7.2"))
+Check "rocm7 pin + 2.11.0+rocm7.13.0 -> not stale"    (-not (IsStale "rocm7" "2.11.0+rocm7.13.0"))
+Check "rocm7 pin + 2.10.0 (untagged) -> stale"        (IsStale "rocm7" "2.10.0")
+Check "rocm7 pin + 2.10.0+rocm (unreadable) -> not stale" (-not (IsStale "rocm7" "2.10.0+rocm"))
+
 Write-Host "Test-RocmKnown211Version + KNOWN-2.11 fallback (rocm7.2 only; no speculative rocm7.3)"
 Check "rocm7.2 -> known 2.11"  (Test-RocmKnown211Version -Major 7 -Minor 2)
 Check "rocm7.1 -> not known"   (-not (Test-RocmKnown211Version -Major 7 -Minor 1))

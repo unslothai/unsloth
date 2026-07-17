@@ -44,9 +44,12 @@ Check "userinfo redacted"                ((Redact-InstallOutput "ERROR https://a
 Check "bare-token@ redacted"             ((Redact-InstallOutput "fetch https://ghp_deadbeef@host/whl/cu128 failed") -eq "fetch https://<redacted>@host/whl/cu128 failed")
 Check "single query value redacted"      ((Redact-InstallOutput "url https://host/whl/cu128?token=abcd1234 unreachable") -eq "url https://host/whl/cu128?token=<redacted> unreachable")
 Check "multiple query values redacted"   ((Redact-InstallOutput "https://host/whl/cu128?token=abcd1234&channel=beta") -eq "https://host/whl/cu128?token=<redacted>&channel=<redacted>")
+Check "fragment token redacted"          ((Redact-InstallOutput "ERROR https://mirror.local/whl/cu128#token=SECRET123 (403)") -eq "ERROR https://mirror.local/whl/cu128#<redacted> (403)")
+Check "query and fragment both redacted" ((Redact-InstallOutput "https://host/whl/cu128?token=abc#sig=xyz done") -eq "https://host/whl/cu128?token=<redacted>#<redacted> done")
+Check "bare hash comment untouched"      ((Redact-InstallOutput "# retrying with --no-cache-dir") -eq "# retrying with --no-cache-dir")
 Check "plain line untouched"             ((Redact-InstallOutput "Resolved 42 packages in 1.2s") -eq "Resolved 42 packages in 1.2s")
-$leak = Redact-InstallOutput "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET"
-Check "no secret substring survives"     (($leak -notmatch "s3cr3t") -and ($leak -notmatch "SUPERSECRET"))
+$leak = Redact-InstallOutput "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET"
+Check "no secret substring survives"     (($leak -notmatch "s3cr3t") -and ($leak -notmatch "SUPERSECRET") -and ($leak -notmatch "ALSOSECRET"))
 
 Write-Host "Get-TorchIndexLeaf (ALL trailing slashes stripped)"
 Check "double slash cu128 -> cu128"      ((Get-TorchIndexLeaf "https://m/whl/cu128//") -eq "cu128")

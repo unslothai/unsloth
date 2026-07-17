@@ -780,6 +780,14 @@ class TestEnsureRocmTorch:
         # when torch is already <2.11: a CPU/CUDA build never satisfies the ROCm pin.
         assert f(f"{amd}/gfx110X-all", "2.10.0") is True
         assert f(f"{amd}/gfx90a", "2.10.0") is True
+        # A major-only rocm pin (rocm7) -- accepted by the family classifier -- compares
+        # on the major alone: rocm6.x is a mismatch, any rocm7.x satisfies it, an
+        # untagged wheel never does, and a bare +rocm tag is accepted leniently.
+        assert f(f"{base}/rocm7", "2.10.0+rocm6.4") is True
+        assert f(f"{base}/rocm7", "2.11.0+rocm7.2") is False
+        assert f(f"{base}/rocm7", "2.11.0+rocm7.13.0") is False
+        assert f(f"{base}/rocm7", "2.10.0") is True
+        assert f(f"{base}/rocm7", "2.10.0+rocm") is False
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)

@@ -475,7 +475,9 @@ function Install-UnslothStudio {
         param([string]$Text)
         if (-not $Text) { return $Text }
         $Text = $Text -replace '(https?://)[^/@\s`]+@', '$1<redacted>@'
-        return $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
+        $Text = $Text -replace '([?&][^=\s&`]+)=[^&#\s`]+', '$1=<redacted>'
+        # URL-anchored fragment redaction: a #token=... fragment is as sensitive as a query.
+        return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
     }
 
     # Run native commands quietly by default to match install.sh behavior.

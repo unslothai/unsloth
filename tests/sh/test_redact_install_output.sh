@@ -58,6 +58,14 @@ assert_eq "http (not https) userinfo redacted" \
     "http://<redacted>@host/simple" \
     "$(redact_str 'http://u:p@host/simple')"
 
+assert_eq "fragment token redacted" \
+    "ERROR: could not fetch https://mirror.local/whl/cu128#<redacted> (403)" \
+    "$(redact_str 'ERROR: could not fetch https://mirror.local/whl/cu128#token=SECRET123 (403)')"
+
+assert_eq "query and fragment both redacted" \
+    "https://host/whl/cu128?token=<redacted>#<redacted> done" \
+    "$(redact_str 'https://host/whl/cu128?token=abc#sig=xyz done')"
+
 # Non-secret text is untouched (no false positives on ordinary log lines).
 assert_eq "plain line untouched" \
     "Resolved 42 packages in 1.2s" \
@@ -65,12 +73,15 @@ assert_eq "plain line untouched" \
 assert_eq "plain url without creds untouched" \
     "downloading https://download.pytorch.org/whl/cu128/torch-2.8.0.whl" \
     "$(redact_str 'downloading https://download.pytorch.org/whl/cu128/torch-2.8.0.whl')"
+assert_eq "bare hash comment untouched" \
+    "# retrying with --no-cache-dir" \
+    "$(redact_str '# retrying with --no-cache-dir')"
 
 # Regression guard: no secret substring survives.
-_leak=$(redact_str 'https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET')
+_leak=$(redact_str 'https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET')
 case "$_leak" in
-    *s3cr3t*|*SUPERSECRET*) assert_eq "no secret leak" "clean" "leaked:$_leak" ;;
-    *)                      assert_eq "no secret leak" "clean" "clean" ;;
+    *s3cr3t*|*SUPERSECRET*|*ALSOSECRET*) assert_eq "no secret leak" "clean" "leaked:$_leak" ;;
+    *)                                   assert_eq "no secret leak" "clean" "clean" ;;
 esac
 
 echo ""
