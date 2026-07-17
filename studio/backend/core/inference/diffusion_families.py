@@ -329,6 +329,24 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Published and validated bf16-only upstream; keep the fp16 fallback off like z-image.
         fp16_incompatible = True,
     ),
+    # HunyuanImage 2.1 (diffusers >= 0.39): a 17B dual-stream DiT with a Qwen2.5-VL text
+    # encoder, a ByT5 glyph encoder, and the 32x-compression HunyuanImage VAE. The community
+    # mirror also ships guider/ocr_guider components (AdaptiveProjectedMixGuidance), which
+    # 0.39 loads natively, so the generic from_pretrained pipeline path covers the whole
+    # stack. 2K-native (the card recipe renders 2048x2048); classifier-free guidance runs
+    # inside the repo's guider at its baked scale, and the call's own guidance knob is
+    # distilled_guidance_scale (there is no guidance_scale kwarg). Distinct from
+    # HunyuanImage-3.0, which stays excluded above: 2.1 has a real diffusers pipeline.
+    DiffusionFamily(
+        name = "hunyuanimage-2.1",
+        pipeline_class = "HunyuanImagePipeline",
+        transformer_class = "HunyuanImageTransformer2DModel",
+        base_repo = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+        cfg_kwarg = "distilled_guidance_scale",
+        aliases = ("hunyuanimage-2.1-diffusers", "hunyuanimage2.1"),
+        # Exported bf16-only; keep the fp16 fallback off like z-image / krea-2.
+        fp16_incompatible = True,
+    ),
     # Ideogram 4 (diffusers >= 0.39): a 34-layer DiT PAIR (conditional + unconditional_transformer
     # for dual-branch CFG, both ~9B, so memory planning counts two DiTs) with a Qwen3-VL encoder.
     # No bf16 checkpoint: ideogram-4-fp8 (raw float8, upcast on load) is the highest-precision
@@ -511,6 +529,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # Lumina Image 2.0 model-card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the
     # loader passes itself; see LUMINA2_FAMILY_NAME).
     ("lumina", 50, 4.0),
+    # HunyuanImage 2.1 model-card: 50 steps; the guidance value feeds the call's
+    # distilled_guidance_scale (default 3.25), while real CFG runs inside the repo guiders.
+    ("hunyuanimage", 50, 3.25),
     # Ideogram 4 model-card: 48 steps, guidance 7 (its schedule tapers the last 3 steps to 3.0;
     # the loader keeps that taper when the request matches these defaults exactly).
     ("ideogram", 48, 7.0),

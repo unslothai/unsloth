@@ -52,6 +52,8 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "krea-2": (26.3, 8.9, 0.5),
     # Ships fp32 (10.4 + 10.5 + 0.3 GB of shards); bf16-resident is half.
     "lumina-2": (5.2, 5.2, 0.2),
+    # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
+    "hunyuanimage-2.1": (32.5, 16.3, 0.8),
     # Two ~9.3B DiTs (conditional + unconditional_transformer for Ideogram's dual-branch CFG),
     # both resident, plus a Qwen3-VL encoder. The vendor stores them as raw float8; these are the
     # bf16-resident sizes after the dtype cast, so each doubles (37.2 = 2 x 18.6, encoder 16.3).
