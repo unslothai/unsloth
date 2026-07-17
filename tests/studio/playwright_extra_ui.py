@@ -413,10 +413,7 @@ with sync_playwright() as p:
             soft_fail(f"chat-only mode should keep /export reachable; url={page.url}")
         else:
             unavailable = page.get_by_text(re.compile(r"Export unavailable", re.I)).first
-            try:
-                # The export hardware probe settles asynchronously on slower runners.
-                unavailable.wait_for(state = "visible", timeout = 8000)
-            except Exception:
+            if unavailable.count() == 0:
                 soft_fail("chat-only /export did not show the export unavailable gate")
             else:
                 info("OK chat-only /export rendered the unavailable gate")
