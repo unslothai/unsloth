@@ -161,6 +161,24 @@ def test_save_transport_error_unlinks_partial_file(monkeypatch, tmp_path):
     assert list(tmp_path.glob("resume-*.bin")) == []
 
 
+def test_fingerprint_tracks_lora_sidecar_rewrite(tmp_path):
+    backend = _resume_backend(tmp_path)
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"v1")
+    backend._extra_args = ["--lora", str(adapter)]
+
+    before = backend._slot_launch_fingerprint()
+    adapter.write_bytes(b"v2-different")  # re-exported adapter, same path
+    assert backend._slot_launch_fingerprint() != before
+
+    backend._extra_args = [f"--lora={adapter}"]
+    assert backend._sidecar_weight_files() == [str(adapter)]
+    backend._extra_args = ["--lora-scaled", str(adapter), "0.5"]
+    assert backend._sidecar_weight_files() == [str(adapter)]
+    backend._extra_args = ["--control-vector", str(adapter), "--threads", "4"]
+    assert backend._sidecar_weight_files() == [str(adapter)]
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"

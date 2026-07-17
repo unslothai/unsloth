@@ -8387,8 +8387,18 @@ class LlamaCppBackend:
         # Launch config that saved KV validity depends on beyond the file itself:
         # e.g. rope-scaling extra args change KV numerics without changing the
         # state-file structure, so the server would restore them undetected.
+        # Sidecar weight files (LoRA, control vector) are stat'd, not just named:
+        # a re-exported adapter at the same path also invalidates saved KV.
+        sidecars = []
+        for path in self._sidecar_weight_files():
+            try:
+                st = os.stat(path)
+                sidecars.append((path, st.st_size, st.st_mtime_ns))
+            except OSError:
+                sidecars.append((path, None, None))
         return (
             tuple(self._extra_args or ()),
+            tuple(sidecars),
             self._requested_n_ctx,
             getattr(self, "_cache_type_kv", None),
             self.effective_parallel_slots,
@@ -8410,6 +8420,23 @@ class LlamaCppBackend:
             return tuple((sp.stat().st_size, sp.stat().st_mtime_ns) for sp in paths)
         except OSError:
             return None
+
+    _SIDECAR_WEIGHT_FLAGS = ("--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled")
+
+    def _sidecar_weight_files(self) -> list[str]:
+        # First operand of each weight-modifying sidecar flag; their contents key
+        # KV validity like the GGUF itself.
+        args = [str(a).strip() for a in (self._extra_args or ())]
+        files: list[str] = []
+        for i, arg in enumerate(args):
+            flag, sep, inline = arg.partition("=")
+            if flag not in self._SIDECAR_WEIGHT_FLAGS:
+                continue
+            if sep:
+                files.append(inline)
+            elif i + 1 < len(args):
+                files.append(args[i + 1])
+        return files
 
     def _prompt_cache_off(self) -> bool:
         # Prompt caching off makes a restored slot unusable (no prompt reuse), so
