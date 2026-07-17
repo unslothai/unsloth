@@ -1936,7 +1936,6 @@ def _detect_safetensors_features(
     feature_template = chat_template
     try:
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
-
         selected_templates = _selected_template_strings_from_value(chat_template, tools)
         if selected_templates:
             feature_template = selected_templates[0]
@@ -8688,6 +8687,7 @@ async def openai_chat_completions(
     _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
     if not _sf_template_tools and _sf_server_tool_intent:
         _sf_template_tools = ({},)
+
     def _sf_response_protocol(tools = None):
         features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
         parse_think = bool(
@@ -9214,9 +9214,7 @@ async def openai_chat_completions(
     # known. This standard path now has the exact schemas that will be rendered,
     # so resolve reasoning parsing again to keep empty registries, forced-tool
     # misses, and tool_choice="none" on the marker-free template branch.
-    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
-        gen_kwargs.get("tools")
-    )
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(gen_kwargs.get("tools"))
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
