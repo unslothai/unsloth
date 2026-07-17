@@ -559,3 +559,77 @@ def test_apply_tolerates_pipe_without_vae_savers():
     bare = _Bare()
     _, tiled = apply_memory_plan(bare, _plan(OFFLOAD_NONE, tiling = False), device = "cpu")
     assert bare.moved == "cpu" and tiled is False
+
+
+# ── settled snapshot + capacity-fit retry helpers ────────────────────────────
+
+
+def test_settled_snapshot_takes_max_free_over_reads(monkeypatch):
+    # A transient foreign allocation can only SHRINK free, so the settled snapshot must
+    # reject a transient undercount (60 GB free on an idle 183 GB card) by keeping the max
+    # free across the retry reads. Measured incident: FLUX.2-dev int8 cold load.
+    from core.inference import diffusion_memory as dm
+
+    reads = [
+        DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 60_000, total_mib = 183_359),
+        DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 170_000, total_mib = 183_359),
+        DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 170_000, total_mib = 183_359),
+    ]
+    monkeypatch.setattr(dm, "snapshot_device_memory", lambda target: reads.pop(0))
+    snap = dm.settled_snapshot_device_memory(_target(device = "cuda"), attempts = 3, delay_s = 0)
+    assert snap.free_mib == 170_000
+
+
+def test_settled_snapshot_stops_early_when_device_already_idle(monkeypatch):
+    # First read already within the reserve of total: no transient to wait out, one read only.
+    from core.inference import diffusion_memory as dm
+
+    calls = []
+
+    def fake_snapshot(target):
+        calls.append(1)
+        return DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 170_000, total_mib = 183_359
+        )
+
+    monkeypatch.setattr(dm, "snapshot_device_memory", fake_snapshot)
+    snap = dm.settled_snapshot_device_memory(_target(device = "cuda"), attempts = 3, delay_s = 0)
+    assert snap.free_mib == 170_000
+    assert calls == [1]
+
+
+def test_settled_snapshot_passthrough_off_cuda(monkeypatch):
+    # Non-cuda targets keep the single-read behaviour (no settle loop).
+    from core.inference import diffusion_memory as dm
+
+    calls = []
+
+    def fake_snapshot(target):
+        calls.append(1)
+        return DeviceMemory("mps", "mps", "unified_memory", free_mib = 8_000, total_mib = 16_000)
+
+    monkeypatch.setattr(dm, "snapshot_device_memory", fake_snapshot)
+    snap = dm.settled_snapshot_device_memory(_target(device = "mps"), attempts = 3, delay_s = 0)
+    assert snap.memory_kind == "unified_memory"
+    assert calls == [1]
+
+
+def test_plan_fits_total_capacity():
+    # True exactly when required fits (total - reserve) * 0.85: the decline can then only
+    # stem from the instantaneous free reading, so a settled retry is worthwhile.
+    from core.inference.diffusion_memory import plan_fits_total_capacity
+
+    def plan(required, total, kind = "discrete_vram"):
+        return types.SimpleNamespace(
+            estimates = {"resident_required_mib": required},
+            device_memory = DeviceMemory("cuda", "cuda", kind, free_mib = 1, total_mib = total),
+        )
+
+    # FLUX.2-dev int8 incident numbers: 90,228 required on a 183,359 MiB card -> fits.
+    assert plan_fits_total_capacity(plan(90_228, 183_359)) is True
+    # Larger than the capacity margin (0.85 * (183,359 - 18,335) = 140,270) -> no retry.
+    assert plan_fits_total_capacity(plan(150_000, 183_359)) is False
+    # Unknown sizes keep today's behaviour (no retry).
+    assert plan_fits_total_capacity(plan(None, 183_359)) is False
+    assert plan_fits_total_capacity(plan(90_228, None)) is False
+    assert plan_fits_total_capacity(types.SimpleNamespace()) is False

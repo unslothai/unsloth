@@ -59,7 +59,8 @@ from .diffusion_memory import (
     file_size_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
-    snapshot_device_memory,
+    plan_fits_total_capacity,
+    settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -1232,22 +1233,50 @@ class DiffusionBackend:
                             logger = logger,
                         )
                         if candidate is not None:
-                            replanned = self._plan_memory(
-                                target,
-                                single_file_path,
-                                base,
-                                fam,
-                                memory_mode,
-                                cpu_offload,
-                                kind = kind,
-                                repo_id = repo_id,
-                                transformer_resident_override_mib = (
-                                    candidate.transient_transformer_mib
-                                ),
-                                # Pass the auto-policy's companion estimate so the prefetched base
-                                # transformer/ shards in the cache aren't double-counted.
-                                companion_override_mib = candidate.companions_mib,
-                            )
+                            def _replan_candidate():
+                                return self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    transformer_resident_override_mib = (
+                                        candidate.transient_transformer_mib
+                                    ),
+                                    # Pass the auto-policy's companion estimate so the prefetched base
+                                    # transformer/ shards in the cache aren't double-counted.
+                                    companion_override_mib = candidate.companions_mib,
+                                )
+
+                            replanned = _replan_candidate()
+                            if (
+                                replanned.offload_policy != OFFLOAD_NONE
+                                # Explicit balanced/low_vram picks offload BY MODE; a fresh
+                                # snapshot cannot change that, so don't waste a retry.
+                                and normalize_memory_mode(memory_mode)
+                                not in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM)
+                                and plan_fits_total_capacity(replanned)
+                            ):
+                                # The candidate fits TOTAL device capacity with the standard
+                                # reserve + resident margin, yet the instantaneous free reading
+                                # said no: a transient foreign allocation (measured on B200:
+                                # ~100 GB held for under a minute on an idle card) must not
+                                # force the GGUF fallback. Re-snapshot (settled) and replan
+                                # once before declining.
+                                replanned = _replan_candidate()
+                            if replanned.offload_policy != OFFLOAD_NONE:
+                                logger.info(
+                                    "diffusion.transformer_quant_declined: required=%s MiB "
+                                    "budget=%s MiB free=%s MiB policy=%s (%s)",
+                                    replanned.estimates.get("resident_required_mib"),
+                                    replanned.estimates.get("safe_device_budget_mib"),
+                                    getattr(replanned.device_memory, "free_mib", None),
+                                    replanned.offload_policy,
+                                    "; ".join(replanned.reasons),
+                                )
                             if replanned.offload_policy == OFFLOAD_NONE:
                                 quant_plan = replanned
                                 # The GGUF plan already declined resident; a prequant-sized
@@ -1862,7 +1891,10 @@ class DiffusionBackend:
         re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
         top of transformer_resident_override_mib (a double-count of the transformer)."""
-        device_memory = snapshot_device_memory(target)
+        # Settled (max-over-reads) on cuda: a transient foreign allocation at the wrong instant
+        # otherwise makes an empty card look full and silently declines the resident/quant fast
+        # path (see settled_snapshot_device_memory).
+        device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo is one cached download; cached bytes are the resident estimate
             # (bnb-4bit/fp8 stay compressed). A LOCAL path isn't cached, so sum its on-disk weights.

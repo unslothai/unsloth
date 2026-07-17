@@ -2712,6 +2712,125 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(fake_runtime, 
     assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
 
+def test_dense_quant_replan_retries_once_on_transient_free_undercount(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A transient foreign allocation at snapshot time makes an empty card look full and the
+    # candidate replan declines resident -- but the candidate FITS total capacity, so the
+    # loader must retry the replan once with a fresh settled snapshot instead of silently
+    # falling back to GGUF-as-is (measured: FLUX.2-dev int8 cold load on an idle B200).
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 33_831, companions_mib = 46_157, prequant = True
+        ),
+    )
+    replan_calls = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            # Initial GGUF plan: force offload so the candidate replan branch is entered.
+            return dataclasses.replace(real, offload_policy = "model")
+        replan_calls.append(True)
+        if len(replan_calls) == 1:
+            # First replan: the transient undercount. Required fits total capacity
+            # (90,228 <= 0.85 * (183,359 - 18,335)), so a retry must follow.
+            return types.SimpleNamespace(
+                offload_policy = "model",
+                estimates = {"resident_required_mib": 90_228, "safe_device_budget_mib": 40_000},
+                device_memory = types.SimpleNamespace(
+                    total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
+                ),
+                reasons = ("companions exceed budget",),
+            )
+        # Retry: the transient cleared; resident.
+        return dataclasses.replace(real, offload_policy = "none")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "int8",
+    )
+    assert replan_calls == [True, True]  # declined once, retried once
+    assert attempted == [False]  # fast path attempted; prequant-sized plan forbids dense fallback
+
+
+def test_dense_quant_replan_no_retry_when_capacity_truly_short(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # When the candidate does NOT fit total capacity, the decline is real: no retry.
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 33_831, companions_mib = 46_157, prequant = True
+        ),
+    )
+    replan_calls = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = "model")
+        replan_calls.append(True)
+        return types.SimpleNamespace(
+            offload_policy = "model",
+            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            device_memory = types.SimpleNamespace(
+                total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
+            ),
+            reasons = ("companions exceed budget",),
+        )
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "int8",
+    )
+    assert replan_calls == [True]  # genuine capacity shortfall: declined without a retry
+
+
 def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     # krea's repo ships transformers-5.x configs and no top-level tokenizer files, so
     # Pipeline.from_pretrained dies in the tokenizer (vocab_file = None). The quant fast
@@ -2994,7 +3113,7 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
     # companions + headroom, but NOT a second copy of the bf16 transformer.
     monkeypatch.setattr(
         dmod,
-        "snapshot_device_memory",
+        "settled_snapshot_device_memory",
         lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
     )
     monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
