@@ -4187,6 +4187,35 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
+            # Refuse early (before the unload side effect below): a hub-managed
+            # download for this repo may be writing into the shared HF cache
+            # right now (its worker's cache preparation purges partial blobs it
+            # does not own). Only a load that would DOWNLOAD races it; one that
+            # reuses a complete cached copy never touches the in-flight blobs,
+            # so it proceeds.
+            if config.gguf_hf_repo:
+                try:
+                    from hub.utils.download_registry import get_models_registry
+                    _active_hub_jobs = get_models_registry().active_jobs(config.gguf_hf_repo)
+                except Exception:
+                    _active_hub_jobs = {}
+                if _active_hub_jobs:
+                    from core.inference.llama_cpp import cached_gguf_for_load
+                    if (
+                        await asyncio.to_thread(
+                            cached_gguf_for_load, config.gguf_hf_repo, config.gguf_variant
+                        )
+                        is None
+                    ):
+                        raise HTTPException(
+                            status_code = 409,
+                            detail = (
+                                f"'{model_log_label}' is currently being downloaded "
+                                "by the download manager. Wait for the download to "
+                                "finish (or cancel it), then load the model."
+                            ),
+                        )
+
             # Unload any active Unsloth model to free VRAM (off the event loop:
             # unload takes _gen_lock and can wait on an in-flight stream).
             if unsloth_backend.active_model_name:
@@ -4394,13 +4423,18 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # falls back to layer split so the checkbox never blocks a model from
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
-            success = await load_with_tensor_fallback(
-                _attempt_gguf_load,
-                requested_tensor = request.tensor_parallel,
-                extra_args = extra_llama_args,
-                label = config.identifier,
-                cancelled = llama_backend.load_cancelled,
-            )
+            # Marked in-flight for the whole attempt (retries included) so the
+            # hub download manager refuses to start a second, uncoordinated
+            # download of this repo while the load path may be fetching it.
+            from core.inference.llama_cpp import gguf_load_in_flight
+            with gguf_load_in_flight(config.gguf_hf_repo):
+                success = await load_with_tensor_fallback(
+                    _attempt_gguf_load,
+                    requested_tensor = request.tensor_parallel,
+                    extra_args = extra_llama_args,
+                    label = config.identifier,
+                    cancelled = llama_backend.load_cancelled,
+                )
 
             if not success:
                 raise HTTPException(

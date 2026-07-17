@@ -328,6 +328,7 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
         pick,
         label,
         cancel_event = None,
+        near_path = None,
     ):
         captured["pick"] = pick
         return None
@@ -447,6 +448,7 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
         pick,
         label,
         cancel_event = None,
+        near_path = None,
     ):
         reached["hit"] = True
         return None

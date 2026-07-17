@@ -89,6 +89,27 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
+    # An in-flight model LOAD may be downloading this same repo into the HF
+    # cache through its own downloader, which is invisible to this registry.
+    # Starting a managed download now would put two uncoordinated writers on
+    # the same blobs (this worker's cache preparation purges partial blobs it
+    # does not own, stalling the other download). Refuse while the load is in
+    # flight; the user can retry once it finishes.
+    try:
+        from core.inference.llama_cpp import hf_gguf_load_in_flight
+        _load_in_flight = hf_gguf_load_in_flight(repo_id)
+    except Exception:
+        _load_in_flight = False
+    if _load_in_flight:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"A model load for '{repo_id}' is in progress and may be "
+                "downloading it. Wait for the load to finish (or cancel it), "
+                "then start the download."
+            ),
+        )
+
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
         raise HTTPException(
