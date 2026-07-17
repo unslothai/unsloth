@@ -16,34 +16,61 @@ from storage import studio_db
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", False)
-    studio_db.upsert_chat_thread({
-        "id": "thread-1", "title": "Research", "modelType": "base",
-        "modelId": "local-model", "createdAt": 1,
-    })
-    studio_db.upsert_chat_message({
-        "id": "user-1", "threadId": "thread-1", "role": "user",
-        "content": [{"type": "text", "text": "What changed?"}], "createdAt": 2,
-    })
-    studio_db.upsert_chat_message({
-        "id": "assistant-1", "threadId": "thread-1", "parentId": "user-1",
-        "role": "assistant", "content": [], "createdAt": 3,
-    })
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread-1",
+            "title": "Research",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 2,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-1",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [],
+            "createdAt": 3,
+        }
+    )
     return tmp_path
 
 
 def _create(
-    run_id = "run-1", assistant_message_id = "assistant-1",
-    *, thread_id = "thread-1", user_message_id = "user-1",
+    run_id = "run-1",
+    assistant_message_id = "assistant-1",
+    *,
+    thread_id = "thread-1",
+    user_message_id = "user-1",
     rag_scope = None,
 ):
     return research_db.create_run(
-        run_id = run_id, owner_subject = "alice", thread_id = thread_id,
-        user_message_id = user_message_id, assistant_message_id = assistant_message_id,
+        run_id = run_id,
+        owner_subject = "alice",
+        thread_id = thread_id,
+        user_message_id = user_message_id,
+        assistant_message_id = assistant_message_id,
         config = {
-            "model": "local-model", "inferenceRequest": {"model": "local-model"},
+            "model": "local-model",
+            "inferenceRequest": {"model": "local-model"},
             "ragScope": rag_scope,
-            "budgets": {"maxSteps": 5, "maxSources": 15,
-                        "modelTimeoutSeconds": 30, "toolTimeoutSeconds": 10},
+            "budgets": {
+                "maxSteps": 5,
+                "maxSources": 15,
+                "modelTimeoutSeconds": 30,
+                "toolTimeoutSeconds": 10,
+            },
         },
         created_at = 10,
     )
@@ -51,33 +78,48 @@ def _create(
 
 def test_source_persistence_rejects_url_outside_run_allowlist(research_home):
     config = {
-        "model": "local-model", "inferenceRequest": {"model": "local-model"},
+        "model": "local-model",
+        "inferenceRequest": {"model": "local-model"},
         "ragScope": None,
-        "budgets": {"maxSteps": 5, "maxSources": 15,
-                    "modelTimeoutSeconds": 30, "toolTimeoutSeconds": 10},
+        "budgets": {
+            "maxSteps": 5,
+            "maxSources": 15,
+            "modelTimeoutSeconds": 30,
+            "toolTimeoutSeconds": 10,
+        },
         "websitePolicy": {"allowedDomains": ["arxiv.org"], "blockedDomains": []},
     }
     research_db.create_run(
-        run_id = "limited", owner_subject = "alice", thread_id = "thread-1",
-        user_message_id = "user-1", assistant_message_id = None, config = config,
+        run_id = "limited",
+        owner_subject = "alice",
+        thread_id = "thread-1",
+        user_message_id = "user-1",
+        assistant_message_id = None,
+        config = config,
     )
-    with pytest.raises(ValueError, match="website access policy"):
+    with pytest.raises(ValueError, match = "website access policy"):
         research_db.upsert_source(
-            "limited", 0, "https://example.com/article", "Blocked", "Nope",
+            "limited",
+            0,
+            "https://example.com/article",
+            "Blocked",
+            "Nope",
         )
     assert research_db.get_run("limited")["sources"] == []
 
 
 def _plan():
-    return {"title": "Plan", "steps": [
-        {"title": "First", "query": "first query"},
-        {"title": "Second", "query": "second query"},
-    ]}
+    return {
+        "title": "Plan",
+        "steps": [
+            {"title": "First", "query": "first query"},
+            {"title": "Second", "query": "second query"},
+        ],
+    }
 
 
 def test_planner_uses_valid_json_from_reasoning_when_content_is_empty():
     from core import research_runs as worker
-
     reasoning = (
         "I will return the strict JSON now.\n"
         + json.dumps(_plan())
@@ -102,9 +144,12 @@ def test_report_is_recovered_from_substantial_synthesis_reasoning():
     assert worker._recover_report_from_reasoning(reasoning) == report.strip()
     assert worker._recover_report_from_reasoning("Too short") == ""
     assert worker._recover_report_from_reasoning("Internal analysis. " * 50) == ""
-    assert worker._recover_report_from_reasoning(
-        ("Long preamble. " * 50) + "\n## Summary\nIncomplete."
-    ) == ""
+    assert (
+        worker._recover_report_from_reasoning(
+            ("Long preamble. " * 50) + "\n## Summary\nIncomplete."
+        )
+        == ""
+    )
 
 
 def test_report_prompt_requires_comprehensive_evidence_based_detail():
@@ -117,9 +162,7 @@ def test_report_prompt_requires_comprehensive_evidence_based_detail():
     assert "counterevidence or conflicting findings" in prompt
 
 
-def test_streamed_reasoning_is_batched_before_database_writes(
-    research_home, monkeypatch,
-):
+def test_streamed_reasoning_is_batched_before_database_writes(research_home, monkeypatch):
     from core import research_runs as worker
 
     _create()
@@ -159,23 +202,30 @@ def test_streamed_reasoning_is_batched_before_database_writes(
 
     monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(
-        worker.auth_storage, "create_api_key",
+        worker.auth_storage,
+        "create_api_key",
         lambda **kwargs: ("token", {"id": 1}),
     )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: None)
     monkeypatch.setattr(
-        worker.db, "append_worker_event",
+        worker.db,
+        "append_worker_event",
         lambda run_id, worker_id, event_type, data: (
             writes.append((event_type, data)) or len(writes)
         ),
     )
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
-    report, reasoning, finish_reason = asyncio.run(supervisor._stream_completion(
-        run, [{"role": "user", "content": "question"}],
-        report_progress = False, phase = "planning",
-        max_tokens = 16384, enable_thinking = False,
-    ))
+    report, reasoning, finish_reason = asyncio.run(
+        supervisor._stream_completion(
+            run,
+            [{"role": "user", "content": "question"}],
+            report_progress = False,
+            phase = "planning",
+            max_tokens = 16384,
+            enable_thinking = False,
+        )
+    )
 
     assert report == ""
     assert reasoning == "x" * 1000
@@ -225,14 +275,20 @@ def test_schema_and_state_transitions(research_home):
 
     conn = studio_db.get_connection()
     try:
-        tables = {row[0] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'research_%'"
-        )}
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'research_%'"
+            )
+        }
     finally:
         conn.close()
     assert tables == {
-        "research_runs", "research_thread_claims", "research_plan_steps",
-        "research_sources", "research_events",
+        "research_runs",
+        "research_thread_claims",
+        "research_plan_steps",
+        "research_sources",
+        "research_events",
     }
 
 
@@ -255,9 +311,7 @@ def test_planner_cannot_finalize_after_its_lease_timestamp_expires(research_home
     assert research_db.claim_next("planner-1") is not None
     conn = studio_db.get_connection()
     try:
-        conn.execute(
-            "UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'"
-        )
+        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
         conn.commit()
     finally:
         conn.close()
@@ -279,22 +333,51 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
     finally:
         conn.close()
 
-    assert research_db.append_worker_event(
-        "run-1", "worker-1", "reasoning.updated", {"reasoningDelta": "stale"},
-    ) is None
-    assert research_db.upsert_execution_step(
-        "run-1", 0, "Stale", "stale", "running", worker_id = "worker-1",
-    ) is False
-    assert research_db.upsert_source(
-        "run-1", 0, "https://stale.example", "Stale", "stale", "worker-1",
-    ) is False
+    assert (
+        research_db.append_worker_event(
+            "run-1",
+            "worker-1",
+            "reasoning.updated",
+            {"reasoningDelta": "stale"},
+        )
+        is None
+    )
+    assert (
+        research_db.upsert_execution_step(
+            "run-1",
+            0,
+            "Stale",
+            "stale",
+            "running",
+            worker_id = "worker-1",
+        )
+        is False
+    )
+    assert (
+        research_db.upsert_source(
+            "run-1",
+            0,
+            "https://stale.example",
+            "Stale",
+            "stale",
+            "worker-1",
+        )
+        is False
+    )
     events = research_db.list_events("run-1", "alice")
     assert all(event["type"] != "reasoning.updated" for event in events)
     assert research_db.finish("run-1", "worker-1", "completed") is None
     assert research_db.get_run("run-1")["status"] == "running"
-    assert research_db.finish(
-        "run-1", "worker-1", "failed", "expired", allow_expired = True,
-    ) == "failed"
+    assert (
+        research_db.finish(
+            "run-1",
+            "worker-1",
+            "failed",
+            "expired",
+            allow_expired = True,
+        )
+        == "failed"
+    )
 
 
 def test_stale_planner_cannot_overwrite_new_lease_owner(research_home):
@@ -302,9 +385,7 @@ def test_stale_planner_cannot_overwrite_new_lease_owner(research_home):
     assert research_db.claim_next("planner-1") is not None
     conn = studio_db.get_connection()
     try:
-        conn.execute(
-            "UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'"
-        )
+        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
         conn.commit()
     finally:
         conn.close()
@@ -376,7 +457,8 @@ def test_sources_are_normalized_by_url(research_home):
     assert source["snippet"] == "two"
     assert source["stepPosition"] == 1
     source_events = [
-        event for event in research_db.list_events("run-1", "alice")
+        event
+        for event in research_db.list_events("run-1", "alice")
         if event["type"] == "source.added"
     ]
     assert source_events[-1]["data"]["snippet"] == "two"
@@ -391,18 +473,14 @@ def test_partial_report_is_persisted_and_emits_an_event(research_home):
     research_db.claim_next("worker-1")
     before = research_db.get_run("run-1")["lastEventSeq"]
 
-    assert research_db.set_report_progress(
-        "run-1", "Partial report", " report",
-    ) is True
+    assert research_db.set_report_progress("run-1", "Partial report", " report") is True
 
     run = research_db.get_run("run-1")
     assert run["report"] == "Partial report"
     assert run["lastEventSeq"] == before + 1
     [event] = research_db.list_events("run-1", "alice", after = before)
     assert event["type"] == "report.updated"
-    assert event["data"] == {
-        "length": 14, "delta": " report", "offset": 7, "attempt": 0,
-    }
+    assert event["data"] == {"length": 14, "delta": " report", "offset": 7, "attempt": 0}
 
 
 def test_report_citations_are_limited_to_gathered_sources():
@@ -412,9 +490,15 @@ def test_report_citations_are_limited_to_gathered_sources():
         "Supported [claim](https://example.com/source) and "
         "invented [claim](https://invalid.example/guess)."
     )
-    validated = _validate_report_sources(report, [{
-        "url": "https://example.com/source", "title": "Source",
-    }])
+    validated = _validate_report_sources(
+        report,
+        [
+            {
+                "url": "https://example.com/source",
+                "title": "Source",
+            }
+        ],
+    )
 
     assert "[Source](https://example.com/source)" in validated
     assert "https://invalid.example/guess" not in validated
@@ -427,10 +511,13 @@ def test_report_citations_use_canonical_titles_without_model_sources_section():
         "A supported claim [generic source](https://example.com/a).\n\n"
         "## Sources\n\n- [Duplicate](https://example.com/a)"
     )
-    validated = _validate_report_sources(report, [
-        {"url": "https://example.com/a", "title": "Primary Report"},
-        {"url": "https://example.com/b", "title": "Unused Source"},
-    ])
+    validated = _validate_report_sources(
+        report,
+        [
+            {"url": "https://example.com/a", "title": "Primary Report"},
+            {"url": "https://example.com/b", "title": "Unused Source"},
+        ],
+    )
 
     assert "## Sources" not in validated
     assert validated.count("[Primary Report](https://example.com/a)") == 1
@@ -485,14 +572,20 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
     from core.research_runs import _validate_agent_action
 
     assert _validate_agent_action(
-        {"action": "search", "title": "Verify", "query": "primary source"}, set(),
+        {"action": "search", "title": "Verify", "query": "primary source"},
+        set(),
     ) == {
-        "action": "search", "title": "Verify", "query": "primary source",
+        "action": "search",
+        "title": "Verify",
+        "query": "primary source",
     }
-    assert _validate_agent_action(
-        {"action": "fetch", "title": "Read", "url": "https://example.com"},
-        {"https://example.com"},
-    )["action"] == "fetch"
+    assert (
+        _validate_agent_action(
+            {"action": "fetch", "title": "Read", "url": "https://example.com"},
+            {"https://example.com"},
+        )["action"]
+        == "fetch"
+    )
     with pytest.raises(ValueError, match = "unknown URL"):
         _validate_agent_action(
             {"action": "fetch", "url": "https://invented.example"},
@@ -505,7 +598,8 @@ def test_research_budget_defaults_support_long_runs():
 
     config = _sanitize_config(
         CreateResearchRun(
-            threadId = "thread-1", userMessageId = "user-1",
+            threadId = "thread-1",
+            userMessageId = "user-1",
             inferenceRequest = {"model": "local-model"},
         ),
         {"modelId": "local-model"},
@@ -519,10 +613,7 @@ def test_research_budget_defaults_support_long_runs():
     }
     ResearchPlan(
         title = "Long plan",
-        steps = [
-            {"title": f"Step {index}", "query": f"query {index}"}
-            for index in range(30)
-        ],
+        steps = [{"title": f"Step {index}", "query": f"query {index}"} for index in range(30)],
     )
 
 
@@ -531,7 +622,8 @@ def test_research_budget_ceilings_allow_depth_but_remain_bounded():
     from routes.research_runs import CreateResearchRun, _sanitize_config
 
     payload = CreateResearchRun(
-        threadId = "thread-1", userMessageId = "user-1",
+        threadId = "thread-1",
+        userMessageId = "user-1",
         inferenceRequest = {"model": "local-model"},
         budgets = {
             "maxSteps": 30,
@@ -589,9 +681,7 @@ def test_retry_of_unapproved_plan_requires_approval_again(research_home):
         step["title"] for step in _plan()["steps"]
     ]
 
-    assert research_db.approve(
-        "run-1", plan["planRevision"], plan["planHash"],
-    ) == "queued"
+    assert research_db.approve("run-1", plan["planRevision"], plan["planHash"]) == "queued"
 
 
 def test_thread_allows_only_one_research_run_but_original_can_retry(research_home):
@@ -607,27 +697,41 @@ def test_thread_allows_only_one_research_run_but_original_can_retry(research_hom
     assert research_db.retry("run-1") == "planning"
 
 
-def test_supervisor_planning_and_research_are_durable_with_mocked_io(
-    research_home, monkeypatch
-):
+def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_home, monkeypatch):
     from core import research_runs as worker
 
     rag_scope = {"kb_id": "kb-1", "default_top_k": 4}
     _create(assistant_message_id = None, rag_scope = rag_scope)
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     report_response = "# Final report\n\nGrounded result [source](https://example.com)."
-    decisions = iter((
-        json.dumps({
-            "action": "search", "title": "Find primary evidence", "query": "example evidence",
-        }),
-        json.dumps({"action": "finish", "title": "Evidence is sufficient"}),
-    ))
+    decisions = iter(
+        (
+            json.dumps(
+                {
+                    "action": "search",
+                    "title": "Find primary evidence",
+                    "query": "example evidence",
+                }
+            ),
+            json.dumps({"action": "finish", "title": "Evidence is sufficient"}),
+        )
+    )
 
-    async def fake_completion(run, messages, *, json_mode = False):
+    async def fake_completion(
+        run,
+        messages,
+        *,
+        json_mode = False,
+    ):
         raise AssertionError("Planning and agent decisions must use the streaming path")
 
     async def fake_stream_completion(
-        run, messages, *, json_mode = False, report_progress = True, **kwargs,
+        run,
+        messages,
+        *,
+        json_mode = False,
+        report_progress = True,
+        **kwargs,
     ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
@@ -681,10 +785,12 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
     assert any("Final report" in part.get("text", "") for part in assistant["content"])
     assert any(
         part.get("type") == "reasoning" and "Checked" in part.get("text", "")
-        for part in assistant["content"] if isinstance(part, dict)
+        for part in assistant["content"]
+        if isinstance(part, dict)
     )
     assert any(
-        part.get("url") == "https://example.com" for part in assistant["content"]
+        part.get("url") == "https://example.com"
+        for part in assistant["content"]
         if isinstance(part, dict) and part.get("type") == "source"
     )
 
@@ -694,14 +800,17 @@ def test_create_without_assistant_id_does_not_eagerly_create_message(research_ho
 
     before = studio_db.list_chat_messages("thread-1")
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
-    run = asyncio.run(create_research_run(
-        CreateResearchRun(
-            threadId = "thread-1", userMessageId = "user-1",
-            inferenceRequest = {"model": "local-model"},
-        ),
-        request,
-        current_subject = "alice",
-    ))
+    run = asyncio.run(
+        create_research_run(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-1",
+                inferenceRequest = {"model": "local-model"},
+            ),
+            request,
+            current_subject = "alice",
+        )
+    )
 
     assert run["assistantMessageId"] is None
     assert studio_db.list_chat_messages("thread-1") == before
@@ -714,24 +823,33 @@ def test_route_rejects_overlapping_active_run_for_thread(research_home):
     _create()
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(create_research_run(
-            CreateResearchRun(
-                threadId = "thread-1", userMessageId = "user-1",
-                inferenceRequest = {"model": "local-model"},
-            ),
-            request,
-            current_subject = "alice",
-        ))
+        asyncio.run(
+            create_research_run(
+                CreateResearchRun(
+                    threadId = "thread-1",
+                    userMessageId = "user-1",
+                    inferenceRequest = {"model": "local-model"},
+                ),
+                request,
+                current_subject = "alice",
+            )
+        )
     assert caught.value.status_code == 409
 
 
 def test_assistant_discovery_binding_and_terminal_fallback_are_idempotent(research_home):
     _create(assistant_message_id = None)
-    studio_db.upsert_chat_message({
-        "id": "frontend-assistant", "threadId": "thread-1", "parentId": "user-1",
-        "role": "assistant", "content": [{"type": "text", "text": "card"}],
-        "metadata": {"researchRunId": "run-1"}, "createdAt": 4,
-    })
+    studio_db.upsert_chat_message(
+        {
+            "id": "frontend-assistant",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "card"}],
+            "metadata": {"researchRunId": "run-1"},
+            "createdAt": 4,
+        }
+    )
 
     assert research_db.discover_and_bind_assistant_message("run-1") == "frontend-assistant"
     assert research_db.get_run("run-1")["assistantMessageId"] == "frontend-assistant"
@@ -739,17 +857,29 @@ def test_assistant_discovery_binding_and_terminal_fallback_are_idempotent(resear
     assert research_db.request_cancel("run-1") == "cancelling"
     research_db.claim_next("worker-1")
     research_db.finish("run-1", "worker-1", "cancelled")
-    studio_db.upsert_chat_thread({
-        "id": "thread-2", "title": "Second", "modelType": "base",
-        "modelId": "local-model", "createdAt": 5,
-    })
-    studio_db.upsert_chat_message({
-        "id": "user-2", "threadId": "thread-2", "role": "user",
-        "content": [{"type": "text", "text": "Second question"}], "createdAt": 6,
-    })
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread-2",
+            "title": "Second",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 5,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-2",
+            "threadId": "thread-2",
+            "role": "user",
+            "content": [{"type": "text", "text": "Second question"}],
+            "createdAt": 6,
+        }
+    )
     _create(
-        "run-2", assistant_message_id = None,
-        thread_id = "thread-2", user_message_id = "user-2",
+        "run-2",
+        assistant_message_id = None,
+        thread_id = "thread-2",
+        user_message_id = "user-2",
     )
     research_db.set_plan("run-2", _plan())
     assert research_db.request_cancel("run-2") == "cancelled"
@@ -778,13 +908,19 @@ def test_research_claim_lasts_for_thread_lifetime(research_home):
     assert research_db.get_run("run-1") is None
     assert research_db.has_thread_claim("alice", "thread-1") is True
 
-    studio_db.upsert_chat_message({
-        "id": "user-new", "threadId": "thread-1", "role": "user",
-        "content": [{"type": "text", "text": "Try again"}], "createdAt": 20,
-    })
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-new",
+            "threadId": "thread-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "Try again"}],
+            "createdAt": 20,
+        }
+    )
     with pytest.raises(research_db.ResearchConflictError, match = "already has"):
         _create(
-            "run-2", assistant_message_id = None,
+            "run-2",
+            assistant_message_id = None,
             user_message_id = "user-new",
         )
 
@@ -795,9 +931,7 @@ def test_research_claim_lasts_for_thread_lifetime(research_home):
 def test_list_active_returns_complete_snapshots(research_home):
     _create()
     research_db.set_plan("run-1", _plan())
-    research_db.upsert_source(
-        "run-1", 0, "https://example.com/source", "Source", "Evidence"
-    )
+    research_db.upsert_source("run-1", 0, "https://example.com/source", "Source", "Evidence")
 
     [run] = research_db.list_active("alice", "thread-1")
     assert [step["title"] for step in run["steps"]] == ["First", "Second"]
@@ -815,18 +949,24 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
         "run-1", 0, "https://example.com/final", "Final source", "Final evidence"
     )
     report = "# Durable report\n\nFinal markdown."
-    assert research_db.finish(
-        "run-1", "worker-1", "completed", event_payload = {"report": report}
-    ) == "completed"
+    assert (
+        research_db.finish("run-1", "worker-1", "completed", event_payload = {"report": report})
+        == "completed"
+    )
 
     class FakeRequest:
         async def is_disconnected(self):
             return False
 
-    response = asyncio.run(research_events(
-        "run-1", FakeRequest(), after = 0, last_event_id = None,
-        current_subject = "alice",
-    ))
+    response = asyncio.run(
+        research_events(
+            "run-1",
+            FakeRequest(),
+            after = 0,
+            last_event_id = None,
+            current_subject = "alice",
+        )
+    )
 
     async def consume():
         chunks = []
@@ -865,6 +1005,7 @@ def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
     if cancelled:
         assert research_db.request_cancel("run-1") == "cancelling"
     else:
+
         async def fail_completion(run, messages, **kwargs):
             raise RuntimeError("mocked model failure")
 
@@ -878,10 +1019,13 @@ def test_worker_terminal_paths_create_one_fallback_without_frontend_message(
     fallback = studio_db.get_chat_message("thread-1", "research-run-1")
     assert fallback["metadata"]["serverManaged"] is True
     assert fallback["content"][0]["text"] == text
-    assert sum(
-        message["id"] == "research-run-1"
-        for message in studio_db.list_chat_messages("thread-1")
-    ) == 1
+    assert (
+        sum(
+            message["id"] == "research-run-1"
+            for message in studio_db.list_chat_messages("thread-1")
+        )
+        == 1
+    )
 
 
 def test_create_run_atomically_creates_exact_frontend_placeholder(research_home):
@@ -893,16 +1037,24 @@ def test_create_run_atomically_creates_exact_frontend_placeholder(research_home)
     assert message["role"] == "assistant"
     assert message["content"] == []
     assert message["metadata"] == {
-        "researchRunId": "run-1", "researchStatus": "planning",
-        "researchPlanRevision": 0, "serverManaged": True,
+        "researchRunId": "run-1",
+        "researchStatus": "planning",
+        "researchPlanRevision": 0,
+        "serverManaged": True,
     }
 
 
 def test_create_run_conflict_rolls_back_placeholder_and_run(research_home):
-    studio_db.upsert_chat_message({
-        "id": "conflict", "threadId": "thread-1", "parentId": None,
-        "role": "assistant", "content": [], "createdAt": 4,
-    })
+    studio_db.upsert_chat_message(
+        {
+            "id": "conflict",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "assistant",
+            "content": [],
+            "createdAt": 4,
+        }
+    )
     with pytest.raises(research_db.ResearchConflictError):
         _create(assistant_message_id = "conflict")
     assert research_db.get_run("run-1") is None
@@ -913,17 +1065,22 @@ def test_update_assistant_replaces_report_parts_without_duplication(research_hom
     from core.research_runs import _update_assistant
 
     _create()
-    studio_db.upsert_chat_message({
-        "id": "assistant-1", "threadId": "thread-1", "parentId": "user-1",
-        "role": "assistant",
-        "content": [
-            {"type": "text", "text": "untagged frontend report"},
-            {"type": "source", "sourceType": "url", "url": "https://old.example"},
-            {"type": "reasoning", "text": "preserve reasoning"},
-            {"type": "artifact", "artifactId": "keep-me"},
-        ],
-        "metadata": {"researchRunId": "run-1"}, "createdAt": 3,
-    })
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-1",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "untagged frontend report"},
+                {"type": "source", "sourceType": "url", "url": "https://old.example"},
+                {"type": "reasoning", "text": "preserve reasoning"},
+                {"type": "artifact", "artifactId": "keep-me"},
+            ],
+            "metadata": {"researchRunId": "run-1"},
+            "createdAt": 3,
+        }
+    )
     run = research_db.get_run("run-1")
     source = {"url": "https://new.example", "title": "New", "snippet": "Evidence"}
 
@@ -948,7 +1105,10 @@ def test_cancel_requested_wins_finish_cas(research_home, requested):
     assert research_db.request_cancel("run-1") == "cancelling"
 
     actual = research_db.finish(
-        "run-1", "worker-1", requested, "model error",
+        "run-1",
+        "worker-1",
+        requested,
+        "model error",
         {"report": "must not survive cancellation"},
     )
 
@@ -986,9 +1146,7 @@ def test_lost_lease_stops_worker_before_more_writes(research_home):
         asyncio.run(supervisor._check_active("run-1"))
 
 
-def test_owned_run_is_failed_instead_of_replanned_after_lease_loss(
-    research_home, monkeypatch,
-):
+def test_owned_run_is_failed_instead_of_replanned_after_lease_loss(research_home, monkeypatch):
     from core import research_runs as worker
 
     _create()
@@ -1033,9 +1191,7 @@ def test_lease_loss_terminalization_retries_database_lock(research_home, monkeyp
     assert research_db.get_run("run-1")["status"] == "failed"
 
 
-def test_error_after_lease_expiry_is_failed_instead_of_replanned(
-    research_home, monkeypatch,
-):
+def test_error_after_lease_expiry_is_failed_instead_of_replanned(research_home, monkeypatch):
     from core import research_runs as worker
 
     _create()
@@ -1191,15 +1347,16 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
 
     monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(
-        worker.auth_storage, "create_api_key",
+        worker.auth_storage,
+        "create_api_key",
         lambda **kwargs: ("internal-key", {"id": 1}),
     )
     monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: True)
 
     async def scenario():
-        task = asyncio.create_task(supervisor._completion(
-            run, [{"role": "user", "content": "question"}]
-        ))
+        task = asyncio.create_task(
+            supervisor._completion(run, [{"role": "user", "content": "question"}])
+        )
         await asyncio.sleep(0.05)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
@@ -1247,15 +1404,24 @@ def test_route_maps_unstable_assistant_conflict_to_409(research_home):
     from fastapi import HTTPException
     from routes.research_runs import CreateResearchRun, create_research_run
 
-    studio_db.upsert_chat_message({
-        "id": "unstable", "threadId": "thread-1", "parentId": None,
-        "role": "assistant", "content": [], "createdAt": 4,
-    })
-    payload = CreateResearchRun.model_validate({
-        "threadId": "thread-1", "userMessageId": "user-1",
-        "unstable_assistantMessageId": "unstable",
-        "inferenceRequest": {"model": "local-model"},
-    })
+    studio_db.upsert_chat_message(
+        {
+            "id": "unstable",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "assistant",
+            "content": [],
+            "createdAt": 4,
+        }
+    )
+    payload = CreateResearchRun.model_validate(
+        {
+            "threadId": "thread-1",
+            "userMessageId": "user-1",
+            "unstable_assistantMessageId": "unstable",
+            "inferenceRequest": {"model": "local-model"},
+        }
+    )
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     with pytest.raises(HTTPException) as caught:
@@ -1266,11 +1432,14 @@ def test_route_maps_unstable_assistant_conflict_to_409(research_home):
 def test_route_accepts_max_tokens_without_treating_it_as_a_credential(research_home):
     from routes.research_runs import CreateResearchRun, create_research_run
 
-    payload = CreateResearchRun.model_validate({
-        "threadId": "thread-1", "userMessageId": "user-1",
-        "assistantMessageId": "assistant-1",
-        "inferenceRequest": {"model": "local-model", "maxTokens": 1024},
-    })
+    payload = CreateResearchRun.model_validate(
+        {
+            "threadId": "thread-1",
+            "userMessageId": "user-1",
+            "assistantMessageId": "assistant-1",
+            "inferenceRequest": {"model": "local-model", "maxTokens": 1024},
+        }
+    )
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
     run = asyncio.run(create_research_run(payload, request, current_subject = "alice"))

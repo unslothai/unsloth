@@ -103,7 +103,9 @@ Do not assume the user's premise is correct. Do not answer the question or call 
 
 
 def _validate_agent_action(
-    value: dict, allowed_urls: set[str], website_policy: dict | None = None,
+    value: dict,
+    allowed_urls: set[str],
+    website_policy: dict | None = None,
 ) -> dict[str, str]:
     action = str(value.get("action") or "").strip().lower()
     title = str(value.get("title") or "Researching").strip()[:200]
@@ -148,7 +150,8 @@ def _extract_text(message: dict) -> str:
         return content
     if isinstance(content, list):
         return "\n".join(
-            str(part.get("text") or "") for part in content
+            str(part.get("text") or "")
+            for part in content
             if isinstance(part, dict) and part.get("type") == "text"
         ).strip()
     return ""
@@ -193,7 +196,7 @@ def _parse_and_validate_plan(response: str, reasoning: str, max_steps: int) -> d
         decoder = json.JSONDecoder()
         for match in re.finditer(r"\{", candidate):
             try:
-                value, _end = decoder.raw_decode(candidate[match.start():])
+                value, _end = decoder.raw_decode(candidate[match.start() :])
                 if isinstance(value, dict):
                     valid_plans.append(_validate_plan(value, max_steps))
             except (ValueError, json.JSONDecodeError) as exc:
@@ -208,14 +211,13 @@ def _parse_and_validate_plan(response: str, reasoning: str, max_steps: int) -> d
 def _recover_report_from_reasoning(reasoning: str) -> str:
     text = reasoning.strip()
     marker = re.search(
-        r"(?m)^(?:#{1,2}\s+(?:Executive\s+)?Summary\b|"
-        r"\*\*(?:Executive\s+)?Summary\*\*)",
+        r"(?m)^(?:#{1,2}\s+(?:Executive\s+)?Summary\b|\*\*(?:Executive\s+)?Summary\*\*)",
         text,
         flags = re.IGNORECASE,
     )
     if marker is None:
         return ""
-    report = text[marker.start():].strip()
+    report = text[marker.start() :].strip()
     return report if len(report) >= 500 else ""
 
 
@@ -233,30 +235,31 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
-        sources.append({
-            "kind": "knowledge_base",
-            "chunkId": candidate.get("chunkId"),
-            "documentId": candidate.get("documentId"),
-            "filename": str(candidate.get("filename") or "Document")[:500],
-            "page": candidate.get("page"),
-            "score": candidate.get("score"),
-            "snippet": str(candidate.get("text") or "")[:2000],
-        })
+        sources.append(
+            {
+                "kind": "knowledge_base",
+                "chunkId": candidate.get("chunkId"),
+                "documentId": candidate.get("documentId"),
+                "filename": str(candidate.get("filename") or "Document")[:500],
+                "page": candidate.get("page"),
+                "score": candidate.get("score"),
+                "snippet": str(candidate.get("text") or "")[:2000],
+            }
+        )
     return text.rstrip(), sources
 
 
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
     """Canonicalize citations and remove model-authored source lists."""
     source_by_url = {
-        str(source.get("url") or ""): source
-        for source in sources if source.get("url")
+        str(source.get("url") or ""): source for source in sources if source.get("url")
     }
     source_urls = list(source_by_url)
     placeholders: dict[str, str] = {}
 
     heading = _SOURCES_HEADING.search(report)
     if heading:
-        report = report[:heading.start()]
+        report = report[: heading.start()]
 
     def citation(url: str) -> str | None:
         source = source_by_url.get(url)
@@ -292,15 +295,22 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
 
 
 def _update_assistant(
-    run: dict, text: str, status: str, sources: list[dict] | None = None,
-    reasoning: str = "", completion_worker_id: str | None = None,
+    run: dict,
+    text: str,
+    status: str,
+    sources: list[dict] | None = None,
+    reasoning: str = "",
+    completion_worker_id: str | None = None,
 ) -> None:
     message_id = db.discover_and_bind_assistant_message(run["id"])
     if not message_id:
         if status not in db.TERMINAL_STATUSES:
             return
         message_id, _created = db.create_and_bind_terminal_fallback(
-            run["id"], text = text, status = status, sources = sources,
+            run["id"],
+            text = text,
+            status = status,
+            sources = sources,
             completion_worker_id = completion_worker_id,
         )
     existing = get_chat_message(run["threadId"], message_id) or {}
@@ -310,34 +320,54 @@ def _update_assistant(
     if reasoning:
         replaced_types.add("reasoning")
     retained = [
-        part for part in content
+        part
+        for part in content
         if not isinstance(part, dict) or part.get("type") not in replaced_types
     ]
     if reasoning:
         retained.append({"type": "reasoning", "text": reasoning, "researchRunId": run["id"]})
     retained.append({"type": "text", "text": text, "researchRunId": run["id"]})
     for source in sources or []:
-        retained.append({
-            "type": "source", "sourceType": "url", "id": source["url"],
-            "url": source["url"], "title": source.get("title") or source["url"],
-            "metadata": {"description": source.get("snippet") or ""},
-            "researchRunId": run["id"],
-        })
+        retained.append(
+            {
+                "type": "source",
+                "sourceType": "url",
+                "id": source["url"],
+                "url": source["url"],
+                "title": source.get("title") or source["url"],
+                "metadata": {"description": source.get("snippet") or ""},
+                "researchRunId": run["id"],
+            }
+        )
     metadata = dict(existing.get("metadata") or {})
-    metadata.update({
-        "researchRunId": run["id"], "researchStatus": status,
-        "researchPlanRevision": run.get("planRevision", 0), "serverManaged": True,
-    })
-    upsert_chat_message({
-        "id": message_id, "threadId": run["threadId"],
-        "parentId": existing.get("parentId") or run["userMessageId"], "role": "assistant",
-        "content": retained, "attachments": existing.get("attachments"), "metadata": metadata,
-        "createdAt": existing.get("createdAt") or db.now_ms(),
-    })
+    metadata.update(
+        {
+            "researchRunId": run["id"],
+            "researchStatus": status,
+            "researchPlanRevision": run.get("planRevision", 0),
+            "serverManaged": True,
+        }
+    )
+    upsert_chat_message(
+        {
+            "id": message_id,
+            "threadId": run["threadId"],
+            "parentId": existing.get("parentId") or run["userMessageId"],
+            "role": "assistant",
+            "content": retained,
+            "attachments": existing.get("attachments"),
+            "metadata": metadata,
+            "createdAt": existing.get("createdAt") or db.now_ms(),
+        }
+    )
 
 
 class ResearchSupervisor:
-    def __init__(self, app: Any, poll_seconds: float = 0.5) -> None:
+    def __init__(
+        self,
+        app: Any,
+        poll_seconds: float = 0.5,
+    ) -> None:
         self.app = app
         self.poll_seconds = poll_seconds
         self.worker_id = uuid.uuid4().hex
@@ -398,13 +428,19 @@ class ResearchSupervisor:
         while True:
             try:
                 return await asyncio.to_thread(
-                    db.finish, run_id, self.worker_id, "failed",
-                    "Worker lease expired", None, True,
+                    db.finish,
+                    run_id,
+                    self.worker_id,
+                    "failed",
+                    "Worker lease expired",
+                    None,
+                    True,
                 )
             except sqlite3.OperationalError:
                 logger.warning(
                     "research.lease_loss_finish_retry run_id=%s",
-                    run_id, exc_info = True,
+                    run_id,
+                    exc_info = True,
                 )
                 await asyncio.sleep(1)
 
@@ -413,8 +449,10 @@ class ResearchSupervisor:
             return
         server = getattr(request, "scope", {}).get("server")
         if (
-            isinstance(server, tuple) and len(server) >= 2
-            and isinstance(server[1], int) and server[1] > 0
+            isinstance(server, tuple)
+            and len(server) >= 2
+            and isinstance(server[1], int)
+            and server[1] > 0
         ):
             self.app.state.research_request_port = server[1]
 
@@ -441,8 +479,13 @@ class ResearchSupervisor:
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
     async def _completion(
-        self, run: dict, messages: list[dict], *, json_mode: bool = False,
-        phase: str = "unknown", step_position: int | None = None,
+        self,
+        run: dict,
+        messages: list[dict],
+        *,
+        json_mode: bool = False,
+        phase: str = "unknown",
+        step_position: int | None = None,
     ) -> str:
         call_id = uuid.uuid4().hex
         expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
@@ -457,7 +500,8 @@ class ResearchSupervisor:
         inference = config.get("inferenceRequest") or {}
         payload: dict[str, Any] = {
             "model": inference.get("model") or config.get("model") or "",
-            "messages": messages, "stream": False,
+            "messages": messages,
+            "stream": False,
             "temperature": inference.get("temperature", 0.2),
             "max_tokens": min(int(inference.get("maxTokens") or 4096), 8192),
         }
@@ -477,7 +521,8 @@ class ResearchSupervisor:
                     try:
                         post_task = asyncio.create_task(
                             client.post(
-                                self._endpoint(), json = payload,
+                                self._endpoint(),
+                                json = payload,
                                 headers = {"Authorization": f"Bearer {token}"},
                             )
                         )
@@ -496,25 +541,33 @@ class ResearchSupervisor:
                         body = response.json()
                         break
                     except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-                        retryable = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code >= 500
+                        retryable = (
+                            not isinstance(exc, httpx.HTTPStatusError)
+                            or exc.response.status_code >= 500
+                        )
                         if not retryable or attempt == 2:
                             raise
                         await asyncio.sleep(2**attempt)
             message = body["choices"][0]["message"]
             thought = message.get("reasoning_content")
             if isinstance(thought, str) and thought.strip():
-                await asyncio.to_thread(db.append_event, run["id"], "reasoning.updated", {
-                    "reasoningDelta": thought.rstrip() + "\n\n",
-                    "reasoningOffset": 0, "phase": phase, "callId": call_id,
-                    **({"stepPosition": step_position} if step_position is not None else {}),
-                })
+                await asyncio.to_thread(
+                    db.append_event,
+                    run["id"],
+                    "reasoning.updated",
+                    {
+                        "reasoningDelta": thought.rstrip() + "\n\n",
+                        "reasoningOffset": 0,
+                        "phase": phase,
+                        "callId": call_id,
+                        **({"stepPosition": step_position} if step_position is not None else {}),
+                    },
+                )
             return str(message.get("content") or "")
         finally:
             await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
 
-    async def _iter_stream_lines(
-        self, run_id: str, response: httpx.Response,
-    ) -> AsyncIterator[str]:
+    async def _iter_stream_lines(self, run_id: str, response: httpx.Response) -> AsyncIterator[str]:
         iterator = response.aiter_lines().__aiter__()
         while True:
             line_task = asyncio.create_task(anext(iterator))
@@ -542,9 +595,15 @@ class ResearchSupervisor:
             yield line
 
     async def _stream_completion(
-        self, run: dict, messages: list[dict], *, json_mode: bool = False,
-        report_progress: bool = True, phase: str = "unknown",
-        step_position: int | None = None, max_tokens: int | None = None,
+        self,
+        run: dict,
+        messages: list[dict],
+        *,
+        json_mode: bool = False,
+        report_progress: bool = True,
+        phase: str = "unknown",
+        step_position: int | None = None,
+        max_tokens: int | None = None,
         enable_thinking: bool | None = None,
     ) -> tuple[str, str, str | None]:
         call_id = uuid.uuid4().hex
@@ -595,11 +654,17 @@ class ResearchSupervisor:
                 try:
                     seq = await asyncio.to_thread(
                         db.append_worker_event,
-                        run["id"], self.worker_id, "reasoning.updated", {
+                        run["id"],
+                        self.worker_id,
+                        "reasoning.updated",
+                        {
                             "reasoningDelta": pending_reasoning,
                             "reasoningOffset": pending_reasoning_offset,
-                            "phase": phase, "callId": call_id,
-                            **({"stepPosition": step_position} if step_position is not None else {}),
+                            "phase": phase,
+                            "callId": call_id,
+                            **(
+                                {"stepPosition": step_position} if step_position is not None else {}
+                            ),
                         },
                     )
                     if seq is None:
@@ -611,7 +676,8 @@ class ResearchSupervisor:
                 except Exception:
                     logger.warning(
                         "research.reasoning_flush_failed run_id=%s",
-                        run["id"], exc_info = True,
+                        run["id"],
+                        exc_info = True,
                     )
                     last_progress_flush = asyncio.get_running_loop().time()
                     return
@@ -619,7 +685,10 @@ class ResearchSupervisor:
                 try:
                     written = await asyncio.to_thread(
                         db.set_report_progress,
-                        run["id"], report, pending_report, self.worker_id,
+                        run["id"],
+                        report,
+                        pending_report,
+                        self.worker_id,
                     )
                     if not written:
                         await self._check_active(run["id"])
@@ -630,7 +699,8 @@ class ResearchSupervisor:
                 except Exception:
                     logger.warning(
                         "research.report_flush_failed run_id=%s",
-                        run["id"], exc_info = True,
+                        run["id"],
+                        exc_info = True,
                     )
             last_progress_flush = asyncio.get_running_loop().time()
 
@@ -638,7 +708,9 @@ class ResearchSupervisor:
             timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
             async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
                 async with client.stream(
-                    "POST", self._endpoint(), json = payload,
+                    "POST",
+                    self._endpoint(),
+                    json = payload,
                     headers = {"Authorization": f"Bearer {token}"},
                 ) as response:
                     response.raise_for_status()
@@ -683,7 +755,8 @@ class ResearchSupervisor:
             except Exception:
                 logger.warning(
                     "research.api_key_cleanup_failed run_id=%s",
-                    run["id"], exc_info = True,
+                    run["id"],
+                    exc_info = True,
                 )
 
     async def _process(self, run: dict) -> None:
@@ -703,14 +776,19 @@ class ResearchSupervisor:
             )
             fresh = await asyncio.to_thread(db.get_run, run["id"])
             if actual_status == "cancelled" and fresh:
-                await asyncio.to_thread(_update_assistant, fresh, "Research cancelled.", "cancelled")
+                await asyncio.to_thread(
+                    _update_assistant, fresh, "Research cancelled.", "cancelled"
+                )
         except LeaseLost:
             logger.warning("research.lease_lost run_id=%s", run["id"])
             actual_status = await self._finish_after_lease_loss(run["id"])
             fresh = await asyncio.to_thread(db.get_run, run["id"])
             if actual_status == "cancelled" and fresh:
                 await asyncio.to_thread(
-                    _update_assistant, fresh, "Research cancelled.", "cancelled",
+                    _update_assistant,
+                    fresh,
+                    "Research cancelled.",
+                    "cancelled",
                 )
             elif actual_status == "failed" and fresh:
                 await asyncio.to_thread(
@@ -779,16 +857,30 @@ class ResearchSupervisor:
         if not question:
             raise ValueError("User message has no text to research")
         max_steps = int(run["config"]["budgets"]["maxSteps"])
-        response, planning_reasoning, _finish_reason = await self._stream_completion(run, [
-            {"role": "system", "content": _planner_system_prompt(
-                max_steps, run["config"].get("websitePolicy"),
-            )},
-            {"role": "user", "content": question},
-        ], json_mode = True, report_progress = False, phase = "planning")
+        response, planning_reasoning, _finish_reason = await self._stream_completion(
+            run,
+            [
+                {
+                    "role": "system",
+                    "content": _planner_system_prompt(
+                        max_steps,
+                        run["config"].get("websitePolicy"),
+                    ),
+                },
+                {"role": "user", "content": question},
+            ],
+            json_mode = True,
+            report_progress = False,
+            phase = "planning",
+        )
         plan = _parse_and_validate_plan(response, planning_reasoning, max_steps)
         try:
             result = await asyncio.to_thread(
-                db.set_plan, run["id"], plan, None, self.worker_id,
+                db.set_plan,
+                run["id"],
+                plan,
+                None,
+                self.worker_id,
             )
         except db.ResearchConflictError:
             if await asyncio.to_thread(db.is_cancel_requested, run["id"]):
@@ -820,7 +912,9 @@ class ResearchSupervisor:
         )
         question = _extract_text(question_message or {})
         written = await asyncio.to_thread(
-            db.reset_execution_steps, run["id"], self.worker_id,
+            db.reset_execution_steps,
+            run["id"],
+            self.worker_id,
         )
         await self._check_worker_write(run["id"], written)
         for position in range(max_steps):
@@ -831,32 +925,46 @@ class ResearchSupervisor:
                 for source in sources
             )
             evidence = "\n\n".join(decision_notes)
-            decision, _decision_reasoning, _finish_reason = await self._stream_completion(run, [
-                {"role": "system", "content": (
-                    _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else "")
-                )},
-                {"role": "user", "content": (
-                    f"Question:\n{question}\n\n"
-                    f"Approved plan (guidance only):\n"
-                    f"{json.dumps(run['plan'], ensure_ascii=False)}\n\n"
-                    f"Actions remaining after this one: {max_steps - position - 1}\n"
-                    f"<untrusted_web_evidence>\n"
-                    f"Gathered sources:\n{source_catalog or '(none)'}\n\n"
-                    f"{evidence[-60000:] or '(none)'}\n"
-                    f"</untrusted_web_evidence>"
-                )},
-            ], json_mode = True, report_progress = False, phase = "decision",
-               step_position = position)
+            decision, _decision_reasoning, _finish_reason = await self._stream_completion(
+                run,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else "")
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Question:\n{question}\n\n"
+                            f"Approved plan (guidance only):\n"
+                            f"{json.dumps(run['plan'], ensure_ascii = False)}\n\n"
+                            f"Actions remaining after this one: {max_steps - position - 1}\n"
+                            f"<untrusted_web_evidence>\n"
+                            f"Gathered sources:\n{source_catalog or '(none)'}\n\n"
+                            f"{evidence[-60000:] or '(none)'}\n"
+                            f"</untrusted_web_evidence>"
+                        ),
+                    },
+                ],
+                json_mode = True,
+                report_progress = False,
+                phase = "decision",
+                step_position = position,
+            )
             try:
                 action = _validate_agent_action(
-                    _parse_json_object(decision), {source["url"] for source in sources},
+                    _parse_json_object(decision),
+                    {source["url"] for source in sources},
                     website_policy,
                 )
             except (ValueError, json.JSONDecodeError):
                 seed_steps = run["plan"].get("steps") or []
                 seed = next(
                     (
-                        step for step in seed_steps
+                        step
+                        for step in seed_steps
                         if str(step.get("query") or "").strip() not in used_queries
                     ),
                     None,
@@ -883,15 +991,26 @@ class ResearchSupervisor:
             if action["action"] == "fetch" and argument in fetched_urls:
                 continue
             written = await asyncio.to_thread(
-                db.upsert_execution_step, run["id"], position, action["title"],
-                argument, "running", None, self.worker_id,
+                db.upsert_execution_step,
+                run["id"],
+                position,
+                action["title"],
+                argument,
+                "running",
+                None,
+                self.worker_id,
             )
             await self._check_worker_write(run["id"], written)
             seq = await asyncio.to_thread(
                 db.append_worker_event,
-                run["id"], self.worker_id, "step.started", {
-                    "position": position, "stepPosition": position,
-                    "title": action["title"], "action": action["action"],
+                run["id"],
+                self.worker_id,
+                "step.started",
+                {
+                    "position": position,
+                    "stepPosition": position,
+                    "title": action["title"],
+                    "action": action["action"],
                     "input": argument,
                 },
             )
@@ -899,7 +1018,9 @@ class ResearchSupervisor:
             if action["action"] == "fetch":
                 fetched_urls.add(argument)
                 result = await asyncio.to_thread(
-                    execute_tool, "web_search", {"url": argument},
+                    execute_tool,
+                    "web_search",
+                    {"url": argument},
                     cancel_event = self._cancel_event(run["id"]),
                     timeout = tool_timeout,
                     website_policy = website_policy,
@@ -908,7 +1029,9 @@ class ResearchSupervisor:
             else:
                 used_queries.add(argument)
                 result = await asyncio.to_thread(
-                    execute_tool, "web_search", {"query": argument},
+                    execute_tool,
+                    "web_search",
+                    {"query": argument},
                     cancel_event = self._cancel_event(run["id"]),
                     timeout = tool_timeout,
                     website_policy = website_policy,
@@ -916,7 +1039,9 @@ class ResearchSupervisor:
                 rag_result = ""
                 if run["config"].get("ragScope"):
                     rag_result = await asyncio.to_thread(
-                        execute_tool, "search_knowledge_base", {"query": argument},
+                        execute_tool,
+                        "search_knowledge_base",
+                        {"query": argument},
                         cancel_event = self._cancel_event(run["id"]),
                         timeout = tool_timeout,
                         rag_scope = run["config"]["ragScope"],
@@ -929,7 +1054,8 @@ class ResearchSupervisor:
                     break
                 source = {k: match.group(k).strip() for k in ("title", "url", "snippet")}
                 allowed, _reason, _hostname = check_url_access(
-                    source["url"], website_policy,
+                    source["url"],
+                    website_policy,
                 )
                 if not allowed:
                     continue
@@ -939,8 +1065,13 @@ class ResearchSupervisor:
                 step_sources.append(source)
                 await self._check_active(run["id"])
                 written = await asyncio.to_thread(
-                    db.upsert_source, run["id"], position, source["url"],
-                    source["title"], source["snippet"], self.worker_id,
+                    db.upsert_source,
+                    run["id"],
+                    position,
+                    source["url"],
+                    source["title"],
+                    source["snippet"],
+                    self.worker_id,
                 )
                 await self._check_worker_write(run["id"], written)
             note = (
@@ -956,7 +1087,8 @@ class ResearchSupervisor:
             tool_failed = is_tool_error(result)
             clean_result = strip_result_for_model(result)
             step_result = {
-                "action": action["action"], "input": argument,
+                "action": action["action"],
+                "input": argument,
                 "sourceCount": len(step_sources),
                 "sourceUrls": [source["url"] for source in step_sources],
                 "evidenceSources": rag_sources,
@@ -965,17 +1097,28 @@ class ResearchSupervisor:
             }
             await self._check_active(run["id"])
             written = await asyncio.to_thread(
-                db.upsert_execution_step, run["id"], position, action["title"],
-                argument, "failed" if tool_failed else "completed", step_result,
+                db.upsert_execution_step,
+                run["id"],
+                position,
+                action["title"],
+                argument,
+                "failed" if tool_failed else "completed",
+                step_result,
                 self.worker_id,
             )
             await self._check_worker_write(run["id"], written)
             seq = await asyncio.to_thread(
-                db.append_worker_event, run["id"], self.worker_id,
-                "step.failed" if tool_failed else "step.completed", {
-                    "position": position, "stepPosition": position,
-                    "title": action["title"], "action": action["action"],
-                    "input": argument, "sourceCount": len(step_sources),
+                db.append_worker_event,
+                run["id"],
+                self.worker_id,
+                "step.failed" if tool_failed else "step.completed",
+                {
+                    "position": position,
+                    "stepPosition": position,
+                    "title": action["title"],
+                    "action": action["action"],
+                    "input": argument,
+                    "sourceCount": len(step_sources),
                     **({"error": clean_result[:500]} if tool_failed else {}),
                 },
             )
@@ -987,24 +1130,30 @@ class ResearchSupervisor:
             f"   Search snippet: {source.get('snippet') or '(none)'}"
             for index, source in enumerate(sources, 1)
         )
-        report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(run, [
-            {"role": "system", "content": _REPORT_SYSTEM_PROMPT},
-            {"role": "user", "content": (
-                f"<research_question>\n{_extract_text(question_message or {})}\n"
-                f"</research_question>\n\n"
-                f"<approved_plan>\n{json.dumps(run['plan'], ensure_ascii=False)}\n"
-                f"</approved_plan>\n\n"
-                f"<source_catalog>\n{source_catalog or '(no web sources gathered)'}\n"
-                f"</source_catalog>\n\n"
-                f"<untrusted_evidence>\n{'\n\n'.join(notes)}\n"
-                f"</untrusted_evidence>"
-            )},
-        ], phase = "synthesis", max_tokens = 16384)
+        report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
+            run,
+            [
+                {"role": "system", "content": _REPORT_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"<research_question>\n{_extract_text(question_message or {})}\n"
+                        f"</research_question>\n\n"
+                        f"<approved_plan>\n{json.dumps(run['plan'], ensure_ascii = False)}\n"
+                        f"</approved_plan>\n\n"
+                        f"<source_catalog>\n{source_catalog or '(no web sources gathered)'}\n"
+                        f"</source_catalog>\n\n"
+                        f"<untrusted_evidence>\n{'\n\n'.join(notes)}\n"
+                        f"</untrusted_evidence>"
+                    ),
+                },
+            ],
+            phase = "synthesis",
+            max_tokens = 16384,
+        )
         await self._check_active(run["id"])
         if synthesis_finish_reason == "length":
-            raise ValueError(
-                "Local model report reached its output limit before completion"
-            )
+            raise ValueError("Local model report reached its output limit before completion")
         if not report.strip():
             report = _recover_report_from_reasoning(synthesis_reasoning)
         if not report:
@@ -1020,7 +1169,12 @@ class ResearchSupervisor:
             await self._check_active(run["id"])
             raise LeaseLost()
         await asyncio.to_thread(
-            _update_assistant, run, report, "completed", sources, reasoning,
+            _update_assistant,
+            run,
+            report,
+            "completed",
+            sources,
+            reasoning,
             self.worker_id,
         )
         actual_status = await asyncio.to_thread(
@@ -1030,6 +1184,4 @@ class ResearchSupervisor:
             raise LeaseLost()
         run = await asyncio.to_thread(db.get_run, run["id"])
         if actual_status == "cancelled" and run:
-            await asyncio.to_thread(
-                _update_assistant, run, "Research cancelled.", "cancelled"
-            )
+            await asyncio.to_thread(_update_assistant, run, "Research cancelled.", "cancelled")

@@ -4101,7 +4101,8 @@ def _fetch_url_raw(
                 current_url = urljoin(current_url, location)
                 rp = urlparse(current_url)
                 allowed, policy_reason, redirect_host = check_url_access(
-                    current_url, website_policy,
+                    current_url,
+                    website_policy,
                 )
                 if not allowed:
                     return policy_reason, "", ""
@@ -4431,11 +4432,7 @@ def _web_search(
                 continue
             title = " ".join(str(r.get("title") or "").split())
             snippet = " ".join(str(r.get("body") or "").split())
-            parts.append(
-                f"Title: {title}\n"
-                f"URL: {href}\n"
-                f"Snippet: {snippet}"
-            )
+            parts.append(f"Title: {title}\n" f"URL: {href}\n" f"Snippet: {snippet}")
         if not parts:
             return "No results found within the website access limits."
         text = "\n\n---\n\n".join(parts)

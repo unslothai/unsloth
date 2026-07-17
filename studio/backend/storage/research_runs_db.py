@@ -74,11 +74,12 @@ def _commit_event(conn: sqlite3.Connection) -> None:
 
 
 def _worker_can_write_locked(
-    conn: sqlite3.Connection, run_id: str, worker_id: str, statuses: set[str],
+    conn: sqlite3.Connection, run_id: str, worker_id: str, statuses: set[str]
 ) -> bool:
     row = conn.execute(
         "SELECT status, lease_owner, lease_expires_at, cancel_requested "
-        "FROM research_runs WHERE id = ?", (run_id,),
+        "FROM research_runs WHERE id = ?",
+        (run_id,),
     ).fetchone()
     return bool(
         row is not None
@@ -105,13 +106,16 @@ def append_event(run_id: str, event_type: str, data: dict[str, Any]) -> int:
 
 
 def append_worker_event(
-    run_id: str, worker_id: str, event_type: str, data: dict[str, Any],
+    run_id: str, worker_id: str, event_type: str, data: dict[str, Any]
 ) -> int | None:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         if not _worker_can_write_locked(
-            conn, run_id, worker_id, {"planning", "running"},
+            conn,
+            run_id,
+            worker_id,
+            {"planning", "running"},
         ):
             conn.commit()
             return None
@@ -126,8 +130,14 @@ def append_worker_event(
 
 
 def create_run(
-    *, run_id: str, owner_subject: str, thread_id: str, user_message_id: str,
-    assistant_message_id: str | None, config: dict[str, Any], created_at: int | None = None,
+    *,
+    run_id: str,
+    owner_subject: str,
+    thread_id: str,
+    user_message_id: str,
+    assistant_message_id: str | None,
+    config: dict[str, Any],
+    created_at: int | None = None,
 ) -> dict:
     created = created_at or now_ms()
     conn = get_connection()
@@ -141,30 +151,34 @@ def create_run(
             )
         except sqlite3.IntegrityError as exc:
             claim = conn.execute(
-                "SELECT 1 FROM research_thread_claims "
-                "WHERE owner_subject=? AND thread_id=?",
+                "SELECT 1 FROM research_thread_claims WHERE owner_subject=? AND thread_id=?",
                 (owner_subject, thread_id),
             ).fetchone()
             if claim is not None:
-                raise ResearchConflictError(
-                    "This thread already has a Deep Research run"
-                ) from exc
+                raise ResearchConflictError("This thread already has a Deep Research run") from exc
             raise
         if assistant_message_id:
             message = conn.execute(
                 "SELECT * FROM chat_messages WHERE id=?", (assistant_message_id,)
             ).fetchone()
             metadata = {
-                "researchRunId": run_id, "researchStatus": "planning",
-                "researchPlanRevision": 0, "serverManaged": True,
+                "researchRunId": run_id,
+                "researchStatus": "planning",
+                "researchPlanRevision": 0,
+                "serverManaged": True,
             }
             if message is None:
                 conn.execute(
                     """INSERT INTO chat_messages
                        (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
                        VALUES (?, ?, ?, 'assistant', '[]', ?, ?)""",
-                    (assistant_message_id, thread_id, user_message_id,
-                     json.dumps(metadata, ensure_ascii = False), created),
+                    (
+                        assistant_message_id,
+                        thread_id,
+                        user_message_id,
+                        json.dumps(metadata, ensure_ascii = False),
+                        created,
+                    ),
                 )
                 conn.execute(
                     "UPDATE chat_threads SET updated_at=MAX(COALESCE(updated_at, created_at), ?) "
@@ -175,7 +189,8 @@ def create_run(
                 existing_metadata = _loads(message["metadata_json"], {})
                 existing_run_id = (
                     existing_metadata.get("researchRunId")
-                    if isinstance(existing_metadata, dict) else None
+                    if isinstance(existing_metadata, dict)
+                    else None
                 )
                 if (
                     message["thread_id"] != thread_id
@@ -186,7 +201,9 @@ def create_run(
                     raise ResearchConflictError(
                         "Assistant message does not match this research run"
                     )
-                merged_metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+                merged_metadata = (
+                    dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+                )
                 merged_metadata.update(metadata)
                 conn.execute(
                     "UPDATE chat_messages SET metadata_json=? WHERE id=?",
@@ -199,8 +216,16 @@ def create_run(
                  status, config_json, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, 'planning', ?, ?, ?)
             """,
-            (run_id, owner_subject, thread_id, user_message_id, assistant_message_id,
-             json.dumps(config, ensure_ascii = False), created, created),
+            (
+                run_id,
+                owner_subject,
+                thread_id,
+                user_message_id,
+                assistant_message_id,
+                json.dumps(config, ensure_ascii = False),
+                created,
+                created,
+            ),
         )
         _event_locked(conn, run_id, "run.created", {"status": "planning"})
         _commit_event(conn)
@@ -215,16 +240,25 @@ def create_run(
 def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     return {
-        "id": data["id"], "ownerSubject": data["owner_subject"],
-        "threadId": data["thread_id"], "userMessageId": data["user_message_id"],
-        "assistantMessageId": data["assistant_message_id"], "status": data["status"],
-        "plan": _loads(data["plan_json"], None), "planRevision": data["plan_revision"],
-        "planHash": data["plan_hash"], "config": _loads(data["config_json"], {}),
-        "cancelRequested": bool(data["cancel_requested"]), "retryCount": data["retry_count"],
-        "error": data["error_message"], "report": data.get("report_text"),
+        "id": data["id"],
+        "ownerSubject": data["owner_subject"],
+        "threadId": data["thread_id"],
+        "userMessageId": data["user_message_id"],
+        "assistantMessageId": data["assistant_message_id"],
+        "status": data["status"],
+        "plan": _loads(data["plan_json"], None),
+        "planRevision": data["plan_revision"],
+        "planHash": data["plan_hash"],
+        "config": _loads(data["config_json"], {}),
+        "cancelRequested": bool(data["cancel_requested"]),
+        "retryCount": data["retry_count"],
+        "error": data["error_message"],
+        "report": data.get("report_text"),
         "createdAt": data["created_at"],
-        "updatedAt": data["updated_at"], "startedAt": data["started_at"],
-        "completedAt": data["completed_at"], "heartbeatAt": data["heartbeat_at"],
+        "updatedAt": data["updated_at"],
+        "startedAt": data["started_at"],
+        "completedAt": data["completed_at"],
+        "heartbeatAt": data["heartbeat_at"],
         "lastEventSeq": int(data["next_event_seq"]) - 1,
     }
 
@@ -241,19 +275,26 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict | None:
         if row is None:
             return None
         result = _row_to_run(row)
-        result["steps"] = [dict(r) for r in conn.execute(
-            "SELECT position, title, query, status, result_json AS resultJson, "
-            "started_at AS startedAt, completed_at AS completedAt FROM research_plan_steps "
-            "WHERE run_id = ? ORDER BY position", (run_id,)
-        ).fetchall()]
+        result["steps"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT position, title, query, status, result_json AS resultJson, "
+                "started_at AS startedAt, completed_at AS completedAt FROM research_plan_steps "
+                "WHERE run_id = ? ORDER BY position",
+                (run_id,),
+            ).fetchall()
+        ]
         for step in result["steps"]:
             step["result"] = _loads(step.pop("resultJson"), None)
             step["input"] = step["query"]
-        result["sources"] = [dict(r) for r in conn.execute(
-            "SELECT id, step_position AS stepPosition, url, title, snippet, "
-            "fetched_at AS fetchedAt FROM research_sources WHERE run_id = ? ORDER BY id",
-            (run_id,),
-        ).fetchall()]
+        result["sources"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, step_position AS stepPosition, url, title, snippet, "
+                "fetched_at AS fetchedAt FROM research_sources WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        ]
         return result
     finally:
         conn.close()
@@ -276,11 +317,13 @@ def list_active(owner_subject: str, thread_id: str) -> list[dict]:
 def has_thread_claim(owner_subject: str, thread_id: str) -> bool:
     conn = get_connection()
     try:
-        return conn.execute(
-            "SELECT 1 FROM research_thread_claims "
-            "WHERE owner_subject=? AND thread_id=?",
-            (owner_subject, thread_id),
-        ).fetchone() is not None
+        return (
+            conn.execute(
+                "SELECT 1 FROM research_thread_claims WHERE owner_subject=? AND thread_id=?",
+                (owner_subject, thread_id),
+            ).fetchone()
+            is not None
+        )
     finally:
         conn.close()
 
@@ -330,7 +373,11 @@ def discover_and_bind_assistant_message(run_id: str) -> str | None:
 
 
 def create_and_bind_terminal_fallback(
-    run_id: str, *, text: str, status: str, sources: list[dict] | None = None,
+    run_id: str,
+    *,
+    text: str,
+    status: str,
+    sources: list[dict] | None = None,
     completion_worker_id: str | None = None,
 ) -> tuple[str, bool]:
     """Discover a frontend message or atomically create exactly one fallback."""
@@ -361,28 +408,38 @@ def create_and_bind_terminal_fallback(
             return message_id, False
 
         message_id = f"research-{run_id}"
-        parts: list[dict[str, Any]] = [
-            {"type": "text", "text": text, "researchRunId": run_id}
-        ]
+        parts: list[dict[str, Any]] = [{"type": "text", "text": text, "researchRunId": run_id}]
         for source in sources or []:
-            parts.append({
-                "type": "source", "sourceType": "url", "id": source["url"],
-                "url": source["url"], "title": source.get("title") or source["url"],
-                "metadata": {"description": source.get("snippet") or ""},
-                "researchRunId": run_id,
-            })
+            parts.append(
+                {
+                    "type": "source",
+                    "sourceType": "url",
+                    "id": source["url"],
+                    "url": source["url"],
+                    "title": source.get("title") or source["url"],
+                    "metadata": {"description": source.get("snippet") or ""},
+                    "researchRunId": run_id,
+                }
+            )
         metadata = {
-            "researchRunId": run_id, "researchStatus": status,
-            "researchPlanRevision": int(run["plan_revision"]), "serverManaged": True,
+            "researchRunId": run_id,
+            "researchStatus": status,
+            "researchPlanRevision": int(run["plan_revision"]),
+            "serverManaged": True,
         }
         created = now_ms()
         conn.execute(
             """INSERT INTO chat_messages
                (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
                VALUES (?, ?, ?, 'assistant', ?, ?, ?)""",
-            (message_id, run["thread_id"], run["user_message_id"],
-             json.dumps(parts, ensure_ascii = False),
-             json.dumps(metadata, ensure_ascii = False), created),
+            (
+                message_id,
+                run["thread_id"],
+                run["user_message_id"],
+                json.dumps(parts, ensure_ascii = False),
+                json.dumps(metadata, ensure_ascii = False),
+                created,
+            ),
         )
         conn.execute(
             "UPDATE research_runs SET assistant_message_id=?, updated_at=? WHERE id=?",
@@ -409,7 +466,9 @@ def create_and_bind_terminal_fallback(
 
 
 def set_plan(
-    run_id: str, plan: dict, expected_revision: int | None = None,
+    run_id: str,
+    plan: dict,
+    expected_revision: int | None = None,
     worker_id: str | None = None,
 ) -> dict:
     raw, digest = canonical_plan(plan)
@@ -419,7 +478,8 @@ def set_plan(
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT status, plan_revision, lease_owner, lease_expires_at, cancel_requested "
-            "FROM research_runs WHERE id = ?", (run_id,)
+            "FROM research_runs WHERE id = ?",
+            (run_id,),
         ).fetchone()
         if row is None:
             raise KeyError(run_id)
@@ -446,13 +506,22 @@ def set_plan(
         conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
         conn.executemany(
             "INSERT INTO research_plan_steps (run_id, position, title, query) VALUES (?, ?, ?, ?)",
-            [(run_id, i, str(s["title"]), str(s.get("query") or s["title"]))
-             for i, s in enumerate(steps)],
+            [
+                (run_id, i, str(s["title"]), str(s.get("query") or s["title"]))
+                for i, s in enumerate(steps)
+            ],
         )
-        _event_locked(conn, run_id, "plan.ready", {
-            "status": "awaiting_approval", "plan": plan,
-            "planRevision": revision, "planHash": digest,
-        })
+        _event_locked(
+            conn,
+            run_id,
+            "plan.ready",
+            {
+                "status": "awaiting_approval",
+                "plan": plan,
+                "planRevision": revision,
+                "planHash": digest,
+            },
+        )
         _commit_event(conn)
         return {"plan": plan, "planRevision": revision, "planHash": digest}
     except Exception:
@@ -503,11 +572,14 @@ def request_cancel(run_id: str) -> str:
         if status in TERMINAL_STATUSES or status == "cancelling":
             conn.commit()
             return status
-        new_status = "cancelled" if status in {"awaiting_approval", "queued", "paused"} else "cancelling"
+        new_status = (
+            "cancelled" if status in {"awaiting_approval", "queued", "paused"} else "cancelling"
+        )
         completed = now_ms() if new_status == "cancelled" else None
         conn.execute(
             "UPDATE research_runs SET cancel_requested = 1, status = ?, completed_at = ?, "
-            "updated_at = ? WHERE id = ?", (new_status, completed, now_ms(), run_id),
+            "updated_at = ? WHERE id = ?",
+            (new_status, completed, now_ms(), run_id),
         )
         event_type = "run.cancelled" if new_status == "cancelled" else "run.cancelRequested"
         _event_locked(conn, run_id, event_type, {"status": new_status})
@@ -526,7 +598,8 @@ def retry(run_id: str, max_retries: int = 3) -> str:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT status, retry_count, plan_json, owner_subject, thread_id "
-            "FROM research_runs WHERE id = ?", (run_id,)
+            "FROM research_runs WHERE id = ?",
+            (run_id,),
         ).fetchone()
         if row is None:
             raise KeyError(run_id)
@@ -544,19 +617,25 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise ResearchConflictError("This thread already has an active research run")
         plan_was_approved = False
         if row["plan_json"]:
-            plan_was_approved = conn.execute(
-                "SELECT 1 FROM research_events WHERE run_id=? AND event_type='run.approved' LIMIT 1",
-                (run_id,),
-            ).fetchone() is not None
+            plan_was_approved = (
+                conn.execute(
+                    "SELECT 1 FROM research_events WHERE run_id=? AND event_type='run.approved' LIMIT 1",
+                    (run_id,),
+                ).fetchone()
+                is not None
+            )
         status = (
-            "queued" if plan_was_approved
-            else "awaiting_approval" if row["plan_json"]
+            "queued"
+            if plan_was_approved
+            else "awaiting_approval"
+            if row["plan_json"]
             else "planning"
         )
         conn.execute(
             "UPDATE research_runs SET status = ?, cancel_requested = 0, retry_count = retry_count + 1, "
             "error_message = NULL, report_text = NULL, completed_at = NULL, lease_owner = NULL, "
-            "lease_expires_at = NULL, updated_at = ? WHERE id = ?", (status, now_ms(), run_id),
+            "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+            (status, now_ms(), run_id),
         )
         if status != "awaiting_approval":
             conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
@@ -580,15 +659,18 @@ def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
             """SELECT * FROM research_runs
                WHERE status IN ('planning','queued','running','cancelling')
                  AND (lease_owner IS NULL OR lease_expires_at < ?)
-               ORDER BY created_at LIMIT 1""", (now,),
+               ORDER BY created_at LIMIT 1""",
+            (now,),
         ).fetchone()
         if row is None:
             conn.commit()
             return None
         status = row["status"]
         next_status = (
-            "running" if status in {"queued", "running"}
-            else "cancelling" if status == "cancelling"
+            "running"
+            if status in {"queued", "running"}
+            else "cancelling"
+            if status == "cancelling"
             else "planning"
         )
         conn.execute(
@@ -606,7 +688,11 @@ def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
         conn.close()
 
 
-def heartbeat(run_id: str, worker_id: str, lease_ms: int = 120_000) -> bool:
+def heartbeat(
+    run_id: str,
+    worker_id: str,
+    lease_ms: int = 120_000,
+) -> bool:
     conn = get_connection()
     try:
         now = now_ms()
@@ -633,8 +719,12 @@ def is_cancel_requested(run_id: str) -> bool:
 
 
 def finish(
-    run_id: str, worker_id: str, status: str, error: str | None = None,
-    event_payload: dict[str, Any] | None = None, allow_expired: bool = False,
+    run_id: str,
+    worker_id: str,
+    status: str,
+    error: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+    allow_expired: bool = False,
 ) -> str | None:
     if status not in TERMINAL_STATUSES:
         raise ValueError(status)
@@ -687,7 +777,9 @@ def finish(
 
 
 def set_report_progress(
-    run_id: str, report: str, delta: str | None = None,
+    run_id: str,
+    report: str,
+    delta: str | None = None,
     worker_id: str | None = None,
 ) -> bool:
     """Persist partial report text and notify followers while synthesis runs."""
@@ -702,8 +794,10 @@ def set_report_progress(
         if (
             row is None
             or row["status"] != "running"
-            or worker_id is not None and (
-                row["lease_owner"] != worker_id or bool(row["cancel_requested"])
+            or worker_id is not None
+            and (
+                row["lease_owner"] != worker_id
+                or bool(row["cancel_requested"])
                 or row["lease_expires_at"] is None
                 or int(row["lease_expires_at"]) < now_ms()
             )
@@ -728,7 +822,12 @@ def set_report_progress(
         conn.close()
 
 
-def update_step(run_id: str, position: int, status: str, result: Any = None) -> None:
+def update_step(
+    run_id: str,
+    position: int,
+    status: str,
+    result: Any = None,
+) -> None:
     conn = get_connection()
     try:
         now = now_ms()
@@ -737,8 +836,16 @@ def update_step(run_id: str, position: int, status: str, result: Any = None) -> 
             "started_at=CASE WHEN ?='running' THEN COALESCE(started_at, ?) ELSE started_at END, "
             "completed_at=CASE WHEN ? IN ('completed','failed') THEN ? ELSE completed_at END "
             "WHERE run_id=? AND position=?",
-            (status, json.dumps(result, ensure_ascii = False) if result is not None else None,
-             status, now, status, now, run_id, position),
+            (
+                status,
+                json.dumps(result, ensure_ascii = False) if result is not None else None,
+                status,
+                now,
+                status,
+                now,
+                run_id,
+                position,
+            ),
         )
         conn.commit()
     finally:
@@ -750,7 +857,10 @@ def reset_execution_steps(run_id: str, worker_id: str | None = None) -> bool:
     try:
         conn.execute("BEGIN IMMEDIATE")
         if worker_id is not None and not _worker_can_write_locked(
-            conn, run_id, worker_id, {"running"},
+            conn,
+            run_id,
+            worker_id,
+            {"running"},
         ):
             conn.commit()
             return False
@@ -765,14 +875,22 @@ def reset_execution_steps(run_id: str, worker_id: str | None = None) -> bool:
 
 
 def upsert_execution_step(
-    run_id: str, position: int, title: str, query: str, status: str,
-    result: Any = None, worker_id: str | None = None,
+    run_id: str,
+    position: int,
+    title: str,
+    query: str,
+    status: str,
+    result: Any = None,
+    worker_id: str | None = None,
 ) -> bool:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         if worker_id is not None and not _worker_can_write_locked(
-            conn, run_id, worker_id, {"running"},
+            conn,
+            run_id,
+            worker_id,
+            {"running"},
         ):
             conn.commit()
             return False
@@ -787,9 +905,14 @@ def upsert_execution_step(
                  started_at=COALESCE(research_plan_steps.started_at, excluded.started_at),
                  completed_at=excluded.completed_at""",
             (
-                run_id, position, title[:200], query[:500], status,
+                run_id,
+                position,
+                title[:200],
+                query[:500],
+                status,
                 json.dumps(result, ensure_ascii = False) if result is not None else None,
-                now, now if status in {"completed", "failed"} else None,
+                now,
+                now if status in {"completed", "failed"} else None,
             ),
         )
         conn.commit()
@@ -804,9 +927,7 @@ def upsert_execution_step(
 def get_reasoning_text(run_id: str) -> str:
     conn = get_connection()
     try:
-        run = conn.execute(
-            "SELECT retry_count FROM research_runs WHERE id=?", (run_id,)
-        ).fetchone()
+        run = conn.execute("SELECT retry_count FROM research_runs WHERE id=?", (run_id,)).fetchone()
         if run is None:
             return ""
         attempt = int(run["retry_count"])
@@ -825,26 +946,35 @@ def get_reasoning_text(run_id: str) -> str:
 
 
 def upsert_source(
-    run_id: str, position: int, url: str, title: str, snippet: str,
+    run_id: str,
+    position: int,
+    url: str,
+    title: str,
+    snippet: str,
     worker_id: str | None = None,
 ) -> bool:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         if worker_id is not None and not _worker_can_write_locked(
-            conn, run_id, worker_id, {"running"},
+            conn,
+            run_id,
+            worker_id,
+            {"running"},
         ):
             conn.commit()
             return False
         run = conn.execute(
-            "SELECT config_json FROM research_runs WHERE id=?", (run_id,),
+            "SELECT config_json FROM research_runs WHERE id=?",
+            (run_id,),
         ).fetchone()
         if run is None:
             conn.commit()
             return False
         config = _loads(run["config_json"], {})
         allowed, reason, _hostname = check_url_access(
-            url, config.get("websitePolicy") if isinstance(config, dict) else None,
+            url,
+            config.get("websitePolicy") if isinstance(config, dict) else None,
         )
         if not allowed:
             raise ValueError(reason)
@@ -857,10 +987,19 @@ def upsert_source(
                snippet=excluded.snippet, fetched_at=excluded.fetched_at""",
             (run_id, position, url, title[:500], snippet[:4000], fetched_at),
         )
-        _event_locked(conn, run_id, "source.added", {
-            "position": position, "stepPosition": position, "url": url,
-            "title": title[:500], "snippet": snippet[:4000], "fetchedAt": fetched_at,
-        })
+        _event_locked(
+            conn,
+            run_id,
+            "source.added",
+            {
+                "position": position,
+                "stepPosition": position,
+                "url": url,
+                "title": title[:500],
+                "snippet": snippet[:4000],
+                "fetchedAt": fetched_at,
+            },
+        )
         _commit_event(conn)
         return True
     except Exception:
@@ -870,7 +1009,12 @@ def upsert_source(
         conn.close()
 
 
-def list_events(run_id: str, owner_subject: str, after: int = 0, limit: int = 1000) -> list[dict]:
+def list_events(
+    run_id: str,
+    owner_subject: str,
+    after: int = 0,
+    limit: int = 1000,
+) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -879,14 +1023,24 @@ def list_events(run_id: str, owner_subject: str, after: int = 0, limit: int = 10
                WHERE e.run_id=? AND r.owner_subject=? AND e.seq>? ORDER BY e.seq LIMIT ?""",
             (run_id, owner_subject, after, limit),
         ).fetchall()
-        return [{"seq": r["seq"], "type": r["event_type"],
-                 "data": _loads(r["data_json"], {}), "createdAt": r["created_at"]} for r in rows]
+        return [
+            {
+                "seq": r["seq"],
+                "type": r["event_type"],
+                "data": _loads(r["data_json"], {}),
+                "createdAt": r["created_at"],
+            }
+            for r in rows
+        ]
     finally:
         conn.close()
 
 
 def wait_for_events(
-    run_id: str, owner_subject: str, after: int = 0, timeout: float = 15,
+    run_id: str,
+    owner_subject: str,
+    after: int = 0,
+    timeout: float = 15,
 ) -> list[dict]:
     """Block until committed events are available or the keep-alive timeout expires."""
     events = list_events(run_id, owner_subject, after)
@@ -909,7 +1063,8 @@ def recover_expired(now: int | None = None) -> int:
         cur = conn.execute(
             """UPDATE research_runs SET lease_owner=NULL, lease_expires_at=NULL, updated_at=?
                WHERE status IN ('planning','queued','running','cancelling')
-                 AND lease_owner IS NOT NULL AND lease_expires_at < ?""", (now, now),
+                 AND lease_owner IS NOT NULL AND lease_expires_at < ?""",
+            (now, now),
         )
         conn.commit()
         return cur.rowcount

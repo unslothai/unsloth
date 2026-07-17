@@ -548,6 +548,7 @@ async def lifespan(app: FastAPI):
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
     from core.research_runs import ResearchSupervisor
+
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
 
@@ -964,9 +965,7 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
-app.include_router(
-    research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"]
-)
+app.include_router(research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.

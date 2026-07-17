@@ -75,13 +75,18 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
     if not message_id:
         if run["status"] not in db.TERMINAL_STATUSES:
             return
-        fallback_text = text or {
-            "cancelled": "Research cancelled.",
-            "failed": f"Research failed: {run.get('error') or 'Unknown error'}",
-            "completed": "Research completed.",
-        }[run["status"]]
+        fallback_text = (
+            text
+            or {
+                "cancelled": "Research cancelled.",
+                "failed": f"Research failed: {run.get('error') or 'Unknown error'}",
+                "completed": "Research completed.",
+            }[run["status"]]
+        )
         message_id, created = db.create_and_bind_terminal_fallback(
-            run["id"], text = fallback_text, status = run["status"],
+            run["id"],
+            text = fallback_text,
+            status = run["status"],
         )
         if created:
             return
@@ -90,18 +95,28 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
         return
     content = message.get("content") if isinstance(message.get("content"), list) else []
     if text is not None:
-        content = [part for part in content if not (
-            isinstance(part, dict) and part.get("researchRunId") == run["id"]
-        )]
+        content = [
+            part
+            for part in content
+            if not (isinstance(part, dict) and part.get("researchRunId") == run["id"])
+        ]
         content.append({"type": "text", "text": text, "researchRunId": run["id"]})
     metadata = dict(message.get("metadata") or {})
-    metadata.update({
-        "researchRunId": run["id"], "researchStatus": run["status"],
-        "researchPlanRevision": run["planRevision"], "serverManaged": True,
-    })
-    upsert_chat_message({
-        **message, "content": content, "metadata": metadata,
-    })
+    metadata.update(
+        {
+            "researchRunId": run["id"],
+            "researchStatus": run["status"],
+            "researchPlanRevision": run["planRevision"],
+            "serverManaged": True,
+        }
+    )
+    upsert_chat_message(
+        {
+            **message,
+            "content": content,
+            "metadata": metadata,
+        }
+    )
 
 
 def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
@@ -115,12 +130,18 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             detail = "Durable research currently supports only the selected local Studio model",
         )
     allowed = {
-        "model", "temperature", "topP", "maxTokens", "enableThinking", "reasoningEffort",
+        "model",
+        "temperature",
+        "topP",
+        "maxTokens",
+        "enableThinking",
+        "reasoningEffort",
     }
     unknown = set(request) - allowed
     if unknown:
         raise HTTPException(
-            status_code = 400, detail = f"Unsupported inferenceRequest fields: {', '.join(sorted(unknown))}"
+            status_code = 400,
+            detail = f"Unsupported inferenceRequest fields: {', '.join(sorted(unknown))}",
         )
     model = str(request.get("model") or thread.get("modelId") or "").strip()
     if not model:
@@ -144,7 +165,13 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         if "reasoningEffort" in request:
             request["reasoningEffort"] = str(request["reasoningEffort"])
             if request["reasoningEffort"] not in {
-                "none", "minimal", "low", "medium", "high", "max", "xhigh",
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "max",
+                "xhigh",
             }:
                 raise ValueError
     except (TypeError, ValueError) as exc:
@@ -152,14 +179,22 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     rag_scope = payload.ragScope
     if rag_scope is not None:
         allowed_rag = {
-            "kb_id", "thread_id", "project_id", "default_top_k", "mode",
-            "autoinject", "autoinject_min_score", "whole_doc",
+            "kb_id",
+            "thread_id",
+            "project_id",
+            "default_top_k",
+            "mode",
+            "autoinject",
+            "autoinject_min_score",
+            "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
         if unknown_rag or any(_SENSITIVE_KEY.search(str(key)) for key in rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
     budgets = {
-        "maxSteps": 12, "maxSources": 40, "modelTimeoutSeconds": 900,
+        "maxSteps": 12,
+        "maxSources": 40,
+        "modelTimeoutSeconds": 900,
         "toolTimeoutSeconds": 120,
     }
     for key, value in (payload.budgets or {}).items():
@@ -167,8 +202,10 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             raise HTTPException(status_code = 400, detail = f"Unsupported budget: {key}")
         budgets[key] = int(value)
     limits = {
-        "maxSteps": (1, _MAX_PLAN_STEPS), "maxSources": (1, 100),
-        "modelTimeoutSeconds": (10, 3600), "toolTimeoutSeconds": (5, 600),
+        "maxSteps": (1, _MAX_PLAN_STEPS),
+        "maxSources": (1, 100),
+        "modelTimeoutSeconds": (10, 3600),
+        "toolTimeoutSeconds": (5, 600),
     }
     for key, (minimum, maximum) in limits.items():
         if not minimum <= budgets[key] <= maximum:
@@ -179,13 +216,19 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         website_policy = normalize_website_policy(payload.websitePolicy)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    return {"model": model, "inferenceRequest": request, "ragScope": rag_scope,
-            "budgets": budgets, "websitePolicy": website_policy}
+    return {
+        "model": model,
+        "inferenceRequest": request,
+        "ragScope": rag_scope,
+        "budgets": budgets,
+        "websitePolicy": website_policy,
+    }
 
 
 @router.post("", status_code = 202)
 async def create_research_run(
-    payload: CreateResearchRun, request: Request,
+    payload: CreateResearchRun,
+    request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     thread = get_chat_thread(payload.threadId)
@@ -193,7 +236,9 @@ async def create_research_run(
         raise HTTPException(status_code = 404, detail = "Thread not found")
     user_message = get_chat_message(payload.threadId, payload.userMessageId)
     if user_message is None or user_message.get("role") != "user":
-        raise HTTPException(status_code = 400, detail = "userMessageId must identify a user message in the thread")
+        raise HTTPException(
+            status_code = 400, detail = "userMessageId must identify a user message in the thread"
+        )
     if db.has_thread_claim(current_subject, payload.threadId):
         raise HTTPException(
             status_code = 409,
@@ -204,8 +249,11 @@ async def create_research_run(
     assistant_id = payload.assistantMessageId
     try:
         run = db.create_run(
-            run_id = run_id, owner_subject = current_subject, thread_id = payload.threadId,
-            user_message_id = payload.userMessageId, assistant_message_id = assistant_id,
+            run_id = run_id,
+            owner_subject = current_subject,
+            thread_id = payload.threadId,
+            user_message_id = payload.userMessageId,
+            assistant_message_id = assistant_id,
             config = config,
         )
     except db.ResearchConflictError as exc:
@@ -219,8 +267,7 @@ async def create_research_run(
 
 @router.get("/active")
 async def active_research_runs(
-    thread_id: str = Query(alias = "threadId"),
-    current_subject: str = Depends(get_current_subject),
+    thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {
         "runs": db.list_active(current_subject, thread_id),
@@ -235,7 +282,9 @@ async def get_research_run(run_id: str, current_subject: str = Depends(get_curre
 
 @router.put("/{run_id}/plan")
 async def update_research_plan(
-    run_id: str, payload: UpdatePlan, current_subject: str = Depends(get_current_subject),
+    run_id: str,
+    payload: UpdatePlan,
+    current_subject: str = Depends(get_current_subject),
 ):
     _require_run(run_id, current_subject)
     try:
@@ -249,7 +298,9 @@ async def update_research_plan(
 
 @router.post("/{run_id}/approve")
 async def approve_research_plan(
-    run_id: str, payload: ApprovePlan, request: Request,
+    run_id: str,
+    payload: ApprovePlan,
+    request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     _require_run(run_id, current_subject)
@@ -268,7 +319,8 @@ async def approve_research_plan(
 
 @router.post("/{run_id}/cancel")
 async def cancel_research_run(
-    run_id: str, request: Request,
+    run_id: str,
+    request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     _require_run(run_id, current_subject)
@@ -283,7 +335,9 @@ async def cancel_research_run(
 
 @router.post("/{run_id}/retry")
 async def retry_research_run(
-    run_id: str, request: Request, current_subject: str = Depends(get_current_subject),
+    run_id: str,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     _require_run(run_id, current_subject)
     try:
@@ -301,7 +355,9 @@ async def retry_research_run(
 
 @router.get("/{run_id}/events")
 async def research_events(
-    run_id: str, request: Request, after: int | None = Query(None, ge = 0),
+    run_id: str,
+    request: Request,
+    after: int | None = Query(None, ge = 0),
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -313,7 +369,11 @@ async def research_events(
         nonlocal cursor
         while True:
             events = await asyncio.to_thread(
-                db.wait_for_events, run_id, current_subject, cursor, 15,
+                db.wait_for_events,
+                run_id,
+                current_subject,
+                cursor,
+                15,
             )
             snapshot = await asyncio.to_thread(db.get_run, run_id, current_subject)
             if snapshot is None:
@@ -325,9 +385,8 @@ async def research_events(
                 event_data["run"] = snapshot
                 data = json.dumps(event_data, separators = (",", ":"), ensure_ascii = False)
                 yield f"id: {cursor}\nevent: {event['type']}\ndata: {data}\n\n"
-            if (
-                snapshot["status"] in db.TERMINAL_STATUSES
-                and cursor >= int(snapshot["lastEventSeq"])
+            if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
+                snapshot["lastEventSeq"]
             ):
                 return
             if await request.is_disconnected():
@@ -336,6 +395,7 @@ async def research_events(
                 yield ": keep-alive\n\n"
 
     return StreamingResponse(
-        stream(), media_type = "text/event-stream",
+        stream(),
+        media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

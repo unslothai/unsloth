@@ -90,9 +90,7 @@ def hostname_allowed(hostname: str, policy: dict[str, Any] | None) -> bool:
     return not allowed or any(_matches_domain(host, domain) for domain in allowed)
 
 
-def check_url_access(
-    url: str, policy: dict[str, Any] | None,
-) -> tuple[bool, str, str]:
+def check_url_access(url: str, policy: dict[str, Any] | None) -> tuple[bool, str, str]:
     """Return ``(allowed, reason, canonical_hostname)`` for an HTTP(S) URL."""
     if not isinstance(url, str) or not url.strip():
         return False, "Blocked: URL is empty.", ""
@@ -129,13 +127,9 @@ def website_policy_prompt(policy: dict[str, Any] | None) -> str:
         )
     if blocked:
         lines.append(
-            "Never search or fetch these domains or their subdomains: "
-            + ", ".join(blocked)
-            + "."
+            "Never search or fetch these domains or their subdomains: " + ", ".join(blocked) + "."
         )
-    lines.append(
-        "Blocked search results are unavailable; do not try to work around these limits."
-    )
+    lines.append("Blocked search results are unavailable; do not try to work around these limits.")
     return "\n".join(lines)
 
 

@@ -6,13 +6,13 @@ FRONTEND = ROOT / "studio" / "frontend" / "src"
 
 
 def source(path: str) -> str:
-    return (FRONTEND / path).read_text(encoding="utf-8")
+    return (FRONTEND / path).read_text(encoding = "utf-8")
 
 
 def test_research_api_is_isolated_and_cursor_based() -> None:
     api = source("features/chat/api/research-api.ts")
     assert 'authFetch("/api/chat/research-runs"' in api
-    assert 'authFetch(`/api/chat/research-runs/active?${query}`)' in api
+    assert "authFetch(`/api/chat/research-runs/active?${query}`)" in api
     assert "const { runs, hasRun }" in api
     assert "runs.at(-1) ?? null" in api
     assert "getResearchThreadState" in api
@@ -94,7 +94,7 @@ def test_research_presentation_is_integrated() -> None:
     assert "ResearchActivityPanel" in page
     assert "ResearchActivitySheet" in page
     assert "ResearchActivityPanel" in chat_index
-    assert "role=\"log\"" in activity
+    assert 'role="log"' in activity
     assert "Review the research plan" in activity
     assert "Start research" in activity
     assert "cancelResearchRun" in thread
@@ -124,7 +124,7 @@ def test_research_presentation_is_integrated() -> None:
     assert "useResearchActivityScroll" in activity
     assert "MutationObserver" in activity
     assert "[overflow-anchor:none]" in activity
-    assert "behavior: \"smooth\"" not in activity
+    assert 'behavior: "smooth"' not in activity
     assert "collapsible={showArtifactPanel}" in page
     assert "!artifactLayoutActive &&" in page
     assert '? "30%"' in page
