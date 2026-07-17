@@ -3,11 +3,23 @@
 
 export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
+  addScanFolder,
+  browseFolders,
+  deleteCachedModel,
+  deleteFineTunedModel,
+  fetchGgufContextLength,
   getInferenceStatus,
   listGgufVariants,
   listLocalModels,
+  listRecommendedFolders,
+  listScanFolders,
   loadModel,
+  removeScanFolder,
+  type BrowseFoldersResponse,
+  type CachedGgufRepo,
+  type CachedModelRepo,
   type LocalModelInfo,
+  type ScanFolderInfo,
 } from "./api/chat-api";
 export type { GgufVariantDetail } from "./types/api";
 export {
@@ -17,6 +29,10 @@ export {
   type Preset,
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  normalizeSpeculativeType,
+  readPersistedSpeculativeType,
+} from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,
   toolOutputKey,
@@ -37,9 +53,11 @@ export {
 } from "./hooks/use-chat-model-runtime";
 export {
   customProviderDisplayName,
+  isCustomProviderType,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { ChatSearchDialog } from "./components/chat-search-dialog";
 export { setTrainingCompareHandoff } from "./lib/training-compare-handoff";

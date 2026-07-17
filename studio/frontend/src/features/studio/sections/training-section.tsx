@@ -53,7 +53,6 @@ export function TrainingSection() {
     ((!store.isVisionModel && store.isDatasetImage === true) ||
       (!store.isAudioModel && store.isDatasetAudio === true));
   const configValidation = validateTrainingConfig(store);
-  const hasMessage = !!(startError || isIncompatible || (!configValidation.ok && configValidation.message));
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -125,7 +124,7 @@ export function TrainingSection() {
         title={t("studio.training.title")}
         description={t("studio.training.description")}
         accent="blue"
-        className={hasMessage ? "min-h-studio-config-column" : "h-studio-config-column"}
+        className="min-h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
         {/* Loss chart */}
