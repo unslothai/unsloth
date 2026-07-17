@@ -370,6 +370,14 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
+    # Clear any stale tokenizer.model left in this reusable directory by an earlier
+    # call. A fast-only tokenizer writes no tokenizer.model, so without this the guard
+    # below could pass on a previous sentencepiece tokenizer's file and patch the wrong
+    # model (e.g. mixing models in one process, like a long-running server).
+    old_model_path = f"{temporary_location}/tokenizer.model"
+    if os.path.isfile(old_model_path):
+        os.remove(old_model_path)
+
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
 

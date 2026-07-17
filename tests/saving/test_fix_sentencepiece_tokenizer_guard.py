@@ -132,3 +132,32 @@ def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path,
     )
 
     assert result is new
+
+
+def test_stale_model_from_a_previous_call_does_not_poison_a_fast_only_call(
+    tmp_path, monkeypatch
+):
+    """The temporary directory defaults to a fixed, reusable location. A prior
+    sentencepiece call leaves a tokenizer.model there; a fast-only tokenizer
+    saved afterwards writes none, so without clearing the stale file the guard
+    would pass on the previous model and patch the wrong tokenizer.
+    """
+    _stub_auto_tokenizer(monkeypatch)
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+
+    # Call 1: a real sentencepiece tokenizer, writes a tokenizer.model.
+    old_sp, new_sp = _tokenizers()
+    fix_sentencepiece_tokenizer(
+        old_sp, new_sp, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
+    assert os.path.isfile(f"{location}/tokenizer.model")
+
+    # Call 2: a fast-only tokenizer reusing the SAME directory must be returned
+    # untouched, not reloaded from call 1's stale model.
+    old_fast = _FakeTokenizer("fast", spm_bytes = None, vocab = {"</s>": 2})
+    new_fast = _FakeTokenizer("fast_new")
+    result = fix_sentencepiece_tokenizer(
+        old_fast, new_fast, {"</s>": "<|special|>"}, temporary_location = location
+    )
+
+    assert result is new_fast
