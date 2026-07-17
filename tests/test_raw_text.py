@@ -295,7 +295,57 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
     return True
 
 
+def test_load_from_file_skips_non_object_json_lines():
+    """A .jsonl line can be any valid JSON value, not only an object.
+
+    `json.loads` happily returns a str/list/int, and `_extract_text_from_json`
+    then does `field in data`, which is a substring/membership test rather than
+    a key lookup — so `data[field]` raises TypeError. Malformed lines are
+    already skipped via JSONDecodeError; well-formed ones must be too.
+    """
+
+    class MockTokenizerJson:
+        def __init__(self):
+            self.eos_token = "</s>"
+            self.eos_token_id = 2
+
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": list(range(len(text.split())))}
+
+        def decode(
+            self,
+            token_ids,
+            skip_special_tokens = False,
+        ):
+            return " ".join(f"word_{i}" for i in token_ids)
+
+    usable_line = '{"text": "hello world this is a usable line"}'
+    # "context" contains "text"; ["text"] contains "text"; 42 is not iterable.
+    for label, junk_line in [
+        ("string", '"context"'),
+        ("list", '["text", "foo"]'),
+        ("number", "42"),
+    ]:
+        with tempfile.NamedTemporaryFile("w", suffix = ".jsonl", delete = False) as f:
+            f.write(junk_line + "\n" + usable_line + "\n")
+            path = f.name
+        try:
+            loader = RawTextDataLoader(MockTokenizerJson())
+            loader.load_from_file(path)
+        finally:
+            os.unlink(path)
+
+    print("✅ test_load_from_file_skips_non_object_json_lines passed!")
+    return True
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
+    success = test_load_from_file_skips_non_object_json_lines() and success
     sys.exit(0 if success else 1)
