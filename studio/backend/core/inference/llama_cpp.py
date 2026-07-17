@@ -8411,15 +8411,20 @@ class LlamaCppBackend:
         except OSError:
             return None
 
-    def _user_disabled_prompt_cache(self) -> bool:
-        # Prompt caching off (extra-args flag or inherited LLAMA_ARG_* env) makes
-        # a restored slot unusable (no prompt reuse), so slot saves would be pure
-        # wasted I/O. Flags win over env, mirroring llama.cpp's arg parser.
-        flags = {arg.strip().split("=", 1)[0] for arg in (self._extra_args or ())}
-        if "--no-cache-prompt" in flags:
+    def _prompt_cache_off(self) -> bool:
+        # Prompt caching off makes a restored slot unusable (no prompt reuse), so
+        # slot saves would be pure wasted I/O. Mirror llama.cpp's arg parser on
+        # the final argv: user extras are appended after Studio's own flags, so
+        # the last prompt-cache flag wins; env applies only when no flag is set.
+        last = None
+        for arg in self._extra_args or ():
+            flag = arg.strip().split("=", 1)[0]
+            if flag in ("--cache-prompt", "--no-cache-prompt"):
+                last = flag
+        if last is not None:
+            return last == "--no-cache-prompt"
+        if self._prompt_cache_disabled:
             return True
-        if "--cache-prompt" in flags:
-            return False
         if os.environ.get("LLAMA_ARG_NO_CACHE_PROMPT") is not None:
             return True
         env = (os.environ.get("LLAMA_ARG_CACHE_PROMPT") or "").strip().lower()
@@ -8432,8 +8437,7 @@ class LlamaCppBackend:
             not self.is_loaded
             or not self._slot_save_dir
             or not self._gguf_path
-            or self._prompt_cache_disabled
-            or self._user_disabled_prompt_cache()
+            or self._prompt_cache_off()
         ):
             return None
         save_dir = Path(self._slot_save_dir)

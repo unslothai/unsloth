@@ -222,6 +222,25 @@ def test_explicit_cache_prompt_flag_overrides_env(monkeypatch, tmp_path):
     assert backend.save_slots_for_resume() is not None
 
 
+def test_user_cache_prompt_overrides_studio_no_cache_flag(monkeypatch, tmp_path):
+    # Windows full-offload sets --no-cache-prompt, but user extras are appended
+    # later in the argv, so an explicit --cache-prompt re-enables caching.
+    backend = _resume_backend(tmp_path)
+    backend._prompt_cache_disabled = True
+    backend._extra_args = ["--cache-prompt"]
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: _Resp(200, {"n_saved": 1, "n_written": 1}),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is not None
+    # Last flag wins when both appear in extras.
+    backend._extra_args = ["--cache-prompt", "--no-cache-prompt"]
+    assert backend.save_slots_for_resume() is None
+
+
 def test_save_stops_writing_once_cap_exceeded(monkeypatch, tmp_path):
     backend = _resume_backend(tmp_path, n_slots = 3)
     _fake_disk(monkeypatch)
