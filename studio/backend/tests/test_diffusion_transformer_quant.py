@@ -443,6 +443,28 @@ def test_exclude_tokens_for_scheme():
     assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
 
 
+def test_exclude_tokens_for_scheme_family():
+    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so a short prompt
+    # runs the text-stream linears at M <= 16 and torch._int_mm raises ("size(0) needs to be
+    # greater than 16"); they stay bf16 while the M ~ 4k image stream keeps int8 coverage.
+    # Unknown families keep the family-independent behaviour.
+    from core.inference.diffusion_transformer_quant import (
+        _INT8_EXCLUDE_NAME_TOKENS,
+        _QWENIMAGE_INT8_EXCLUDES,
+        exclude_tokens_for_scheme,
+    )
+
+    for fam in ("qwen-image", "qwen-image-edit"):
+        assert (
+            exclude_tokens_for_scheme(TQ_INT8, fam)
+            == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+        )
+    for token in ("txt_in", "add_q_proj", "to_add_out", "txt_mlp"):
+        assert token in _QWENIMAGE_INT8_EXCLUDES
+    assert exclude_tokens_for_scheme(TQ_INT8, "z-image") == _INT8_EXCLUDE_NAME_TOKENS
+    assert exclude_tokens_for_scheme(TQ_FP8, "qwen-image") == ()
+
+
 # ── apply ───────────────────────────────────────────────────────────────────────
 
 

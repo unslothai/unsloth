@@ -69,12 +69,41 @@ _INT8_EXCLUDE_NAME_TOKENS = (
 )
 
 
-def exclude_tokens_for_scheme(scheme: str) -> tuple[str, ...]:
-    """Name tokens excluded from quantisation for ``scheme``. int8 skips the M=1 modulation /
-    conditioning-embedder projections; other schemes (scaled_mm) exclude nothing. Shared by the
-    runtime path and the offline prequant builder so they never drift (else an int8 checkpoint
-    bakes the M=1 projections and crashes at the first denoise on Flux / Qwen)."""
-    return _INT8_EXCLUDE_NAME_TOKENS if scheme == TQ_INT8 else ()
+# int8 PER-FAMILY name exclusions, on top of _INT8_EXCLUDE_NAME_TOKENS. Qwen-Image's MMDiT
+# runs every TEXT-stream Linear at M = actual prompt tokens (the Qwen2.5-VL embeds are not
+# padded to a fixed length like FLUX's 512-token T5), so a short prompt ("Cute sloth writing
+# on a paper" = 13 tokens, or the near-empty negative prompt) drives torch._int_mm below its
+# M > 16 floor and the denoise crashes (measured on B200: "self.size(0) needs to be greater
+# than 16, but got 13"). Keep the text stream bf16: it runs at M = tens vs the image stream's
+# M ~ 4k+, so the exclusion costs ~nothing and the image stream keeps full int8 coverage.
+# txt_mod is already covered by "_mod" in the base list; txt_in is the context embedder.
+_QWENIMAGE_INT8_EXCLUDES = (
+    "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp",
+)
+_INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
+    "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+}
+
+
+def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific).
+    int8 (M>16) skips the M=1 modulation / conditioning-embedder projections
+    (_INT8_EXCLUDE_NAME_TOKENS) plus per-family small-M text streams
+    (_INT8_FAMILY_EXCLUDE_NAME_TOKENS); other schemes (scaled_mm) exclude nothing.
+    ``family=None`` preserves the historical behaviour. Shared by the runtime path and the
+    offline prequant builder so they never drift (else an int8 checkpoint bakes the small-M
+    projections and crashes at the first denoise on Flux / Qwen)."""
+    if scheme == TQ_INT8:
+        return _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(
+            str(family or "").strip().lower(), ()
+        )
+    return ()
 
 
 # Per-arch preference for ``auto`` -- best first, lower-precision schemes as fallbacks. On
@@ -440,7 +469,7 @@ def quantize_transformer(
         # int8 skips the M=1 projections; scaled_mm schemes have no M limit but fp8/mxfp8 assert
         # a bf16 weight, so on a mixed-precision DiT (Wan/Hunyuan) they must skip non-bf16 ones or
         # the pass raises. nvfp4 quantises fp32 fine, so it is not gated (see _REQUIRE_BF16_SCHEMES).
-        exclude = exclude_tokens_for_scheme(scheme)
+        exclude = exclude_tokens_for_scheme(scheme, family)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),

@@ -353,7 +353,11 @@ def _validate_checkpoint(
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
-        expected = tuple(exclude_tokens_for_scheme(scheme))
+
+        # The exclude set derives from scheme AND family; use the recorded family so an artifact
+        # baked under an older token list (e.g. a Qwen int8 checkpoint from before the
+        # text-stream exclude) is rejected and re-quantised, not loaded crashing.
+        expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if tuple(ckpt_excludes) != expected:
             _warn(
                 logger,
