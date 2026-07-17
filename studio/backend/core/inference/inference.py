@@ -888,6 +888,7 @@ class InferenceBackend:
         thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        reasoning_prefilled: bool = False,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -941,6 +942,7 @@ class InferenceBackend:
             session_id = session_id,
             thread_id = thread_id,
             rag_scope = rag_scope,
+            reasoning_prefilled = reasoning_prefilled,
         )
 
     def generate_chat_response(
