@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { validateChatTemplate } from "../api/templates";
 import {
   MAX_CHAT_TEMPLATE_BYTES,
@@ -42,6 +42,9 @@ export function ChatTemplateEditorDialog({
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
+  // Bumped whenever the dialog closes so a validation still in flight cannot
+  // apply a template the user has already dismissed.
+  const validationToken = useRef(0);
   const renderedDraft = draft ?? value ?? defaultTemplate ?? "";
 
   const byteLength = chatTemplateByteLength(renderedDraft);
@@ -50,8 +53,10 @@ export function ChatTemplateEditorDialog({
     defaultTemplate != null && renderedDraft === defaultTemplate;
 
   const handleClose = () => {
+    validationToken.current += 1;
     setDraft(null);
     setError(null);
+    setValidating(false);
     onOpenChange(false);
   };
 
@@ -66,8 +71,14 @@ export function ChatTemplateEditorDialog({
       return;
     }
     setValidating(true);
+    const token = validationToken.current;
     try {
       const result = await validateChatTemplate(renderedDraft);
+      // Dialog was closed (or reopened) while validating; drop the result so a
+      // discarded template is never applied.
+      if (token !== validationToken.current) {
+        return;
+      }
       if (!result.valid) {
         setError(result.error ?? "Invalid Jinja template.");
         return;
@@ -75,9 +86,13 @@ export function ChatTemplateEditorDialog({
       onSave(renderedDraft);
       handleClose();
     } catch {
-      setError("Could not validate the template.");
+      if (token === validationToken.current) {
+        setError("Could not validate the template.");
+      }
     } finally {
-      setValidating(false);
+      if (token === validationToken.current) {
+        setValidating(false);
+      }
     }
   };
 
