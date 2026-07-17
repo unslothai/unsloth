@@ -1961,9 +1961,7 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
         # Prefer the snapshot refs/main points at (the active revision).
         snapshots_dir = snapshots[0].parent
         try:
-            commit = (snapshots_dir.parent / "refs" / "main").read_text(
-                encoding = "utf-8"
-            ).strip()
+            commit = (snapshots_dir.parent / "refs" / "main").read_text(encoding = "utf-8").strip()
             preferred = snapshots_dir / commit
             if commit and preferred.is_dir():
                 return (preferred / "modules.json").is_file()

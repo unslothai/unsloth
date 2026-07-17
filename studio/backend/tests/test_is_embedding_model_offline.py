@@ -55,7 +55,11 @@ def _clean_state(monkeypatch):
     mc._embedding_detection_cache.clear()
 
 
-def _repo(tmp_path, *snapshots, main_ref = None):
+def _repo(
+    tmp_path,
+    *snapshots,
+    main_ref = None,
+):
     """Fake HF cache repo dir: snapshots/<name>[/modules.json] (+ refs/main).
 
     ``snapshots``: (name, sentence_transformer) tuples, oldest last (the
