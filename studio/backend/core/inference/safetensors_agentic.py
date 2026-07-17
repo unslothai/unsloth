@@ -57,6 +57,7 @@ from core.tool_healing import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
@@ -1099,6 +1100,9 @@ def run_safetensors_tool_loop(
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
+        # Collect no-op nudges and flush them after the batch, so a no-op doesn't
+        # abort it and drop the parallel calls that follow.
+        deferred_noop_msgs: list = []
 
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
@@ -1127,12 +1131,12 @@ def run_safetensors_tool_loop(
                         "provenance": decision.provenance,
                     }
                 completion = tool_controller.record_noop(decision)
-                conversation.append(completion.model_message())
+                deferred_noop_msgs.append(completion.model_message())
                 logger.info(
                     "Suppressed local safetensors tool call as internal no-op: "
                     f"action={decision.action} tool={decision.tool_name}"
                 )
-                break
+                continue
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
@@ -1242,6 +1246,8 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+
+        append_deferred_nudges(conversation, deferred_noop_msgs)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
