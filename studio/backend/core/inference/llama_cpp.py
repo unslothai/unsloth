@@ -1001,6 +1001,20 @@ def _cached_colocated_split_main(
 
 def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[str], list[str]]:
     """Find a cached main GGUF and its shards for a variant."""
+    candidate = next(_cached_variant_candidates(repo_id, hf_variant), None)
+    if candidate is None:
+        return None, []
+    _, main, shards, _ = candidate
+    return main, shards
+
+
+def _cached_variant_candidates(
+    repo_id: str,
+    hf_variant: str,
+    *,
+    require_mmproj: bool = False,
+) -> Generator[tuple[str, str, list[str], Path], None, None]:
+    """Yield complete cached variant copies in snapshot preference order."""
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
         for snap in _iter_hf_cache_snapshots(repo_id):
@@ -1019,25 +1033,79 @@ def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[
                 }
                 if numbers != set(range(1, int(split.group(3)) + 1)):
                     continue
-            return main, shards
+            main_path = snap.joinpath(*main.replace("\\", "/").split("/"))
+            if not main_path.is_file() or not _snapshot_has_all_shards(
+                str(main_path), main, shards, {}
+            ):
+                continue
+            if require_mmproj and not _pick_mmproj(cached_files):
+                continue
+            yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
-    return None, []
 
 
-def _cached_complete_gguf(
+def _cached_candidate_matches_revision_size(
+    repo_id: str, candidate: tuple[str, str, list[str], Path], hf_token: Optional[str]
+) -> bool:
+    """Check cached byte sizes against the snapshot's own Hub revision.
+
+    A snapshot pointer is normally published only after its blob is complete.
+    When the old revision is still queryable, also compare every weight file's
+    size so a manually truncated cache entry is not treated as reusable. If
+    metadata cannot be reached, retain the cache's normal offline semantics.
+    """
+    main_path, main, shards, snap = candidate
+    paths = [main, *shards]
+    try:
+        from huggingface_hub import get_paths_info
+        infos = list(
+            get_paths_info(
+                repo_id,
+                paths,
+                revision = snap.name,
+                token = hf_token,
+            )
+        )
+    except Exception as e:
+        logger.debug(
+            "Could not size-check cached GGUF %s at revision %s: %s",
+            repo_id,
+            snap.name,
+            e,
+        )
+        return True
+
+    expected_sizes = {info.path: info.size for info in infos if info.size is not None}
+    if any(path not in expected_sizes for path in paths):
+        return False
+    try:
+        if os.path.getsize(main_path) < expected_sizes[main]:
+            return False
+    except OSError:
+        return False
+    return _snapshot_has_all_shards(main_path, main, shards, expected_sizes)
+
+
+def _cached_complete_candidate(
     repo_id: str, gguf_filename: Optional[str], shards: list[str]
-) -> Optional[str]:
-    """Return the main file of a complete cached GGUF, or None."""
+) -> Optional[tuple[str, str, list[str], Path]]:
+    """Return one complete exact-filename cache candidate with snapshot context."""
     if not gguf_filename:
         return None
     if shards:
-        return _cached_colocated_split_main(repo_id, gguf_filename, shards, {})
-    m = _SHARD_FULL_RE.match(gguf_filename)
-    if m and int(m.group(3)) > 1:
-        # Do not reuse a split shard without its siblings.
+        main_path = _cached_colocated_split_main(repo_id, gguf_filename, shards, {})
+    else:
+        m = _SHARD_FULL_RE.match(gguf_filename)
+        if m and int(m.group(3)) > 1:
+            return None
+        main_path = _cached_hf_snapshot_file(repo_id, gguf_filename)
+    if main_path is None:
         return None
-    return _cached_hf_snapshot_file(repo_id, gguf_filename)
+    snap = _snapshot_dir_of(main_path)
+    if snap is None:
+        return None
+    return main_path, gguf_filename, shards, snap
 
 
 def cached_gguf_for_load(
@@ -1045,16 +1113,24 @@ def cached_gguf_for_load(
     hf_variant: Optional[str],
     *,
     require_mmproj: bool = False,
+    verify_sizes: bool = False,
+    hf_token: Optional[str] = None,
 ) -> Optional[str]:
     """Return a cached GGUF that can be loaded without downloading."""
     if not hf_variant:
         return None
     hf_repo = _resolve_repo_id_casing(hf_repo)
-    name, shards = _cached_variant_resolution(hf_repo, hf_variant)
-    main = _cached_complete_gguf(hf_repo, name, shards)
-    if main and require_mmproj and not _companion_snapshot_sibling(main, _pick_mmproj):
-        return None
-    return main
+    for candidate in _cached_variant_candidates(
+        hf_repo,
+        hf_variant,
+        require_mmproj = require_mmproj,
+    ):
+        if verify_sizes and not _cached_candidate_matches_revision_size(
+            hf_repo, candidate, hf_token
+        ):
+            continue
+        return candidate[0]
+    return None
 
 
 def _snapshot_dir_of(path: str) -> Optional[Path]:
@@ -3944,13 +4020,13 @@ class LlamaCppBackend:
         hf_repo: str,
         free_bytes: int,
         hf_token: Optional[str] = None,
-    ) -> Optional[tuple[str, int]]:
+    ) -> Optional[tuple[str, int, list[str]]]:
         """Find the smallest GGUF variant (including all shards) that fits.
 
         Groups split shards by variant prefix and sums their sizes (e.g.
         UD-Q4_K_XL with 9 shards of 50 GB each = 450 GB total).
 
-        Returns (first_shard_filename, total_size_bytes) or None.
+        Returns (first_shard_filename, total_size_bytes, extra_shards) or None.
         """
         try:
             from huggingface_hub import get_paths_info, list_repo_files
@@ -3986,9 +4062,13 @@ class LlamaCppBackend:
 
             # Smallest that fits
             variant_sizes.sort(key = lambda x: x[1])
-            for first_file, total_size, _ in variant_sizes:
+            for first_file, total_size, shard_files in variant_sizes:
                 if total_size > 0 and total_size <= free_bytes:
-                    return first_file, total_size
+                    return (
+                        first_file,
+                        total_size,
+                        [path for path in sorted(shard_files) if path != first_file],
+                    )
 
             return None
         except Exception:
@@ -4602,10 +4682,24 @@ class LlamaCppBackend:
 
         # Prefer the existing model. Updates use force=True to fetch a new revision.
         if not force:
-            cached_main = _cached_complete_gguf(hf_repo, gguf_filename, gguf_extra_shards)
-            if cached_main is None and hf_variant:
-                # A new revision may use a different filename for the same variant.
-                cached_main = cached_gguf_for_load(hf_repo, hf_variant)
+            if hf_variant:
+                # Resolve by variant so a newer revision's filename does not hide
+                # the complete older copy. Size-check against that older snapshot's
+                # own revision when its metadata remains available.
+                cached_main = cached_gguf_for_load(
+                    hf_repo,
+                    hf_variant,
+                    verify_sizes = True,
+                    hf_token = hf_token,
+                )
+            else:
+                candidate = _cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)
+                cached_main = (
+                    candidate[0]
+                    if candidate is not None
+                    and _cached_candidate_matches_revision_size(hf_repo, candidate, hf_token)
+                    else None
+                )
             if cached_main is not None:
                 logger.info(f"Reusing cached GGUF: {cached_main}")
                 return cached_main
@@ -4688,25 +4782,26 @@ class LlamaCppBackend:
                         hf_token,
                     )
                     if smaller:
-                        fallback_file, fallback_size = smaller
+                        fallback_file, fallback_size, fallback_shards = smaller
                         logger.info(
                             f"Selected variant too large ({total_gb:.1f} GB), "
                             f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                         )
                         gguf_filename = fallback_file
-                        _m = _SHARD_RE.match(gguf_filename)
-                        _prefix = _m.group(1) if _m else None
-                        if _prefix:
-                            prefix_lower = _prefix.lower()
-                            gguf_extra_shards = sorted(
-                                f
-                                for f in all_gguf_files
-                                if f.lower().startswith(prefix_lower)
-                                and f != gguf_filename
-                                and not _is_companion_gguf_path(f)
+                        gguf_extra_shards = fallback_shards
+
+                        # The selected fallback is a new load target. Apply the
+                        # same any-revision reuse policy before starting a fetch.
+                        fallback_candidate = _cached_complete_candidate(
+                            hf_repo, gguf_filename, gguf_extra_shards
+                        )
+                        if fallback_candidate is not None and (
+                            _cached_candidate_matches_revision_size(
+                                hf_repo, fallback_candidate, hf_token
                             )
-                        else:
-                            gguf_extra_shards = []
+                        ):
+                            logger.info(f"Reusing cached fallback GGUF: {fallback_candidate[0]}")
+                            return fallback_candidate[0]
                     else:
                         raise RuntimeError(
                             f"Not enough disk space to download any variant. "

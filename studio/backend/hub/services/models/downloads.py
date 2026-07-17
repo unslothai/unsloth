@@ -60,21 +60,28 @@ def _job_status(
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
 
-def _reject_if_load_in_flight(repo_id: str) -> None:
+def _load_in_flight(repo_id: str) -> bool:
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
-        load_in_flight = hf_gguf_load_in_flight(repo_id)
+        return hf_gguf_load_in_flight(repo_id)
     except Exception:
-        load_in_flight = False
-    if load_in_flight:
-        raise HTTPException(
-            status_code = 409,
-            detail = (
-                f"A model load for '{repo_id}' is in progress and may be "
-                "downloading it. Wait for the load to finish (or cancel it), "
-                "then start the download."
-            ),
-        )
+        return False
+
+
+def _load_in_flight_error(repo_id: str) -> HTTPException:
+    return HTTPException(
+        status_code = 409,
+        detail = (
+            f"A model load for '{repo_id}' is in progress and may be "
+            "downloading it. Wait for the load to finish (or cancel it), "
+            "then start the download."
+        ),
+    )
+
+
+def _reject_if_load_in_flight(repo_id: str) -> None:
+    if _load_in_flight(repo_id):
+        raise _load_in_flight_error(repo_id)
 
 
 def _spawn_download_worker(
@@ -158,7 +165,6 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
                 variant_progress_blob_hashes,
             )
 
-    _reject_if_load_in_flight(repo_id)
     claimed, claim_state = _registry.claim(
         key,
         transport,
@@ -168,9 +174,12 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
         blob_hashes = variant_blob_hashes,
         progress_blob_hashes = variant_progress_blob_hashes,
         completed_baseline_bytes = completed_baseline_bytes,
+        admission_check = lambda: not _load_in_flight(repo_id),
     )
     generation = _registry.current_generation(key)
     if not claimed:
+        if claim_state == "admission_blocked":
+            raise _load_in_flight_error(repo_id)
         # claim_state is the blocking job's state. The client can attach only
         # when the blocker is this key's own in-flight job (adoptable); a
         # cross-variant conflict or in-progress delete is not accepted.

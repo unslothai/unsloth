@@ -4195,46 +4195,6 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 from core.inference.llama_cpp import gguf_load_in_flight
                 gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
 
-            # Block cache writes that would race the download manager.
-            # Check before unloading the current model.
-            if config.gguf_hf_repo:
-                try:
-                    from hub.utils.download_registry import get_models_registry
-                    _active_hub_jobs = get_models_registry().active_jobs(config.gguf_hf_repo)
-                except Exception:
-                    _active_hub_jobs = {}
-                if _active_hub_jobs:
-                    from core.inference.llama_cpp import cached_gguf_for_load
-                    if (
-                        await asyncio.to_thread(
-                            cached_gguf_for_load,
-                            config.gguf_hf_repo,
-                            config.gguf_variant,
-                            require_mmproj = bool(
-                                config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
-                            ),
-                        )
-                        is None
-                    ):
-                        raise HTTPException(
-                            status_code = 409,
-                            detail = (
-                                f"'{model_log_label}' is currently being downloaded "
-                                "by the download manager. Wait for the download to "
-                                "finish (or cancel it), then load the model."
-                            ),
-                        )
-
-            # Unload any active Unsloth model to free VRAM (off the event loop:
-            # unload takes _gen_lock and can wait on an in-flight stream).
-            if unsloth_backend.active_model_name:
-                logger.info(
-                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
-                )
-                await asyncio.to_thread(
-                    unsloth_backend.unload_model, unsloth_backend.active_model_name
-                )
-
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
             # them; explicit [] still clears). Gated on (model_identifier,
@@ -4312,6 +4272,48 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                                 "load (same model, shadow-stripped): %s",
                                 extra_llama_args,
                             )
+
+            # Block cache writes that would race the download manager. This runs
+            # after pass-through argument inheritance so a carried --no-mmproj
+            # changes the companion requirement exactly as it does for the load.
+            if config.gguf_hf_repo:
+                try:
+                    from hub.utils.download_registry import get_models_registry
+                    _active_hub_jobs = get_models_registry().active_jobs(config.gguf_hf_repo)
+                except Exception:
+                    _active_hub_jobs = {}
+                if _active_hub_jobs:
+                    from core.inference.llama_cpp import cached_gguf_for_load
+                    if (
+                        await asyncio.to_thread(
+                            cached_gguf_for_load,
+                            config.gguf_hf_repo,
+                            config.gguf_variant,
+                            require_mmproj = bool(
+                                config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                            ),
+                            verify_sizes = True,
+                            hf_token = request.hf_token,
+                        )
+                        is None
+                    ):
+                        raise HTTPException(
+                            status_code = 409,
+                            detail = (
+                                f"'{model_log_label}' is currently being downloaded "
+                                "by the download manager. Wait for the download to "
+                                "finish (or cancel it), then load the model."
+                            ),
+                        )
+
+            # Unload any active Unsloth model only after every hub conflict check.
+            if unsloth_backend.active_model_name:
+                logger.info(
+                    f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
+                )
+                await asyncio.to_thread(
+                    unsloth_backend.unload_model, unsloth_backend.active_model_name
+                )
 
             # Route to HF or local mode based on config. Run in a thread so the
             # event loop stays free for progress polling and other requests

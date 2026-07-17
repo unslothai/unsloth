@@ -47,7 +47,7 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Literal, Optional
+from typing import Callable, Iterator, Literal, Optional
 
 from loggers import get_logger
 
@@ -963,12 +963,20 @@ class DownloadRegistry:
         blob_hashes: Optional[frozenset[str]] = None,
         progress_blob_hashes: Optional[frozenset[str]] = None,
         completed_baseline_bytes: int = 0,
+        admission_check: Optional[Callable[[], bool]] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         requested_hashes = blob_hashes or frozenset()
         requested_progress_hashes = progress_blob_hashes or frozenset()
         with self._lock:
+            # Run the final external admission check while the registry lock is
+            # held, immediately before inspecting and publishing active state.
+            # The GGUF load path establishes its marker before calling
+            # active_jobs(), so either this claim observes that marker or the
+            # load's later active_jobs() observes this claim.
+            if admission_check is not None and not admission_check():
+                return False, "admission_blocked"
             deleting_scopes = self._deleting.get(repo)
             if deleting_scopes is not None and (
                 None in deleting_scopes or variant_from_key(key) in deleting_scopes

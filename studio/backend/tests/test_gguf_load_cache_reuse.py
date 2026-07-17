@@ -130,6 +130,103 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / MAIN)
 
+    def test_reuse_size_check_uses_cached_snapshot_revision(self, hf_cache):
+        """Current-revision size changes do not invalidate an older complete copy."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        revisions: list[str | None] = []
+
+        def fake_get_paths_info(
+            _repo,
+            paths,
+            *,
+            revision = None,
+            token = None,
+        ):
+            revisions.append(revision)
+            size = 4 if revision == snap.name else 8
+            return [_types.SimpleNamespace(path = path, size = size) for path in paths]
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(snap / MAIN)
+        assert revisions == [snap.name]
+
+    def test_truncated_cached_file_is_not_reused(self, hf_cache):
+        backend = LlamaCppBackend()
+        _build_cache(hf_cache, REPO, {MAIN: 4})
+        downloaded: list[str] = []
+
+        def fake_get_paths_info(
+            _repo,
+            paths,
+            *,
+            revision = None,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 8) for path in paths]
+
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
+            downloaded.append(filename)
+            return f"/fake/{repo_id}/{filename}"
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert downloaded == [MAIN]
+        assert out == f"/fake/{REPO}/{MAIN}"
+
+    def test_truncated_cached_split_shard_is_not_reused(self, hf_cache):
+        backend = LlamaCppBackend()
+        shard1 = f"gemma-test-{VARIANT}-00001-of-00002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-00002-of-00002.gguf"
+        _build_cache(hf_cache, REPO, {shard1: 8, shard2: 4})
+        downloaded: list[str] = []
+
+        def fake_get_paths_info(
+            _repo,
+            paths,
+            *,
+            revision = None,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 8) for path in paths]
+
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
+            downloaded.append(filename)
+            return f"/fake/{repo_id}/{filename}"
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert downloaded == [shard1, shard2]
+        assert out == f"/fake/{REPO}/{shard1}"
+
     def test_online_reuse_when_reupload_renamed_the_file(self, hf_cache):
         """A renamed variant still reuses its cached file."""
         backend = LlamaCppBackend()
@@ -279,6 +376,37 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(new_snap / MAIN)
 
+    def test_low_disk_fallback_reuses_cached_copy(self, hf_cache):
+        backend = LlamaCppBackend()
+        fallback = "gemma-test-Q2_K.gguf"
+        snap = _build_cache(hf_cache, REPO, {fallback: 4})
+
+        def fake_get_paths_info(
+            _repo,
+            paths,
+            *,
+            revision = None,
+            token = None,
+        ):
+            size = 4 if revision == snap.name else 100
+            return [_types.SimpleNamespace(path = path, size = size) for path in paths]
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free = 10)),
+            patch.object(
+                backend,
+                "_find_smallest_fitting_variant",
+                lambda *_a, **_k: (fallback, 4, []),
+            ),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(snap / fallback)
+
     def test_companion_prefers_main_snapshot_sibling(self, hf_cache):
         """A cached mmproj is reused from the main model's snapshot."""
         backend = LlamaCppBackend()
@@ -371,6 +499,21 @@ class TestCachedGgufForLoadProbe:
         (snap / "mmproj-F16.gguf").write_bytes(b"mmproj")
         assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(snap / MAIN)
 
+    def test_required_mmproj_scans_past_newer_main_only_snapshot(self, hf_cache):
+        import os
+
+        old = _build_cache(
+            hf_cache,
+            REPO,
+            {MAIN: 4, "mmproj-F16.gguf": 2},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(hf_cache, REPO, {MAIN: 4}, snapshot_sha = "b" * 40)
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(new, (2_000_000, 2_000_000))
+
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(old / MAIN)
+
 
 class TestLoadHubDownloadExclusion:
     def test_in_flight_marker_counts_and_normalizes_case(self):
@@ -424,9 +567,15 @@ class TestLoadHubDownloadExclusion:
                 scope.__enter__()
             return frozenset()
 
-        registry = _types.SimpleNamespace(
-            claim = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not claim"))
-        )
+        class _Registry:
+            def claim(self, *_args, admission_check, **_kwargs):
+                assert admission_check() is False
+                return False, "admission_blocked"
+
+            def current_generation(self, _key):
+                return 0
+
+        registry = _Registry()
         body = DownloadModelRequest(repo_id = REPO, gguf_variant = VARIANT)
         try:
             with (
@@ -442,12 +591,30 @@ class TestLoadHubDownloadExclusion:
 
         assert exc_info.value.status_code == 409
 
+    def test_registry_admission_check_prevents_claim(self):
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        registry = DownloadRegistry()
+        claimed, state = registry.claim(
+            f"{REPO}::{VARIANT}",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = VARIANT,
+            admission_check = lambda: False,
+        )
+
+        assert claimed is False
+        assert state == "admission_blocked"
+        assert registry.active_jobs(REPO) == {}
+
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
         gguf_branch = source[source.index("if config.is_gguf:") :]
 
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
+            < gguf_branch.index("if request.llama_extra_args is None")
             < gguf_branch.index("active_jobs(config.gguf_hf_repo)")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
