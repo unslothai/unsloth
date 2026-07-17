@@ -54,6 +54,10 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
     "hunyuanimage-2.1": (32.5, 16.3, 0.8),
+    # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5
+    # from the repo, plus the Llama-3.1-8B text_encoder_4 (~16 GB bf16) assembled from the
+    # open mirror at load time (diffusion_hidream.py).
+    "hidream-i1": (34.2, 28.8, 0.2),
     # Two ~9.3B DiTs (conditional + unconditional_transformer for Ideogram's dual-branch CFG),
     # both resident, plus a Qwen3-VL encoder. The vendor stores them as raw float8; these are the
     # bf16-resident sizes after the dtype cast, so each doubles (37.2 = 2 x 18.6, encoder 16.3).

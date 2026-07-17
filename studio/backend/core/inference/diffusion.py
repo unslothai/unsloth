@@ -48,6 +48,7 @@ from .diffusion_device import (
     resolve_diffusion_device_target,
 )
 from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
+from .diffusion_hidream import HIDREAM_FAMILY_NAME, hidream_te4_kwargs
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
@@ -302,6 +303,12 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # HunyuanImage 2.1: the community diffusers mirror (open, tencent-hunyuan-community
         # license), safetensors-only, including the diffusers-native guider components.
         "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
+        # HiDream-I1: open MIT-weights repos, all three variants one family. The Llama TE the
+        # model_index names comes from the unsloth mirror (diffusion_hidream.py), which the
+        # unsloth/ org prefix already trusts.
+        "hidream-ai/hidream-i1-full",
+        "hidream-ai/hidream-i1-dev",
+        "hidream-ai/hidream-i1-fast",
         # Ideogram 4: no bf16 ships. -fp8 stores the two DiTs as raw float8 (the family base);
         # the two nf4 repos are identical bnb-4bit exports (both listed so either id loads).
         "ideogram-ai/ideogram-4-fp8",
@@ -1388,6 +1395,10 @@ class DiffusionBackend:
                             pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype}
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
+                            if fam.name == HIDREAM_FAMILY_NAME:
+                                # The repo names a Llama text_encoder_4 it does not ship;
+                                # supply it from the open mirror (diffusion_hidream.py).
+                                pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
                             # The prefetched snapshot dir keeps from_pretrained off the hub (its
                             # sweep re-pulls files the scoped prefetch skipped: 24 GB per FLUX.1).
                             pipe = pipeline_cls.from_pretrained(
@@ -1428,6 +1439,9 @@ class DiffusionBackend:
                             pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
                             if hf_token:
                                 pipe_kwargs["token"] = hf_token
+                            if fam.name == HIDREAM_FAMILY_NAME:
+                                # Same Llama TE4 assembly as the full-pipeline branch above.
+                                pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
                             pipe = pipeline_cls.from_pretrained(
                                 _base_local_dir or base, **pipe_kwargs
                             )
@@ -1864,6 +1878,10 @@ class DiffusionBackend:
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
         if hf_token:
             pipe_kwargs["token"] = hf_token
+        if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
+            # The repo ships no Llama text_encoder_4; assemble it from the open mirror
+            # (diffusion_hidream.py) exactly like the full-pipeline load branch.
+            pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
