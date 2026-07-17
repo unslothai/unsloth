@@ -7,6 +7,7 @@ that hangs on DNS retries when offline (#6817)."""
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from pathlib import Path
@@ -17,13 +18,30 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_loggers_stub = types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
 
-_structlog_stub = types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
+def _maybe_stub(name: str, builder):
+    # Stub only if the real module is unavailable, so this file never shadows
+    # real packages for later tests in the same pytest process.
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        sys.modules[name] = builder()
+
+
+def _build_loggers_stub():
+    m = types.ModuleType("loggers")
+    m.get_logger = lambda name: __import__("logging").getLogger(name)
+    return m
+
+
+def _build_structlog_stub():
+    m = types.ModuleType("structlog")
+    m.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    return m
+
+
+_maybe_stub("loggers", _build_loggers_stub)
+_maybe_stub("structlog", _build_structlog_stub)
 
 import utils.models.model_config as mc  # noqa: E402
 
@@ -37,13 +55,27 @@ def _clean_state(monkeypatch):
     mc._embedding_detection_cache.clear()
 
 
-def _snapshot(tmp_path, name, *, sentence_transformer):
-    d = tmp_path / name
-    d.mkdir(parents = True, exist_ok = True)
-    (d / "config.json").write_text("{}")
-    if sentence_transformer:
-        (d / "modules.json").write_text("[]")
-    return d
+def _repo(tmp_path, *snapshots, main_ref = None):
+    """Fake HF cache repo dir: snapshots/<name>[/modules.json] (+ refs/main).
+
+    ``snapshots``: (name, sentence_transformer) tuples, oldest last (the
+    iterator under test yields newest first, so pass them in that order).
+    Returns the snapshot dirs in the given order.
+    """
+    repo = tmp_path / "models--org--model"
+    dirs = []
+    for name, is_st in snapshots:
+        d = repo / "snapshots" / name
+        d.mkdir(parents = True, exist_ok = True)
+        (d / "config.json").write_text("{}")
+        if is_st:
+            (d / "modules.json").write_text("[]")
+        dirs.append(d)
+    if main_ref is not None:
+        refs = repo / "refs"
+        refs.mkdir(parents = True, exist_ok = True)
+        (refs / "main").write_text(main_ref)
+    return dirs
 
 
 def _fake_hf_model_info(monkeypatch, fn):
@@ -60,14 +92,14 @@ def _no_network(*a, **k):
 
 
 def test_marker_true_when_modules_json_present(tmp_path, monkeypatch):
-    snap = _snapshot(tmp_path, "snap", sentence_transformer = True)
-    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter([snap]))
+    snaps = _repo(tmp_path, ("aaa", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
     assert mc._embedding_marker_in_hf_cache("org/emb") is True
 
 
 def test_marker_false_when_cached_without_modules_json(tmp_path, monkeypatch):
-    snap = _snapshot(tmp_path, "snap", sentence_transformer = False)
-    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter([snap]))
+    snaps = _repo(tmp_path, ("aaa", False))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
     assert mc._embedding_marker_in_hf_cache("org/llm") is False
 
 
@@ -76,19 +108,67 @@ def test_marker_none_when_not_cached(monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/llm") is None
 
 
+def test_marker_prefers_refs_main_revision(tmp_path, monkeypatch):
+    # The repo USED to be a sentence-transformers model (old snapshot has
+    # modules.json) but the revision refs/main points at no longer is. The
+    # active revision must win: an any-snapshot scan would wrongly say True.
+    snaps = _repo(tmp_path, ("new", False), ("old", True), main_ref = "new")
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    assert mc._embedding_marker_in_hf_cache("org/was-embedder") is False
+
+
+def test_marker_refs_main_st_revision_is_true(tmp_path, monkeypatch):
+    snaps = _repo(tmp_path, ("new", True), ("old", False), main_ref = "new")
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    assert mc._embedding_marker_in_hf_cache("org/is-embedder") is True
+
+
+def test_marker_missing_ref_falls_back_to_snapshot_scan(tmp_path, monkeypatch):
+    # No refs/main recorded: keep the newest-first any-snapshot behavior.
+    snaps = _repo(tmp_path, ("new", False), ("old", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    assert mc._embedding_marker_in_hf_cache("org/no-ref") is True
+
+
+def test_marker_never_raises_when_cache_mutates(monkeypatch):
+    # A snapshot vanishing mid-iteration (concurrent cached-model deletion)
+    # must read as not-cached, not propagate a 500 out of the routes.
+    def _exploding_iter(repo):
+        raise FileNotFoundError("snapshot removed underneath")
+
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", _exploding_iter)
+    assert mc._embedding_marker_in_hf_cache("org/racing") is None
+
+
+def test_is_embedding_model_survives_cache_race_online(monkeypatch):
+    # With the cache probe failing, the online path must still resolve via the
+    # Hub instead of erroring out.
+    def _exploding_iter(repo):
+        raise FileNotFoundError("snapshot removed underneath")
+
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", _exploding_iter)
+    _fake_hf_model_info(
+        monkeypatch,
+        lambda name, token = None: types.SimpleNamespace(
+            tags = ["sentence-transformers"], pipeline_tag = None
+        ),
+    )
+    assert mc.is_embedding_model("org/racing") is True
+
+
 # ── is_embedding_model ──
 
 
 def test_cached_sentence_transformer_skips_network(tmp_path, monkeypatch):
-    snap = _snapshot(tmp_path, "snap", sentence_transformer = True)
-    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter([snap]))
+    snaps = _repo(tmp_path, ("aaa", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("unsloth/bge-small-en-v1.5") is True
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):
-    snap = _snapshot(tmp_path, "snap", sentence_transformer = False)
-    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter([snap]))
+    snaps = _repo(tmp_path, ("aaa", False))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("org/gemma-4-e4b") is False

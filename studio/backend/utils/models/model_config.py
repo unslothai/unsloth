@@ -1944,18 +1944,40 @@ _embedding_detection_cache: Dict[tuple, bool] = {}
 def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
     """Sentence-transformers detection from the local HF cache, no network call.
 
-    True if a cached snapshot carries the ``modules.json`` marker (the same
-    signal ``is_embedding_model`` uses for local paths), False if the repo is
-    cached but no snapshot has it, None when the repo is not in the cache."""
-    cached = False
-    for snap in _iter_hf_cache_snapshots(repo_id):
-        cached = True
+    True/False when the ACTIVE cached revision carries / lacks the
+    ``modules.json`` marker (the same signal ``is_embedding_model`` uses for
+    local paths), None when the repo is not in the cache (or the cache is
+    unreadable). The revision ``refs/main`` resolves to is authoritative when
+    recorded: the cache keeps snapshots of older revisions, and a repo that
+    later stopped (or started) being a sentence-transformers model must be
+    judged by its current revision, not any historical one. Snapshots are only
+    scanned newest-first when no ref exists. Never raises -- a cache mutating
+    underneath (concurrent model deletion) reads as not-cached so callers keep
+    their normal fallback."""
+    try:
+        snapshots = list(_iter_hf_cache_snapshots(repo_id))
+        if not snapshots:
+            return None
+        # Prefer the snapshot refs/main points at (the active revision).
+        snapshots_dir = snapshots[0].parent
         try:
-            if (snap / "modules.json").is_file():
-                return True
+            commit = (snapshots_dir.parent / "refs" / "main").read_text(
+                encoding = "utf-8"
+            ).strip()
+            preferred = snapshots_dir / commit
+            if commit and preferred.is_dir():
+                return (preferred / "modules.json").is_file()
         except OSError:
-            continue
-    return False if cached else None
+            pass  # no ref recorded: fall back to the newest-first scan
+        for snap in snapshots:
+            try:
+                if (snap / "modules.json").is_file():
+                    return True
+            except OSError:
+                continue
+        return False
+    except Exception:
+        return None
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
