@@ -262,6 +262,10 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
+    // Snapshot the user's existing entries before merging: legacy settings are
+    // imported only into spare budget and must never evict a config the user
+    // already saved in the current schema.
+    const existingKeys = new Set(Object.keys(map));
     const migratedKeys = mergeLegacyEntries(
       map,
       legacy as Record<string, unknown>,
@@ -270,16 +274,11 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    // Protect the just-migrated entries from eviction, but cap the protected set
-    // to MAX_ENTRIES: an oversized legacy store would otherwise deadlock the
-    // budget loop and never finish migrating. On failure the flag stays unset so
-    // migration retries once space frees.
-    const protectedKeys = new Set(
-      migratedKeys.length > MAX_ENTRIES
-        ? migratedKeys.slice(0, MAX_ENTRIES)
-        : migratedKeys,
-    );
-    if (!enforceStorageBudget(map, protectedKeys)) {
+    // Protect existing entries so only the just-migrated legacy entries are
+    // evicted when over budget: importing old settings never discards a newer
+    // config, and since existing entries already fit the budget this cannot
+    // deadlock. On failure the flag stays unset so migration retries.
+    if (!enforceStorageBudget(map, existingKeys)) {
       return;
     }
     if (writeMap(map)) {
