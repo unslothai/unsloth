@@ -1796,11 +1796,15 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: Optional[str] = Query(None),
+    hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
     try:
+        # Prefer the header token; keep the query param as a fallback for older
+        # clients that predate the header (as /gguf-variants does).
+        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         if not is_local_path(model_name):
             resolved = resolve_cached_repo_id_case(model_name)
             if resolved != model_name:
@@ -2517,7 +2521,8 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
 async def check_vision_model(
     model_name: str,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: Optional[str] = Query(None),
+    hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2526,6 +2531,7 @@ async def check_vision_model(
     This endpoint wraps the backend is_vision_model function.
     """
     try:
+        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
         is_vision = is_vision_model(model_name, hf_token = hf_token)
@@ -2549,7 +2555,8 @@ async def check_vision_model(
 @router.get("/check-embedding/{model_name:path}", response_model = EmbeddingCheckResponse)
 async def check_embedding_model(
     model_name: str,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: Optional[str] = Query(None),
+    hf_token_header: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2558,6 +2565,7 @@ async def check_embedding_model(
     This endpoint wraps the backend is_embedding_model function.
     """
     try:
+        hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
 
