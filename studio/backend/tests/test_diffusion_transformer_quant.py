@@ -471,6 +471,17 @@ def test_exclude_tokens_for_scheme_family():
             == _INT8_EXCLUDE_NAME_TOKENS + _HUNYUAN15_INT8_EXCLUDES
         )
         assert "context_embedder" in _HUNYUAN15_INT8_EXCLUDES  # covers context_embedder_2 too
+    # Qwen-Image never pads its text stream (unlike FLUX's 512-token T5), so a short prompt
+    # runs the text-stream linears at M <= 16 and torch._int_mm raises; they stay bf16.
+    from core.inference.diffusion_transformer_quant import _QWENIMAGE_INT8_EXCLUDES
+
+    for fam in ("qwen-image", "qwen-image-edit"):
+        assert (
+            exclude_tokens_for_scheme(TQ_INT8, fam)
+            == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+        )
+    for token in ("txt_in", "add_q_proj", "to_add_out", "txt_mlp"):
+        assert token in _QWENIMAGE_INT8_EXCLUDES
 
 
 # ── apply ───────────────────────────────────────────────────────────────────────

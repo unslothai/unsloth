@@ -87,9 +87,26 @@ _HUNYUAN15_INT8_EXCLUDES = (
     "to_add_out",
     "ff_context",
 )
+# Qwen-Image's MMDiT runs every TEXT-stream Linear at M = actual prompt tokens (the
+# Qwen2.5-VL embeds are not padded to a fixed length like FLUX's 512-token T5), so a short
+# prompt ("Cute sloth writing on a paper" = 13 tokens, or the near-empty negative prompt)
+# drives torch._int_mm below its M > 16 floor and the denoise crashes (measured on B200:
+# "self.size(0) needs to be greater than 16, but got 13"). Keep the text stream bf16: it
+# runs at M = tens vs the image stream's M ~ 4k+, so the exclusion costs ~nothing.
+# txt_mod is already covered by "_mod" in the base list; txt_in is the context embedder.
+_QWENIMAGE_INT8_EXCLUDES = (
+    "txt_in",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "txt_mlp",
+)
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
+    "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
+    "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
 }
 
 
