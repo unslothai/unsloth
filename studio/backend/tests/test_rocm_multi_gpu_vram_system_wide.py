@@ -53,7 +53,13 @@ _maybe_stub("structlog", _build_structlog_stub)
 import utils.hardware.hardware as hw  # noqa: E402
 
 
-def _device(index, used, total, *, ordinal = None):
+def _device(
+    index,
+    used,
+    total,
+    *,
+    ordinal = None,
+):
     return {
         "index": index,
         "index_kind": "physical",
@@ -157,9 +163,7 @@ def test_linux_per_card_skips_zero_total_and_bad_files(monkeypatch, tmp_path):
 
 def test_overlay_windows_uses_props_capacity(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5}
-    )
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5})
     # WDDM: mem_get_info's total is the process budget; capacity must come
     # from device properties instead.
     monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: 45.0)
@@ -172,9 +176,7 @@ def test_overlay_windows_uses_props_capacity(monkeypatch):
 
 def test_overlay_windows_unmatched_adapter_untouched(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 5.0}
-    )
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 5.0})
     monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: None)
     devices = [_device(1, used = 0.01, total = 8.0)]  # only position 0 reported
     hw._overlay_system_wide_vram(devices)
@@ -183,9 +185,7 @@ def test_overlay_windows_unmatched_adapter_untouched(monkeypatch):
 
 def test_overlay_windows_clamps_to_total(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0}
-    )
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0})
     monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: 8.0)
     devices = [_device(0, used = 0.0, total = 6.0)]
     hw._overlay_system_wide_vram(devices)

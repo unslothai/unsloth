@@ -756,8 +756,7 @@ def _rocm_windows_perf_counter_vram_per_adapter_gb() -> dict[int, float]:
             luid = (int(m.group(1), 16), int(m.group(2), 16))
             by_luid[luid] = by_luid.get(luid, 0.0) + used_bytes
         return {
-            pos: round(by_luid[luid] / (1024**3), 2)
-            for pos, luid in enumerate(sorted(by_luid))
+            pos: round(by_luid[luid] / (1024**3), 2) for pos, luid in enumerate(sorted(by_luid))
         }
     except Exception:
         return {}
