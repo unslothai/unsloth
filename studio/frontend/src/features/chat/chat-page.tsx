@@ -1999,15 +1999,11 @@ export function ChatPage({
       await stageOrLoad({
         id: label,
         nativePathToken: intent.path.token,
+        nativePathExpiresAtMs: intent.path.expiresAtMs ?? null,
         isDownloaded: true,
         loadingDescription,
         forceReload: true,
         throwOnError: true,
-      });
-      // Record when this file lease expires so a later reload can prompt
-      // re-selection instead of reusing a token the host has already pruned.
-      useChatRuntimeStore.setState({
-        activeNativePathExpiresAtMs: intent.path.expiresAtMs ?? null,
       });
       useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
@@ -2244,6 +2240,7 @@ export function ChatPage({
           isGguf: meta?.isGguf,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
+          nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: isSameLoadedModel || undefined,
         };
         await stageOrLoad(selection);
@@ -2281,6 +2278,7 @@ export function ChatPage({
         // Without the native token the reload validates the display label as a
         // repo and fails.
         nativePathToken: nativeToken ?? undefined,
+        nativePathExpiresAtMs: nativeExpiry,
         isGguf: activeModelIsGguf,
         isDownloaded: true,
         config,

@@ -77,13 +77,6 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
   );
 }
 
-function resolveCustomContextLength(
-  value: number,
-  native: number | null,
-): number | null {
-  return native != null && value === native ? null : value;
-}
-
 function ChatTemplateSetting({
   config,
   onEditTemplate,
@@ -458,10 +451,7 @@ export function ModelConfigPage({
     maxContext,
   );
   const setContextLength = (v: number) =>
-    update({
-      customContextLength:
-        nativeContextLength != null && v === nativeContextLength ? null : v,
-    });
+    update({ customContextLength: v });
   const baseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const atBaseline = perModelConfigsEqual(config, baseline);
   const contextAtDefault =
@@ -483,19 +473,7 @@ export function ModelConfigPage({
     clampMaxSeqLength(initialMaxSeqLength, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
   const runtimeConfig = target.isGguf
-    ? {
-        ...config,
-        // Persist the user's intent collapsed against native (not the loaded
-        // context, which equals the override): an explicit sub-native value is
-        // kept, "at native" becomes null. null stays null (auto/VRAM-fit).
-        customContextLength:
-          config.customContextLength == null
-            ? null
-            : resolveCustomContextLength(
-                config.customContextLength,
-                nativeContextLength,
-              ),
-      }
+    ? config
     : {
         ...config,
         maxSeqLength: maxSeqLengthValue,

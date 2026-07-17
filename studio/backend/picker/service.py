@@ -227,6 +227,14 @@ def _variant_matches(relative_path: str, needle: str) -> bool:
     return bool(value) and value.replace(".", "", 1).isdigit()
 
 
+_GGUF_SPLIT_INDEX_RE = re.compile(r"-(\d{3,})-of-\d{3,}$", re.IGNORECASE)
+
+
+def _is_nonfirst_gguf_split(path: Path) -> bool:
+    match = _GGUF_SPLIT_INDEX_RE.search(path.stem)
+    return match is not None and int(match.group(1)) != 1
+
+
 def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[Path]:
     try:
         ggufs = sorted(_iter_ggufs(dir_path))
@@ -244,10 +252,11 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
             if _variant_matches(relative, needle):
                 return path
         return None
+    candidates = [path for path in ggufs if not _is_nonfirst_gguf_split(path)] or ggufs
     try:
-        return max(ggufs, key = lambda path: path.stat().st_size)
+        return max(candidates, key = lambda path: path.stat().st_size)
     except OSError:
-        return ggufs[0]
+        return candidates[0]
 
 
 def _chat_template_from_dir(

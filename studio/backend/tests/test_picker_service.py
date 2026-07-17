@@ -48,6 +48,20 @@ def test_find_gguf_in_dir_without_variant_prefers_largest_model(tmp_path):
     assert _find_gguf_in_dir(tmp_path, None) == larger
 
 
+def test_find_gguf_in_dir_without_variant_prefers_first_split(tmp_path):
+    first = tmp_path / "model-Q4_K_M-00001-of-00003.gguf"
+    second = tmp_path / "model-Q4_K_M-00002-of-00003.gguf"
+    third = tmp_path / "model-Q4_K_M-00003-of-00003.gguf"
+    first.write_bytes(b"0")
+    second.write_bytes(b"000")
+    third.write_bytes(b"00")
+
+    assert _find_gguf_in_dir(tmp_path, None) == first
+
+    first.unlink()
+    assert _find_gguf_in_dir(tmp_path, None) == second
+
+
 def test_find_gguf_in_dir_matches_bpw_variant_base_label(tmp_path):
     target = tmp_path / "model-IQ4_XS-3.53bpw.gguf"
     target.write_bytes(b"")
