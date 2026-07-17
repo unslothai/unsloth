@@ -124,6 +124,15 @@ def test_lumina2_generation_defaults():
     assert default_generation_params("Alpha-VLLM/Lumina-Image-2.0") == (50, 4.0)
 
 
+def test_lumina2_prequant_wiring():
+    # Hosted int8/fp8 checkpoints (gate-validated) serve the family default base.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Alpha-VLLM/Lumina-Image-2.0")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/Lumina-Image-2.0-FP8"
+
+
 def test_lumina2_bf16_component_table_present():
     fam = detect_family("Alpha-VLLM/Lumina-Image-2.0")
     sizes = family_bf16_components_gb(fam)

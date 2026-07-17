@@ -319,6 +319,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "Lumina2Pipeline",
         transformer_class = "Lumina2Transformer2DModel",
         base_repo = "Alpha-VLLM/Lumina-Image-2.0",
+        # Gate-validated hosted checkpoints (28/28 pairs each; LPIPS mean 0.146 int8 /
+        # 0.116 fp8 vs same-seed bf16).
+        prequant_repos = (
+            ("int8", "unsloth/Lumina-Image-2.0-FP8"),
+            ("fp8", "unsloth/Lumina-Image-2.0-FP8"),
+        ),
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         # Published and validated bf16-only upstream; keep the fp16 fallback off like z-image.
         fp16_incompatible = True,
