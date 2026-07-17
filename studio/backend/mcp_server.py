@@ -23,14 +23,11 @@ class BearerTokenMiddleware:
         if not token or not token.strip():
             raise ValueError("Studio MCP bearer token must be a non-empty value")
         if not token.isascii():
-            # HTTP header values are ASCII; a non-ASCII token cannot be sent by a
-            # standard client, so reject it here instead of silently locking out.
+            # A non-ASCII token cannot be sent in an HTTP header; reject it here.
             raise ValueError("Studio MCP bearer token must contain ASCII characters only")
         self.app = app
-        # Keep the expected token as bytes and compare against the raw header
-        # bytes: a client can send any byte value (including non-ASCII), and
-        # str-based hmac.compare_digest raises on non-ASCII input, which would
-        # surface as a 500 instead of a clean 401.
+        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII
+        # input, which would surface as a 500 instead of a clean 401.
         self.expected = token.encode("utf-8")
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -140,9 +137,8 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        # Pass via_api_key explicitly: a direct call would otherwise leave it as
-        # the FastAPI Depends default object. MCP drives a local Studio like the
-        # UI session, so it coexists with and frees VRAM as the UI does.
+        # Pass via_api_key explicitly (a direct call leaves it a Depends object).
+        # MCP drives Studio like the UI session, so it coexists and frees VRAM.
         return _dump(await start(request, current_subject = "mcp", via_api_key = False))
 
     @mcp.tool
@@ -156,8 +152,7 @@ def create_studio_mcp() -> FastMCP:
         """List completed and stopped training runs, newest first."""
         from routes.training_history import list_training_runs as list_runs
 
-        # Direct calls skip FastAPI Query validation, so clamp to the same bounds
-        # the HTTP route enforces (a negative SQLite LIMIT means "no limit").
+        # Clamp here (direct call skips Query bounds); a negative LIMIT = no limit.
         limit = _clamp(limit, 1, 200)
         offset = max(0, offset)
         return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
@@ -185,8 +180,7 @@ def create_studio_mcp() -> FastMCP:
         """Read a bounded page of generated Data Recipe rows."""
         from routes.data_recipe.jobs import job_dataset
 
-        # Direct calls skip FastAPI Query validation, so clamp to the same bounds
-        # the HTTP route enforces.
+        # Clamp here (direct call skips FastAPI's Query bounds).
         limit = _clamp(limit, 1, 500)
         offset = max(0, offset)
         return _dump(job_dataset(job_id, limit = limit, offset = offset))
