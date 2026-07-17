@@ -74,6 +74,16 @@ import {
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
+import { ResearchMessage } from "@/features/chat/components/research-message";
+import {
+  DeepResearchComposerButton,
+  DeepResearchWebsiteAccessDialog,
+} from "@/features/chat/components/deep-research-composer-button";
+import { cancelResearchRun } from "@/features/chat/api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -151,6 +161,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SquareIcon,
+  TelescopeIcon,
   TerminalIcon,
   Volume2Icon,
   VolumeXIcon,
@@ -1435,6 +1446,37 @@ const Composer: FC<{
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const deepResearchEnabled = useChatRuntimeStore(
+    (s) => s.deepResearchEnabled,
+  );
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const researchThreadId = threadId ?? activeThreadId ?? null;
+  const researchThreadClaimed = useResearchRunStore((state) =>
+    researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
+  );
+  const hasResearchMessage = useAuiState(({ thread }) =>
+    thread.messages.some((message) => {
+      const custom = (
+        message.metadata as
+          | { custom?: { researchRunId?: unknown } }
+          | undefined
+      )?.custom;
+      return typeof custom?.researchRunId === "string";
+    }),
+  );
+  const researchUsed = researchThreadClaimed || hasResearchMessage;
+  const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
+  const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
+    useState(false);
+  useEffect(() => {
+    if (!researchUsed) return;
+    if (hasResearchMessage && researchThreadId) {
+      useResearchRunStore.getState().setThreadClaimed(researchThreadId, true);
+    }
+    if (deepResearchEnabled) {
+      useChatRuntimeStore.getState().setDeepResearchEnabled(false);
+    }
+  }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
   // More than 4 pills: collapse to icons only. Search and Code always show; the
   // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
@@ -1444,9 +1486,9 @@ const Composer: FC<{
       (ragEnabled ? 1 : 0) +
       (supportsBuiltinImageGeneration ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
-      (mcpEnabledForChat ? 1 : 0) >
+      (mcpEnabledForChat ? 1 : 0) +
+      (effectiveDeepResearchEnabled ? 1 : 0) >
     4;
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
@@ -1569,6 +1611,7 @@ const Composer: FC<{
     ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat ||
+    effectiveDeepResearchEnabled ||
     permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
@@ -1862,10 +1905,18 @@ const Composer: FC<{
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
-          <ComposerToolsMenu side={effectiveMenuSide} />
+          <ComposerToolsMenu
+            side={effectiveMenuSide}
+            researchAvailable={!researchUsed}
+          />
           {/* Permission-level pill: always visible, even while the pill row
               is collapsed; opens the permission level dropdown. */}
           <PermissionModeComposerPill side={effectiveMenuSide} />
+          {effectiveDeepResearchEnabled ? (
+            <DeepResearchComposerButton
+              onConfigure={() => setResearchWebsiteAccessOpen(true)}
+            />
+          ) : null}
           {composerExpanded ? (
             <>
               <WebSearchToggle />
@@ -1920,6 +1971,10 @@ const Composer: FC<{
           queueThreadIds={promptQueueThreadIds}
         />
       </div>
+      <DeepResearchWebsiteAccessDialog
+        open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
+        onOpenChange={setResearchWebsiteAccessOpen}
+      />
     </>
   );
 
@@ -2699,9 +2754,10 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return filtered || accept;
 }
 
-const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
-  side = "bottom",
-}) => {
+const ComposerToolsMenu: FC<{
+  side?: "top" | "bottom";
+  researchAvailable: boolean;
+}> = ({ side = "bottom", researchAvailable }) => {
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
@@ -2714,6 +2770,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const deepResearchEnabled = useChatRuntimeStore((s) => s.deepResearchEnabled);
+  const setDeepResearchEnabled = useChatRuntimeStore((s) => s.setDeepResearchEnabled);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   // Shared gate so the menu row agrees with the RAG pill.
@@ -2767,6 +2826,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const imageDisabled = !modelLoaded;
   // Like Search/Code: disabled only when a loaded model lacks tool support.
   const mcpDisabled = modelLoaded && !supportsTools;
+  // Match Search and Code: allow pre-selection before a local model loads.
+  const researchDisabled =
+    !researchAvailable || Boolean(externalSelection) || incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
@@ -2792,7 +2854,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const incognito = useChatRuntimeStore((s) => s.incognito);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
@@ -3052,6 +3113,27 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
           Add photos &amp; files
         </DropdownMenuItem>
+        {researchAvailable ? (
+          <DropdownMenuItem
+            disabled={researchDisabled && !deepResearchEnabled}
+            className={
+              deepResearchEnabled && !researchDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+          >
+            <TelescopeIcon />
+            Deep research
+            {deepResearchEnabled && !researchDisabled ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem
           disabled={searchDisabled}
           className={
@@ -3352,6 +3434,60 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const activeResearchRun = useResearchRunStore((state) => {
+    const runId = activeThreadId
+      ? state.latestRunByThreadId[activeThreadId]
+      : undefined;
+    return runId ? state.sessions[runId]?.run : undefined;
+  });
+  const isResearchActive = Boolean(
+    activeResearchRun &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+  );
+  const [stoppingResearchRunId, setStoppingResearchRunId] = useState<
+    string | null
+  >(null);
+  const stoppingResearchRunIdRef = useRef<string | null>(null);
+  const researchStopping = Boolean(
+    activeResearchRun &&
+      (activeResearchRun.status === "cancelling" ||
+        stoppingResearchRunId === activeResearchRun.id),
+  );
+  useEffect(() => {
+    if (
+      !isResearchActive ||
+      (stoppingResearchRunIdRef.current &&
+        stoppingResearchRunIdRef.current !== activeResearchRun?.id)
+    ) {
+      stoppingResearchRunIdRef.current = null;
+      setStoppingResearchRunId(null);
+    }
+  }, [activeResearchRun?.id, isResearchActive]);
+  const stop = () => {
+    if (isResearchActive && activeResearchRun) {
+      if (
+        activeResearchRun.status === "cancelling" ||
+        stoppingResearchRunIdRef.current === activeResearchRun.id
+      ) {
+        return;
+      }
+      if (isQueueRunning) onStopClick?.();
+      stoppingResearchRunIdRef.current = activeResearchRun.id;
+      setStoppingResearchRunId(activeResearchRun.id);
+      void cancelResearchRun(activeResearchRun.id)
+        .then((run) => ingestResearchUpdate(run))
+        .catch((error) => {
+          stoppingResearchRunIdRef.current = null;
+          setStoppingResearchRunId(null);
+          toast.error("Could not stop research", {
+            description: error instanceof Error ? error.message : undefined,
+          });
+        });
+      return;
+    }
+    if (isQueueRunning) onStopClick?.();
+  };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
@@ -3379,7 +3515,11 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.StopDictation>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
+      <AuiIf
+        condition={({ thread }) =>
+          !thread.isRunning && !isQueueRunning && !isResearchActive
+        }
+      >
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
@@ -3402,7 +3542,7 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
-      {isQueueRunning ? (
+      {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
           <TooltipIconButton
             tooltip="Queue message"
@@ -3419,9 +3559,26 @@ const ComposerRightControls: FC<{
           </TooltipIconButton>
         </AuiIf>
       ) : null}
-      <AuiIf condition={({ thread }) => thread.isRunning}>
-        <div className="ml-1.5 flex items-center">
-          {queueDisabled ? (
+      {isResearchActive ? (
+        <Button
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel ml-1.5 size-8 rounded-full"
+          aria-label={researchStopping ? "Stopping research" : "Stop research"}
+          disabled={researchStopping}
+          onClick={stop}
+        >
+          {researchStopping ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+          )}
+        </Button>
+      ) : (
+        <AuiIf condition={({ thread }) => thread.isRunning}>
+          <div className="ml-1.5 flex items-center">
+            {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
@@ -3429,12 +3586,12 @@ const ComposerRightControls: FC<{
                 size="icon"
                 className="aui-composer-cancel size-8 rounded-full"
                 aria-label="Stop generating"
-                onClick={isQueueRunning ? onStopClick : undefined}
+                onClick={stop}
               >
                 <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
-          ) : (
+            ) : (
             <TooltipIconButton
               tooltip="Queue message"
               side="bottom"
@@ -3448,9 +3605,10 @@ const ComposerRightControls: FC<{
             >
               <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
-          )}
-        </div>
-      </AuiIf>
+            )}
+          </div>
+        </AuiIf>
+      )}
     </div>
   );
 };
@@ -3560,6 +3718,16 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
+  const researchRunId = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { researchRunId?: unknown } }
+        | undefined
+    )?.custom;
+    return typeof custom?.researchRunId === "string"
+      ? custom.researchRunId
+      : null;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3648,16 +3816,20 @@ const AssistantMessage: FC = () => {
             <div className="pointer-events-none relative h-0 min-w-0">
               <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
             </div>
-            <GeneratingIndicator />
-            <CancelledIndicator />
-            <DiffusionCanvas />
+            {researchRunId ? (
+              <ResearchMessage />
+            ) : (
+              <>
+                <GeneratingIndicator />
+                <CancelledIndicator />
+                <DiffusionCanvas />
 
             {/*
                 We use the standard MessagePrimitive.Parts. This ensures that
                 edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
-            <MessagePrimitive.Parts
+                <MessagePrimitive.Parts
               components={{
                 Text: MarkdownText,
                 Reasoning: Reasoning,
@@ -3677,10 +3849,12 @@ const AssistantMessage: FC = () => {
                   Fallback: ToolFallbackConfirmable,
                 },
               }}
-            />
-            <SourcesGroup />
-            <RagSourcesGroup />
-            <MessageHtmlArtifacts />
+                />
+                <SourcesGroup />
+                <RagSourcesGroup />
+                <MessageHtmlArtifacts />
+              </>
+            )}
             <MessageError />
           </>
         )}

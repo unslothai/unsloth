@@ -391,6 +391,110 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'planning', 'awaiting_approval', 'queued', 'running', 'paused',
+                'cancelling', 'cancelled', 'completed', 'failed'
+            )),
+            plan_json TEXT,
+            plan_revision INTEGER NOT NULL DEFAULT 0,
+            plan_hash TEXT,
+            config_json TEXT NOT NULL,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            lease_owner TEXT,
+            lease_expires_at INTEGER,
+            heartbeat_at INTEGER,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            error_message TEXT,
+            report_text TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            next_event_seq INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    research_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_runs)").fetchall()
+    }
+    if "report_text" not in research_run_cols:
+        conn.execute("ALTER TABLE research_runs ADD COLUMN report_text TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_thread_claims (
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(owner_subject, thread_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """INSERT OR IGNORE INTO research_thread_claims
+           (owner_subject, thread_id, created_at)
+           SELECT owner_subject, thread_id, MIN(created_at)
+           FROM research_runs GROUP BY owner_subject, thread_id"""
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_plan_steps (
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            query TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result_json TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            PRIMARY KEY(run_id, position)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            step_position INTEGER,
+            url TEXT NOT NULL,
+            title TEXT,
+            snippet TEXT,
+            fetched_at INTEGER NOT NULL,
+            UNIQUE(run_id, url)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_events (
+            run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(run_id, seq)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_owner_thread_status "
+        "ON research_runs(owner_subject, thread_id, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_lease "
+        "ON research_runs(status, lease_expires_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_sources_run ON research_sources(run_id, id)"
+    )
 
 
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:

@@ -1,15 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { openLink } from "@/lib/open-link";
 import { cn } from "@/lib/utils";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { memo, type ReactElement } from "react";
+import { type ComponentProps, type ReactElement, memo } from "react";
 import { Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 
 const MARKDOWN_PLUGINS = { code, math, mermaid } as const;
+const MARKDOWN_COMPONENTS = {
+  a: ({ href, children, ...props }: ComponentProps<"a">) => (
+    <a
+      href={href}
+      rel="noopener noreferrer"
+      className="cursor-pointer text-primary underline decoration-primary/40 underline-offset-2 transition-colors hover:decoration-primary"
+      onClick={(event) => {
+        if (href && openLink(href)) {
+          event.preventDefault();
+        }
+      }}
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+};
 
 type MarkdownPreviewProps = {
   markdown: string;
@@ -37,6 +55,7 @@ function MarkdownPreviewImpl({
       <Streamdown
         mode="static"
         plugins={MARKDOWN_PLUGINS}
+        components={MARKDOWN_COMPONENTS}
         controls={false}
         className={markdownClassName}
       >

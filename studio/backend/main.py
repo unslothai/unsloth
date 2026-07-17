@@ -304,6 +304,7 @@ from routes import (
     models_router,
     providers_router,
     rag_router,
+    research_runs_router,
     training_history_router,
     training_router,
 )
@@ -546,6 +547,10 @@ async def lifespan(app: FastAPI):
     _start_helper_precache_if_enabled()
     threading.Thread(target = _warm_rag_embedder, daemon = True, name = "rag-embedder-warm").start()
 
+    from core.research_runs import ResearchSupervisor
+    app.state.research_supervisor = ResearchSupervisor(app)
+    app.state.research_supervisor.start()
+
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop
 
@@ -593,6 +598,10 @@ async def lifespan(app: FastAPI):
             await _idle_task
         except asyncio.CancelledError:
             pass
+
+    _research_supervisor = getattr(app.state, "research_supervisor", None)
+    if _research_supervisor is not None:
+        await _research_supervisor.stop()
 
     from core.inference.llama_http import aclose as _close_llama_http
 
@@ -955,6 +964,9 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
+app.include_router(
+    research_runs_router, prefix = "/api/chat/research-runs", tags = ["research-runs"]
+)
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
 # Studio-only inference endpoints (cancel, etc.) are NOT exposed on the /v1
 # OpenAI-compat prefix below.

@@ -39,6 +39,11 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { getResearchThreadState } from "./api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "./stores/research-run-store";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -842,26 +847,33 @@ function trackRunStartReady(
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
 ): Promise<void> {
-  const lastMessage = messages.at(-1);
-  if (!lastMessage || lastMessage.role !== "user") {
+  // Deep Research reserves an assistant placeholder before invoking the model
+  // adapter, so the user message is not necessarily the final entry here.
+  const userMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!userMessage) {
     return;
   }
-  const ready =
-    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
-    pendingHistoryAppendByMessageId.get(lastMessage.id);
-  if (!ready) {
+  const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  const pending = [runStartReady, historyAppendReady].filter(
+    (ready): ready is Promise<void> => ready !== undefined,
+  );
+  if (pending.length === 0) {
     return;
   }
   let didBecomeReady = false;
   try {
-    await ready;
+    await Promise.all(pending);
     didBecomeReady = true;
   } finally {
     if (
       didBecomeReady &&
-      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
+      runStartReady &&
+      pendingRunStartReadyByMessageId.get(userMessage.id) === runStartReady
     ) {
-      pendingRunStartReadyByMessageId.delete(lastMessage.id);
+      pendingRunStartReadyByMessageId.delete(userMessage.id);
     }
   }
 }
@@ -910,6 +922,32 @@ function useStudioRuntimeAdapters(
             throw error;
           }
           msgs = [];
+        }
+        // Durable research can outlive this runtime. Reattach its server-owned
+        // assistant message to the inline card after navigation or refresh.
+        const researchThreadState = await getResearchThreadState(remoteId).catch(
+          () => null,
+        );
+        if (researchThreadState) {
+          useResearchRunStore
+            .getState()
+            .setThreadClaimed(remoteId, researchThreadState.hasRun);
+        }
+        const activeResearchRun = researchThreadState?.activeRun ?? null;
+        if (activeResearchRun) ingestResearchUpdate(activeResearchRun);
+        if (activeResearchRun?.assistantMessageId) {
+          const assistant = msgs.find(
+            (message) => message.id === activeResearchRun.assistantMessageId,
+          );
+          if (assistant) {
+            assistant.metadata = {
+              ...(assistant.metadata ?? {}),
+              researchRunId: activeResearchRun.id,
+              researchRun: activeResearchRun,
+              serverManaged: true,
+              serverRevision: activeResearchRun.lastEventSeq,
+            };
+          }
         }
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
@@ -1009,16 +1047,34 @@ function useStudioRuntimeAdapters(
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-            Date.now();
+              Date.now();
+          const existingMetadata = existingMessage?.metadata;
+          const incomingRevision = Number(
+            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+          );
+          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const incomingMetadata = custom as
+            | Record<string, unknown>
+            | undefined;
+          const sameResearchRun =
+            typeof existingMetadata?.researchRunId === "string" &&
+            existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const preserveServerManaged =
+            existingMetadata?.serverManaged === true &&
+            (sameResearchRun ||
+              !incomingMetadata?.serverManaged ||
+              existingRevision > incomingRevision);
+          const metadata = preserveServerManaged
+            ? { ...incomingMetadata, ...existingMetadata }
+            : incomingMetadata;
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content,
+            content: preserveServerManaged ? existingMessage!.content : content,
             ...(attachments.length > 0 && { attachments }),
-            ...(custom &&
-              Object.keys(custom).length > 0 && { metadata: custom }),
+            ...(metadata && { metadata }),
             createdAt,
           });
         })();

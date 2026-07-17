@@ -126,7 +126,7 @@ function Source({
 
 // ── Source badge with hover card ─────────────────────────────
 
-interface SourceData {
+export interface SourceData {
   /**
    * Stable per-citation key. Two Anthropic citations into different spans of
    * the same source share a `url`, so React keys on `id` to keep them distinct.
@@ -178,14 +178,16 @@ const SourceBadge: FC<{ source: SourceData }> = ({ source }) => {
 
 // ── Grouped sources with 2-row collapse ─────────────────────
 
-const SourcesGroup: FC = () => {
+const SourcesGroup: FC<{ sources?: SourceData[] }> = ({
+  sources: suppliedSources,
+}) => {
   const message = useMessage();
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const sources: SourceData[] = [];
-  if (message.content) {
+  const messageSources: SourceData[] = [];
+  if (!suppliedSources && message.content) {
     for (const part of message.content) {
       if (
         part.type === "source" &&
@@ -199,7 +201,7 @@ const SourcesGroup: FC = () => {
           typeof (part as { id?: unknown }).id === "string"
             ? ((part as { id: string }).id)
             : url;
-        sources.push({
+        messageSources.push({
           id: partId,
           url,
           title: (part as { title?: string }).title || "",
@@ -209,6 +211,7 @@ const SourcesGroup: FC = () => {
       }
     }
   }
+  const sources = suppliedSources ?? messageSources;
 
   // Measure how many badges fit in 2 rows
   const measure = useCallback(() => {

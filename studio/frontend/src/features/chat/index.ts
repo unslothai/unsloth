@@ -47,6 +47,11 @@ export type { ProjectRecord } from "./types";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { listStoredChatThreads } from "./utils/chat-history-storage";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ResearchMessage } from "./components/research-message";
+export {
+  ResearchActivityPanel,
+  ResearchActivitySheet,
+} from "./components/research-activity-panel";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,
