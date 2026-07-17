@@ -378,6 +378,9 @@ class SdCppDiffusionBackend:
         transformer_cache_threshold: Optional[float] = None,
         # Accepted for interface parity; native is GGUF-only (router forces diffusers otherwise).
         model_kind: Optional[str] = None,
+        # Parity with the diffusers engine's load-time LoRA bake; native applies LoRA at
+        # generation time through sd-cli, so a load-time selection is ignored here.
+        loras: Optional[list[tuple[str, float]]] = None,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.

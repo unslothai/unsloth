@@ -1849,6 +1849,18 @@ class DiffusionLoadRequest(BaseModel):
         "the OS path separator). A bare on/off value such as '1' is deliberately not "
         "accepted -- it must name an allowed directory.",
     )
+    loras: Optional[list[LoraSpec]] = Field(
+        None,
+        max_length = 8,
+        description = "LoRA adapters to BAKE into a torchao int8/fp8 build: they attach on "
+        "the dense transformer before quantisation and compilation (the only ordering the "
+        "quantized fast path supports), so they ride inside the compiled build. Weight "
+        "changes and disabling apply live at generation time; CHANGING the adapter set "
+        "needs a reload with the new selection. Ignored by every other load kind (bf16 / "
+        "bnb-4bit loads take adapters at generation time; GGUF-as-is has no dense "
+        "transformer). Also forces the dense build path: a baked-LoRA load skips the "
+        "hosted pre-quantized checkpoint and pays the dense load peak.",
+    )
     attention_backend: Optional[
         Literal[
             "auto",
@@ -2222,8 +2234,10 @@ class DiffusionStatusResponse(BaseModel):
     supports_lora: bool = Field(
         False,
         description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "
-        "LoRA picker's enabled state). False on unsupported families/quant (e.g. torchao fp8/int8 "
-        "dense, GGUF-via-diffusers, or Qwen-Image on the native engine).",
+        "LoRA picker's enabled state). torchao int8/fp8 builds support LoRA via the load-time "
+        "bake: select the adapters when loading; weight changes apply live, a different adapter "
+        "set needs a reload. False on unsupported families/quant (e.g. nvfp4/mxfp8, "
+        "GGUF-via-diffusers, or Qwen-Image on the native engine).",
     )
     supports_controlnet: bool = Field(
         False,

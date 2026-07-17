@@ -152,6 +152,7 @@ def resolve_dense_quant_candidate(
     requested: Optional[str],
     base_repo: Optional[str] = None,
     prequant_path: Optional[str] = None,
+    force_dense: bool = False,
     logger: Optional[logging.Logger] = None,
 ) -> Optional[DenseQuantEstimate]:
     """The dense-quant candidate the loader should re-plan memory against, or None.
@@ -172,16 +173,20 @@ def resolve_dense_quant_candidate(
     if scheme is None:
         return None
     prequant_available = False
-    try:
-        from .diffusion_prequant import usable_prequant_source
+    # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake attaches
+    # adapters on the dense transformer), so the candidate must be sized for the dense build.
+    if not force_dense:
+        try:
+            from .diffusion_prequant import usable_prequant_source
 
-        # usable_ (not resolve_): a local path override counts only when the loader will accept it
-        # (allowlisted AND present), else load_prequantized_transformer refuses it and rebuilds
-        # dense after the resident pipe is unloaded (the evict-then-OOM this prefetch avoids).
-        src = usable_prequant_source(fam, scheme, path_override = prequant_path)
-        prequant_available = src is not None
-    except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
-        prequant_available = False
+            # usable_ (not resolve_): a local path override counts only when the loader will
+            # accept it (allowlisted AND present), else load_prequantized_transformer refuses it
+            # and rebuilds dense after the resident pipe is unloaded (the evict-then-OOM this
+            # prefetch avoids).
+            src = usable_prequant_source(fam, scheme, path_override = prequant_path)
+            prequant_available = src is not None
+        except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
+            prequant_available = False
     estimate = estimate_dense_quant(
         fam, scheme, base_repo = base_repo, prequant_available = prequant_available
     )

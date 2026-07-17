@@ -72,18 +72,35 @@ def test_supports_lora_matrix():
     assert not dl.supports_lora(
         engine = "sd_cpp", family = "qwen-image", model_kind = "gguf", transformer_quant = None
     )
-    # diffusers: bf16 yes, fp8/int8 dense no, gguf-diffusers no
+    # diffusers: bf16 yes, torchao int8/fp8 yes (load-time bake), nvfp4/mxfp8 no,
+    # gguf-diffusers no
     assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = None
     )
     assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = None
     )
-    assert not dl.supports_lora(
+    assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "fp8"
     )
-    assert not dl.supports_lora(
+    assert dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "int8"
+    )
+    # The quant fast path keeps the PICKER kind ("gguf") while the effective transformer is a
+    # dense torchao build, so the quant check must decide BEFORE the gguf-kind check; and the
+    # bake precedes compilation by construction, so compiled does not gate quant builds.
+    assert dl.supports_lora(
+        engine = "diffusers",
+        family = "z-image",
+        model_kind = "gguf",
+        transformer_quant = "int8",
+        compiled = True,
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "nvfp4"
+    )
+    assert not dl.supports_lora(
+        engine = "diffusers", family = "flux.1", model_kind = "single_file", transformer_quant = "mxfp8"
     )
     assert not dl.supports_lora(
         engine = "diffusers", family = "flux.1", model_kind = "gguf", transformer_quant = None
@@ -392,14 +409,19 @@ def test_diffusers_apply_clears_when_empty(monkeypatch):
 
 
 def test_diffusers_apply_rejects_unsupported_quant():
+    # int8/fp8 pipes bake adapters at load time; a bake-less quant pipe cannot take one at
+    # generation time (frozen topology) and must direct the client to reload with the
+    # selection. nvfp4/mxfp8 are never baked, so the same reload error is unreachable there
+    # via the API (supports_lora blocks the load), but the backend path is shared.
     import threading
     pipe = _FakePipe()
-    with pytest.raises(ValueError, match = "not supported"):
+    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
         _backend()._apply_loras(
             _fake_state(pipe, kind = "single_file", quant = "fp8"),
             [("styleA", 1.0)],
             threading.Event(),
         )
+    assert pipe.loaded == []  # rejected before touching the pipe
 
 
 def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
