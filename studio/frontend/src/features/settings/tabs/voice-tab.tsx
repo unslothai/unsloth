@@ -270,9 +270,12 @@ function SttModelPicker({
                   <span className="block truncate text-xs">
                     {sttModelName(model)}
                   </span>
-                  <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
-                    {sttModelSource(model)}
-                  </span>
+                  {/* A custom repo's name is its id; skip the duplicate line. */}
+                  {sttModelSource(model) !== sttModelName(model) ? (
+                    <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
+                      {sttModelSource(model)}
+                    </span>
+                  ) : null}
                 </span>
                 {sttModelSize(model) ? (
                   <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
