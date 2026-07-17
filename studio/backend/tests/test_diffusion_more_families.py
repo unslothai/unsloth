@@ -287,6 +287,22 @@ def test_ideogram4_memory_table_counts_both_dits():
     assert text_encoders_gb > 5.0
 
 
+def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
+    # Measured on a B200 (outputs/hidream_smoke): int8 and fp8 both engage and render
+    # cleanly, including a 2-3 token prompt on int8 -- the routed MoE expert Linears
+    # only ever see the concatenated image+text token stream (M >> 16), so the
+    # torch._int_mm minimum never binds and no family exclude tokens are needed.
+    from core.inference.diffusion_transformer_quant import (
+        _FAMILY_SCHEME_DENY,
+        _INT8_EXCLUDE_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+    )
+
+    assert "hidream-i1" not in _FAMILY_SCHEME_DENY
+    assert exclude_tokens_for_scheme("int8", "hidream-i1") == _INT8_EXCLUDE_NAME_TOKENS
+    assert exclude_tokens_for_scheme("fp8", "hidream-i1") == ()
+
+
 # ── structured exclusions ────────────────────────────────────────────────────
 def test_hunyuanimage_is_excluded_with_reason():
     reason = excluded_model_reason("tencent/HunyuanImage-3.0")
