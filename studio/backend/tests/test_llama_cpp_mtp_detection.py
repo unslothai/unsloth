@@ -359,7 +359,7 @@ def test_load_mmproj_false_scrubs_inherited_auto_mmproj():
     assert 'cmd.append("--no-mmproj")' in src
     assert 'env.pop("LLAMA_ARG_MMPROJ", None)' in src
     assert 'env.pop("LLAMA_ARG_MMPROJ_AUTO", None)' in src
-    assert src.find('cmd.extend(str(a) for a in extra_args)') < src.find(
+    assert src.find("cmd.extend(str(a) for a in extra_args)") < src.find(
         'cmd.append("--no-mmproj")'
     )
 
