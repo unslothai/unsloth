@@ -510,9 +510,7 @@ class TestRedactInstallOutput:
         out = stack_mod._redact_install_output(
             "https://alice:s3cr3t@host/whl/cu128?token=SUPERSECRET#frag=ALSOSECRET"
         )
-        assert (
-            "s3cr3t" not in out and "SUPERSECRET" not in out and "ALSOSECRET" not in out
-        )
+        assert "s3cr3t" not in out and "SUPERSECRET" not in out and "ALSOSECRET" not in out
 
 
 class TestTrimIndexPathSlashes:
