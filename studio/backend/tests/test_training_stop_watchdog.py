@@ -383,9 +383,7 @@ def test_finalize_after_escalation_clears_output_dir_on_cancel(monkeypatch):
     # watchdog must clear the persisted output_dir, not record a checkpoint path.
     b = TrainingBackend()
     finstop: list = []
-    monkeypatch.setattr(
-        b, "_finish_stopped_run", lambda *a, **k: finstop.append((a, k))
-    )
+    monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append((a, k)))
 
     b._proc = _FakeProc(alive = True)
     b._should_stop = True
