@@ -361,6 +361,16 @@ assert.equal(
   groupForRepoId("QuantStack/FLUX.1-Krea-dev-GGUF", IMAGE_CATALOG),
   kreaDevRoute,
 );
+// Lumina Image 2.0: a single ungated bf16 pipeline artifact (11 GB) -- auto-routed on a
+// 24 GB GPU (11 <= 0.7 * 24) and resolvable through its canonical id.
+const lumina = groupForRepoId("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG);
+assert.ok(lumina);
+assert.equal(
+  pickDefaultArtifact(lumina, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
+    .repoId,
+  "Alpha-VLLM/Lumina-Image-2.0",
+);
+assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
 // FLUX.1-schnell is Apache-2.0 (not gated): its BF16 IS auto-routed on a GPU that fits it.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);

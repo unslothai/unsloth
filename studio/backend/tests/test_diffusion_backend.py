@@ -257,6 +257,7 @@ class _FakePipe:
         callback_on_step_end = None,
         guidance_scale = None,
         true_cfg_scale = None,
+        cfg_trunc_ratio = None,
         **kwargs,
     ):
         self.last_kwargs = {
@@ -265,6 +266,7 @@ class _FakePipe:
             "callback_on_step_end": callback_on_step_end,
             "guidance_scale": guidance_scale,
             "true_cfg_scale": true_cfg_scale,
+            "cfg_trunc_ratio": cfg_trunc_ratio,
             **kwargs,
         }
         n = kwargs.get("num_images_per_prompt", 1)
@@ -406,6 +408,10 @@ def fake_runtime(monkeypatch):
     # that to a fake pipe so the guidance path is reachable without real weights.
     diffusers.Ideogram4Pipeline = _FakePipeline
     diffusers.Ideogram4Transformer2DModel = _FakeTransformer
+    # Lumina 2, so the cfg_trunc_ratio special case is exercisable (the fake pipe's
+    # signature carries the kwarg, mirroring the real Lumina2Pipeline).
+    diffusers.Lumina2Pipeline = _FakePipeline
+    diffusers.Lumina2Transformer2DModel = _FakeTransformer
     # SDXL: a U-Net family. Its single-file checkpoint is the whole pipeline, so the pipeline
     # class carries from_single_file; UNet2DConditionModel is the denoiser class (fetched but
     # unused on the pipeline/single-file-pipeline paths).
@@ -1753,6 +1759,41 @@ def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path
     call = backend._state.pipe.last_kwargs
     assert call["guidance_scale"] == 5.0
     assert "guidance_schedule" in call and call["guidance_schedule"] is None
+
+
+def _load_lumina(backend, tmp_path):
+    # Lumina 2 loads through the GENERIC pipeline path (standard diffusers layout);
+    # a local pipeline dir is enough here.
+    (tmp_path / "model_index.json").write_text("{}")
+    backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
+
+
+def test_generate_lumina2_passes_cfg_trunc_ratio(fake_runtime, tmp_path):
+    # The card recipe truncates the CFG double-forward to the first quarter of the
+    # trajectory; the pipeline default (1.0) applies it everywhere. The backend passes
+    # the constant card value on every lumina-2 generate.
+    backend = DiffusionBackend()
+    _load_lumina(backend, tmp_path)
+    backend.generate(prompt = "a sloth", steps = 50, guidance = 4.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["cfg_trunc_ratio"] == 0.25
+    assert call["guidance_scale"] == 4.0
+
+
+def test_generate_other_family_never_passes_cfg_trunc_ratio(fake_runtime, tmp_path):
+    # The kwarg is family-gated, not just signature-gated: another family whose pipeline
+    # happens to accept cfg_trunc_ratio must not inherit Lumina's recipe constant.
+    backend = DiffusionBackend()
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    backend.generate(prompt = "a sloth", steps = 9, guidance = 0.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["cfg_trunc_ratio"] is None
 
 
 def test_begin_load_rejects_concurrent(monkeypatch):

@@ -85,6 +85,56 @@ def test_flux1_krea_dev_generation_defaults():
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+# ── lumina-2 family ──────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "Alpha-VLLM/Lumina-Image-2.0",
+        # A same-arch finetune must group here via the lumina-image-2.0 token.
+        "neta-art/NetaYume-Lumina-Image-2.0",
+    ],
+)
+def test_detect_family_lumina2_repos(repo_id):
+    fam = detect_family(repo_id)
+    assert fam is not None and fam.name == "lumina-2"
+    assert fam.pipeline_class == "Lumina2Pipeline"
+    assert fam.transformer_class == "Lumina2Transformer2DModel"
+    assert fam.base_repo == "Alpha-VLLM/Lumina-Image-2.0"
+    # Published bf16-only upstream; the fp16 fallback stays off.
+    assert fam.fp16_incompatible is True
+
+
+def test_detect_family_lumina2_override_and_next_rejected():
+    assert detect_family("x", override = "lumina-2").name == "lumina-2"
+    assert detect_family("x", override = "lumina2").name == "lumina-2"
+    # Lumina-Next is a DIFFERENT arch (LuminaText2ImgPipeline): it must stay unknown
+    # instead of resolving here and crashing mid-load.
+    assert detect_family("Alpha-VLLM/Lumina-Next-SFT-diffusers") is None
+
+
+def test_lumina2_is_trusted_non_gguf():
+    # The official pipeline loads via from_pretrained -> needs the allowlist.
+    assert _is_trusted_diffusion_repo("Alpha-VLLM/Lumina-Image-2.0")
+    assert not _is_trusted_diffusion_repo("Alpha-VLLM/some-future-repo")
+
+
+def test_lumina2_generation_defaults():
+    # Model-card recipe: 50 steps at guidance 4.0 (cfg_trunc_ratio is added by the
+    # backend generate call itself, not the defaults table).
+    assert default_generation_params("Alpha-VLLM/Lumina-Image-2.0") == (50, 4.0)
+
+
+def test_lumina2_bf16_component_table_present():
+    fam = detect_family("Alpha-VLLM/Lumina-Image-2.0")
+    sizes = family_bf16_components_gb(fam)
+    assert sizes is not None
+    transformer_gb, encoders_gb, vae_gb = sizes
+    # 2.6B DiT + Gemma2-2B, both fp32 on disk -> ~5.2 GB each bf16-resident.
+    assert 4.0 <= transformer_gb <= 7.0
+    assert 4.0 <= encoders_gb <= 7.0
+    assert vae_gb <= 0.5
+
+
 def test_ideogram4_generation_defaults():
     # Model-card settings: 48 steps, guidance 7 (the backend keeps the pipeline's
     # recommended tapered schedule when the request matches exactly).

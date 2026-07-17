@@ -33,6 +33,7 @@ from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     IDEOGRAM4_FAMILY_NAME,
+    LUMINA2_FAMILY_NAME,
     DiffusionFamily,
     default_generation_params,
     detect_family_for_pick,
@@ -295,6 +296,9 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # undistilled base to train LoRAs on (train on Raw, run adapters on Turbo).
         "krea/krea-2-turbo",
         "krea/krea-2-raw",
+        # Lumina Image 2.0: standard diffusers layout (Gemma2-2B encoder), safetensors-only,
+        # loads through the generic from_pretrained pipeline path.
+        "alpha-vllm/lumina-image-2.0",
         # Ideogram 4: no bf16 ships. -fp8 stores the two DiTs as raw float8 (the family base);
         # the two nf4 repos are identical bnb-4bit exports (both listed so either id loads).
         "ideogram-ai/ideogram-4-fp8",
@@ -2644,6 +2648,11 @@ class DiffusionBackend:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
                         kwargs["guidance_schedule"] = None
+                if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
+                    # Lumina 2's card recipe runs the CFG double-forward only over the FIRST
+                    # quarter of the trajectory (cfg_trunc_ratio=0.25); the pipeline default (1.0)
+                    # applies it everywhere, visibly oversaturating output. Constant card value.
+                    kwargs["cfg_trunc_ratio"] = 0.25
                 if init_pil is not None:
                     # Reference passes the whole list (FLUX.2 combines); others take the single image.
                     kwargs["image"] = [init_pil, *ref_extra] if ref_extra else init_pil
