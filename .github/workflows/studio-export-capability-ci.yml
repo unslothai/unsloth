@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Runs studio/backend/tests/test_export_capability.py on Linux, Windows and macOS.
+#
+# export_capability() is per-OS (is_apple_silicon() and the PyTorch-import probe differ per
+# platform) and the export backend must import without PyTorch, so this confirms the gating and
+# import-safety on hosted Windows/macOS. Hosted runners have no GPU/MLX, so a real accelerator
+# export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
+# torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
+
+name: Studio export capability
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/utils/hardware/hardware.py'
+      - 'studio/backend/core/export/export.py'
+      - 'studio/backend/routes/export.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/tests/test_export_capability.py'
+      - '.github/workflows/studio-export-capability-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/backend/utils/hardware/hardware.py'
+      - 'studio/backend/core/export/export.py'
+      - 'studio/backend/routes/export.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/tests/test_export_capability.py'
+      - '.github/workflows/studio-export-capability-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  capability:
+    name: capability (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      # No accelerator on hosted runners; keep detection on the CPU path.
+      CUDA_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch
+        # CPU wheel index so every OS gets a CPU build; keep PyPI as an extra index so torch's
+        # transitive deps still resolve (matching the other workflows in this repo).
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.13"
+      - name: Install backend import deps
+        # Enough to import utils.hardware and core.export.export; NOT unsloth (needs a GPU, and
+        # the import-safety test blocks it) or triton/llama.cpp (Linux-only / native builds).
+        run: python -m pip install
+          transformers peft accelerate safetensors huggingface_hub datasets
+          sentencepiece protobuf fastapi starlette structlog psutil
+          python-multipart pydantic httpx "numpy<3" pytest
+      - name: Export capability + import-safety tests
+        working-directory: studio/backend
+        run: python -m pytest tests/test_export_capability.py -q

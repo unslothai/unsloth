@@ -5,6 +5,7 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
+import { useToolArgsStatus } from "@assistant-ui/react";
 import { CopyIcon, TerminalIcon } from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -15,15 +16,16 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { ToolLiveOutput } from "./tool-live-output";
+import { ToolResultOutput } from "./tool-result-output";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  preferFullToolOutput,
+  toolOutputKey,
+  useToolPaneScope,
+} from "@/features/chat";
 
-const MAX_DISPLAY = 10_000;
 const COPY_RESET_MS = 2000;
-
-function truncate(text: string): string {
-  return text.length <= MAX_DISPLAY
-    ? text
-    : `${text.slice(0, MAX_DISPLAY)}\n... (truncated)`;
-}
 
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -65,12 +67,16 @@ function CopyBtn({ text }: { text: string }) {
 }
 
 const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   args,
   result,
   status,
 }) => {
   const command = (args as { command?: string })?.command ?? "";
   const isRunning = status?.type === "running";
+  // Args still streaming = the model is WRITING the command, not running it yet.
+  const { propStatus } = useToolArgsStatus();
+  const isWritingCommand = isRunning && propStatus.command === "streaming";
   const output =
     typeof result === "string"
       ? result
@@ -78,8 +84,17 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         ? JSON.stringify(result, null, 2)
         : "";
 
+  // Show the fuller live stream over a truncated result, keeping its exit
+  // status. Session-transient: after a reload only the result remains.
+  const paneScope = useToolPaneScope();
+  const fullOutput = useChatRuntimeStore(
+    (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  );
+  const displayOutput = preferFullToolOutput(fullOutput, output);
+
   return (
-    <ToolFallbackRoot>
+    // Open when mounted mid-run so live output shows; collapsed from history.
+    <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
         status={status}
@@ -88,19 +103,21 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {isRunning ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner className="size-3.5" />
-              <span>Running&hellip;</span>
-            </div>
-          ) : output ? (
+            <>
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Spinner className="size-3.5" />
+                <span>{isWritingCommand ? "Writing command…" : "Running…"}</span>
+              </div>
+              {/* Live stdout streamed via tool_output SSE events. */}
+              <ToolLiveOutput toolCallId={toolCallId} />
+            </>
+          ) : displayOutput ? (
             <div>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">output</span>
-                <CopyBtn text={output} />
+                <CopyBtn text={displayOutput} />
               </div>
-              <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
-                {truncate(output)}
-              </pre>
+              <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
         </div>

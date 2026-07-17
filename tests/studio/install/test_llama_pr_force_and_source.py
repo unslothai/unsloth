@@ -362,8 +362,11 @@ class TestSourcePatternsSh:
         assert '_LLAMA_SOURCE="${_DEFAULT_LLAMA_SOURCE}"' in self.content
 
     def test_release_repo_override_removed(self):
+        # No env-based release-repo override, and CPU-only hosts no longer fall
+        # back to ggml-org -- every host now routes to the fork.
         assert "UNSLOTH_LLAMA_RELEASE_REPO:-unslothai/llama.cpp" not in self.content
-        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' in self.content
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in self.content
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then' in self.content
@@ -425,12 +428,11 @@ class TestSourcePatternsPs1:
         assert "$LlamaSource = $DefaultLlamaSource" in self.content
 
     def test_release_repo_override_removed(self):
-        # Repo chosen by GPU detection (GPU -> fork, CPU -> ggml-org), no env override.
+        # No env-based release-repo override; every host now routes to the fork
+        # (the CPU-only ggml-org fallback was removed), mirroring setup.sh.
         assert "$HelperReleaseRepo = if ($env:UNSLOTH_LLAMA_RELEASE_REPO)" not in self.content
-        assert (
-            "$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) "
-            '{ "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }' in self.content
-        )
+        assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in self.content
+        assert "$HelperReleaseRepo = if (" not in self.content
 
     def test_force_compile_skips_prebuilt_resolution_early(self):
         assert 'if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {' in self.content

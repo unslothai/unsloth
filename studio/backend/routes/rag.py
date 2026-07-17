@@ -167,7 +167,7 @@ def create_knowledge_base(
             conn,
             name = payload.name.strip(),
             description = (payload.description or None),
-            embedding_model = config.EMBEDDING_MODEL,
+            embedding_model = config.effective_embedding_model(),
         )
         return {"id": kb_id, "name": payload.name.strip()}
     finally:

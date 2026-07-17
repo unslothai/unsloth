@@ -151,6 +151,19 @@ def _ocr_scanned_pages(
     return out, ocred
 
 
+def _replace_old_document(conn, replaces: tuple[str, str | None] | None, keep_path: str) -> None:
+    """Drop the document this ingestion replaced (stale embedder / empty prior
+    ingest), called only after the replacement completed successfully."""
+    if replaces is None:
+        return
+    old_id, old_path = replaces
+    try:
+        store.delete_document(conn, old_id)
+        _remove_upload(old_path, keep_path = keep_path)
+    except Exception:  # noqa: BLE001 - the new document is already live
+        logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
+
+
 def _run(
     job_id: str,
     document_id: str,
@@ -159,6 +172,7 @@ def _run(
     model_name: str | None,
     ocr: bool | None = None,
     caption: bool | None = None,
+    replaces: tuple[str, str | None] | None = None,
 ) -> None:
     conn = rag_db.get_connection()
     try:
@@ -213,6 +227,7 @@ def _run(
         )
         if not chunks:
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
+            _replace_old_document(conn, replaces, stored_path)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
@@ -233,6 +248,7 @@ def _run(
         _progress(conn, job_id, "storing", 0.9)
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
+        _replace_old_document(conn, replaces, stored_path)
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
@@ -274,17 +290,32 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        effective_model = model_name or config.effective_embedding_model()
+        # (old_document_id, old_stored_path) replaced by this upload; deleted by
+        # the worker only after the replacement completes, so a failed re-index
+        # never destroys the still-searchable original.
+        replaces: tuple[str, str | None] | None = None
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
             doc = store.get_document(conn, existing)
             empty_completed = (
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
             )
-            if empty_completed:
+            # Vectors from a different embedder are stale; re-uploading must
+            # re-index, not dedupe. NULL (legacy rows) is assumed current. Only
+            # completed rows are replaceable: a pending/running duplicate has a
+            # live worker whose writes must not land on a deleted document.
+            stale_model = (
+                doc is not None
+                and doc.get("status") == "completed"
+                and doc.get("embedding_model") is not None
+                and doc.get("embedding_model") != effective_model
+            )
+            if empty_completed or stale_model:
                 # A prior ingest of identical bytes yielded zero chunks (e.g. a scanned
-                # PDF uploaded before a vision model loaded). Re-ingest, don't dedupe.
-                store.delete_document(conn, existing)
-                _remove_upload(doc.get("stored_path"), keep_path = stored_path)
+                # PDF uploaded before a vision model loaded), or was embedded with a
+                # different model. Re-ingest, don't dedupe.
+                replaces = (existing, doc.get("stored_path"))
             else:
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
                 _remove_upload(stored_path)
@@ -310,6 +341,7 @@ def start_ingestion(
             project_id = project_id,
             status = "pending",
             stored_path = stored_path,
+            embedding_model = effective_model,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
@@ -319,7 +351,10 @@ def start_ingestion(
         _jobs[job_id] = queue.Queue()
     threading.Thread(
         target = _run,
-        args = (job_id, document_id, scope, stored_path, model_name, ocr, caption),
+        # effective_model (not the raw model_name) pins the embedder for the
+        # whole job: a Settings change mid-ingestion must not switch tokenizer
+        # or embedder between batches of one document.
+        args = (job_id, document_id, scope, stored_path, effective_model, ocr, caption, replaces),
         daemon = True,
     ).start()
     return document_id, job_id
