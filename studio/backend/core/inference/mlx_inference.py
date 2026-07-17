@@ -562,6 +562,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -606,6 +607,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
+                _adapter_state = _adapter_state,
             )
         else:
             yield from self._generate_text(
@@ -622,6 +624,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
+                _adapter_state = _adapter_state,
             )
 
     def _generate_text(
@@ -640,6 +643,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
@@ -685,10 +689,6 @@ class MLXInferenceBackend:
         think_prefix = detect_think_prefill(
             prompt, getattr(self._tokenizer, "all_special_tokens", None)
         )
-        # Emit it before the first token so the block renders during prefill.
-        if think_prefix:
-            yield think_prefix
-
         sampler = make_sampler(
             temp = temperature,
             top_p = top_p,
@@ -720,9 +720,12 @@ class MLXInferenceBackend:
             type(self._model).__name__,
             type(self._tokenizer).__name__,
         )
-        with self._generation_lock:
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
             final_response = None
             try:
+                # Enter request-scoped model state before yielding any response.
+                if think_prefix:
+                    yield think_prefix
                 gen_kwargs = dict(
                     prompt = prompt,
                     max_tokens = max_new_tokens,
@@ -776,6 +779,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -879,9 +883,6 @@ class MLXInferenceBackend:
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         cumulative = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
-        # Emit it before the first token so the block renders during prefill.
-        if cumulative:
-            yield cumulative
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -916,9 +917,12 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
-        with self._generation_lock:
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
             final_response = None
             try:
+                # Enter request-scoped model state before yielding any response.
+                if cumulative:
+                    yield cumulative
                 for response in vlm_stream(
                     self._model,
                     self._processor,
@@ -948,8 +952,11 @@ class MLXInferenceBackend:
         cancel_event = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
-        # MLX LoRA adapter toggling not yet supported; generate normally
-        yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)
+        yield from self.generate_chat_response(
+            cancel_event = cancel_event,
+            _adapter_state = use_adapter,
+            **gen_kwargs,
+        )
 
     def reset_generation_state(self):
         import mlx.core as mx

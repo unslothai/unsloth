@@ -2,6 +2,7 @@
 
 import sys
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -429,9 +430,26 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
 
 
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
-    from core.inference.mlx_inference import MLXInferenceBackend
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
 
     calls = {"generic": [], "model": [], "stream": []}
+    adapter_events = []
+    adapter_active = {"value": False}
+
+    @contextmanager
+    def _adapter_state(_model, state):
+        assert backend._generation_lock.locked()
+        adapter_events.append(("enter", state))
+        adapter_active["value"] = True
+        try:
+            yield
+        finally:
+            adapter_active["value"] = False
+            adapter_events.append(("exit", state))
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
     state = {"generic": "serialized", "model": "<image> model-aware"}
     prompt_utils = SimpleNamespace(
         MODEL_CONFIG = {"deepseek_vl_v2": object()},
@@ -441,10 +459,13 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     )
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.prompt_utils = prompt_utils
-    mlx_vlm.stream_generate = lambda *_args, **kwargs: (
-        calls["stream"].append((_args, kwargs))
-        or iter([SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)])
-    )
+
+    def _vlm_stream(*args, **kwargs):
+        assert adapter_active["value"]
+        calls["stream"].append((args, kwargs))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
 
     def generic(_target, _messages, **kwargs):
@@ -464,7 +485,11 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
     args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
     tools = [{"function": {"name": "search"}}]
-    assert list(backend._generate_vlm(*args)) == ["ok"]
+    generator = backend._generate_vlm(*args, _adapter_state = False)
+    assert next(generator) == "ok"
+    assert adapter_active["value"] and backend._generation_lock.locked()
+    generator.close()
+    assert adapter_events == [("enter", False), ("exit", False)]
     assert calls["model"][0]["num_images"] == 1
     assert calls["stream"][0][0][2] == "<image> model-aware"
     with pytest.raises(RuntimeError, match = "dropping requested tools"):
@@ -544,7 +569,10 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     """Mac text path must route through apply_chat_template_for_generation so
     reasoning / tool kwargs reach the tokenizer."""
     _install_fake_mlx(monkeypatch)
-    from core.inference.mlx_inference import MLXInferenceBackend
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+    real_adapter_state = mlx_inference._temporary_mlx_adapter_state
 
     # The text path renders once with tools, then the native-template fallback makes a second no-
     # tools probe call (tools=None) to detect whether the template dropped the schema.
@@ -569,11 +597,31 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     mlx_lm_sample.make_sampler = lambda **_kw: object()
     mlx_lm_sample.make_logits_processors = lambda **_kw: None
 
+    adapter_events = []
+    adapter_active = {"value": False}
+    stream_state = {"fail": False}
+
+    @contextmanager
+    def _adapter_state(_model, state):
+        assert backend._generation_lock.locked()
+        adapter_events.append(("enter", state))
+        adapter_active["value"] = True
+        try:
+            yield
+        finally:
+            adapter_active["value"] = False
+            adapter_events.append(("exit", state))
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+
     class _Resp:
         def __init__(self, tok):
             self.token = tok
 
     def _stream_generate(_model, _tokenizer, **_kw):
+        assert adapter_active["value"]
+        if stream_state["fail"]:
+            raise RuntimeError("generation failed")
         yield _Resp(1)
 
     mlx_lm_pkg.stream_generate = _stream_generate
@@ -595,17 +643,45 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(monkeypatch):
     backend._tokenizer = _Tok()
     backend._is_vlm = False
 
-    out = list(
-        backend.generate_chat_response(
-            messages = [{"role": "user", "content": "ping"}],
-            tools = [{"function": {"name": "web_search"}}],
-            enable_thinking = True,
-            reasoning_effort = "medium",
-            preserve_thinking = True,
-            max_new_tokens = 1,
-        )
+    generator = backend.generate_with_adapter_control(
+        use_adapter = False,
+        messages = [{"role": "user", "content": "ping"}],
+        tools = [{"function": {"name": "web_search"}}],
+        enable_thinking = True,
+        reasoning_effort = "medium",
+        preserve_thinking = True,
+        max_new_tokens = 1,
     )
-    assert out == ["hi"]
+    assert next(generator) == "hi"
+    assert adapter_active["value"] and backend._generation_lock.locked()
+    generator.close()
+    assert adapter_events == [("enter", False), ("exit", False)]
+    stream_state["fail"] = True
+    with pytest.raises(RuntimeError, match = "generation failed"):
+        list(
+            backend.generate_with_adapter_control(
+                use_adapter = False,
+                messages = [{"role": "user", "content": "ping"}],
+                max_new_tokens = 1,
+            )
+        )
+    assert adapter_events[-2:] == [("enter", False), ("exit", False)]
+    assert not backend._generation_lock.locked()
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", real_adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill",
+        lambda *_args, **_kwargs: "<think>",
+    )
+    stream_state["fail"] = False
+    named = backend.generate_with_adapter_control(
+        use_adapter = "named",
+        messages = [{"role": "user", "content": "ping"}],
+        max_new_tokens = 1,
+    )
+    with pytest.raises(NotImplementedError, match = "named adapter"):
+        next(named)
+    assert not adapter_active["value"] and not backend._generation_lock.locked()
     # The toggled kwargs must reach the chat-template helper on the real render
     # (one of the calls carries the tools; the fallback probe passes tools=None).
     tool_renders = [
