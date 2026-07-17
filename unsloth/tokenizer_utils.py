@@ -17,7 +17,9 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import shutil
 import tempfile
+import weakref
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
@@ -380,6 +382,8 @@ def fix_sentencepiece_tokenizer(
 
     # Only sentencepiece tokenizers write tokenizer.model, so check after the save.
     if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
+        # new_tokenizer was built in memory and never references this dir, so drop it.
+        shutil.rmtree(temporary_location, ignore_errors = True)
         return new_tokenizer
 
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
@@ -419,6 +423,10 @@ def fix_sentencepiece_tokenizer(
         eos_token = new_tokenizer.eos_token,
         pad_token = new_tokenizer.pad_token,
     )
+    # The tokenizer's vocab_file points at this dir, so it must live as long as the
+    # tokenizer (a later save_pretrained copies the patched tokenizer.model from here).
+    # Reclaim it once the tokenizer is garbage collected.
+    weakref.finalize(tokenizer, shutil.rmtree, temporary_location, ignore_errors = True)
     return tokenizer
 
 
