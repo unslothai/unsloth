@@ -126,6 +126,46 @@ def test_gguf_lora_push_to_hub_is_rejected(tmp_path):
         )
 
 
+# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path
+# has to work; it is only ever exercised here.
+
+
+def test_push_to_hub_gguf_lora_dispatches(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        save_mod,
+        "_unsloth_save_lora_gguf",
+        lambda model, tok, sd, **kw: seen.update(kw),
+    )
+    save_mod.unsloth_push_to_hub_gguf(
+        _FakeModel(),
+        "repo/id",
+        tokenizer = object(),
+        save_method = "lora",
+        quantization_method = "q8_0",
+    )
+    assert seen.get("outtype") == "q8_0"
+    assert seen.get("push_to_hub") is True
+
+
+def test_push_to_hub_gguf_lora_skips_non_main_process(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        save_mod,
+        "_unsloth_save_lora_gguf",
+        lambda *a, **kw: calls.append(kw),
+    )
+    result = save_mod.unsloth_push_to_hub_gguf(
+        _FakeModel(),
+        "repo/id",
+        tokenizer = object(),
+        save_method = "lora",
+        is_main_process = False,
+    )
+    assert result is None
+    assert calls == []
+
+
 # -- torchao PTQ / QAT dispatch ------------------------------------------------------------
 
 

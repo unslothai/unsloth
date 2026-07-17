@@ -3132,6 +3132,7 @@ def unsloth_push_to_hub_gguf(
     commit_message: Optional[str] = "Trained with Unsloth",
     private: Optional[bool] = None,
     token: Union[bool, str, None] = None,
+    is_main_process: bool = True,
     max_shard_size: Union[int, str, None] = "5GB",
     create_pr: bool = False,
     safe_serialization: bool = True,
@@ -3233,6 +3234,7 @@ def unsloth_push_to_hub_gguf(
             first_conversion = first_conversion,
             push_to_hub = False,  # Never push from here
             token = token,  # forwarded so imatrix_file=True can read a gated/private upstream
+            is_main_process = is_main_process,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
