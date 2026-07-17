@@ -248,7 +248,6 @@ def restore_kv_resume(backend, manifest) -> None:
 def sweep_slot_save_dir() -> None:
     try:
         from utils.paths.storage_roots import llama_slot_cache_root
-
         for path in llama_slot_cache_root().glob("resume-*.bin"):
             with contextlib.suppress(OSError):
                 path.unlink()

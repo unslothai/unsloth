@@ -135,7 +135,9 @@ def get_auto_unload_keep_kv() -> bool:
 
 
 def set_openai_auto_switch(
-    enabled: Any, idle_seconds: Any, keep_kv: Any = None
+    enabled: Any,
+    idle_seconds: Any,
+    keep_kv: Any = None,
 ) -> tuple[bool, int, bool]:
     """Set the auto-switch flags in one transaction so a settings PUT can't leave
     one key updated and another stale. ``keep_kv=None`` leaves the stored value
@@ -164,8 +166,10 @@ def set_openai_auto_switch(
     _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     if parsed_keep_kv is not None:
         _invalidate(AUTO_UNLOAD_KEEP_KV_SETTING_KEY)
-    return parsed_enabled, parsed_idle, (
-        parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv()
+    return (
+        parsed_enabled,
+        parsed_idle,
+        (parsed_keep_kv if parsed_keep_kv is not None else get_auto_unload_keep_kv()),
     )
 
 

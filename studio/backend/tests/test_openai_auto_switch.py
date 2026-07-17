@@ -2902,6 +2902,7 @@ def test_non_gguf_load_clears_reload_stash():
     # A non-GGUF (Transformers/Unsloth) load must clear the stash like the GGUF
     # branch, so it never lingers until the idle poll (or forever, idle-unload off).
     import inspect
+
     src = inspect.getsource(inference_route._load_model_impl)
     assert src.count("note_model_loaded()") >= 1  # non-GGUF branch
     assert "to_thread(note_model_loaded, llama_backend)" in src  # GGUF branch
@@ -3131,7 +3132,11 @@ def _seed_kv_manifest(
     }
 
 
-def _drive_idle_loop(kw, poll_seconds = 0.02, run_for = 0.2):
+def _drive_idle_loop(
+    kw,
+    poll_seconds = 0.02,
+    run_for = 0.2,
+):
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = poll_seconds))
         await asyncio.sleep(run_for)
@@ -3388,7 +3393,6 @@ def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
     import inspect
-
     src = inspect.getsource(inference_route._load_model_impl)
     assert "to_thread(note_model_loaded, llama_backend)" in src
 
