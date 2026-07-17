@@ -244,9 +244,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
         self, monkeypatch, hf_cache
     ):
-        # Cross-snapshot reuse is an offline-resilience path: online, hf_hub_download
-        # resumes the partial current-ref download and revalidates the revision instead
-        # of serving an older snapshot's same-name blob.
+        # Keep coverage for offline reuse; online reuse is tested separately.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -292,8 +290,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
         self, monkeypatch, hf_cache
     ):
-        # Case-variant cross-dir reuse is offline-only; online the canonical repo id
-        # resolves up front and hf_hub_download fetches the current revision.
+        # Keep coverage for case-insensitive offline cache lookup.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
@@ -348,45 +345,26 @@ class TestGgufVariantFileResolution:
         assert out == str(snap / gguf_file)
         assert seen_repos
 
-    def test_download_online_does_not_reuse_old_snapshot(self, monkeypatch, hf_cache):
-        # Online, an older same-name snapshot must not be served (it may be a stale
-        # revision); hf_hub_download is called so the current revision is fetched and
-        # its etag revalidated.
+    def test_download_online_reuses_complete_cached_snapshot(self, monkeypatch, hf_cache):
+        # Loads reuse complete cached models across repo revisions.
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
-        _build_cache(hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40)
-        downloaded: list[str] = []
+        snap = _build_cache(hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40)
 
-        def fake_get_paths_info(
-            _repo_id,
-            paths,
-            token = None,
-        ):
-            return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p]
-
-        def fake_download(
-            repo_id,
-            filename,
-            token = None,
-            **kwargs,
-        ):
-            downloaded.append(filename)
-            return f"/fresh/{filename}"
+        def fail_download(*_args, **_kwargs):
+            raise AssertionError("must reuse the cached GGUF instead of downloading")
 
         with (
             patch(
                 "huggingface_hub.list_repo_files",
                 lambda *_a, **_k: ["model-UD-Q4_K_XL.gguf"],
             ),
-            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
-            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fail_download),
         ):
             out = backend._download_gguf(hf_repo = repo, hf_variant = "UD-Q4_K_XL")
 
-        assert downloaded == ["model-UD-Q4_K_XL.gguf"]
-        assert out == "/fresh/model-UD-Q4_K_XL.gguf"
+        assert out == str(snap / "model-UD-Q4_K_XL.gguf")
 
     def test_download_reuses_older_snapshot_when_offline_env_is_true(self, monkeypatch, hf_cache):
         # HF_HUB_OFFLINE accepts truthy spellings beyond "1" (true/yes/on); the offline
