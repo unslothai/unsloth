@@ -1588,6 +1588,7 @@ _INKLING_REASONING_EFFORT = {
     "max": 0.99,
 }
 
+
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")

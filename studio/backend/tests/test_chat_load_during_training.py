@@ -590,7 +590,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_local_counts_dflash_like_mtp(self):
         import tempfile
-
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             main = root / "model.gguf"
