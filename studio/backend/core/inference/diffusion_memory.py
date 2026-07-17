@@ -148,6 +148,46 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
     return DeviceMemory(backend, device, "system_memory", free, total)
 
 
+def settled_snapshot_device_memory(
+    target: Any, attempts: int = 3, delay_s: float = 1.0
+) -> DeviceMemory:
+    """``snapshot_device_memory`` hardened against TRANSIENT free-VRAM undercounts on cuda.
+
+    ``torch.cuda.mem_get_info`` is device-wide and instantaneous: a neighbouring process (or a
+    just-spawned subprocess context) briefly holding tens of GB at the wrong moment makes an
+    empty card look full, and the planner then silently declines the resident/quant fast path
+    (measured on B200: a cold FLUX.2-dev int8 load saw free < 74 GB on an idle 183 GB card and
+    fell back to offloaded GGUF; the identical retry saw >= 124 GB and went resident). Settle
+    the allocator (synchronize + empty_cache, best-effort) and take the MAX free over a few
+    spaced reads: a transient can only SHRINK free, so the max rejects transient undercounts
+    while a persistent tenant still caps every read. Non-cuda targets keep the single read."""
+    if getattr(target, "device", "cpu") != "cuda":
+        return snapshot_device_memory(target)
+    try:
+        import torch
+
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
+        pass
+    best = snapshot_device_memory(target)
+    for _ in range(max(0, attempts - 1)):
+        if best.free_mib is not None and best.total_mib is not None:
+            # Free already within the reserve of total: nothing transient to wait out.
+            if best.free_mib >= best.total_mib - max(2048, int(best.total_mib * 0.10)):
+                break
+        try:
+            import time
+
+            time.sleep(delay_s)
+        except Exception:  # noqa: BLE001
+            break
+        nxt = snapshot_device_memory(target)
+        if nxt.free_mib is not None and (best.free_mib is None or nxt.free_mib > best.free_mib):
+            best = nxt
+    return best
+
+
 def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
@@ -274,19 +314,40 @@ def estimate_video_runtime_mib(
     return max(3072, int(4096 + 3.0 * decoded_mib))
 
 
+def _reserve_mib(memory_kind: str, base: int) -> int:
+    if memory_kind == "unified_memory":
+        return max(2048, int(base * 0.20))  # OS + CPU share this pool
+    if memory_kind == "system_memory":
+        return max(1024, int(base * 0.10))
+    return max(2048, int(base * 0.10))
+
+
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """Free memory minus a headroom reserve (room for fragmentation + other tenants). None when
     free memory is unknown."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    if memory.memory_kind == "unified_memory":
-        reserve = max(2048, int(base * 0.20))  # OS + CPU share this pool
-    elif memory.memory_kind == "system_memory":
-        reserve = max(1024, int(base * 0.10))
-    else:
-        reserve = max(2048, int(base * 0.10))
-    return max(0, int(memory.free_mib) - reserve)
+    return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
+
+
+def plan_fits_total_capacity(plan: Any) -> bool:
+    """Whether ``plan``'s resident requirement fits TOTAL device capacity under the standard
+    reserve + the 0.85 resident margin -- i.e. an offload decision can only stem from the
+    instantaneous FREE reading (something else held VRAM at snapshot time), never from the
+    device being too small. Used to retry a declined resident/quant plan once with a fresh
+    settled snapshot instead of trusting a single transient undercount. False on any missing
+    input (unknown sizes keep today's behaviour)."""
+    try:
+        required = plan.estimates.get("resident_required_mib")
+        memory = plan.device_memory
+        total = memory.total_mib
+        kind = memory.memory_kind
+    except Exception:  # noqa: BLE001 — malformed plan: no retry
+        return False
+    if required is None or total is None:
+        return False
+    return int(required) <= int((int(total) - _reserve_mib(kind, int(total))) * 0.85)
 
 
 def _sum_required(*values: Optional[int]) -> Optional[int]:
