@@ -14,7 +14,7 @@ Separately, the load path's in-process downloader and the hub download
 manager's worker knew nothing about each other, so both could write the same
 repo's cache blobs concurrently (the hub worker's cache preparation purges
 partial blobs it does not own, stalling the other download). The two entry
-points now refuse to start a second writer for the same repo.
+points refuse to start a second writer for the same repo.
 
 No GPU, no network, no subprocess. Linux/macOS/Windows compatible.
 """

@@ -244,8 +244,8 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
         self, monkeypatch, hf_cache
     ):
-        # Cross-snapshot reuse now applies online too (loads run what is on
-        # disk); this case pins the original offline-resilience path.
+        # Pins the offline-resilience path; online reuse is covered in
+        # test_gguf_load_cache_reuse.py.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -291,8 +291,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
         self, monkeypatch, hf_cache
     ):
-        # Case-variant cross-dir reuse, pinned offline (its original shape);
-        # online loads now reuse complete cached copies the same way.
+        # Case-variant cross-dir reuse, pinned offline (its original shape).
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
@@ -348,12 +347,10 @@ class TestGgufVariantFileResolution:
         assert seen_repos
 
     def test_download_online_reuses_complete_cached_snapshot(self, monkeypatch, hf_cache):
-        # Policy reversal (see test_gguf_load_cache_reuse.py): online, a complete
-        # cached copy is served even when the repo has moved to a newer revision.
-        # Loads run what is on disk; the consent-gated update flow (hub download
-        # with force) is the only path that fetches a new revision. Previously the
-        # online load re-resolved the current revision and silently re-downloaded
-        # the whole model after every repo re-upload.
+        # Policy reversal (see test_gguf_load_cache_reuse.py): online, a
+        # complete cached copy is served even when the repo has moved to a
+        # newer revision. Loads run what is on disk; only the consent-gated
+        # update flow fetches a new revision.
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"

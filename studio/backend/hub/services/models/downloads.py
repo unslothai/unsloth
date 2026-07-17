@@ -89,12 +89,10 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
-    # An in-flight model LOAD may be downloading this same repo into the HF
-    # cache through its own downloader, which is invisible to this registry.
-    # Starting a managed download now would put two uncoordinated writers on
-    # the same blobs (this worker's cache preparation purges partial blobs it
-    # does not own, stalling the other download). Refuse while the load is in
-    # flight; the user can retry once it finishes.
+    # An in-flight model LOAD may be downloading this repo through its own
+    # downloader, invisible to this registry; a managed download would put two
+    # writers on the same blobs (this worker purges partials it does not own).
+    # Refuse; the user can retry once the load finishes.
     try:
         from core.inference.llama_cpp import hf_gguf_load_in_flight
         _load_in_flight = hf_gguf_load_in_flight(repo_id)
