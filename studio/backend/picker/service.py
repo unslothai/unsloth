@@ -285,6 +285,13 @@ def read_default_chat_template(
                 logger.debug("Refused chat template read outside allowed folders: %s", name)
                 return None
             if name.lower().endswith(".gguf"):
+                # Prefer a maintained sidecar template (chat_template.jinja /
+                # tokenizer_config.json) next to the file over the GGUF's embedded
+                # copy, matching the tokenizer-first precedence used for directory
+                # and variant selections.
+                sidecar = _chat_template_from_tokenizer_dir(target.parent, allow_roots)
+                if sidecar:
+                    return sidecar
                 return read_gguf_chat_template(str(target))
             return _chat_template_from_dir(target, gguf_variant, allow_roots)
         except Exception as exc:

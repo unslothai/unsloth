@@ -9,6 +9,7 @@ from picker.service import (
     _chat_template_from_tokenizer_dir,
     _find_gguf_in_dir,
     _iter_ggufs,
+    read_default_chat_template,
     validate_chat_template,
 )
 
@@ -137,3 +138,25 @@ def test_chat_template_from_dir_with_variant_falls_back_to_gguf(tmp_path, monkey
 
 def test_chat_template_from_dir_returns_none_when_absent(tmp_path):
     assert _chat_template_from_dir(tmp_path) is None
+
+
+def test_read_default_chat_template_direct_gguf_prefers_sidecar(tmp_path, monkeypatch):
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"")
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
+    )
+    monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
+    monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
+    # A directly selected .gguf file must prefer a maintained sidecar template
+    # over its embedded copy, matching directory/variant precedence.
+    assert read_default_chat_template(str(gguf)) == "FROM_CONFIG"
+
+
+def test_read_default_chat_template_direct_gguf_falls_back_to_embedded(tmp_path, monkeypatch):
+    gguf = tmp_path / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"")
+    monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
+    monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
+    # With no sidecar next to the file, the embedded GGUF template is the fallback.
+    assert read_default_chat_template(str(gguf)) == "FROM_GGUF"
