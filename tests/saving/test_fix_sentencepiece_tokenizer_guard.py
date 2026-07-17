@@ -134,9 +134,7 @@ def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path,
     assert result is new
 
 
-def test_stale_model_from_a_previous_call_does_not_poison_a_fast_only_call(
-    tmp_path, monkeypatch
-):
+def test_stale_model_from_a_previous_call_does_not_poison_a_fast_only_call(tmp_path, monkeypatch):
     """The temporary directory defaults to a fixed, reusable location. A prior
     sentencepiece call leaves a tokenizer.model there; a fast-only tokenizer
     saved afterwards writes none, so without clearing the stale file the guard
@@ -147,9 +145,7 @@ def test_stale_model_from_a_previous_call_does_not_poison_a_fast_only_call(
 
     # Call 1: a real sentencepiece tokenizer, writes a tokenizer.model.
     old_sp, new_sp = _tokenizers()
-    fix_sentencepiece_tokenizer(
-        old_sp, new_sp, {"</s>": "<|im_end|>"}, temporary_location = location
-    )
+    fix_sentencepiece_tokenizer(old_sp, new_sp, {"</s>": "<|im_end|>"}, temporary_location = location)
     assert os.path.isfile(f"{location}/tokenizer.model")
 
     # Call 2: a fast-only tokenizer reusing the SAME directory must be returned
