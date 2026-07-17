@@ -1326,7 +1326,9 @@ const ThreadWelcome: FC<{
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
-    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    // Cap very long names so the greeting stays on one line.
+    const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
 
@@ -1433,7 +1435,6 @@ const Composer: FC<{
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
-  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
   // More than 4 pills: collapse to icons only. Search and Code always show; the
   // permission pill shows in every mode except "off" (it renders null there);
   // Images, RAG, Canvas and MCP are conditional.
@@ -1557,8 +1558,7 @@ const Composer: FC<{
   }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
-  // Bypass permissions counts too: turning it on should drop the composer into
-  // the two-row layout immediately, same as Search/Code.
+  // Keep the composer expanded whenever the permission pill is visible.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -1569,7 +1569,7 @@ const Composer: FC<{
     ragEnabled ||
     artifactsEnabled ||
     mcpEnabledForChat ||
-    bypassPermissions;
+    permissionMode !== "off";
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -2272,6 +2272,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             type="button"
             disabled={disabled}
             className="unsloth-thinking-pill"
+            data-pill-label="Thinking settings"
             data-active={activeLook ? "true" : "false"}
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
@@ -2281,9 +2282,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           >
             <ThinkIcon />
             {activeLook ? (
-              <span>{isEffort ? `Thinking · ${effortLabel}` : "Thinking"}</span>
+              <span className="unsloth-thinking-label">
+                {isEffort ? `Thinking · ${effortLabel}` : "Thinking"}
+              </span>
             ) : null}
-            <ArrowDownStandardIcon className="size-[15px]" />
+            <ArrowDownStandardIcon className="unsloth-thinking-caret size-[15px]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -2315,7 +2318,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               )}
               {effectiveReasoningEffortLevels
-                .filter((level) => level !== "none")
+                // 'none' is a real template level for models like Inkling
+                // (effort 0 = thinking off); show it as a pick unless the
+                // dedicated off item above already covers it.
+                .filter(
+                  (level) =>
+                    level !== "none" || !effectiveSupportsReasoningOff,
+                )
                 .map((level) => (
                   <DropdownMenuItem
                     key={level}
@@ -2423,6 +2432,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
         }
       }}
       className="unsloth-thinking-pill"
+      data-pill-label="Thinking"
       data-active={activeLook ? "true" : "false"}
       aria-label={thinkToggleAriaLabel({
         reasoningLockedOn,
@@ -2434,7 +2444,9 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
       <PillGlyph>
         <ThinkIcon />
       </PillGlyph>
-      {activeLook ? <span>Thinking</span> : null}
+      {activeLook ? (
+        <span className="unsloth-thinking-label">Thinking</span>
+      ) : null}
     </button>
   );
 };
@@ -2697,6 +2709,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -2947,7 +2960,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -2958,7 +2972,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
@@ -3444,8 +3458,18 @@ const ComposerRightControls: FC<{
 const MessageError: FC = () => {
   return (
     <MessagePrimitive.Error>
-      <ErrorPrimitive.Root className="aui-message-error-root mt-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
-        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
+      <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
+        <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
+        {/* Recovery path for interrupted/failed turns: regenerate in place. */}
+        <ActionBarPrimitive.Reload asChild={true}>
+          <button
+            type="button"
+            className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+          >
+            <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+            Retry
+          </button>
+        </ActionBarPrimitive.Reload>
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );
@@ -3536,9 +3560,6 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
-  const hasReasoningParts = useAuiState(({ message }) =>
-    message.parts.some((part) => part.type === "reasoning"),
-  );
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3624,11 +3645,9 @@ const AssistantMessage: FC = () => {
           </div>
         ) : (
           <>
-            {!hasReasoningParts ? (
-              <div className="pointer-events-none relative h-0 min-w-0">
-                <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
-              </div>
-            ) : null}
+            <div className="pointer-events-none relative h-0 min-w-0">
+              <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
+            </div>
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />

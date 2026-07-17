@@ -5,6 +5,7 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import codecs
 import fnmatch
 import http.client
 import os
@@ -13,6 +14,7 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import queue
 import random
 import re
 import shlex
@@ -21,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -73,7 +76,21 @@ if sys.platform != "win32":
 # Raster-image allowlist for sandbox file serving.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
-_MAX_OUTPUT_CHARS = 8000  # truncate long output
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env override; fall back to ``default`` on unset/garbage."""
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Model-visible cap on python/terminal tool results (protects the context
+# window). The live UI stream is capped separately and higher, so _truncate's
+# notice stays mode-neutral (see tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
+_MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -204,8 +221,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     blocked: set[str] = set()
 
     # punctuation_chars splits separators into their own tokens, so command
-    # position is detected even in `echo done; rm -rf x` (no whitespace) or
-    # quote-split names (`r''m` collapses to `rm` after `;`).
+    # position is detected even in `echo done; rm -rf x` (no whitespace).
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
@@ -309,6 +325,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     return blocked
 
 
+# Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
+# path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
+_SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
 # and hard blocks (blocklist, rlimits) still apply at run time; this gate only
@@ -2476,9 +2495,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
-    TMPDIR/LANG/TERM/PYTHONIOENCODING (+VIRTUAL_ENV or Windows SystemRoot) reach
-    the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    points at the sandbox workdir so SDKs can't read the operator's cached creds.
+    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
+    SystemRoot) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.)
+    are absent. HOME points at the sandbox workdir so SDKs can't read the
+    operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
+    shim directory.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
     # same environment the Studio server runs in.
@@ -2508,6 +2529,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
+        # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
+        "PYTHONPATH": _SANDBOX_SITE_DIR,
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
@@ -2542,13 +2566,10 @@ _BYPASS_ENV_SECRET_NAMES = frozenset(
         "KAGGLE_KEY",
         "MYSQL_PWD",  # exact name: markers use PASSWD, not PWD (PWD is the cwd var)
         "LD_PRELOAD",
-        # Auth brokers / capability handles: not secrets by value, but they
-        # hand the child the operator's live agent (ssh/gpg), kube config, or
-        # docker daemon. Names are listed because there is no value signal to
-        # key off. URL config vars (HTTP_PROXY, PIP_INDEX_URL, DATABASE_URL,
-        # ...) are intentionally NOT name-listed: a benign proxy/index without
-        # credentials must keep working in bypass mode, while a credentialed
-        # value is dropped by _is_secret_env_value() regardless of its name.
+        # Auth brokers / capability handles: hand the child the operator's live
+        # agent (ssh/gpg), kube config, or docker daemon. Listed by name (no
+        # value signal). URL config vars are NOT name-listed: a credentialed
+        # value is dropped by _is_secret_env_value() regardless of name.
         "SSH_AUTH_SOCK",
         "SSH_AGENT_PID",
         "GPG_AGENT_INFO",
@@ -2568,37 +2589,30 @@ _BYPASS_ENV_SECRET_MARKERS = (
     "CREDENTIAL",
     "PRIVATE_KEY",
     "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
-    # Azure App Service connection strings: SQLCONNSTR_/CUSTOMCONNSTR_/... and
-    # WEBSITE_CONTENTAZUREFILECONNECTIONSTRING carry DB/storage credentials.
+    # Azure App Service connection strings carry DB/storage credentials.
     "CONNSTR",
     "CONNECTIONSTRING",
 )
 # Non-secret hardening flags that match a secret prefix/marker but must be KEPT
-# so bypass mode does not silently undo an operator's opt-out. AWS_EC2_METADATA_
-# DISABLED tells the AWS SDK/CLI not to pull instance-role creds from IMDS;
-# dropping it would re-open that path for a bypassed tool.
+# so bypass mode does not undo an operator's opt-out (e.g.
+# AWS_EC2_METADATA_DISABLED blocks the AWS SDK from pulling IMDS creds).
 _BYPASS_ENV_KEEP_NAMES = frozenset(
     {
         "AWS_EC2_METADATA_DISABLED",
         "AWS_EC2_METADATA_V1_DISABLED",
     }
 )
-# Matches a URL that embeds userinfo before the host, covering both
-# "scheme://user:pass@host" and token-only "scheme://token@host" (and
-# percent-encoded variants). The userinfo must precede the first '/', so an '@'
-# in a path or query does not false-positive. Used to scrub credential-bearing
-# URL values regardless of the variable's name.
+# Matches a URL embedding userinfo before the host ("scheme://user:pass@host"
+# and token-only forms). The userinfo must precede the first '/', so an '@' in
+# a path/query does not false-positive.
 _URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
-# Connection-string credential fields (ADO.NET / Azure storage / Service Bus):
-# "...;Password=...", "...;AccountKey=...", "...;SharedAccessKey=...". Catches
-# credential-bearing values whose names dodge the name classifier. "accesskey"
-# also covers Shared/Secret AccessKey via substring; the Name fields (e.g.
-# SharedAccessKeyName=) do not match since "=" must follow the keyword.
+# Connection-string credential fields (ADO.NET / Azure storage / Service Bus)
+# whose names dodge the name classifier. The Name fields (SharedAccessKeyName=)
+# don't match since "=" must follow the keyword.
 _SECRET_VALUE_RE = re.compile(r"(?i)(?:password|pwd|accountkey|accesskey)\s*=\s*[^\s;]")
 
-# Names that hold no secret value but point SDKs at the operator's real
+# Names holding no secret value but pointing SDKs at the operator's real
 # home/cache/config (cached tokens, cred files), defeating the HOME repoint.
-# Startup always sets HF_HOME (-> $HF_HOME/token), so this is the live leak.
 # Dropped in bypass mode so tools fall back to the empty repointed HOME.
 _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
     {
@@ -2679,12 +2693,12 @@ def _is_secret_env_value(value: str) -> bool:
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
-    """Env for bypass exec: full host env (unrestricted) minus credential vars,
-    with HOME/TMPDIR repointed at the workdir so SDKs cannot read cached creds.
+    """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
+    repointed at the workdir so SDKs cannot read cached creds.
 
-    Note: stripping the child env is necessary but not sufficient on its own -
-    a same-UID child can still read the parent's environment via procfs, so
-    callers also harden the parent (see _harden_parent_against_proc_env_leak).
+    Stripping the child env is necessary but not sufficient (a same-UID child can
+    read the parent's env via procfs), so callers also harden the parent (see
+    _harden_parent_against_proc_env_leak).
     """
     env = {
         k: v
@@ -2699,6 +2713,12 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    # sitecustomize path shim (see _build_safe_env). Bypass inherits the
+    # operator's PYTHONPATH, so prepend rather than replace.
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (_SANDBOX_SITE_DIR, inherited_pythonpath) if part
+    )
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
@@ -2789,24 +2809,14 @@ def _harden_parent_against_proc_env_leak() -> bool:
     """Make the Studio process's /proc/<pid>/environ unreadable to its children.
 
     Stripping the child env is not enough on Linux: a bypassed same-UID child
-    runs unsandboxed and can read /proc/<getppid()>/environ to recover the
-    tool-executing process's *unfiltered* secrets (HF_TOKEN, cloud keys, ...).
-    Clearing the dumpable flag (PR_SET_DUMPABLE=0) reparents this process's
-    /proc entries to root, so a same-UID child can no longer read its environ.
+    can read /proc/<getppid()>/environ to recover the parent's unfiltered
+    secrets. Clearing PR_SET_DUMPABLE reparents this process's /proc entries to
+    root, closing that read.
 
-    Returns True when the process is hardened or hardening is unnecessary (no
-    /proc leak off Linux), and False when it is needed but could not be applied
-    (e.g. prctl denied by a seccomp policy). Callers must fail closed - refuse
-    the unsandboxed exec - when this returns False, rather than running with the
-    parent environ still readable.
-
-    Scope: this closes the direct parent read (the demonstrated leak). It is a
-    mitigation, not a full boundary - a bypassed tool is unsandboxed by design,
-    so it can still walk /proc to a same-UID *ancestor* (e.g. the launching
-    shell) or read on-disk credentials by absolute path. Complete isolation
-    needs a separate uid / PID+mount namespace, which is out of scope here; the
-    UI already warns the mode is dangerous. Applied lazily on first bypass exec
-    so non-bypass operation is unchanged.
+    Returns True when hardened or unnecessary (off Linux), False when needed but
+    unappliable (e.g. prctl denied by seccomp); callers must then fail closed.
+    This is a mitigation, not a full boundary - a bypassed tool can still walk
+    /proc to an ancestor or read creds by path. Applied lazily on first bypass.
     """
     global _parent_proc_hardened
     if _parent_proc_hardened:
@@ -2933,11 +2943,20 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+# Appended to the python/terminal descriptions: models habitually write to
+# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
+_SANDBOX_PATHS_NOTE = (
+    " Read and write files using relative paths in the current working "
+    "directory, which persists for this conversation; absolute paths like "
+    "/mnt/data or /tmp/outputs do not exist."
+)
+
 PYTHON_TOOL = {
     "type": "function",
     "function": {
         "name": "python",
-        "description": "Execute Python code in a sandbox and return stdout/stderr.",
+        "description": "Execute Python code in a sandbox and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -2955,7 +2974,7 @@ TERMINAL_TOOL = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "Execute a terminal command and return stdout/stderr.",
+        "description": "Execute a terminal command and return stdout/stderr." + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -3034,9 +3053,8 @@ ALL_TOOLS = [
 ]
 
 
-# OpenAI's function.name regex ^[a-zA-Z0-9_-]{1,64}$, enforced before streaming.
-# MCP tool names with '.', '/', spaces, etc. would 400 the whole request, so we
-# validate up front and skip with a warning.
+# OpenAI's function.name regex; MCP names that violate it would 400 the whole
+# request, so validate up front and skip with a warning.
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
@@ -3082,8 +3100,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
 
 async def get_enabled_mcp_tools() -> list[dict]:
     servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
-    # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
-    # carried from a desktop install onto a Colab/network deployment).
+    # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
@@ -3108,15 +3125,11 @@ async def get_enabled_mcp_tools() -> list[dict]:
             ),
             return_exceptions = True,
         )
-        # An edit/delete can land while we await a probe (up to 305 s for
-        # OAuth); its cache eviction is a no-op against an entry we haven't
-        # written yet. Re-read and drop a result whose server changed or
-        # was removed mid-probe, else a stale tool list caches indefinitely.
+        # An edit/delete can land while we await a probe; re-read and drop a
+        # result whose server changed or was removed mid-probe, else a stale
+        # tool list (or cool-off on a just-fixed server) persists.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
         for server, payload in zip(uncached, results):
-            # Guard the failure branch too: a stale failure must not park a
-            # cool-off on the fresh config, or the server the user just fixed
-            # is skipped for the whole window.
             fresh = current.get(server["id"])
             if fresh is None or any(
                 fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
@@ -3175,6 +3188,7 @@ def execute_tool(
     thread_id: str | None = None,
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -3187,6 +3201,10 @@ def execute_tool(
     ``disable_sandbox``: Bypass Permissions; run python/terminal without the
     safety checks, blocklist, or resource caps (secrets still stripped). Only
     affects local code tools; web_search / MCP are unchanged.
+    ``output_callback``: optional ``callable(str)`` invoked with incremental
+    stdout/stderr chunks while python/terminal executions run (UI live
+    output). Purely observational: the returned result string is identical
+    with or without it. Tools without incremental output ignore it.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
@@ -3247,6 +3265,7 @@ def execute_tool(
             arguments.get("query", ""),
             url = arguments.get("url"),
             timeout = effective_timeout,
+            cancel_event = cancel_event,
         )
     if name == "python":
         return _python_exec(
@@ -3255,6 +3274,7 @@ def execute_tool(
             effective_timeout,
             session_id,
             disable_sandbox = disable_sandbox,
+            output_callback = output_callback,
         )
     if name == "terminal":
         return _bash_exec(
@@ -3263,6 +3283,7 @@ def execute_tool(
             effective_timeout,
             session_id,
             disable_sandbox = disable_sandbox,
+            output_callback = output_callback,
         )
     return f"Unknown tool: {name}"
 
@@ -3468,11 +3489,10 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
 
-    # Whole-document mode: a thread-attached file under budget is injected in full so
-    # the model reads everything. A KB selection is exclusive, so whole-doc never
-    # preempts it; in a project chat the project sources are still retrieved top-K and
-    # appended under one citation numbering. Oversized files (or no thread doc) fall
-    # through to the combined top-K retrieval below.
+    # Whole-document mode: a thread-attached file under budget is injected in
+    # full. A KB selection is exclusive so whole-doc never preempts it; project
+    # sources are still retrieved top-K and appended under one citation
+    # numbering. Oversized/absent thread docs fall through to top-K below.
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
@@ -3577,10 +3597,118 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
-# Raw download cap > _MAX_PAGE_CHARS because SSR pages embed large <head>
-# sections stripped during conversion; 512 KB reaches article content even
-# where <head> alone is ~200 KB.
+# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
+# stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
+# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+_MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
+_MAX_WEB_PDF_PAGES = 50
+# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
+# Binary when they exceed 12.5%, after allowing 16 minor encoding glitches.
+_BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
+_MIN_BINARY_CHARS = 16
+_BINARY_CHAR_DIVISOR = 8
+# Common binary signatures that can otherwise look text-heavy when mislabeled.
+_PDF_MAGIC = b"%PDF-"
+_BINARY_MAGIC = (
+    _PDF_MAGIC,
+    b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
+    b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",  # OLE / legacy Office
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"\x28\xb5\x2f\xfd",  # zstd
+)
+
+# Check UTF-32 first because its little-endian BOM starts with the UTF-16 BOM.
+_UNICODE_BOM_CODECS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+)
+
+# A cp1252 retry needs 75% ASCII structure so it cannot rescue high-byte binary.
+_MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
+_ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
+
+
+def _looks_binary(text: str) -> bool:
+    """Whether control or undecodable characters exceed the binary threshold."""
+    return len(_BINARY_CHAR_RE.findall(text)) > max(
+        _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
+    )
+
+
+def _magic_head(data: bytes) -> bytes:
+    head = data[:1024].lstrip()
+    for bom, _codec in _UNICODE_BOM_CODECS:
+        if head.startswith(bom):
+            head = head.removeprefix(bom).lstrip()
+            break
+    return head
+
+
+def _has_pdf_magic(data: bytes) -> bool:
+    return _magic_head(data).startswith(_PDF_MAGIC)
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Whether a common binary signature follows optional BOM or whitespace."""
+    return _magic_head(data).startswith(_BINARY_MAGIC)
+
+
+def _has_single_byte_text_evidence(data: bytes) -> bool:
+    """True when *data* has enough ASCII structure for a cp1252 text retry."""
+    if not data:
+        return True
+    ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
+    return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract page-delimited text with the same parser used by RAG ingestion."""
+    from ..rag.parsers import parse_pdf_bytes
+
+    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
+    page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
+    parts: list[str] = []
+    length = 0
+    text_limited = False
+    for page in pages:
+        page_text = page.text.strip()
+        if not page_text:
+            continue
+        section = f"## Page {page.page_number}\n\n{page_text}"
+        piece = ("\n\n" if parts else "") + section
+        remaining = _MAX_PAGE_CHARS - length
+        if len(piece) > remaining:
+            parts.append(piece[:remaining])
+            text_limited = True
+            break
+        parts.append(piece)
+        length += len(piece)
+
+    text = "".join(parts).rstrip()
+    if not text:
+        if page_limit_reached:
+            return f"(PDF contains no extractable text in the first {_MAX_WEB_PDF_PAGES} pages)"
+        return ""
+    limits = []
+    if text_limited:
+        limits.append(f"text limited to {_MAX_PAGE_CHARS:,} characters")
+    if page_limit_reached:
+        limits.append(f"page processing capped at {_MAX_WEB_PDF_PAGES} pages")
+    if limits:
+        marker = f"\n\n... (PDF extraction {'; '.join(limits)})"
+        text = text[: _MAX_PAGE_CHARS - len(marker)].rstrip() + marker
+    return text
+
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -3662,10 +3790,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        # `not ip.is_global` is the source of truth: it rejects every category
-        # below PLUS shared/CGNAT (100.64.0.0/10) and benchmarking/doc ranges
-        # Python marks is_private=False and is_global=False. The explicit
-        # predicates only give human-readable categories in the error message.
+        # `not ip.is_global` is the source of truth (also rejects CGNAT and
+        # benchmarking/doc ranges); the explicit predicates only label the error.
         if (
             not ip.is_global
             or ip.is_private
@@ -3682,28 +3808,244 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
-def _fetch_page_text(
-    url: str,
-    max_chars: int = _MAX_PAGE_CHARS,
-    timeout: int = 30,
-) -> str:
-    """Fetch a URL and return plain text content (HTML tags stripped).
+# Binary application subtypes rejected by MIME; other application types are
+# sniffed so textual artifacts such as SQL stay usable.
+_BINARY_APPLICATION_SUBTYPES = frozenset(
+    {
+        "epub+zip",
+        "gzip",
+        "java-archive",
+        "pdf",
+        "vnd.apple.installer+xml",
+        "wasm",
+        "x-7z-compressed",
+        "x-bzip2",
+        "x-gzip",
+        "x-rar-compressed",
+        "x-tar",
+        "x-xz",
+        "zip",
+        "zstd",
+    }
+)
 
-    Blocks private/loopback/link-local targets (SSRF protection) and caps
-    the download size to avoid unbounded memory usage.
+
+def _is_text_candidate_content_type(content_type: str | None) -> bool:
+    """Whether a MIME type is textual or ambiguous enough for byte sniffing."""
+    match = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+    if not match:
+        return True
+    ct = match.group(0).lower()
+    if ct.startswith("text/"):
+        return True
+    if ct.startswith("application/"):
+        subtype = ct[len("application/") :]
+        return subtype not in _BINARY_APPLICATION_SUBTYPES
+    return False
+
+
+# First path segments on github.com that are site pages, not repo owners.
+_GITHUB_NON_OWNER_SEGMENTS = frozenset(
+    {
+        "about",
+        "apps",
+        "codespaces",
+        "collections",
+        "contact",
+        "customer-stories",
+        "dashboard",
+        "discussions",
+        "enterprise",
+        "explore",
+        "features",
+        "issues",
+        "join",
+        "login",
+        "marketplace",
+        "new",
+        "notifications",
+        "organizations",
+        "orgs",
+        "pricing",
+        "pulls",
+        "search",
+        "security",
+        "settings",
+        "signup",
+        "site",
+        "sponsors",
+        "team",
+        "topics",
+        "trending",
+    }
+)
+_GITHUB_NAME_RE = re.compile(r"\A[A-Za-z0-9_.\-]{1,100}\Z")
+
+
+def _github_repo_readme_api_url(url: str) -> str | None:
+    """README API URL for a ``github.com/{owner}/{repo}`` page, else None.
+
+    A repo root page rendered as HTML is mostly UI chrome (nav, file table,
+    stats); the ``/readme`` API returns the raw README markdown unauthenticated,
+    which is what the model actually wants to read.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if owner.lower() in _GITHUB_NON_OWNER_SEGMENTS:
+        return None
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    if not (_GITHUB_NAME_RE.match(owner) and _GITHUB_NAME_RE.match(repo)):
+        return None
+    return f"https://api.github.com/repos/{owner}/{repo}/readme"
+
+
+# A single fetch can chain several steps (README API attempt, HTML fallback, up
+# to five redirect hops, each reading a body). A per-operation socket timeout
+# bounds one stalled step but not their sum, and nothing aborts on client
+# disconnect, so one overall wall-clock deadline (plus a cooperative
+# cancel_event) bounds the whole fetch instead.
+def _fetch_budget_exceeded(deadline, cancel_event):
+    """User-facing error string when the fetch must stop early, else None."""
+    if cancel_event is not None and cancel_event.is_set():
+        return "Failed to fetch URL: cancelled."
+    if deadline is not None and time.monotonic() >= deadline:
+        return "Failed to fetch URL: timed out."
+    return None
+
+
+def _fetch_hop_timeout(timeout, deadline):
+    """Per-operation socket timeout: the lesser of the caller's per-op timeout
+    and the time left on the deadline, so one slow hop cannot overrun the whole
+    budget. Callers check ``_fetch_budget_exceeded`` first, so remaining time is
+    positive here; the tiny floor only guards a race."""
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        remaining = 0.001
+    return remaining if timeout is None else min(timeout, remaining)
+
+
+def _resolve_with_budget(hostname, port, deadline, cancel_event):
+    """``_validate_and_resolve_host`` bounded by the overall fetch budget.
+
+    ``getaddrinfo`` is blocking with no deadline of its own, so a slow resolver
+    (or a request cancelled before dispatch) could run past the budget. Resolve
+    on a daemon thread and poll the budget so the fetch aborts on time; the
+    abandoned lookup is discarded. With no deadline and no cancel_event this is a
+    plain synchronous call, so opt-out callers keep the old behavior and cost.
+    """
+    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+    if budget_error is not None:
+        return False, budget_error, ""
+    if deadline is None and cancel_event is None:
+        return _validate_and_resolve_host(hostname, port)
+
+    result: "queue.Queue" = queue.Queue(maxsize = 1)
+
+    def _resolve():
+        try:
+            result.put(_validate_and_resolve_host(hostname, port))
+        except Exception as exc:  # defensive: never let the worker die silently
+            result.put((False, f"Failed to resolve host: {exc}", ""))
+
+    threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
+    while True:
+        budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        if budget_error is not None:
+            return False, budget_error, ""
+        try:
+            return result.get(timeout = 0.05)
+        except queue.Empty:
+            continue
+
+
+def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
+    """Read up to ``max_bytes``, enforcing the overall budget between chunks.
+
+    A single ``resp.read(max_bytes)`` can block for the whole transfer if the
+    server dribbles bytes just inside each socket-inactivity timeout, so the body
+    is read in chunks with the budget re-checked (and the socket timeout
+    re-tightened toward the deadline) each round. The joined bytes are identical
+    to one capped read. Returns ``(error_or_None, body_bytes)``.
+    """
+    # Best-effort handle on the underlying socket so its timeout tightens as the
+    # deadline nears; absent on test doubles, where the between-chunk budget
+    # check still bounds the read.
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    chunks = []
+    remaining = max_bytes
+    while remaining > 0:
+        budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        if budget_error is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return budget_error, b""
+        if sock is not None:
+            try:
+                sock.settimeout(_fetch_hop_timeout(timeout, deadline))
+            except Exception:
+                pass
+        chunk = resp.read(min(65536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+    if budget_error is not None:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        return budget_error, b""
+    return None, b"".join(chunks)
+
+
+def _fetch_url_raw(
+    url: str,
+    timeout: int = 30,
+    extra_headers: dict | None = None,
+    deadline: float | None = None,
+    cancel_event = None,
+) -> tuple[str | None, str, str]:
+    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``error`` is a user-facing message string when the fetch failed (the
+    existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
+    Blocks private/loopback/link-local targets and caps the download size.
+
+    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch
+    (redirect hops and body read included) and ``cancel_event`` aborts it when
+    the caller goes away; both default off so callers keep the old behavior.
     """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r})."
+        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r}).", "", ""
     if not parsed.hostname:
-        return "Blocked: URL is missing a hostname."
+        return "Blocked: URL is missing a hostname.", "", ""
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ip = _validate_and_resolve_host(parsed.hostname, port)
+    ok, reason, pinned_ip = _resolve_with_budget(
+        parsed.hostname,
+        port,
+        deadline,
+        cancel_event,
+    )
     if not ok:
-        return reason
+        return reason, "", ""
 
     try:
         from urllib.error import HTTPError as _HTTPError
@@ -3715,6 +4057,9 @@ def _fetch_page_text(
         ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", ""
             # Pin to the validated IP (prevents DNS rebinding): rewrite URL to
             # the IP, set the Host header.
             cp = urlparse(current_url)
@@ -3728,57 +4073,294 @@ def _fetch_page_text(
                 _SNIHTTPSHandler(current_host),
             )
 
-            req = urllib.request.Request(
-                pinned_url,
-                headers = {
-                    "User-Agent": ua,
-                    "Host": current_host,
-                },
-            )
+            headers = {
+                "User-Agent": ua,
+                "Host": current_host,
+            }
+            if extra_headers:
+                headers.update(extra_headers)
+            req = urllib.request.Request(pinned_url, headers = headers)
             try:
-                resp = opener.open(req, timeout = timeout)
+                # Cap the socket timeout at the time left on the overall deadline
+                # so a single slow hop cannot outlast the whole fetch budget.
+                resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
                 location = e.headers.get("Location")
                 if not location:
-                    return "Failed to fetch URL: redirect missing Location header."
+                    return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
                 rp = urlparse(current_url)
                 if rp.scheme not in ("http", "https") or not rp.hostname:
-                    return "Blocked: redirect target is not a valid http/https URL."
+                    return "Blocked: redirect target is not a valid http/https URL.", "", ""
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ip = _validate_and_resolve_host(
+                ok2, reason2, pinned_ip = _resolve_with_budget(
                     rp.hostname,
                     rp_port,
+                    deadline,
+                    cancel_event,
                 )
                 if not ok2:
-                    return reason2
+                    return reason2, "", ""
                 current_host = rp.hostname
                 continue
-            # Success: read capped body.
-            raw_bytes = resp.read(max_bytes)
+
+            # get_content_type() defaults to "text/plain" when the header is
+            # absent (RFC 2045); report "" instead so callers can tell a missing
+            # header apart from a server that really declared text/plain.
+            if resp.headers.get("Content-Type") is None:
+                content_type = ""
+            else:
+                content_type = (resp.headers.get_content_type() or "").lower()
+
+            # Success: read the capped body enforcing the budget between chunks
+            # (see _read_capped_body), so a slow-drip server can't stretch a
+            # single resp.read past the deadline.
+            declared_pdf = content_type == "application/pdf"
+            read_limit = _MAX_PDF_FETCH_BYTES + 1 if declared_pdf else max_bytes
+            body_error, raw_bytes = _read_capped_body(
+                resp,
+                read_limit,
+                timeout,
+                deadline,
+                cancel_event,
+            )
+            if body_error is not None:
+                return body_error, "", ""
+
+            # A missing or wrong PDF MIME type is common: once the initial text-sized
+            # read identifies PDF magic, finish the bounded download to reach the EOF xref.
+            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+                tail_error, tail = _read_capped_body(
+                    resp,
+                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    timeout,
+                    deadline,
+                    cancel_event,
+                )
+                if tail_error is not None:
+                    return tail_error, "", ""
+                raw_bytes += tail
             break
         else:
-            return "Failed to fetch URL: too many redirects."
+            return "Failed to fetch URL: too many redirects.", "", ""
 
-        charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors = "replace")
+        is_pdf = declared_pdf or _has_pdf_magic(raw_bytes)
+        if is_pdf:
+            if len(raw_bytes) > _MAX_PDF_FETCH_BYTES:
+                return (
+                    "(PDF content exceeds the download limit; not readable as text)",
+                    "",
+                    content_type,
+                )
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", content_type
+            try:
+                pdf_text = _extract_pdf_text(raw_bytes)
+            except Exception as exc:
+                logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
+                return "(PDF content could not be read as text)", "", content_type
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", content_type
+            if not pdf_text:
+                pdf_text = "(PDF contains no extractable text)"
+            # Report the true type even for a mislabeled body so the caller's "html"
+            # check routes the extracted text to the plain-text path, not html_to_markdown.
+            return None, pdf_text, "application/pdf"
+
+        # Reject known-binary MIME types before decoding. Binary is returned as the
+        # error string so the caller surfaces the placeholder, not replacement chars.
+        if not _is_text_candidate_content_type(content_type):
+            # Only echo a clean MIME token back to the model.
+            m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+            safe_type = m.group(0) if m else "unknown type"
+            return (
+                f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)",
+                "",
+                content_type,
+            )
+
+        # Catch text-labeled binary via its magic signature.
+        if _has_binary_magic(raw_bytes):
+            return (
+                f"(binary content, {len(raw_bytes)} bytes; not readable as text)",
+                "",
+                content_type,
+            )
+
+        declared = resp.headers.get_content_charset()
+        declared_codec = codecs.lookup(declared).name if declared else None
+        bom_codec = next(
+            (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
+            None,
+        )
+        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+
+        # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
+        if _looks_binary(raw_html):
+            # Rescue undeclared cp1252 only when the bytes have text structure.
+            alt = (
+                raw_bytes.decode("cp1252", "replace")
+                if declared_codec in (None, "iso8859-1")
+                and _has_single_byte_text_evidence(raw_bytes)
+                else None
+            )
+            if alt is not None and not _looks_binary(alt):
+                raw_html = alt
+            else:
+                return (
+                    f"(binary content, {len(raw_bytes)} bytes; not readable as text)",
+                    "",
+                    content_type,
+                )
+
+        return None, raw_html, content_type
     except _HTTPError as e:
-        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
     except Exception as e:
-        return f"Failed to fetch URL: {e}"
+        return f"Failed to fetch URL: {e}", "", ""
+
+
+# Tags that, at the very START of a body, mark it as HTML. Excludes ambiguous
+# tags (<div>/<p>/<span>/<a>/<img>/<h1>..<h6>/<table>) that legitimately open
+# centered-logo or badge-layout Markdown READMEs and must stay Markdown.
+_HTML_LEADING_TAGS = (
+    "html",
+    "head",
+    "body",
+    "title",
+    "meta",
+    "link",
+    "script",
+    "style",
+    "article",
+    "section",
+    "main",
+    "header",
+    "footer",
+    "nav",
+    "aside",
+    "figure",
+    "form",
+    "ul",
+    "ol",
+    "dl",
+    "pre",
+    "blockquote",
+)
+_HTML_LEADING_RE = re.compile(r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)")
+
+
+def _looks_like_html(body: str) -> bool:
+    """True only when the document ITSELF opens with HTML.
+
+    Matches an HTML doctype or a leading document/structure tag after optional
+    whitespace, not a mere substring, so a Markdown README with a fenced HTML
+    example or tags further down stays Markdown. Also detects bare fragments
+    (``<body>``/``<article>``/...) with no doctype, so a page with a
+    missing/wrong Content-Type is still converted.
+    """
+    probe = body.lstrip()[:256].lower()
+    return bool(_HTML_LEADING_RE.match(probe))
+
+
+# Stricter than _HTML_LEADING_RE: only a real document opener (doctype or leading
+# <html>/<head>/<body>), never a block tag a Markdown file can open with. Used on
+# the raw GitHub README body so a Markdown README starting with an HTML block is
+# not run through html_to_markdown, which would collapse its headings, lists and
+# fenced code onto one line.
+_HTML_DOCUMENT_RE = re.compile(r"<(?:!doctype\s+html\b|/?(?:html|head|body)\b)")
+
+
+def _looks_like_html_document(body: str) -> bool:
+    """True only when the body opens as a full HTML document (e.g. a .html README)."""
+    probe = body.lstrip()[:256].lower()
+    return bool(_HTML_DOCUMENT_RE.match(probe))
+
+
+def _truncate_page_text(text: str, max_chars: int) -> str:
+    if not text:
+        return "(page returned no readable text)"
+    if len(text) > max_chars:
+        return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
+    return text
+
+
+def _fetch_page_text(
+    url: str,
+    max_chars: int = _MAX_PAGE_CHARS,
+    timeout: int = 30,
+    cancel_event = None,
+) -> str:
+    """Fetch a URL and return readable text content.
+
+    HTML responses are converted to Markdown with a main-content heuristic
+    (``<article>``/``<main>`` scoping, hidden-element and boilerplate
+    stripping); non-HTML text responses are returned as-is. GitHub repo root
+    pages are rewritten to the README API so the model reads the README
+    instead of the repo page's UI chrome. Blocks private/loopback/link-local
+    targets (SSRF protection) and caps the download size.
+    """
+    # One wall-clock budget for the whole fetch. The README API attempt and its
+    # HTML fallback both draw from it, so a slow/failed API call cannot hand the
+    # fallback a fresh full timeout and double the worst case.
+    deadline = None if timeout is None else time.monotonic() + timeout
+    readme_api_url = _github_repo_readme_api_url(url)
+    if readme_api_url:
+        err, body, _ctype = _fetch_url_raw(
+            readme_api_url,
+            timeout = timeout,
+            extra_headers = {
+                "Accept": "application/vnd.github.raw+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            deadline = deadline,
+            cancel_event = cancel_event,
+        )
+        # The README API is unauthenticated and rate-limited; on any failure fall
+        # back to the HTML page fetch. A 200 body is authoritative even when it is
+        # HTML (a .html README): convert it rather than falling back to the repo
+        # page's UI chrome, keeping the raw body if extraction yields nothing.
+        if err is None and body.strip():
+            readme_body = body
+            # The raw file is almost always Markdown. Only a real HTML document (a
+            # .html README) is converted; a Markdown README that merely opens with
+            # a block tag is kept as-is (see _HTML_DOCUMENT_RE).
+            if _looks_like_html_document(body):
+                from ._html_to_md import html_to_markdown
+                converted = html_to_markdown(body, main_content = True)
+                readme_body = converted if converted.strip() else body
+            if readme_body.strip():
+                return _truncate_page_text(
+                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+                    max_chars,
+                )
+
+    err, body, content_type = _fetch_url_raw(
+        url,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+    )
+    if err is not None:
+        return err
+
+    # Trust a declared HTML type, and otherwise sniff the body: servers with a
+    # missing or wrong Content-Type (e.g. text/plain on an HTML page) still get
+    # converted, matching the pre-extraction behavior of always converting.
+    is_html = "html" in content_type or _looks_like_html(body)
+    if not is_html:
+        # Plain text / markdown / JSON (e.g. raw.githubusercontent.com):
+        # converting through the HTML renderer would collapse its whitespace.
+        return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
     from ._html_to_md import html_to_markdown
 
-    text = html_to_markdown(raw_html)
-
-    if not text:
-        return "(page returned no readable text)"
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
-    return text
+    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
 
 
 def _web_search(
@@ -3786,6 +4368,7 @@ def _web_search(
     max_results: int = 5,
     timeout: int = _EXEC_TIMEOUT,
     url: str | None = None,
+    cancel_event = None,
 ) -> str:
     """Search the web using DuckDuckGo and return formatted results.
 
@@ -3794,14 +4377,25 @@ def _web_search(
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
-        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
+        return _fetch_page_text(
+            url.strip(),
+            timeout = fetch_timeout,
+            cancel_event = cancel_event,
+        )
 
     if not query or not query.strip():
         return "No query provided."
+    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be
+    # interrupted mid-flight, so gate on either side: skip an already-cancelled
+    # request, and discard results that land after the client has gone.
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
     try:
         from ddgs import DDGS
 
         results = DDGS(timeout = timeout).text(query, max_results = max_results)
+        if cancel_event is not None and cancel_event.is_set():
+            return "Search cancelled."
         if not results:
             return "No results found."
         parts = []
@@ -4799,19 +5393,37 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _capture_process_group(proc):
+    """Return the setsid process-group id, or ``None`` when unavailable.
+
+    Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
+    the leader cannot make ``os.getpgid(proc.pid)`` fail first. POSIX-only:
+    Windows has no process groups (and no ``os.getpgid``), so return ``None``
+    there and let the single-pid ``proc.kill()`` fallback handle cleanup.
+    """
+    if os.name != "posix" or not hasattr(os, "getpgid"):
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        return None
+
+
 def _kill_process_tree(proc) -> None:
     """SIGKILL the setsid process group; fall back to single-pid kill."""
     if proc.poll() is not None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
-    if pgid is not None:
+    pgid = None
+    if hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+    if pgid is not None and hasattr(os, "killpg"):
         try:
             os.killpg(pgid, signal.SIGKILL)
             return
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
     try:
         proc.kill()
@@ -4819,23 +5431,234 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
+def _killpg_captured(pgid) -> None:
+    """SIGKILL a process group captured before its leader was waited on.
+
+    Once ``proc`` exits, ``os.getpgid(proc.pid)`` fails and ``_kill_process_tree``
+    short-circuits, so a stdout-holding grandchild that outlived the parent could
+    not otherwise be signaled. The pre-captured setsid group id still targets the
+    whole tree. No-op with no ``os.killpg`` (Windows) or nothing captured.
+    """
+    if pgid is None or not hasattr(os, "killpg"):
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def _cancel_watcher(
     proc,
     cancel_event,
     poll_interval = 0.2,
+    pgid = None,
 ):
-    """Daemon thread that kills a process when cancel_event is set."""
+    """Daemon thread that kills a process when cancel_event is set.
+
+    ``pgid`` is the group id captured right after spawn; killing it directly
+    reaps a stdout-holding grandchild even when the watcher's own ``poll()``
+    already reaped the leader (which makes ``_kill_process_tree`` short-circuit).
+    """
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+    # Mode-neutral notice: this result serves both the streaming UI and
+    # non-streaming callers and must stay byte-identical with and without an
+    # output_callback (a regression-tested invariant), so it can't claim the
+    # user saw the full output.
     if len(text) > limit:
-        return text[:limit] + f"\n\n... (truncated, {len(text)} chars total)"
+        return text[:limit] + (
+            f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+            "total. The full output is not retained here; any files the code wrote "
+            "persist in the working directory.)"
+        )
     return text
+
+
+# ChatGPT code-interpreter path conventions models write out of habit; none
+# exist in the Studio sandbox, so a failure on one earns the retry hint.
+_MISSING_PATH_PREFIXES = (
+    "/mnt/data",
+    "/mnt/outputs",
+    "/home/sandbox",
+    "/workspace",
+    "/tmp/outputs",
+)
+
+# Matches the quoted path in a Python OSError str and the bare path in a bash
+# "No such file or directory" error; applied only to the error line.
+_QUOTED_ABS_PATH_RE = re.compile(r"""['"](/[^'"\n]+)['"]""")
+_BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
+
+# The sandbox CWD is a per-thread dir under ~/studio_sandbox; an absolute path
+# under it is a genuine local miss, not a hallucinated out-of-sandbox write.
+_SANDBOX_ROOT = os.path.join(os.path.expanduser("~"), "studio_sandbox")
+
+
+def _missing_error_lines(output: str) -> list[str]:
+    """The lines that actually name a missing file (a FileNotFoundError message
+    or a bash "No such file or directory"). Traceback frame lines such as
+    ``File "/workspace/proj/script.py"`` are excluded, so an unrelated absolute
+    path mentioned elsewhere in the output is never treated as the failing one."""
+    return [
+        line
+        for line in output.splitlines()
+        if "No such file or directory" in line or "FileNotFoundError" in line
+    ]
+
+
+def _extract_missing_abs_path(output: str) -> str | None:
+    """Pull the absolute path a FileNotFoundError / bash error named, if any."""
+    for line in reversed(_missing_error_lines(output)):
+        m = _QUOTED_ABS_PATH_RE.search(line)
+        if m:
+            return m.group(1)
+        m = _BASH_ABS_PATH_RE.search(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
+    """True when ``abs_path`` is not the working directory or under it.
+
+    ``workdir`` is the executor's actual working directory (defaults to the
+    sandbox root). Project-backed sessions run under a root OUTSIDE
+    ``~/studio_sandbox`` (see ``_get_workdir``), so a legitimate miss inside a
+    project must be judged against the real workdir, not a static sandbox root,
+    or it is wrongly classed as an external habit path.
+    """
+    try:
+        root = os.path.realpath(workdir or _SANDBOX_ROOT)
+        rp = os.path.realpath(abs_path)
+    except (OSError, ValueError):
+        return True
+    return rp != root and not rp.startswith(root + os.sep)
+
+
+def _missing_path_hint(output: str, workdir: str | None = None) -> str:
+    """Model-visible healing when an execution fails on an absolute path missing
+    in the sandbox (a code-interpreter habit path, or one invented from the CWD).
+    Detected on the full pre-truncation output; the hint echoes the failing path
+    so the model retries with the right relative name."""
+    error_lines = _missing_error_lines(output)
+    if not error_lines:
+        return ""
+    abs_path = _extract_missing_abs_path(output)
+    # A convention prefix is an out-of-sandbox signal only when the exact failing
+    # path could not be isolated; scoped to the failing-path error line(s) so a
+    # prefix mentioned elsewhere doesn't trigger a misleading hint.
+    convention = any(prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES)
+    if abs_path is not None:
+        # Judge the isolated path against the real workdir even when it matches a
+        # convention prefix, so a genuine miss inside a project rooted under such
+        # a prefix (e.g. /workspace/proj) is not steered out of its subdirectory.
+        if not _is_outside_workdir(abs_path, workdir):
+            return ""
+    elif not convention:
+        # Nothing marks this as an out-of-sandbox miss; stay silent.
+        return ""
+    if abs_path:
+        example = f"'{os.path.basename(abs_path)}', not '{abs_path}'"
+    else:
+        example = "'output.html', not '/mnt/data/output.html'"
+    return (
+        "\nHint: that absolute path does not exist in this sandbox. The current "
+        "working directory is writable and persists for this conversation; retry "
+        f"with a relative path (for example {example})."
+    )
+
+
+def _drain_process_output(
+    proc,
+    timeout,
+    output_callback,
+    cancel_event = None,
+    *,
+    pgid = None,
+) -> tuple[str, bool]:
+    """``proc.communicate(timeout=...)`` equivalent that also streams each
+    stdout line to ``output_callback`` as it is produced.
+
+    Returns ``(output, timed_out)``. The joined output is identical to what
+    ``communicate`` would return: the same TextIOWrapper decodes the stream,
+    so encoding, error replacement, and newline translation all match. On
+    timeout the process tree is killed (mirroring the non-streaming path).
+    With ``timeout=None`` the drain waits for EOF like ``communicate`` would,
+    stopping early only when ``cancel_event`` is set.
+    """
+    chunks: list[str] = []
+
+    # Captured before waiting so a stdout-holding grandchild can still be killed
+    # after the leader is reaped (getpgid then fails). Callers pass it in from
+    # right after Popen; fall back to capturing here for direct callers.
+    if pgid is None:
+        pgid = _capture_process_group(proc)
+
+    def _reader() -> None:
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                chunks.append(line)
+                if output_callback is not None:
+                    try:
+                        output_callback(line)
+                    except Exception:  # noqa: BLE001 - observer must never kill the tool
+                        logger.debug("tool output_callback raised", exc_info = True)
+        except (ValueError, OSError):
+            pass  # pipe closed during kill
+
+    reader = threading.Thread(target = _reader, daemon = True)
+    reader.start()
+    started_at = time.monotonic()
+    timed_out = False
+    try:
+        proc.wait(timeout = timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process_tree(proc)
+        # Also kill the pre-captured group in case the leader was reaped in the
+        # window before _kill_process_tree sampled its pgid, reaping a
+        # stdout-holding grandchild (matches the non-streaming timeout path).
+        _killpg_captured(pgid)
+        try:
+            proc.wait(timeout = 5)
+        except subprocess.TimeoutExpired:
+            pass
+    # A grandchild that inherited stdout can hold the pipe open past the main
+    # process's exit.
+    if not timed_out:
+        if timeout is not None:
+            # Wait out the remaining budget like communicate() would, polling
+            # cancel_event in slices (the cancel watcher is gone once the leader
+            # exits) so a chatty grandchild doesn't keep draining after a Stop.
+            # The normal path still reaches EOF on its own with the same bytes.
+            deadline = started_at + timeout
+            while reader.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    _killpg_captured(pgid)
+                    break
+                if cancel_event is not None and cancel_event.is_set():
+                    _killpg_captured(pgid)
+                    break
+                reader.join(timeout = min(0.5, remaining))
+        else:
+            # Unlimited timeout: drain until the pipe closes (like
+            # communicate(timeout=None)), stopping early only on cancellation.
+            while reader.is_alive():
+                if cancel_event is not None and cancel_event.is_set():
+                    _killpg_captured(pgid)
+                    break
+                reader.join(timeout = 0.5)
+    reader.join(timeout = 5)
+    return "".join(chunks), timed_out
 
 
 def _python_exec(
@@ -4844,11 +5667,14 @@ def _python_exec(
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
     disable_sandbox (Bypass Permissions): skip the safety analysis and rlimit
     pre-exec, and use the host env minus secrets.
+    output_callback: optional callable(str) streamed each stdout line as it is
+    produced; the returned result is unchanged.
     """
     if not code or not code.strip():
         return "No code provided."
@@ -4907,23 +5733,32 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
+        # -u forces unbuffered child stdout so a bare print() streams live
+        # instead of sitting in the pipe's block buffer until exit. Applied
+        # unconditionally to stay byte-identical with and without streaming;
+        # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
+        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
 
-        # Spawn cancel watcher if we have a cancel event
+        # Capture the group before any watcher can reap the leader (see
+        # _capture_process_group); None on Windows.
+        pgid = _capture_process_group(proc)
+
         if cancel_event is not None:
             watcher = threading.Thread(
-                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
-        try:
-            output, _ = proc.communicate(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
-            try:
-                proc.communicate(timeout = 5)
-            except subprocess.TimeoutExpired:
-                pass
+        # Always drain via _drain_process_output (output_callback may be None):
+        # it kills the captured group on cancellation, reaping a grandchild that
+        # outlived the leader, and returns bytes identical to communicate() so
+        # the streaming vs non-streaming result stays byte-identical.
+        output, timed_out = _drain_process_output(
+            proc, timeout, output_callback, cancel_event, pgid = pgid
+        )
+        if timed_out:
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
@@ -4932,7 +5767,13 @@ def _python_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
+        # Detect the missing-path pattern on the full output (truncation could
+        # hide the trailing traceback); append the hint after truncation. External
+        # paths are judged against the real workdir (project sessions live outside
+        # the default sandbox root).
+        hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
+        result += hint
 
         # Detect new/overwritten images and append sentinel for the frontend
         if session_id and os.path.isdir(workdir):
@@ -4971,11 +5812,14 @@ def _bash_exec(
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
     disable_sandbox (Bypass Permissions): skip the command blocklist and rlimit
     pre-exec, and use the host env minus secrets.
+    output_callback: optional callable(str) streamed each stdout line as it is
+    produced; the returned result is unchanged.
     """
     if not command or not command.strip():
         return "No command provided."
@@ -5000,6 +5844,11 @@ def _bash_exec(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            # Match _python_exec: decode utf-8 with "replace" so invalid output
+            # bytes never raise UnicodeDecodeError (which the streaming reader
+            # thread would swallow), keeping both paths byte-identical.
+            encoding = "utf-8",
+            errors = "replace",
             cwd = workdir,
             env = safe_env,
         )
@@ -5010,20 +5859,25 @@ def _bash_exec(
 
         proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
 
+        # Capture the group before any watcher can poll/reap the leader (see
+        # _python_exec); None on Windows.
+        pgid = _capture_process_group(proc)
+
         if cancel_event is not None:
             watcher = threading.Thread(
-                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
-        try:
-            output, _ = proc.communicate(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
-            try:
-                proc.communicate(timeout = 5)
-            except subprocess.TimeoutExpired:
-                pass
+        # Always drain via _drain_process_output (see _python_exec): kills the
+        # captured group on cancellation and returns bytes identical to
+        # communicate(), keeping streaming vs non-streaming byte-identical.
+        output, timed_out = _drain_process_output(
+            proc, timeout, output_callback, cancel_event, pgid = pgid
+        )
+        if timed_out:
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
@@ -5032,7 +5886,10 @@ def _bash_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        return _truncate(result) if result.strip() else "(no output)"
+        # Same missing-path healing as _python_exec.
+        hint = _missing_path_hint(result, workdir)
+        result = _truncate(result) if result.strip() else "(no output)"
+        return result + hint
 
     except Exception as e:
         return f"Execution error: {e}"

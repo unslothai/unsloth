@@ -192,7 +192,6 @@ export function ParamsSection(): ReactElement {
   const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
-  const needsExpandedHeight = isCpt || (isLora && loraOpen) || hyperOpen;
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
@@ -233,11 +232,7 @@ export function ParamsSection(): ReactElement {
         title={t("studio.params.title")}
         description={t("studio.params.description")}
         accent="orange"
-        className={`${
-          needsExpandedHeight
-            ? "min-h-studio-config-column"
-            : "h-studio-config-column"
-        } duration-150`}
+        className="min-h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
