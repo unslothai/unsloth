@@ -174,6 +174,12 @@ export function ChatTab() {
   const [clearing, setClearing] = useState(false);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const showCanvasMenuItem = useChatRuntimeStore(
+    (state) => state.showCanvasMenuItem,
+  );
+  const setShowCanvasMenuItem = useChatRuntimeStore(
+    (state) => state.setShowCanvasMenuItem,
+  );
   const collapseHtmlArtifacts = useChatRuntimeStore(
     (state) => state.collapseHtmlArtifacts,
   );
@@ -369,9 +375,16 @@ export function ChatTab() {
       >
         {PLUS_MENU_SETTINGS.map((item) => (
           <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
-              checked={plusPins[item.id]}
-              onCheckedChange={() => togglePlusPin(item.id)}
+              checked={
+                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
+              }
+              onCheckedChange={
+                item.id === "canvas"
+                  ? setShowCanvasMenuItem
+                  : () => togglePlusPin(item.id)
+              }
             />
           </SettingsRow>
         ))}

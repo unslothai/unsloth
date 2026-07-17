@@ -171,7 +171,8 @@ export function applyActiveModelStatusToStore(
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
-    reasoningStyle === "enable_thinking_effort"
+    reasoningStyle === "enable_thinking_effort" ||
+    reasoningStyle === "reasoning_effort"
       ? clampReasoningEffortToLevels(
           prevState.reasoningEffort,
           reasoningEffortLevels,

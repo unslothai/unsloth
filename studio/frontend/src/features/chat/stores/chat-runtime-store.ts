@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -21,14 +22,15 @@ import {
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
 import { useExternalProvidersStore } from "./external-providers-store";
+import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
-const HF_TOKEN_KEY = "unsloth_hf_token";
-const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
+  "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -354,6 +356,24 @@ function saveBool(key: string, value: boolean): void {
   }
 }
 
+// The visibility flag shipped after the menu pins, so when it is absent,
+// profiles that had explicitly pinned Canvas keep it visible.
+function loadShowCanvasMenuItem(): boolean {
+  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
+  if (stored !== null) return stored;
+  if (!canUseStorage()) return false;
+  try {
+    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
+    if (raw === null) return false;
+    const parsed = JSON.parse(raw) as {
+      state?: { pins?: { canvas?: boolean } };
+    };
+    return parsed.state?.pins?.canvas === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * "full" is intentionally not restorable: it disables the sandbox and every
  * confirmation gate, so it must be re-enabled (through the warning dialog)
@@ -471,17 +491,6 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
-function notifyHfTokenChanged(value: string): void {
-  if (!canUseStorage()) return;
-  try {
-    window.dispatchEvent(
-      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
-    );
-  } catch {
-    // ignore
-  }
-}
-
 /** A pick is a GGUF: HF variant, native file, or a direct local .gguf. */
 export function hasGgufSource(x: {
   ggufVariant?: string;
@@ -588,6 +597,8 @@ type ChatRuntimeStore = {
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   artifactsEnabled: boolean;
+  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
@@ -761,6 +772,7 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
+  setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
@@ -1022,7 +1034,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
-  hfToken: loadString(HF_TOKEN_KEY, ""),
+  hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
@@ -1049,6 +1061,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -1225,11 +1238,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) => {
-    saveString(HF_TOKEN_KEY, hfToken);
-    set({ hfToken });
-    notifyHfTokenChanged(hfToken);
-  },
+  setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
@@ -1388,6 +1397,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       return { artifactsEnabled };
+    }),
+  setShowCanvasMenuItem: (showCanvasMenuItem) =>
+    set(() => {
+      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
+      return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set((state) => {
@@ -1639,6 +1653,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+// Mirror token edits made through the shared store (e.g. Studio's field).
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
 
 export function resolveSpeculativeSettingsForLoad({
   usePersistedPreference = false,

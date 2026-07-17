@@ -634,6 +634,7 @@ export function SharedComposer({
   );
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
@@ -1494,7 +1495,8 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -1505,7 +1507,7 @@ export function SharedComposer({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>

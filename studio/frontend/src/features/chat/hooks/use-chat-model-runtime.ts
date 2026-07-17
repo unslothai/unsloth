@@ -799,7 +799,8 @@ export function useChatModelRuntime() {
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
-              reasoningStyle === "enable_thinking_effort"
+              reasoningStyle === "enable_thinking_effort" ||
+              reasoningStyle === "reasoning_effort"
                 ? clampReasoningEffortToLevels(
                     existingReasoningEffort,
                     reasoningEffortLevels,

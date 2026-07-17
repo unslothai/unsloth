@@ -1326,7 +1326,9 @@ const ThreadWelcome: FC<{
 
   useEffect(() => {
     // Prefer the nickname; otherwise first name only. Blank falls back to none.
-    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    const raw = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
+    // Cap very long names so the greeting stays on one line.
+    const name = raw.length > 20 ? `${raw.slice(0, 20)}…` : raw;
     setWelcome(buildWelcome(new Date().getHours(), name));
   }, [displayName, nickname]);
 
@@ -2316,7 +2318,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 </DropdownMenuItem>
               )}
               {effectiveReasoningEffortLevels
-                .filter((level) => level !== "none")
+                // 'none' is a real template level for models like Inkling
+                // (effort 0 = thinking off); show it as a pick unless the
+                // dedicated off item above already covers it.
+                .filter(
+                  (level) =>
+                    level !== "none" || !effectiveSupportsReasoningOff,
+                )
                 .map((level) => (
                   <DropdownMenuItem
                     key={level}
@@ -2701,6 +2709,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
+  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -2951,7 +2960,8 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    canvas: (
+    // Hidden by default; enabled from Settings > Chat > Canvas.
+    canvas: showCanvasMenuItem ? (
       <DropdownMenuItem
         className={artifactsEnabled ? "text-primary font-medium" : undefined}
         onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
@@ -2962,7 +2972,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
       </DropdownMenuItem>
-    ),
+    ) : null,
     bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>

@@ -655,9 +655,10 @@ export function GeneralTab() {
           description={t("settings.general.rag.embeddingModelDescription", {
             defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
           })}
+          className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
         >
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
+            <div className="flex items-center gap-2 max-[360px]:w-full">
               <EmbeddingModelCombobox
                 value={draftEmbeddingModel}
                 onChange={(next) => {
@@ -669,7 +670,7 @@ export function GeneralTab() {
                 disabled={!embeddingModel}
                 placeholder={embeddingModel?.defaultEmbeddingModel ?? ""}
                 ariaLabel={t("settings.general.rag.embeddingModel")}
-                className="w-[220px]"
+                className="w-[220px] max-[360px]:min-w-0 max-[360px]:flex-1"
               />
               <Button
                 variant="outline"

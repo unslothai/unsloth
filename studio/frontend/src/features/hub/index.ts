@@ -37,7 +37,12 @@ export {
 } from "./hooks/use-hub-model-search";
 export { useOnlineStatus } from "./hooks/use-online-status";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
-export { useHfTokenStore, hfApiToken } from "./stores/hf-token-store";
+export {
+  getHfToken,
+  hfApiToken,
+  mirrorHfTokenInto,
+  useHfTokenStore,
+} from "./stores/hf-token-store";
 export { looksLikeLocalPath } from "./lib/local-path";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {
