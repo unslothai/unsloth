@@ -156,6 +156,39 @@ _VISION_DATASET_KEYS = frozenset(
 )
 
 
+def _is_vlm_config(config, model_types = ()) -> bool:
+    if any(
+        hasattr(config, attr)
+        for attr in ("vision_config", "img_processor", "image_token_index", "projector_config")
+    ):
+        return True
+
+    architectures = getattr(config, "architectures", None) or ()
+    try:
+        from transformers.models.auto import modeling_auto
+
+        mappings = (
+            getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}) or {},
+            getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}) or {},
+        )
+        registry_types = set().union(*(mapping.keys() for mapping in mappings))
+        registry_classes = set().union(*(mapping.values() for mapping in mappings))
+        config_types = set(model_types or ())
+        model_type = getattr(config, "model_type", None)
+        if model_type is not None:
+            config_types.add(model_type)
+        if not config_types.isdisjoint(registry_types) or any(
+            architecture in registry_classes for architecture in architectures
+        ):
+            return True
+    except Exception:
+        pass
+    return any(
+        isinstance(architecture, str) and architecture.endswith("ForVisionText2Text")
+        for architecture in architectures
+    )
+
+
 def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
     if dataset is None:
         return False
@@ -535,10 +568,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
-                architectures = getattr(model_config, "architectures", None) or ()
-                is_vlm = hasattr(model_config, "vision_config") or any(
-                    x.endswith("ForConditionalGeneration") for x in architectures
-                )
+                is_vlm = _is_vlm_config(model_config, model_types)
 
         processing_class = (
             args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")

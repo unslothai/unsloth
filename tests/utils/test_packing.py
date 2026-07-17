@@ -224,6 +224,35 @@ def test_vlm_without_processing_class_still_disables_packing():
     assert config.padding_free is False
 
 
+@pytest.mark.parametrize(
+    ("model_type", "architecture"),
+    (
+        ("t5", "T5ForConditionalGeneration"),
+        ("bart", "BartForConditionalGeneration"),
+        ("whisper", "WhisperForConditionalGeneration"),
+        ("csm", "CsmForConditionalGeneration"),
+    ),
+)
+def test_nonvision_conditional_generation_keeps_packing(model_type, architecture):
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    model = SimpleNamespace(
+        config = SimpleNamespace(model_type = model_type, architectures = [architecture]),
+        max_seq_length = 16,
+    )
+
+    trainer = fake_trainer(
+        model,
+        config,
+        None,
+        Dataset.from_dict({"text": ["text-only sample"]}),
+    )
+
+    assert config.packing is True
+    assert config.padding_free is True
+    assert trainer.model._unsloth_allow_packed_overlength is True
+
+
 def test_vlm_vision_dataset_still_disables_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
