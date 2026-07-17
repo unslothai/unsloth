@@ -144,6 +144,64 @@ def test_lumina2_bf16_component_table_present():
     assert vae_gb <= 0.5
 
 
+# ── hunyuanimage-2.1 family ──────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+        "QuantStack/HunyuanImage-2.1-GGUF",
+        # A local GGUF pick where the family keyword lives in the filename (QuantStack's
+        # actual naming drops the dash: the hunyuanimage2.1 alias covers it).
+        "QuantStack/HunyuanImage-2.1-GGUF/HunyuanImage2.1-Q4_K_M.gguf",
+    ],
+)
+def test_detect_family_hunyuanimage21_repos(repo_id):
+    fam = detect_family(repo_id)
+    assert fam is not None and fam.name == "hunyuanimage-2.1"
+    assert fam.pipeline_class == "HunyuanImagePipeline"
+    assert fam.transformer_class == "HunyuanImageTransformer2DModel"
+    assert fam.base_repo == "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
+    # The call's guidance knob is distilled_guidance_scale; there is no guidance_scale kwarg.
+    assert fam.cfg_kwarg == "distilled_guidance_scale"
+    # Published bf16-only upstream; the fp16 fallback stays off.
+    assert fam.fp16_incompatible is True
+
+
+def test_detect_family_hunyuanimage21_override_and_30_still_excluded():
+    assert detect_family("x", override = "hunyuanimage-2.1").name == "hunyuanimage-2.1"
+    assert detect_family("x", override = "hunyuanimage2.1").name == "hunyuanimage-2.1"
+    # The HunyuanImage-3.0 structured exclusion must survive the 2.1 family: 3.0 has
+    # no diffusers pipeline and must stay unknown with its stated reason.
+    assert detect_family("tencent/HunyuanImage-3.0") is None
+    assert excluded_model_reason("tencent/HunyuanImage-3.0") is not None
+    assert excluded_model_reason("hunyuanvideo-community/HunyuanImage-2.1-Diffusers") is None
+
+
+def test_hunyuanimage21_is_trusted_non_gguf():
+    # The mirror pipeline loads via from_pretrained -> needs the allowlist.
+    assert _is_trusted_diffusion_repo("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
+    assert not _is_trusted_diffusion_repo("hunyuanvideo-community/some-future-repo")
+
+
+def test_hunyuanimage21_generation_defaults():
+    # Card recipe: 50 steps; guidance feeds the call's distilled_guidance_scale (3.25
+    # default), while classifier-free guidance runs inside the repo's guider components.
+    assert default_generation_params(
+        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
+    ) == (50, 3.25)
+
+
+def test_hunyuanimage21_bf16_component_table_present():
+    fam = detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
+    sizes = family_bf16_components_gb(fam)
+    assert sizes is not None
+    transformer_gb, encoders_gb, vae_gb = sizes
+    # 17B DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
+    assert 30.0 <= transformer_gb <= 35.0
+    assert 15.0 <= encoders_gb <= 18.0
+    assert vae_gb <= 1.0
+
+
 def test_ideogram4_generation_defaults():
     # Model-card settings: 48 steps, guidance 7 (the backend keeps the pipeline's
     # recommended tapered schedule when the request matches exactly).

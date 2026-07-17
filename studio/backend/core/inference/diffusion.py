@@ -299,6 +299,9 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # Lumina Image 2.0: standard diffusers layout (Gemma2-2B encoder), safetensors-only,
         # loads through the generic from_pretrained pipeline path.
         "alpha-vllm/lumina-image-2.0",
+        # HunyuanImage 2.1: the community diffusers mirror (open, tencent-hunyuan-community
+        # license), safetensors-only, including the diffusers-native guider components.
+        "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
         # Ideogram 4: no bf16 ships. -fp8 stores the two DiTs as raw float8 (the family base);
         # the two nf4 repos are identical bnb-4bit exports (both listed so either id loads).
         "ideogram-ai/ideogram-4-fp8",
