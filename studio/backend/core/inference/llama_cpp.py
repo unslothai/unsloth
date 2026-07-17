@@ -2858,8 +2858,9 @@ class LlamaCppBackend:
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
-        neither is readable. On a unified-memory APU this, not the ROCm-reported
-        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        neither is readable. Under WSL this, not the ROCm-reported VRAM, is the
+        real ceiling for a unified-memory APU: the WSL2 VM's RAM cap governs the
+        weights regardless of what the GPU driver reports free."""
         try:
             import psutil
             return int(psutil.virtual_memory().available // (1024 * 1024))
@@ -2875,26 +2876,62 @@ class LlamaCppBackend:
         return None
 
     @staticmethod
+    def _apu_memory_ceiling_mib(gpu_indices = None) -> "tuple[Optional[int], str]":
+        """Real memory ceiling (+ source label) for a unified-memory APU's
+        weight-fit check.
+
+        Bare metal: the ROCm-reported free VRAM on the selected GPU(s) is the
+        real ceiling. The BIOS/driver can carve out far more unified memory as
+        VRAM than the OS reports as general-purpose "available" system RAM, so
+        gating on system RAM alone refuses loads that would actually fit
+        (#6834, AMD Strix Halo: 110 GB free VRAM vs. 22 GB "available" RAM).
+
+        WSL is the exception: the WSL2 VM's RAM cap, not the GPU free-memory
+        report, is the real ceiling there, so system RAM stays authoritative.
+
+        Falls back to the system RAM reading whenever the GPU probe comes back
+        empty (unsupported/misdetected GPU), so the refusal never silently
+        disappears -- it only gets a more accurate ceiling when one is
+        available.
+        """
+        from utils.paths.path_utils import _is_wsl
+
+        if not _is_wsl():
+            try:
+                gpu_free = LlamaCppBackend._get_gpu_free_memory()
+                if gpu_indices is not None:
+                    gpu_free = [(idx, free) for idx, free in gpu_free if idx in gpu_indices]
+                if gpu_free:
+                    return sum(free for _idx, free in gpu_free), "GPU memory"
+            except Exception:
+                pass
+        return LlamaCppBackend._available_system_memory_mib(), "system RAM"
+
+    @staticmethod
     def _apu_ram_shortfall_message(
         model_size_bytes: int,
         avail_mib: Optional[int],
         headroom_mib: int = 2048,
+        source: str = "system RAM",
     ) -> Optional[str]:
         """On a unified-memory APU, return a user-facing refusal when the weights
-        cannot fit in available system RAM (else None). Weights only: KV/context
-        auto-reduce, so counting them too would refuse loads that would succeed.
-        None avail (unknown RAM) never refuses."""
+        cannot fit in ``avail_mib`` of ``source`` (else None). Weights only:
+        KV/context auto-reduce, so counting them too would refuse loads that
+        would succeed. None avail (unknown ceiling) never refuses."""
         if avail_mib is None:
             return None
         need_mib = model_size_bytes / (1024 * 1024)
         if need_mib <= avail_mib - headroom_mib:
             return None
+        wsl_hint = (
+            " (on WSL, raise the memory limit in .wslconfig)" if source == "system RAM" else ""
+        )
         return (
             f"This model needs about {need_mib / 1024:.0f} GB but only about "
-            f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
-            "APU the weights load into system RAM, so a larger model is stopped by "
-            "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
-            "(on WSL, raise the memory limit in .wslconfig)."
+            f"{avail_mib / 1024:.0f} GB of {source} is available. On a unified-memory "
+            "APU the weights load into shared memory, so a larger model is stopped by "
+            "the OS mid-load. Use a smaller or more quantized GGUF, or free memory"
+            f"{wsl_hint}."
         )
 
     # Skip the wait when the last kill is older than this; the driver has
@@ -6558,18 +6595,22 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
-                # Unified-memory APUs load weights into system RAM (under WSL the VM
-                # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
-                # oversize load the OS would otherwise kill mid-flight. Base model
-                # only: an optional MTP drafter is dropped by the MTP-drop fallback.
-                # CUDA/ROCm ids only; a Vulkan build's gpu_indices are ggml ordinals.
+                # Unified-memory APUs load weights into shared memory; refuse an
+                # oversize load the OS would otherwise kill mid-flight. The real
+                # ceiling is the GPU-reported free VRAM on bare metal (the BIOS can
+                # carve out far more unified memory as VRAM than the OS considers
+                # "available" system RAM, #6834) and the WSL2 VM's RAM cap under
+                # WSL. Base model only: an optional MTP drafter is dropped by the
+                # MTP-drop fallback. CUDA/ROCm ids only; a Vulkan build's
+                # gpu_indices are ggml ordinals.
                 if (
                     model_size is not None
                     and not is_vulkan_backend
                     and self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
+                    _avail_mib, _avail_source = self._apu_memory_ceiling_mib(gpu_indices)
                     _ram_msg = self._apu_ram_shortfall_message(
-                        model_size, self._available_system_memory_mib()
+                        model_size, _avail_mib, source = _avail_source
                     )
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)

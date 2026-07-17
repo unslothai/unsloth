@@ -115,3 +115,104 @@ class TestApuRamShortfall:
     def test_available_system_memory_is_int_or_none(self):
         v = LlamaCppBackend._available_system_memory_mib()
         assert v is None or (isinstance(v, int) and v > 0)
+
+
+class TestApuMemoryCeiling:
+    """#6834: on bare metal the ROCm-reported free VRAM, not the OS's notion of
+    "available" system RAM, is the real ceiling for a unified-memory APU -- the
+    BIOS/driver can carve out far more unified memory as VRAM than the OS
+    considers general-purpose RAM. WSL keeps the old system-RAM ceiling, since
+    there the WSL2 VM's RAM cap is what actually limits the load."""
+
+    @staticmethod
+    def _patch_wsl(monkeypatch, is_wsl):
+        import utils.paths.path_utils as path_utils
+        monkeypatch.setattr(path_utils, "_is_wsl", lambda: is_wsl)
+
+    def test_field_case_6834_strix_halo_bare_metal_allows(self, monkeypatch):
+        # The exact reported case: 110 GB free VRAM, but only ~19 GB "available"
+        # system RAM. Bare metal must use the GPU figure and allow the load.
+        self._patch_wsl(monkeypatch, False)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 110 * _MIB_PER_GB)])
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 19 * _MIB_PER_GB)
+        )
+        avail_mib, source = LlamaCppBackend._apu_memory_ceiling_mib()
+        assert source == "GPU memory"
+        msg = _shortfall(int(21.3 * _GB), avail_mib, source = source)
+        assert msg is None
+
+    def test_bare_metal_insufficient_gpu_memory_refuses(self, monkeypatch):
+        self._patch_wsl(monkeypatch, False)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 4 * _MIB_PER_GB)])
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 30 * _MIB_PER_GB)
+        )
+        avail_mib, source = LlamaCppBackend._apu_memory_ceiling_mib()
+        assert source == "GPU memory"
+        msg = _shortfall(int(21.3 * _GB), avail_mib, source = source)
+        assert msg is not None
+        assert "GPU memory" in msg
+        assert ".wslconfig" not in msg  # WSL hint doesn't apply to a GPU-memory refusal
+
+    def test_wsl_still_uses_system_ram_ceiling(self, monkeypatch):
+        # Regression guard: WSL must keep refusing on the VM RAM cap even when
+        # the GPU driver reports plenty of free VRAM.
+        self._patch_wsl(monkeypatch, True)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: [(0, 110 * _MIB_PER_GB)])
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 19 * _MIB_PER_GB)
+        )
+        avail_mib, source = LlamaCppBackend._apu_memory_ceiling_mib()
+        assert source == "system RAM"
+        assert avail_mib == 19 * _MIB_PER_GB
+        msg = _shortfall(int(21.3 * _GB), avail_mib, source = source)
+        assert msg is not None and ".wslconfig" in msg
+
+    def test_gpu_probe_empty_falls_back_to_system_ram(self, monkeypatch):
+        # Unsupported/misdetected GPU: the refusal must not silently vanish,
+        # it should keep gating on system RAM like before #6834.
+        self._patch_wsl(monkeypatch, False)
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda: []))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 19 * _MIB_PER_GB)
+        )
+        avail_mib, source = LlamaCppBackend._apu_memory_ceiling_mib()
+        assert source == "system RAM"
+        assert avail_mib == 19 * _MIB_PER_GB
+
+    def test_gpu_indices_scope_the_free_memory_sum(self, monkeypatch):
+        # A mixed multi-GPU host: only the selected GPU's free memory counts,
+        # matching how _amd_apu_wants_unified_memory itself scopes to a selection.
+        self._patch_wsl(monkeypatch, False)
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_get_gpu_free_memory",
+            staticmethod(lambda: [(0, 4 * _MIB_PER_GB), (1, 110 * _MIB_PER_GB)]),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 30 * _MIB_PER_GB)
+        )
+        avail_mib, source = LlamaCppBackend._apu_memory_ceiling_mib([0])
+        assert source == "GPU memory"
+        assert avail_mib == 4 * _MIB_PER_GB
+
+    def test_gpu_probe_exception_falls_back_to_system_ram(self, monkeypatch):
+        self._patch_wsl(monkeypatch, False)
+
+        def _raise():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(LlamaCppBackend, "_get_gpu_free_memory", staticmethod(_raise))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 19 * _MIB_PER_GB)
+        )
+        avail_mib, source = LlamaCppBackend._apu_memory_ceiling_mib()
+        assert source == "system RAM"
+        assert avail_mib == 19 * _MIB_PER_GB
