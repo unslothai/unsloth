@@ -28,6 +28,8 @@ import {
 } from "@/features/training";
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import { isAdapterMethod } from "@/types/training";
+import type { TrainingMethod } from "@/types/training";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
@@ -35,6 +37,7 @@ import {
   ChartAverageIcon,
   DashboardSpeed01Icon,
   FolderExportIcon,
+  LayoutTwoColumnIcon,
   Notebook01Icon,
   RamMemoryIcon,
   StopIcon,
@@ -149,10 +152,20 @@ export function ProgressSection({
   const showHalfwayHint =
     data.phase === "training" && pct >= 50 && pct < 100;
   const showCompletedHint = data.phase === "completed";
+  const isAdapterRun = isAdapterMethod(data.trainingMethod as TrainingMethod);
   const handleCompareInChat = async () => {
-    setTrainingCompareHandoff(data.modelName);
+    setTrainingCompareHandoff(
+      data.modelName,
+      isAdapterRun ? data.outputDir : null,
+    );
     await navigate({ to: "/chat" });
   };
+  const canCompareInChat =
+    isHistorical &&
+    data.phase === "completed" &&
+    isAdapterRun &&
+    !data.resumedLater &&
+    Boolean(data.outputDir);
 
   // A finished run can be exported to GGUF: deep-link to the Export page with
   // this run preselected (its output-dir basename is the export model name).
@@ -236,6 +249,17 @@ export function ProgressSection({
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
         <div className="flex items-center gap-2">
+          {canCompareInChat && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={handleCompareInChat}
+            >
+              <HugeiconsIcon icon={LayoutTwoColumnIcon} className="size-3.5" />
+              {t("studio.training.compareInChat")}
+            </Button>
+          )}
           {canExportGguf && (
             <Button
               size="sm"

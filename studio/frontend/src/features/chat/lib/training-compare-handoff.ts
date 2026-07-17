@@ -7,15 +7,20 @@ const HANDOFF_MAX_AGE_MS = 15 * 60 * 1000;
 export type TrainingCompareHandoff = {
   intent: "compare";
   baseModel: string | null;
+  loraPath: string | null;
   requestedAt: number;
 };
 
-export function setTrainingCompareHandoff(baseModel: string | null): void {
+export function setTrainingCompareHandoff(
+  baseModel: string | null,
+  loraPath: string | null = null,
+): void {
   if (typeof window === "undefined") return;
 
   const payload: TrainingCompareHandoff = {
     intent: "compare",
     baseModel,
+    loraPath,
     requestedAt: Date.now(),
   };
   window.sessionStorage.setItem(
@@ -42,6 +47,7 @@ export function getTrainingCompareHandoff(): TrainingCompareHandoff | null {
       intent: "compare",
       baseModel:
         typeof parsed.baseModel === "string" ? parsed.baseModel : null,
+      loraPath: typeof parsed.loraPath === "string" ? parsed.loraPath : null,
       requestedAt: parsed.requestedAt,
     };
   } catch {

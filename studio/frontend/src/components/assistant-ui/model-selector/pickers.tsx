@@ -67,6 +67,7 @@ import {
   Download01Icon,
   Flag01Icon,
   Folder02Icon,
+  LayoutTwoColumnIcon,
   RemoveCircleIcon,
   Search01Icon,
   ViewIcon,
@@ -1245,6 +1246,7 @@ export function HubModelPicker({
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
+  onCompareWithBase,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
@@ -1261,6 +1263,7 @@ export function HubModelPicker({
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onCompareWithBase?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "custom" | "connected";
@@ -2898,6 +2901,7 @@ export function HubModelPicker({
                       value={value}
                       onSelect={onSelect}
                       onModelsChange={onModelsChange}
+                      onCompareWithBase={onCompareWithBase}
                       deleteDisabled={deleteDisabled}
                       loraModelList={hubModelList}
                       expandedGguf={expandedGguf}
@@ -3689,6 +3693,7 @@ function FineTunedRows({
   value,
   onSelect,
   onModelsChange,
+  onCompareWithBase,
   deleteDisabled = false,
   loraModelList,
   expandedGguf,
@@ -3699,6 +3704,7 @@ function FineTunedRows({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onCompareWithBase?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   loraModelList: ReturnType<typeof useRovingModelList>;
   expandedGguf: string | null;
@@ -3720,6 +3726,8 @@ function FineTunedRows({
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
+        const isAdapterLora = !isLocal && !isMerged && !isGguf;
+        const canCompareWithBase = Boolean(onCompareWithBase) && isAdapterLora;
         const isLocalGgufDir =
           isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
         const optionKey = makeModelOptionKey("lora", adapter.id);
@@ -3792,6 +3800,24 @@ function FineTunedRows({
                   }
                 />
               </div>
+              {canCompareWithBase && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCompareWithBase?.(adapter);
+                  }}
+                  aria-label={`Compare ${adapter.name} with its base model`}
+                  title="Compare with base model"
+                  className="shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-primary/10 hover:text-primary"
+                >
+                  <HugeiconsIcon
+                    icon={LayoutTwoColumnIcon}
+                    strokeWidth={1.75}
+                    className="size-3.5"
+                  />
+                </button>
+              )}
               {canDelete && (
                 <ModelDeleteAction
                   ariaLabel={`Delete ${adapter.name}`}
