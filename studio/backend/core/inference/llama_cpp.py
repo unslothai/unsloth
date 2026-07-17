@@ -8415,8 +8415,7 @@ class LlamaCppBackend:
         # --no-cache-prompt in a user override makes a restored slot unusable
         # (no prompt reuse), so slot saves would be pure wasted I/O.
         return any(
-            arg.strip().split("=", 1)[0] == "--no-cache-prompt"
-            for arg in (self._extra_args or ())
+            arg.strip().split("=", 1)[0] == "--no-cache-prompt" for arg in (self._extra_args or ())
         )
 
     def save_slots_for_resume(
