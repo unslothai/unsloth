@@ -137,7 +137,6 @@ function speculativeModeMayUseMtp(
 ): boolean {
   const normalized = mode?.trim().toLowerCase() || "auto";
   if (normalized === "mtp" || normalized === "mtp+ngram") return true;
-  if (normalized === "draft-mtp") return true;
   if (normalized.includes("draft-mtp")) return true;
   return (
     (normalized === "auto" || normalized === "default") &&
