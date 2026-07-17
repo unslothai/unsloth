@@ -99,7 +99,7 @@ def test_save_collects_manifest_across_slots(monkeypatch, tmp_path):
     assert manifest["binary"] == ("/bin/llama-server", 1)
     assert manifest["gguf"] == str(tmp_path / "model.gguf")
     st = os.stat(manifest["gguf"])
-    assert manifest["gguf_stat"] == (st.st_size, st.st_mtime_ns)
+    assert manifest["gguf_stat"] == ((st.st_size, st.st_mtime_ns),)
     assert manifest["launch"] == backend._slot_launch_fingerprint()
     assert [e["id"] for e in manifest["slots"]] == [0, 1]
     assert all(e["n_saved"] == 40 for e in manifest["slots"])
@@ -158,6 +158,55 @@ def test_save_transport_error_unlinks_partial_file(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None
+    assert list(tmp_path.glob("resume-*.bin")) == []
+
+
+def test_gguf_file_identity_covers_split_shards(tmp_path):
+    backend = _resume_backend(tmp_path)
+    first = tmp_path / "m-00001-of-00002.gguf"
+    second = tmp_path / "m-00002-of-00002.gguf"
+    first.write_bytes(b"a")
+    second.write_bytes(b"bb")
+
+    before = backend._gguf_file_identity(str(first))
+    st1, st2 = os.stat(first), os.stat(second)
+    assert before == ((st1.st_size, st1.st_mtime_ns), (st2.st_size, st2.st_mtime_ns))
+
+    second.write_bytes(b"rewritten")  # sibling changes, primary untouched
+    after = backend._gguf_file_identity(str(first))
+    assert after is not None and after != before
+    assert after[0] == before[0]  # primary shard unchanged
+
+    second.unlink()
+    assert backend._gguf_file_identity(str(first)) is None  # missing shard
+
+
+def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path)
+    backend._extra_args = ["--no-cache-prompt"]
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is None
+
+
+def test_save_stops_writing_once_cap_exceeded(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path, n_slots = 3)
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 150)
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        (tmp_path / kwargs["json"]["filename"]).write_bytes(b"x" * 100)
+        return _Resp(200, {"n_saved": 1, "n_written": 100})
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    assert backend.save_slots_for_resume() is None
+    assert len(calls) == 2  # cap blown after slot 1; slot 2 never attempted
     assert list(tmp_path.glob("resume-*.bin")) == []
 
 

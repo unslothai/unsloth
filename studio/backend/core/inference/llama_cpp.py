@@ -8394,6 +8394,31 @@ class LlamaCppBackend:
             self.effective_parallel_slots,
         )
 
+    def _gguf_file_identity(self, path) -> Optional[tuple]:
+        # (size, mtime_ns) per shard, primary first: a split GGUF is all of its
+        # sibling shards, so KV validity keys on every file, not just the first.
+        p = Path(path)
+        paths = [p]
+        m = _SHARD_FULL_RE.match(p.name)
+        if m:
+            prefix, _first, total = m.groups()
+            paths = [
+                p.with_name(f"{prefix}-{i:05d}-of-{total}{p.suffix}")
+                for i in range(1, int(total) + 1)
+            ]
+        try:
+            return tuple((sp.stat().st_size, sp.stat().st_mtime_ns) for sp in paths)
+        except OSError:
+            return None
+
+    def _user_disabled_prompt_cache(self) -> bool:
+        # --no-cache-prompt in a user override makes a restored slot unusable
+        # (no prompt reuse), so slot saves would be pure wasted I/O.
+        return any(
+            arg.strip().split("=", 1)[0] == "--no-cache-prompt"
+            for arg in (self._extra_args or ())
+        )
+
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None
     ) -> Optional[dict]:
@@ -8402,12 +8427,12 @@ class LlamaCppBackend:
             or not self._slot_save_dir
             or not self._gguf_path
             or self._prompt_cache_disabled
+            or self._user_disabled_prompt_cache()
         ):
             return None
         save_dir = Path(self._slot_save_dir)
-        try:
-            gguf_stat = Path(self._gguf_path).stat()
-        except OSError:
+        gguf_stat = self._gguf_file_identity(self._gguf_path)
+        if gguf_stat is None:
             return None
         try:
             estimate = self._estimate_kv_cache_bytes(
@@ -8466,6 +8491,8 @@ class LlamaCppBackend:
                     n_written = 0
             total_bytes += n_written
             entries.append({"id": slot, "filename": filename, "n_saved": n_saved})
+            if total_bytes > _SLOT_SAVE_MAX_BYTES:
+                break  # already over the cap; the discard below cleans up
         if not entries:
             return None
         if total_bytes > _SLOT_SAVE_MAX_BYTES:
@@ -8482,7 +8509,7 @@ class LlamaCppBackend:
             "dir": self._slot_save_dir,
             "binary": self._slot_save_binary,
             "gguf": str(self._gguf_path),
-            "gguf_stat": (gguf_stat.st_size, gguf_stat.st_mtime_ns),
+            "gguf_stat": gguf_stat,
             "launch": self._slot_launch_fingerprint(),
             "slots": entries,
         }

@@ -243,10 +243,10 @@ def restore_kv_resume(backend, manifest) -> None:
         current = getattr(backend, "_gguf_path", None)
         same_gguf = bool(gguf and current) and Path(current).resolve() == Path(gguf).resolve()
         if same_gguf:
-            # Same path is not enough: the file may have been overwritten with
+            # Same path is not enough: any shard may have been overwritten with
             # different weights between the unload and this reload.
-            st = Path(current).stat()
-            same_gguf = (st.st_size, st.st_mtime_ns) == tuple(manifest.get("gguf_stat") or ())
+            identity = getattr(backend, "_gguf_file_identity", None)
+            same_gguf = callable(identity) and identity(current) == manifest.get("gguf_stat")
         if same_gguf:
             # Nor is the same file: a launch-override change (e.g. rope scaling)
             # can invalidate KV numerics without tripping server-side checks.

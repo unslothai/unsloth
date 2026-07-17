@@ -43,6 +43,13 @@ class _FakeBackend:
     def _slot_launch_fingerprint(self):
         return ((), None, None, 1)
 
+    def _gguf_file_identity(self, path):
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        return ((st.st_size, st.st_mtime_ns),)
+
 
 class _LoadRecorder:
     """Stand-in for the load route: records calls and simulates a load."""
@@ -3137,7 +3144,7 @@ def _seed_kv_manifest(
         "dir": str(tmp_path),
         "binary": ("/bin/llama-server", 111),
         "gguf": gguf,
-        "gguf_stat": (st.st_size, st.st_mtime_ns),
+        "gguf_stat": ((st.st_size, st.st_mtime_ns),),
         "launch": ((), None, None, 1),
         "slots": [{"id": 0, "filename": state_file.name, "n_saved": 42}],
     }
