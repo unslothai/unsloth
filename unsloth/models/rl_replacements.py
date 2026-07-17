@@ -459,12 +459,27 @@ def sft_trainer_prepare_dataset(function_name, function):
             # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
             function = function.replace(
+                "    # All Unsloth Zoo code licensed under LGPLv3\n",
+                '''    # All Unsloth Zoo code licensed under LGPLv3
+    import inspect as _inspect
+    try:
+        _unsloth_pack_has_strategy = "strategy" in _inspect.signature(pack_dataset).parameters
+    except Exception:
+        _unsloth_pack_has_strategy = True
+    _unsloth_wrapped_packing = packing and (
+        getattr(args, "packing_strategy", None) == "wrapped"
+        or not _unsloth_pack_has_strategy
+    )
+''',
+                1,
+            )
+            function = function.replace(
                 "truncation = do_truncation,",
-                'truncation = do_truncation and getattr(args, "packing_strategy", "bfd") != "wrapped",',
+                "truncation = do_truncation and not _unsloth_wrapped_packing,",
             )
             function = function.replace(
                 "if do_truncation and max_seq_length > 0:",
-                'if do_truncation and getattr(args, "packing_strategy", "bfd") != "wrapped" and max_seq_length > 0:',
+                "if do_truncation and not _unsloth_wrapped_packing and max_seq_length > 0:",
             )
             function = function.replace(
                 """dataset = pack_dataset(
@@ -473,8 +488,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             getattr(args, "packing_strategy", "bfd"),
             map_kwargs,
         )""",
-                """import inspect as _inspect
-        _pack_kwargs = {"map_kwargs": map_kwargs}
+                """_pack_kwargs = {"map_kwargs": map_kwargs}
         if "strategy" in _inspect.signature(pack_dataset).parameters:
             _pack_kwargs["strategy"] = getattr(args, "packing_strategy", "bfd")
         dataset = pack_dataset(

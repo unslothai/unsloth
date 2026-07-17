@@ -199,6 +199,15 @@ def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
     return unknown_is_vision
 
 
+def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
+    if isinstance(dataset, dict):
+        return any(
+            _is_vision_dataset(split, unknown_is_vision = unknown_is_vision)
+            for split in dataset.values()
+        )
+    return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
+
+
 # Unsloth gradient accumulation fix:
 from transformers import __version__ as transformers_version, ProcessorMixin
 
@@ -575,12 +584,16 @@ def _patch_sft_trainer_auto_packing(trl_module):
         )
         data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
+        eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
         is_auto_processor_vlm = is_vlm and processing_class is None
         is_vision_dataset = (
             data_collator is None
             and not is_processor
-            and _is_vision_dataset(train_dataset, unknown_is_vision = is_vlm)
+            and (
+                _is_vision_dataset(train_dataset, unknown_is_vision = is_vlm)
+                or _is_vision_eval_dataset(eval_dataset, unknown_is_vision = is_vlm)
+            )
         )
 
         # Disable padding-free for VLMs / custom collators / blocklisted models

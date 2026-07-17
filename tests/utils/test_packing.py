@@ -193,6 +193,21 @@ def _text_model():
     )
 
 
+class _CharacterTokenizer:
+    bos_token = None
+    eos_token = None
+    chat_template = None
+
+    def __call__(self, texts, **kwargs):
+        is_batched = isinstance(texts, list)
+        if not is_batched:
+            texts = [texts]
+        input_ids = [[ord(char) for char in text] for text in texts]
+        if kwargs.get("truncation") and kwargs.get("max_length") is not None:
+            input_ids = [ids[: kwargs["max_length"]] for ids in input_ids]
+        return {"input_ids": input_ids if is_batched else input_ids[0]}
+
+
 def test_vlm_text_dataset_allows_explicit_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -289,6 +304,26 @@ def test_vlm_preprocessed_vision_dataset_disables_packing(vision_column):
     assert config.padding_free is False
 
 
+@pytest.mark.parametrize("dict_eval", (False, True))
+def test_vlm_vision_eval_dataset_disables_packing(dict_eval):
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    eval_dataset = Dataset.from_dict({"input_ids": [[1]], "pixel_values": [None]})
+    if dict_eval:
+        eval_dataset = {"vision": eval_dataset}
+
+    fake_trainer(
+        model = _vlm_model(),
+        args = config,
+        processing_class = object(),
+        train_dataset = Dataset.from_dict({"text": ["text-only training sample"]}),
+        eval_dataset = eval_dataset,
+    )
+
+    assert config.packing is False
+    assert config.padding_free is False
+
+
 def test_vlm_streaming_vision_dataset_without_metadata_disables_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -361,16 +396,6 @@ def test_text_model_stream_without_metadata_keeps_packing():
 
 
 def test_bfd_packing_truncates_before_packing(monkeypatch):
-    class CharacterTokenizer:
-        bos_token = None
-        eos_token = None
-        chat_template = None
-
-        def __call__(self, texts, **kwargs):
-            if isinstance(texts, list):
-                return {"input_ids": [[ord(char) for char in text] for text in texts]}
-            return {"input_ids": [ord(char) for char in texts]}
-
     args = SimpleNamespace(
         dataset_num_proc = 1,
         dataset_text_field = "text",
@@ -388,7 +413,7 @@ def test_bfd_packing_truncates_before_packing(monkeypatch):
     packed = SFTTrainer._prepare_dataset(
         trainer,
         dataset,
-        CharacterTokenizer(),
+        _CharacterTokenizer(),
         args,
         True,
         None,
@@ -398,26 +423,39 @@ def test_bfd_packing_truncates_before_packing(monkeypatch):
     assert len(packed["input_ids"][0]) == args.max_length
 
 
-def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):
-    class CharacterTokenizer:
-        bos_token = None
-        eos_token = None
-        chat_template = None
-
-        def __call__(self, texts, **kwargs):
-            if isinstance(texts, str):
-                texts = [texts]
-            input_ids = [[ord(char) for char in text] for text in texts]
-            if kwargs.get("truncation") and kwargs.get("max_length") is not None:
-                input_ids = [ids[: kwargs["max_length"]] for ids in input_ids]
-            return {"input_ids": input_ids}
-
+def test_wrapped_strategy_without_packing_still_truncates():
     args = SimpleNamespace(
         dataset_num_proc = 1,
         dataset_text_field = "text",
         max_length = 4,
         packing_strategy = "wrapped",
     )
+    trainer = SimpleNamespace(model = None)
+    dataset = Dataset.from_dict({"text": ["abcdefghi"]})
+
+    prepared = SFTTrainer._prepare_dataset(
+        trainer,
+        dataset,
+        _CharacterTokenizer(),
+        args,
+        False,
+        None,
+        "train",
+    )
+
+    assert len(prepared["input_ids"][0]) == args.max_length
+
+
+@pytest.mark.parametrize("legacy_api", (False, True))
+def test_wrapped_packing_preserves_overlength_tokens(monkeypatch, legacy_api):
+    args_kwargs = {
+        "dataset_num_proc": 1,
+        "dataset_text_field": "text",
+        "max_length": 4,
+    }
+    if not legacy_api:
+        args_kwargs["packing_strategy"] = "wrapped"
+    args = SimpleNamespace(**args_kwargs)
     trainer = SimpleNamespace(model = None)
     dataset = Dataset.from_dict({"text": ["abcdefghi"]})
     prepare_globals = SFTTrainer._prepare_dataset.__globals__
@@ -430,12 +468,13 @@ def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):
     ):
         return pack_dataset(dataset, seq_length, "wrapped", map_kwargs)
 
-    monkeypatch.setitem(prepare_globals, "pack_dataset", legacy_pack_dataset)
+    if legacy_api:
+        monkeypatch.setitem(prepare_globals, "pack_dataset", legacy_pack_dataset)
 
     packed = SFTTrainer._prepare_dataset(
         trainer,
         dataset,
-        CharacterTokenizer(),
+        _CharacterTokenizer(),
         args,
         True,
         None,
