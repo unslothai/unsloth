@@ -57,6 +57,7 @@ const SETTINGS_TAB_ENTRIES: {
   { id: "chat", labelKey: "settings.tabs.chat", keywords: ["archived"] },
   { id: "connections", labelKey: "settings.tabs.connections", keywords: ["providers"] },
   { id: "api-keys", labelKey: "settings.tabs.apiKeys", keywords: ["api keys"] },
+  { id: "voice", labelKey: "settings.tabs.voice", keywords: ["dictation", "microphone", "read aloud"] },
   { id: "about", labelKey: "settings.tabs.about", keywords: ["help", "version", "updates"] },
 ];
 
