@@ -11,7 +11,11 @@ from hub.utils import download_registry, state_dir
 class _Proc:
     pid = 4242
 
-    def __init__(self, rc, stderr=b""):
+    def __init__(
+        self,
+        rc,
+        stderr = b"",
+    ):
         self.rc = rc
         self.stderr = io.BytesIO(stderr)
         self.waited = False
@@ -19,7 +23,7 @@ class _Proc:
     def poll(self):
         return self.rc if self.waited else None
 
-    def wait(self, timeout=None):
+    def wait(self, timeout = None):
         self.waited = True
         return self.rc
 
@@ -44,7 +48,7 @@ def test_resolve_effective_use_xet(monkeypatch):
         monkeypatch.setattr(
             download_lifecycle.download_registry,
             "download_transport_unavailable_reason",
-            lambda _transport, reason=unavailable_reason: reason,
+            lambda _transport, reason = unavailable_reason: reason,
         )
         assert download_lifecycle.resolve_effective_use_xet(requested) is expected
 
@@ -59,21 +63,25 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
         ("dataset", "Org/Data", None, ["--repo-id", "Org/Data", "--dataset"]),
     ):
         registry = download_registry.DownloadRegistry()
-        key = download_registry.normalize_job_key(
-            f"{repo_id}::{variant}" if variant else repo_id
-        )
+        key = download_registry.normalize_job_key(f"{repo_id}::{variant}" if variant else repo_id)
         assert registry.claim(
             key,
             download_registry.TRANSPORT_XET,
-            repo_type=repo_type,
-            repo_id=repo_id,
-            variant=variant,
-            blob_hashes=frozenset({"blob"}),
+            repo_type = repo_type,
+            repo_id = repo_id,
+            variant = variant,
+            blob_hashes = frozenset({"blob"}),
         )[0]
         generation = registry.current_generation(key)
         spawned = []
 
-        def fake_spawn(args, _token, *, use_xet, protected_blob_hashes=None):
+        def fake_spawn(
+            args,
+            _token,
+            *,
+            use_xet,
+            protected_blob_hashes = None,
+        ):
             spawned.append((args, use_xet, protected_blob_hashes))
             return _Proc(0)
 
@@ -87,14 +95,14 @@ def test_xet_failure_retries_over_http_for_model_and_dataset(monkeypatch, tmp_pa
             registry,
             key,
             _Proc(1, b"xet failed"),
-            hf_token=None,
-            label=repo_id,
-            log_prefix="Download",
-            logger=logging.getLogger("test"),
-            repo_type=repo_type,
-            repo_id=repo_id,
-            transport=download_registry.TRANSPORT_XET,
-            watch_name=f"{repo_type}-watch",
+            hf_token = None,
+            label = repo_id,
+            log_prefix = "Download",
+            logger = logging.getLogger("test"),
+            repo_type = repo_type,
+            repo_id = repo_id,
+            transport = download_registry.TRANSPORT_XET,
+            watch_name = f"{repo_type}-watch",
         )
 
         metadata = registry.get_job_metadata(key)
@@ -113,8 +121,8 @@ def test_http_failure_remains_terminal(monkeypatch, tmp_path):
     assert registry.claim(
         key,
         download_registry.TRANSPORT_HTTP,
-        repo_type="dataset",
-        repo_id="Org/Data",
+        repo_type = "dataset",
+        repo_id = "Org/Data",
     )[0]
     monkeypatch.setattr(
         download_lifecycle,
@@ -127,13 +135,13 @@ def test_http_failure_remains_terminal(monkeypatch, tmp_path):
         registry,
         key,
         _Proc(1, b"http failed"),
-        hf_token=None,
-        label="Org/Data",
-        log_prefix="Download",
-        logger=logging.getLogger("test"),
-        repo_type="dataset",
-        repo_id="Org/Data",
-        transport=download_registry.TRANSPORT_HTTP,
-        watch_name="dataset-watch",
+        hf_token = None,
+        label = "Org/Data",
+        log_prefix = "Download",
+        logger = logging.getLogger("test"),
+        repo_type = "dataset",
+        repo_id = "Org/Data",
+        transport = download_registry.TRANSPORT_HTTP,
+        watch_name = "dataset-watch",
     )
     assert registry.get_job(key).state == "error"
