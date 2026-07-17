@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelDeleteAction } from "@/components/assistant-ui/model-selector/model-delete-action";
 import {
   Tooltip,
   TooltipContent,
@@ -8,22 +9,18 @@ import {
 } from "@/components/ui/tooltip";
 import {
   type GgufVariantDetail,
-  deleteCachedDataset,
   deleteCachedModel,
+  deleteCachedDataset,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
-} from "@/features/hub";
-import {
-  classifyUnslothSupport,
-  formatBytes,
-  formatRelativeShort,
-  ggufVariantDisplayLabel,
-  modelIdsMatch,
-  useHfTokenStore,
-} from "@/features/hub";
-import { ModelDeleteAction } from "@/features/model-picker";
+} from "@/features/hub/inventory";
+import { classifyUnslothSupport } from "@/features/hub/hooks/use-hub-model-search";
+import { formatBytes, formatRelativeShort } from "@/features/hub/lib/format";
+import { ggufVariantDisplayLabel } from "@/features/hub/lib/gguf-variant-sort";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn, formatCompact } from "@/lib/utils";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   Download01Icon,
   FavouriteIcon,
@@ -42,7 +39,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { paramLabelFromId } from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -50,6 +46,7 @@ import type {
 } from "../types";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
+import { paramLabelFromId } from "../lib/view-models";
 
 const COARSE_POINTER =
   typeof window !== "undefined" &&
@@ -145,15 +142,15 @@ function CachedSizeChipLive({
   );
 
   const rows: Array<{ label: string; size_bytes: number }> | null =
-    needsVariantFetch
-      ? currentVariantState.status === "loaded" &&
+    !needsVariantFetch
+      ? [{ label: repoId, size_bytes: totalBytes }]
+      : currentVariantState.status === "loaded" &&
           currentVariantState.variants.length > 0
         ? currentVariantState.variants.map((variant) => ({
             label: ggufVariantDisplayLabel(variant),
             size_bytes: variant.size_bytes,
           }))
-        : null
-      : [{ label: repoId, size_bytes: totalBytes }];
+        : null;
   const variantMessage =
     currentVariantState.status === "loading"
       ? "Loading downloaded variants..."
@@ -278,9 +275,7 @@ function CatalogRow({
         )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
-        <div
-          className={cn("pointer-events-none relative", card && "z-[1] w-full")}
-        >
+        <div className={cn("pointer-events-none relative", card && "z-[1] w-full")}>
           {children}
         </div>
       </CatalogRowInteractiveContext.Provider>
@@ -658,9 +653,7 @@ export const InventoryRow = memo(function InventoryRow({
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
         {/* Format already shows as the status dot, so the pill stays neutral. */}
         {formatLabel && <span className="hub-chip">{formatLabel}</span>}
-        {paramLabel && (
-          <span className="hub-chip tabular-nums">{paramLabel}</span>
-        )}
+        {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
         {quantLabel && (
           <span className="hub-chip font-mono text-[10.5px] uppercase">
             {quantLabel}
@@ -704,7 +697,9 @@ export const InventoryRow = memo(function InventoryRow({
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
+        {partialRepoId && (
+          <StatusDot tone="warning" label="Partial download" />
+        )}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}

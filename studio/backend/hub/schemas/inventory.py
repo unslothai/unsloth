@@ -160,7 +160,6 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
-    last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
     inventory_id: Optional[str] = None

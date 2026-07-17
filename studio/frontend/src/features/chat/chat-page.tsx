@@ -2,18 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  applyModelLoadConfigToRuntime,
-  currentRuntimePerModelConfig,
   type DeletedModelRef,
   type ExternalModelOption,
   type LoraModelOption,
   type ModelOption,
   ModelSelector,
-  type ModelSelectorChangeMeta,
-  type PerModelConfig,
-  resolveInitialConfig,
-  SidebarModelConfig,
-} from "@/features/model-picker";
+} from "@/components/assistant-ui/model-selector";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -29,10 +27,10 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   DOWNLOAD_KIND,
   downloadManager,
-  useRepoDownload,
 } from "@/features/hub/download-manager";
 import {
   type NativeIntent,
@@ -95,6 +93,7 @@ import {
   renameChatItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
+import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -129,8 +128,10 @@ import {
   hasGgufSource,
   isDownloadableHubRepo,
   loadOptionalBool,
+  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import type { PendingModelSelection } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
@@ -384,7 +385,6 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
-  config?: PerModelConfig;
 };
 
 function modelMatchesDeleted(
@@ -645,8 +645,6 @@ function GeneralCompareHeader({
   loraModels,
   externalModels,
   value,
-  selectedConfig,
-  selectedGgufVariant,
   onValueChange,
   onFoldersChange,
   onModelsChange,
@@ -657,11 +655,9 @@ function GeneralCompareHeader({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value: string;
-  selectedConfig?: PerModelConfig | null;
-  selectedGgufVariant?: string | null;
   onValueChange: (
     id: string,
-    meta: ModelSelectorChangeMeta,
+    meta: { isLora: boolean; ggufVariant?: string },
   ) => void;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -688,8 +684,6 @@ function GeneralCompareHeader({
         loraModels={loraModels}
         externalModels={externalModels}
         value={value}
-        selectedConfig={selectedConfig}
-        selectedGgufVariant={selectedGgufVariant}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
         onModelsChange={onModelsChange}
@@ -817,14 +811,11 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               loraModels={loraModels}
               externalModels={externalModels}
               value={model1.id}
-              selectedConfig={model1.config}
-              selectedGgufVariant={model1.ggufVariant}
               onValueChange={(id, meta) =>
                 setModel1({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
-                  config: meta.config,
                 })
               }
               onFoldersChange={onFoldersChange}
@@ -847,14 +838,11 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               loraModels={loraModels}
               externalModels={externalModels}
               value={model2.id}
-              selectedConfig={model2.config}
-              selectedGgufVariant={model2.ggufVariant}
               onValueChange={(id, meta) =>
                 setModel2({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
-                  config: meta.config,
                 })
               }
               onFoldersChange={onFoldersChange}
@@ -1248,13 +1236,6 @@ export function validateChatSearch(search: Record<string, unknown>): ChatSearch 
   };
 }
 
-type PendingHubAutoLoad = {
-  selection: SelectedModelInput;
-  contextKey: string;
-  originCheckpoint: string;
-  originGgufVariant: string | null;
-};
-
 // `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route
 // (keeping an in-flight generation alive), frozen to the last /chat search. `active`
 // is false off-route: close body-portaled surfaces and stop route-specific listeners
@@ -1267,6 +1248,30 @@ export function ChatPage({
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
+  // header context so the sheet can show the context slider before the load.
+  // autoLoad picks instead load the cached file as soon as the download ends;
+  // selectModel is defined below, so the load runs through a ref.
+  const autoLoadStagedRef = useRef<
+    ((pending: PendingModelSelection) => void) | null
+  >(null);
+  const stagedDownload = useStagedModelPreparation({
+    onAutoLoad: (pending) => autoLoadStagedRef.current?.(pending),
+  });
+  // Abandon a staged pick: the store action cancels its in-flight download and
+  // reverts the edited knobs, so nothing lingers after the user walks away.
+  const abandonStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel();
+  }, []);
+  // Detach a staged pick on navigation without cancelling its download: the
+  // transfer keeps running in the manager and lands in cache, like Hub.
+  const detachStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+  }, []);
+  // Tracks whether the chat page is still mounted, so a staged-load failure that
+  // resolves after the user left chat doesn't resurrect the abandoned pick.
+  const mountedRef = useRef(true);
+  useEffect(() => () => void (mountedRef.current = false), []);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
@@ -1358,9 +1363,6 @@ export function ChatPage({
   const ggufContextLength = useChatRuntimeStore(
     (state) => state.ggufContextLength,
   );
-  const ggufNativeContextLength = useChatRuntimeStore(
-    (state) => state.ggufNativeContextLength,
-  );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
   const lorasFromStore = useChatRuntimeStore((state) => state.loras);
@@ -1438,82 +1440,37 @@ export function ChatPage({
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
-  const rememberedConfigFor = useCallback(
-    (selection: {
-      id: string;
-      ggufVariant?: string | null;
-      source?: string;
-    }) => {
-      if (selection.source === "external") return null;
-      const resolved = resolveInitialConfig(selection.id, selection.ggufVariant);
-      return resolved.remembered ? resolved.config : null;
-    },
-    [],
-  );
+  // Load a cached autoLoad pick once its download finishes. The sheet was never
+  // opened, so on a load failure just drop the orphaned staged knobs. The knobs
+  // were already seeded on stage, so keepSpeculative only when a config was
+  // saved -- otherwise the standing speculative preference should win.
+  autoLoadStagedRef.current = (pending) => {
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey(pending),
+    );
+    void selectModel({
+      ...pending,
+      isDownloaded: true,
+      forceReload: true,
+      keepSpeculative: remembered != null,
+      throwOnError: true,
+    }).catch(() => {
+      const store = useChatRuntimeStore.getState();
+      // selectModel only clears pendingSelection on success, so a failed
+      // auto-load leaves our staged pick (and its edited load knobs) behind.
+      // Abandon it when it is still the active stage; otherwise just revert the
+      // settings if the stage was already cleared by something else.
+      if (pendingSelectionMatches(store.pendingSelection, pending)) {
+        store.abandonStagedModel();
+      } else if (!store.pendingSelection) {
+        store.resetModelSettingsToLoaded();
+      }
+    });
+  };
   const isExternalModel = useMemo(
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
   );
-  const runtimeCustomContextLength = useChatRuntimeStore(
-    (s) => s.customContextLength,
-  );
-  const runtimeKvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const runtimeSpeculativeType = useChatRuntimeStore((s) => s.speculativeType);
-  const runtimeSpecDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
-  const runtimeTensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
-  const runtimeChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.chatTemplateOverride,
-  );
-  const activeModelConfig = useMemo<PerModelConfig | null>(() => {
-    if (!inferenceParams.checkpoint || isExternalModel) return null;
-    const activeModelIsGguf =
-      activeGgufVariant != null ||
-      ggufContextLength != null ||
-      inferenceParams.checkpoint.toLowerCase().endsWith(".gguf");
-    return {
-      customContextLength: runtimeCustomContextLength ?? null,
-      maxSeqLength: activeModelIsGguf ? null : inferenceParams.maxSeqLength,
-      kvCacheDtype: runtimeKvCacheDtype ?? null,
-      speculativeType: runtimeSpeculativeType ?? "auto",
-      specDraftNMax: runtimeSpecDraftNMax ?? null,
-      tensorParallel: runtimeTensorParallel ?? false,
-      chatTemplateOverride: runtimeChatTemplateOverride ?? null,
-    };
-  }, [
-    inferenceParams.checkpoint,
-    inferenceParams.maxSeqLength,
-    isExternalModel,
-    activeGgufVariant,
-    ggufContextLength,
-    runtimeCustomContextLength,
-    runtimeKvCacheDtype,
-    runtimeSpeculativeType,
-    runtimeSpecDraftNMax,
-    runtimeTensorParallel,
-    runtimeChatTemplateOverride,
-  ]);
-  const activeModelIsGguf = useMemo(() => {
-    const checkpoint = inferenceParams.checkpoint;
-    if (!checkpoint || isExternalModel) return false;
-    return (
-      activeGgufVariant != null ||
-      ggufContextLength != null ||
-      checkpoint.toLowerCase().endsWith(".gguf")
-    );
-  }, [
-    inferenceParams.checkpoint,
-    isExternalModel,
-    activeGgufVariant,
-    ggufContextLength,
-  ]);
-  const activeModelIsLora = useMemo(() => {
-    const checkpoint = inferenceParams.checkpoint;
-    if (!checkpoint || isExternalModel) return false;
-    const model = modelsFromStore.find((entry) => entry.id === checkpoint);
-    if (model) return model.isLora;
-    const lora = lorasFromStore.find((entry) => entry.id === checkpoint);
-    return lora?.exportType === "lora";
-  }, [inferenceParams.checkpoint, isExternalModel, modelsFromStore, lorasFromStore]);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
@@ -1826,21 +1783,75 @@ export function ChatPage({
     closeArtifactSurface();
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
-  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  // Abandon a staged (not-yet-loaded) pick when the chat context actually
+  // changes — switching threads, leaving single view, or starting a new chat /
+  // project — so a stale Load button can't resurface in a different context.
+  // New Chat keeps activeThreadId null and only bumps the `new` search nonce, so
+  // the key includes the route identity, not just the thread. Mirrors the
+  // incognito reset pattern. (Route exit is handled in __root.tsx, which runs
+  // after this unmounts.) Clear only on a real change, never on mount: staging
+  // from the Hub sets pendingSelection then navigates here, and clearing on
+  // mount would wipe it. Comparing the previous context (rather than a first-run
+  // flag) is also safe under StrictMode's double-invoke and component remounts.
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
-  const [pendingHubAutoLoad, setPendingHubAutoLoad] =
-    useState<PendingHubAutoLoad | null>(null);
+  const chatContextKeyRef = useLatestRef(chatContextKey);
+  const prevChatContextRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevChatContextRef.current;
+    prevChatContextRef.current = chatContextKey;
+    if (prev === null || prev === chatContextKey) return;
+    detachStaged();
+  }, [chatContextKey, detachStaged]);
+
+  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  // Load immediately, or — when "Load on selection" is off — stage the pick so
+  // its load options can be set first. Shared by the main selector, native
+  // drag-drop/picker, and the dropped-file chip (the Hub stages via the store).
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
+      // An un-cached HF repo (GGUF variant or a full non-GGUF snapshot) downloads
+      // through the manager first (global indicator), then auto-loads. Everything
+      // else -- cached picks, local/native files, LoRA, external -- loads now.
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
+      if (
+        (!hasGgufSource(selection) && !wantManagerDownload) ||
+        (store.loadOnSelection && selection.isDownloaded)
+      ) {
+        // Detach any staged pick first so its edited knobs (e.g. a custom
+        // context length) don't leak into this immediate load -- resolveLoad
+        // reads customContextLength before checking the target is GGUF. Detach
+        // (not abandon) keeps its download running.
+        detachStaged();
+        // Load-on-selection skips the sheet, so seed the saved knobs here the
+        // way the sheet's restore effect would; the switch would otherwise reset
+        // the remembered speculative choice (keepSpeculative below prevents it).
+        const remembered = hasGgufSource(selection)
+          ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
+          : null;
+        if (remembered) store.applyRememberedLoadSettings(remembered);
+        await selectModel(
+          remembered ? { ...selection, keepSpeculative: true } : selection,
+        );
+        return;
+      }
+      // Loads can't queue behind each other, but a download is independent: if
+      // the pick needs downloading, start it in the manager so it runs alongside
+      // the load. Nothing to download (already on device) just waits.
       if (store.modelLoading) {
+        // Both an uncached non-GGUF snapshot (wantManagerDownload) and an
+        // uncached remote GGUF quant download through the manager, so either can
+        // run in the background while another model loads. wantManagerDownload
+        // excludes GGUF by design, so the GGUF case is checked separately.
         const wantBackgroundDownload =
           wantManagerDownload ||
           (selection.source === "hub" &&
             hasGgufSource(selection) &&
             !selection.isDownloaded);
+        // The model currently loading already downloads as part of its own load
+        // (the /load flow fetches before setting the checkpoint), so re-picking
+        // it must not kick off a second transfer against the same cache.
         const isLoadingThisPick =
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
@@ -1851,6 +1862,11 @@ export function ChatPage({
             description: "It's downloading as part of the load in progress.",
           });
         } else if (wantBackgroundDownload) {
+          // Only claim the download started once a job is actually created. A
+          // transport conflict records state that is only resolvable from the
+          // Hub download card, so point the user there instead of showing a
+          // success toast for a transfer that never began; "busy" and "error"
+          // already surface their own toasts.
           const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
@@ -1867,11 +1883,6 @@ export function ChatPage({
               description:
                 "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
             });
-          } else if (outcome === "busy") {
-            toast.info("Download already in progress", {
-              description:
-                "Another download for this model is still running. Reselect it once that finishes to load it.",
-            });
           }
         } else {
           toast.info("Another model is already loading", {
@@ -1880,118 +1891,23 @@ export function ChatPage({
         }
         return;
       }
-      const wantManagerStage =
-        wantManagerDownload ||
-        (selection.source === "hub" &&
-          hasGgufSource(selection) &&
-          !selection.isDownloaded);
-      if (wantManagerStage) {
-        setPendingHubAutoLoad({
-          selection,
-          contextKey: chatContextKey,
-          originCheckpoint: store.params.checkpoint,
-          originGgufVariant: store.activeGgufVariant,
-        });
-        return;
-      }
-      setPendingHubAutoLoad(null);
-      const previousConfig = currentRuntimePerModelConfig({
-        includeMaxSeqLength: true,
-      });
-      const hasAppliedConfig = applyModelLoadConfigToRuntime(
-        selection.config ?? rememberedConfigFor(selection),
-      );
-      await selectModel({
-        ...selection,
-        ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
-        previousConfig,
+      // Detach the prior staged pick (keeping its download) before rebinding, so
+      // a second pick downloads alongside the first instead of cancelling it.
+      detachStaged();
+      store.stageModel({
+        id: selection.id,
+        isLora: selection.isLora,
+        ggufVariant: selection.ggufVariant,
+        isDownloaded: selection.isDownloaded,
+        expectedBytes: selection.expectedBytes,
+        nativePathToken: selection.nativePathToken,
+        isGguf: selection.isGguf,
+        isHubRepo: wantManagerDownload || undefined,
+        autoLoad: store.loadOnSelection,
       });
     },
-    [selectModel, loadingModel, rememberedConfigFor, chatContextKey],
+    [detachStaged, selectModel, loadingModel],
   );
-  useRepoDownload({
-    kind: DOWNLOAD_KIND.MODEL,
-    repoId: pendingHubAutoLoad?.selection.id ?? "__hub_autoload_idle__",
-    activeVariant: pendingHubAutoLoad?.selection.ggufVariant ?? null,
-    onComplete: (variant) => {
-      const pending = pendingHubAutoLoad;
-      if (
-        !pending ||
-        (pending.selection.ggufVariant ?? null) !== (variant ?? null)
-      ) {
-        return;
-      }
-      setPendingHubAutoLoad(null);
-      const store = useChatRuntimeStore.getState();
-      if (
-        !active ||
-        pending.contextKey !== chatContextKey ||
-        normalizeModelRef(pending.originCheckpoint) !==
-          normalizeModelRef(store.params.checkpoint) ||
-        pending.originGgufVariant !== store.activeGgufVariant
-      ) {
-        return;
-      }
-      void stageOrLoad({ ...pending.selection, isDownloaded: true });
-    },
-    onError: (variant) => {
-      if (
-        pendingHubAutoLoad &&
-        (pendingHubAutoLoad.selection.ggufVariant ?? null) === (variant ?? null)
-      ) {
-        setPendingHubAutoLoad(null);
-      }
-    },
-    onCancelled: (variant) => {
-      if (
-        pendingHubAutoLoad &&
-        (pendingHubAutoLoad.selection.ggufVariant ?? null) === (variant ?? null)
-      ) {
-        setPendingHubAutoLoad(null);
-      }
-    },
-  });
-  useEffect(() => {
-    const pending = pendingHubAutoLoad;
-    if (!pending) return;
-    let active = true;
-    void (async () => {
-      const outcome = await downloadManager.requestStart({
-        kind: DOWNLOAD_KIND.MODEL,
-        repoId: pending.selection.id,
-        variant: pending.selection.ggufVariant ?? null,
-        expectedBytes: pending.selection.expectedBytes ?? 0,
-      });
-      if (!active) return;
-      if (outcome === "started") {
-        toast.info("Downloading model", {
-          description: "It'll load automatically once the download finishes.",
-        });
-        return;
-      }
-      if (outcome === "conflict") {
-        // Keep pendingHubAutoLoad bound so this surface's cleanup does not wipe
-        // the conflict just recorded by requestStart (which the toast points the
-        // user to); resolving it from the Hub completes the download and this
-        // surface's onComplete auto-loads, mirroring the "started" branch.
-        toast.info("Resume this download from the Hub", {
-          description:
-            "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
-        });
-        return;
-      }
-      if (outcome === "busy") {
-        toast.info("Download already in progress", {
-          description:
-            "Another download for this model is still running. Reselect it once that finishes to load it.",
-        });
-      }
-      setPendingHubAutoLoad((current) => (current === pending ? null : current));
-    })();
-    return () => {
-      active = false;
-    };
-  }, [pendingHubAutoLoad]);
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
@@ -2003,11 +1919,6 @@ export function ChatPage({
         loadingDescription,
         forceReload: true,
         throwOnError: true,
-      });
-      // Record when this file lease expires so a later reload can prompt
-      // re-selection instead of reusing a token the host has already pruned.
-      useChatRuntimeStore.setState({
-        activeNativePathExpiresAtMs: intent.path.expiresAtMs ?? null,
       });
       useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
@@ -2054,20 +1965,28 @@ export function ChatPage({
   const handleCheckpointChange = useCallback(
     (
       value: string,
-      meta?: ModelSelectorChangeMeta,
+      meta?: {
+        source?: string;
+        isLora: boolean;
+        ggufVariant?: string;
+        isDownloaded?: boolean;
+        expectedBytes?: number;
+        isGguf?: boolean;
+      },
     ) => {
       const store = useChatRuntimeStore.getState();
       const currentCheckpoint = store.params.checkpoint;
       const currentVariant = store.activeGgufVariant;
-      if (!value) return;
-      setPendingHubAutoLoad(null);
-      const isSameLoadedModel =
-        value === currentCheckpoint &&
-        (meta?.ggufVariant ?? null) === (currentVariant ?? null);
-      if (isSameLoadedModel && !meta?.forceReload) {
+      if (
+        !value ||
+        (value === currentCheckpoint &&
+          (meta?.ggufVariant ?? null) === (currentVariant ?? null))
+      )
         return;
-      }
       if (meta?.source === "external" || isExternalModelId(value)) {
+        // Switching to an external model abandons any staged local pick: cancel
+        // its download too (setCheckpoint below only clears the pending + knobs).
+        abandonStaged();
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -2239,60 +2158,24 @@ export function ChatPage({
           source: meta?.source,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
-          isDownloaded: meta?.isDownloaded || isSameLoadedModel,
+          isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
-          config: meta?.config,
-          nativePathToken: meta?.nativePathToken,
-          forceReload: isSameLoadedModel || undefined,
         };
+        // "Load on selection" off: stage the model and open settings so its
+        // load knobs (tensor parallel, context length…) can be set, then it
+        // loads once via the sheet's Load button. The currently loaded model
+        // stays put until the user commits.
         await stageOrLoad(selection);
       })();
     },
     [
+      abandonStaged,
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
       stageOrLoad,
       view,
-    ],
-  );
-  const handleReloadActiveModel = useCallback(
-    (config: PerModelConfig) => {
-      const checkpoint = inferenceParams.checkpoint;
-      if (!checkpoint) return;
-      const runtime = useChatRuntimeStore.getState();
-      const nativeToken = runtime.activeNativePathToken;
-      const nativeExpiry = runtime.activeNativePathExpiresAtMs;
-      // A file-picked GGUF is reachable only via its native path token, which
-      // the desktop host prunes after a TTL. Reusing an expired token makes the
-      // reload fail with an opaque error, so prompt the user to re-select the
-      // file instead.
-      if (nativeToken && nativeExpiry != null && Date.now() >= nativeExpiry) {
-        toast.error("This local model file's access has expired.", {
-          description: "Re-select the model file to reload it.",
-        });
-        return;
-      }
-      handleCheckpointChange(checkpoint, {
-        source: "local",
-        isLora: activeModelIsLora,
-        ggufVariant: activeGgufVariant ?? undefined,
-        // Without the native token the reload validates the display label as a
-        // repo and fails.
-        nativePathToken: nativeToken ?? undefined,
-        isGguf: activeModelIsGguf,
-        isDownloaded: true,
-        config,
-        forceReload: true,
-      });
-    },
-    [
-      inferenceParams.checkpoint,
-      activeGgufVariant,
-      activeModelIsLora,
-      activeModelIsGguf,
-      handleCheckpointChange,
     ],
   );
   const handleEject = useCallback(() => {
@@ -2697,8 +2580,6 @@ export function ChatPage({
                 externalModels={externalModels}
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
-                activeModelConfig={activeModelConfig}
-                activeGgufContextLength={ggufContextLength}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
@@ -2752,12 +2633,7 @@ export function ChatPage({
               <NativeModelChip
                 intent={pendingNativeModelIntent}
                 nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={() =>
-                  loadNativeModelIntent(
-                    pendingNativeModelIntent,
-                    "Loading selected local GGUF model.",
-                  )
-                }
+                onLoad={(selection) => stageOrLoad(selection)}
               />
             ) : null}
             {loadingModel && loadToastDismissed ? (
@@ -2914,22 +2790,13 @@ export function ChatPage({
         open={active && settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
+          // Closing the sheet abandons a staged (not-yet-loaded) pick: cancel its
+          // download and revert the staged knobs so nothing lingers as a dirty
+          // edit (or a background download) on the loaded model.
+          if (!open) abandonStaged();
         }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
-        modelConfig={
-          view.mode !== "compare" && activeModelConfig && !modelLoading ? (
-            <SidebarModelConfig
-              modelId={inferenceParams.checkpoint}
-              ggufVariant={activeGgufVariant ?? null}
-              isGguf={activeModelIsGguf}
-              nativeContextLength={ggufNativeContextLength}
-              loadedContextLength={ggufContextLength}
-              loadedConfig={activeModelConfig}
-              onReload={handleReloadActiveModel}
-            />
-          ) : null
-        }
         isExternalModel={isExternalModel}
         providerCapabilities={activeProviderCapabilities}
         activeExternalProvider={activeExternalProvider}
@@ -2941,6 +2808,62 @@ export function ChatPage({
           );
         }}
         externalProviderType={activeExternalProviderType}
+        loadingModel={loadingModel}
+        onReloadModel={() => {
+          const state = useChatRuntimeStore.getState();
+          if (state.params.checkpoint) {
+            selectModel({
+              id: state.params.checkpoint,
+              ggufVariant: state.activeGgufVariant ?? undefined,
+              forceReload: true,
+              isDownloaded: true,
+              loadingDescription: "Reloading with updated chat template.",
+            });
+          }
+        }}
+        onLoadPendingModel={() => {
+          const pending = useChatRuntimeStore.getState().pendingSelection;
+          if (!pending) return;
+          const keyAtLoad = chatContextKey;
+          // forceReload: the staged model isn't loaded yet, so bypass the
+          // same-checkpoint dedupe. keepSpeculative: honor the speculative mode
+          // set on the sidebar.
+          void selectModel({
+            ...pending,
+            forceReload: true,
+            keepSpeculative: true,
+            throwOnError: true,
+          }).catch(() => {
+            // Recoverable failure (expired token, gated repo, OOM…): the pick is
+            // cleared only on success, so it normally stays staged with edited
+            // knobs intact — nothing to restore.
+            const store = useChatRuntimeStore.getState();
+            // Still staged (this pick, or a newer one queued meanwhile): leave it.
+            if (store.pendingSelection) return;
+            // Cleared mid-load (sheet closed / switched chats). Re-stage only if
+            // the staged-load is still wanted: same chat context, sheet still
+            // open, page still mounted.
+            const stillWanted =
+              mountedRef.current &&
+              store.settingsPanelOpen &&
+              chatContextKeyRef.current === keyAtLoad;
+            if (stillWanted) {
+              store.setPendingSelection(pending);
+            } else {
+              // Abandoned (closed the sheet / switched chats / left chat): drop
+              // the orphaned staged knob edits so they don't linger as dirty
+              // settings over the loaded model.
+              store.resetModelSettingsToLoaded();
+            }
+          });
+        }}
+        stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
+        onCancelStagedDownload={() =>
+          stagedDownload.cancelDownload(
+            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ??
+              null,
+          )
+        }
       />
     </div>
     </ChatActiveContext.Provider>

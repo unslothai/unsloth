@@ -10,14 +10,7 @@ from pathlib import Path
 
 WORKDIR = Path(__file__).resolve().parents[2]
 MODEL_SELECTOR = (
-    WORKDIR
-    / "studio"
-    / "frontend"
-    / "src"
-    / "features"
-    / "model-picker"
-    / "components"
-    / "model-selector.tsx"
+    WORKDIR / "studio" / "frontend" / "src" / "components" / "assistant-ui" / "model-selector.tsx"
 )
 APP_SIDEBAR = WORKDIR / "studio" / "frontend" / "src" / "components" / "app-sidebar.tsx"
 
@@ -41,12 +34,10 @@ def test_model_selector_trigger_label_uses_leading_tight():
 
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
-    # Match the account-block parent div regardless of its layout/spacing
-    # utilities (e.g. min-w-0, flex-1, the gap-* class); this guard is about the
-    # leading-* class immediately before the collapsible visibility utility, not
-    # the surrounding flex plumbing.
+    # Match the account-block parent div regardless of its gap utility; this
+    # guard is about the leading-* class, not the spacing.
     pattern = re.compile(
-        r'<div\s+className="flex\b[^"]*\bflex-col\b[^"]*\bgap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
+        r'<div\s+className="flex\s+flex-col\s+gap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
     )
     matches = pattern.findall(src)
     assert matches, "could not find sidebar account-block parent div"

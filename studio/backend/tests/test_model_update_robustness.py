@@ -314,7 +314,6 @@ def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
                         file_name = "model.safetensors",
                         size_on_disk = 100,
                         blob_path = str(repo_path / "blobs" / "modelsha"),
-                        blob_last_modified = 3_000.0,
                     ),
                 ]
             )
@@ -337,51 +336,6 @@ def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
     assert rows[0]["repo_id"] == "Org/SafeTensorRepo"
     assert rows[0]["model_format"] == "safetensors"
     assert rows[0]["size_bytes"] == 100
-    assert rows[0]["last_modified"] == 3_000.0
-
-
-def test_cached_gguf_scan_keeps_download_timestamp(monkeypatch, tmp_path):
-    repo_path = tmp_path / "models--Org--GgufRepo"
-    repo = SimpleNamespace(
-        repo_id = "Org/GgufRepo",
-        repo_type = "model",
-        repo_path = repo_path,
-        revisions = [
-            SimpleNamespace(
-                files = [
-                    SimpleNamespace(
-                        file_name = "model-Q4_K_M.gguf",
-                        size_on_disk = 100,
-                        blob_path = None,
-                        blob_last_modified = 5_000.0,
-                    ),
-                ]
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        CI,
-        "all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [repo])],
-    )
-    monkeypatch.setattr(
-        CI.hf_cache_scan,
-        "is_gguf_repo_partial",
-        lambda *args, **kwargs: False,
-    )
-    monkeypatch.setattr(
-        CI,
-        "_gguf_variant_state_summary",
-        lambda _repo_id: (False, 0),
-    )
-
-    rows = CI._scan_cached_gguf()
-
-    assert len(rows) == 1
-    assert rows[0]["repo_id"] == "Org/GgufRepo"
-    assert rows[0]["model_format"] == "gguf"
-    assert rows[0]["size_bytes"] == 100
-    assert rows[0]["last_modified"] == 5_000.0
 
 
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───

@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
-import { resolveInitialConfig } from "@/features/model-picker";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -1517,25 +1520,27 @@ async function autoLoadSmallestModel(): Promise<{
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
-    const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey({
+        id: candidate.id,
+        ggufVariant: candidate.ggufVariant,
+      }),
+    );
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
-      customContextLength: config.customContextLength,
+      customContextLength: remembered?.contextLength ?? null,
       ggufContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
+      maxSeqLength: candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
     const effectiveSpeculativeType =
-      config.speculativeType ?? specSettings.speculativeType;
+      remembered?.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
-      config.specDraftNMax ?? specSettings.specDraftNMax;
-    const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
-      ? config.chatTemplateOverride
-      : null;
+      remembered?.specDraftNMax ?? specSettings.specDraftNMax;
     if (
       !(await canAutoLoad({
         model_path: candidate.id,
@@ -1558,18 +1563,12 @@ async function autoLoadSmallestModel(): Promise<{
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
-      chat_template_override: effectiveChatTemplateOverride,
-      cache_type_kv: config.kvCacheDtype,
+      cache_type_kv: remembered?.kvCacheDtype ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: config.tensorParallel,
+      tensor_parallel: remembered?.tensorParallel ?? false,
     });
-    // Only persist the global preference when the value came from the global
-    // settings. A per-model config's choice must stay load-local, or autoloading
-    // a remembered model on startup would rewrite the global default.
-    if (config.speculativeType == null) {
-      saveSpeculativeType(effectiveSpeculativeType);
-    }
+    saveSpeculativeType(effectiveSpeculativeType);
     useChatRuntimeStore
       .getState()
       .setCheckpoint(candidate.id, candidate.ggufVariant ?? undefined);
@@ -1579,9 +1578,6 @@ async function autoLoadSmallestModel(): Promise<{
     );
     store.setParams({
       ...store.params,
-      ...(candidate.kind === "gguf"
-        ? {}
-        : { maxSeqLength: effectiveMaxSeqLength }),
       maxTokens:
         candidate.kind === "gguf"
           ? loadResp.context_length ?? 131072
@@ -1618,11 +1614,8 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: effectiveChatTemplateOverride,
-        loadedChatTemplateOverride: effectiveChatTemplateOverride,
-        // Retain the saved requested context so re-saving the config keeps the
-        // override; null stays null (auto/VRAM-fit).
-        customContextLength: config.customContextLength,
+        chatTemplateOverride: null,
+        loadedChatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
         ...resolveLoadedSpeculativeSettings(loadResp),
@@ -1641,9 +1634,8 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: effectiveChatTemplateOverride,
-        loadedChatTemplateOverride: effectiveChatTemplateOverride,
-        customContextLength: null,
+        chatTemplateOverride: null,
+        loadedChatTemplateOverride: null,
         ...resolveLoadedSpeculativeSettings(loadResp),
         loadedIsMultimodal: isMultimodalResponse(loadResp),
         loadedIsDiffusion: loadResp.is_diffusion ?? false,

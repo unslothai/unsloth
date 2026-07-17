@@ -80,11 +80,6 @@ import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
-  normalizeMaxSeqLength,
-  resolveInitialConfig,
-  type PerModelConfig,
-} from "@/features/model-picker";
-import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
@@ -495,23 +490,7 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
-  config?: PerModelConfig;
 };
-
-function cleanCompareChatTemplate(
-  value: string | null | undefined,
-): string | null {
-  return value?.trim() ? value : null;
-}
-
-function resolveCompareSpecDraftNMax(
-  speculativeType: string | null,
-  value: number | null,
-): number | null {
-  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
-    ? value
-    : null;
-}
 
 // Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
@@ -1045,11 +1024,13 @@ export function SharedComposer({
       const store = useChatRuntimeStore.getState();
       const maxSeqLength = store.params.maxSeqLength;
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
-      const fallbackTensorParallel = store.tensorParallel;
+      const chatTemplateOverride = store.chatTemplateOverride;
+      const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
+        ? chatTemplateOverride
+        : null;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
-      let loadedFromConfig = false;
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -1065,53 +1046,21 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
-        const config = sel.config ?? null;
-        // This pane's effective config: an explicit selection config, else the
-        // remembered store config for this model/quant (never the other pane's).
-        // A model with no saved config resolves to all-null defaults, so every
-        // setting below still falls through to its session default.
-        const resolved = config
-          ? { config, remembered: true }
-          : resolveInitialConfig(sel.id, sel.ggufVariant ?? null);
-        const ownConfig = resolved.config;
-        const ownRemembered = resolved.remembered;
-        // Mirror single-view resolveLoadMaxSeqLength: a GGUF pane with no
-        // explicit context loads at native (0 -> n_ctx_train), not the session
-        // maxSeqLength, which would silently shrink the picker's shown context.
-        const isGgufLoad =
-          (sel.ggufVariant ?? null) != null ||
-          sel.id.toLowerCase().endsWith(".gguf");
-        const effectiveMaxSeqLength =
-          ownConfig.customContextLength ??
-          normalizeMaxSeqLength(ownConfig.maxSeqLength) ??
-          (isGgufLoad ? 0 : maxSeqLength);
-        const effectiveChatTemplateOverride = cleanCompareChatTemplate(
-          ownConfig.chatTemplateOverride,
-        );
-        const effectiveSpeculativeType =
-          ownConfig.speculativeType ?? specSettings.speculativeType;
-        const effectiveSpecDraftNMax = ownRemembered
-          ? resolveCompareSpecDraftNMax(
-              effectiveSpeculativeType,
-              ownConfig.specDraftNMax,
-            )
-          : specSettings.specDraftNMax;
-        const effectiveTensorParallel = ownRemembered
-          ? ownConfig.tensorParallel
-          : fallbackTensorParallel;
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        if (isAlreadyActive && !config && !loadedFromConfig) {
+        // Already loaded (gate passed at first load): skip a redundant reload that would
+        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
+        if (isAlreadyActive) {
           return "ready";
         }
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: effectiveMaxSeqLength,
+          max_seq_length: maxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -1165,24 +1114,19 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: effectiveMaxSeqLength,
+          max_seq_length: maxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
-          cache_type_kv: ownConfig.kvCacheDtype ?? null,
-          speculative_type: effectiveSpeculativeType,
-          spec_draft_n_max: effectiveSpecDraftNMax,
-          tensor_parallel: effectiveTensorParallel,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
+          // Honor the Tensor Parallelism toggle on compare loads too.
+          tensor_parallel: currentStore.tensorParallel,
         });
-        // Keep a compare pane's per-model speculative choice load-local: only
-        // persist the global preference when it came from the global settings,
-        // matching the single-model load path.
-        if (ownConfig.speculativeType == null) {
-          saveSpeculativeType(effectiveSpeculativeType);
-        }
+        saveSpeculativeType(specSettings.speculativeType);
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
@@ -1198,38 +1142,11 @@ export function SharedComposer({
           ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
-          kvCacheDtype: resp.cache_type_kv ?? null,
-          loadedKvCacheDtype: resp.cache_type_kv ?? null,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
-          defaultChatTemplate: resp.chat_template ?? null,
-          chatTemplateOverride: effectiveChatTemplateOverride,
-          loadedChatTemplateOverride: effectiveChatTemplateOverride,
           loadedIsMultimodal: isMultimodalResponse(resp),
-          // Record the context this pane actually loaded with, mirroring the
-          // single-model load path, so that when the last-loaded pane becomes
-          // the active model the settings UI and any subsequent reload or save
-          // use its context instead of the previous/default one.
-          customContextLength: isGgufLoad
-            ? (ownConfig.customContextLength ?? null)
-            : null,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          ggufNativeContextLength: resp.is_gguf
-            ? (resp.native_context_length ?? null)
-            : null,
-          ggufMaxContextLength: resp.is_gguf
-            ? (resp.max_context_length ?? null)
-            : null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
-        if (!isGgufLoad) {
-          // Non-GGUF panes carry their context in params.maxSeqLength.
-          store.setParams({
-            ...store.params,
-            maxSeqLength: effectiveMaxSeqLength,
-          });
-        }
-        loadedFromConfig = config != null;
         // Sync the models[] entry with the load response so attach/send gates
         // read fresh capabilities. /api/models/list can lag a model's actual
         // state (e.g. a GGUF whose mmproj arrived after the snapshot).

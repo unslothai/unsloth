@@ -43,6 +43,7 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Settings02Icon,
   ShieldBanIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -195,6 +196,10 @@ export function ChatTab() {
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
+  const loadOnSelection = useChatRuntimeStore((state) => state.loadOnSelection);
+  const setLoadOnSelection = useChatRuntimeStore(
+    (state) => state.setLoadOnSelection,
+  );
   const expandQuantizations = useChatRuntimeStore(
     (state) => state.expandQuantizations,
   );
@@ -328,6 +333,40 @@ export function ChatTab() {
       </header>
 
       <SettingsSection title="Select model settings">
+        <SettingsRow
+          label="Load on selection"
+          alignTop={true}
+          description={
+            <span>
+              On: Unsloth auto-picks the best settings and loads it.
+              <br />
+              Off: opens Run settings to customize, then load.
+              <br />
+              The gear always opens Run settings:{" "}
+              <span className="ml-2 inline-flex items-center gap-3 align-middle">
+                <span className="font-mono text-xs text-foreground">
+                  Q4_K_M
+                </span>
+                <span className="text-[9px] font-medium text-green-400">
+                  downloaded
+                </span>
+                <span className="text-[10px] text-muted-foreground">16 GB</span>
+                <span className="inline-flex size-4 items-center justify-center rounded bg-black/[0.06] dark:bg-white/[0.08]">
+                  <HugeiconsIcon
+                    icon={Settings02Icon}
+                    strokeWidth={1.75}
+                    className="size-2.5 text-muted-foreground/80"
+                  />
+                </span>
+              </span>
+            </span>
+          }
+        >
+          <Switch
+            checked={loadOnSelection}
+            onCheckedChange={setLoadOnSelection}
+          />
+        </SettingsRow>
         <SettingsRow
           label="Expand quantizations"
           description={

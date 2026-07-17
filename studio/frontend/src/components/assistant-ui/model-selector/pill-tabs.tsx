@@ -78,8 +78,7 @@ export function PillTabs({
             onValueChange(tabs[next].value);
             e.currentTarget.parentElement
               ?.querySelectorAll<HTMLElement>('button[role="tab"]')
-              .item(next)
-              ?.focus();
+              [next]?.focus();
           }}
           onClick={() => onValueChange(tab.value)}
           className={cn(

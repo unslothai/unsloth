@@ -1,32 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
+import { hfModelFitsDevice } from "@/components/assistant-ui/model-selector/recommended-fit";
+import { useHubInventory } from "@/features/hub/inventory";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
+import {
+  type HfModelSearchChannel,
+  type HfSortDirection,
+  type HfSortKey,
+} from "@/features/hub/hooks/use-hub-model-search";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
+import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
   isExternalModelId,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useHubInventory } from "@/features/hub";
-import type {
-  HfModelSearchChannel,
-  HfSortDirection,
-  HfSortKey,
-} from "@/features/hub";
-import { useOnlineStatus } from "@/features/hub";
-import { useHubInfiniteScroll } from "@/features/hub";
-import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub";
-import { hfApiToken, useHfTokenStore } from "@/features/hub";
-import {
-  applyModelLoadConfigToRuntime,
-  currentRuntimePerModelConfig,
-  hfModelFitsDevice,
-  resolveInitialConfig,
-} from "@/features/model-picker";
-import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { useGpuInfo } from "@/hooks/use-gpu-info";
-import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   useCallback,
@@ -36,17 +38,10 @@ import {
   useRef,
   useState,
 } from "react";
-import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
-import { HubFeed } from "./catalog/hub-feed";
 import { HubTopBar } from "./catalog/hub-top-bar";
-import {
-  ModelsCatalog,
-  type ModelsCatalogHandlers,
-  type ModelsCatalogPagination,
-  type ModelsCatalogState,
-} from "./catalog/models-catalog";
-import { ModelsHeader } from "./catalog/models-header";
+import { HubFeed } from "./catalog/hub-feed";
+import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import {
   type AllModelsView,
   HubListHeader,
@@ -54,9 +49,16 @@ import {
   InventorySortControl,
   ResultListHeader,
 } from "./catalog/models-table";
+import {
+  ModelsCatalog,
+  type ModelsCatalogHandlers,
+  type ModelsCatalogPagination,
+  type ModelsCatalogState,
+} from "./catalog/models-catalog";
+import { ModelsHeader } from "./catalog/models-header";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
-import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHubFeed } from "./hooks/use-hub-feed";
@@ -566,15 +568,15 @@ export function ModelsPage() {
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
-  const mode: DiscoverMode = isModelDiscover
-    ? hasQuery
+  const mode: DiscoverMode = !isModelDiscover
+    ? "search"
+    : hasQuery
       ? "search"
       : urlSection != null
         ? "channel-list"
         : sortBrowseActive
           ? "search"
-          : "feed"
-    : "search";
+          : "feed";
   const isFeedMode = mode === "feed";
   const isChannelListMode = mode === "channel-list";
   const isSortBrowseMode =
@@ -765,10 +767,7 @@ export function ModelsPage() {
     }
     return merged;
   }, [isFeedMode, feedTrendingRows, filteredDiscoverRows]);
-  const feedResults = useMemo(
-    () => feedRows.map((row) => row.result),
-    [feedRows],
-  );
+  const feedResults = useMemo(() => feedRows.map((row) => row.result), [feedRows]);
   const selectionDiscoverRows = isFeedMode ? feedRows : discoverRows;
   const selectionFilteredDiscoverRows = isFeedMode
     ? feedRows
@@ -1109,22 +1108,50 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
-      const rememberedConfig = resolvedConfig.remembered
-        ? resolvedConfig.config
-        : null;
-      const previousConfig = currentRuntimePerModelConfig({
-        includeMaxSeqLength: true,
-      });
-      const hasAppliedConfig = applyModelLoadConfigToRuntime(rememberedConfig);
+      // "Load on selection" off: stage GGUF picks instead of loading, so the
+      // chat page's staging flow can read the header and show the load options.
+      // Non-GGUF models have nothing to configure pre-load, so they load now.
+      if (
+        !useChatRuntimeStore.getState().loadOnSelection &&
+        (opts.ggufVariant != null || selectedModel.isGguf)
+      ) {
+        useChatRuntimeStore.getState().stageModel({
+          id: runId,
+          ggufVariant: opts.ggufVariant,
+          isGguf: selectedModel.isGguf,
+          isDownloaded,
+          expectedBytes: opts.expectedBytes,
+        });
+        openNewChat();
+        return;
+      }
+      // Detach any leftover staged pick first so its edited knobs (e.g. a custom
+      // context length) don't leak into this load -- mirrors the chat page's
+      // detachStaged(); keepDownload keeps any staged download running.
+      useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+      // Load-on-selection skips the chat sheet, so seed this GGUF pick's saved
+      // load knobs here the way the sheet's restore effect would; otherwise the
+      // remembered config is silently ignored on the Hub run path. keepSpeculative
+      // then honors the restored speculative choice across the switch.
+      const remembered =
+        opts.ggufVariant != null || selectedModel.isGguf
+          ? loadRememberedLoadSettings(
+              rememberedLoadSettingsKey({
+                id: runId,
+                ggufVariant: opts.ggufVariant,
+              }),
+            )
+          : null;
+      if (remembered) {
+        useChatRuntimeStore.getState().applyRememberedLoadSettings(remembered);
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
         isDownloaded,
         expectedBytes: opts.expectedBytes,
-        keepSpeculative: hasAppliedConfig,
+        keepSpeculative: remembered != null,
         throwOnError: true,
-        previousConfig,
       })
         .then(() => {
           // Read fresh: the load is async, so the checkpoint may have changed.
@@ -1348,18 +1375,16 @@ export function ModelsPage() {
         </div>
       );
     }
-    const ownerToggle = isDatasetMode ? undefined : (
+    const ownerToggle = !isDatasetMode ? (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
-    );
+    ) : undefined;
     // Compact pill so it stays beside the view-mode tabs even in the narrow
     // split pane instead of dropping to its own row.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
           <HubListHeader
-            title={
-              channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"
-            }
+            title={channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"}
             count={listCount}
             view={allModelsView}
             onViewChange={setAllModelsView}

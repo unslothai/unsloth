@@ -678,16 +678,10 @@ with sync_playwright() as p:
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
     page.wait_for_timeout(400)
-    # Exclude disabled controls: the picker's new disabled "Reload model"
-    # button also matches and sorts first, so .first would target it.
-    regen_btn = (
-        page.get_by_role(
-            "button",
-            name = re.compile(r"(reload|regenerate)", re.I),
-        )
-        .and_(page.locator("button:not([disabled])"))
-        .first
-    )
+    regen_btn = page.get_by_role(
+        "button",
+        name = re.compile(r"(reload|regenerate)", re.I),
+    ).first
     if regen_btn.count() > 0:
         regen_btn.click()
         try:

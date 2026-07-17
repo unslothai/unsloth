@@ -48,7 +48,6 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
@@ -66,7 +65,6 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
-  last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;

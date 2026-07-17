@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { FolderBrowser } from "@/components/assistant-ui/model-selector/folder-browser";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,11 +22,9 @@ import {
   addScanFolder,
   listScanFolders,
   removeScanFolder,
-} from "@/features/hub";
-import { FolderBrowser } from "@/features/model-picker";
-import { openModelsDir } from "@/features/native-intents";
+} from "@/features/hub/inventory";
+import { openModelsDir } from "@/features/native-intents/api";
 import { isTauri } from "@/lib/api-base";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Delete02Icon,
@@ -39,6 +38,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "@/lib/toast";
 
 function pathTail(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
@@ -123,9 +123,7 @@ export function OnDeviceFoldersDialog({
         setPath("");
         mutationVersionRef.current += 1;
         setFolders((current) => {
-          const withoutDuplicate = current.filter(
-            (row) => row.id !== folder.id,
-          );
+          const withoutDuplicate = current.filter((row) => row.id !== folder.id);
           return [...withoutDuplicate, folder];
         });
         toast.success("Location added", {
@@ -186,12 +184,9 @@ export function OnDeviceFoldersDialog({
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
           <DialogHeader className="border-b border-border/60 px-5 py-4">
-            <DialogTitle className="text-[15px]">
-              On-device locations
-            </DialogTitle>
+            <DialogTitle className="text-[15px]">On-device locations</DialogTitle>
             <DialogDescription className="sr-only">
-              Hugging Face model folders, GGUF files, and adapters are indexed
-              here.
+              Hugging Face model folders, GGUF files, and adapters are indexed here.
             </DialogDescription>
           </DialogHeader>
 
@@ -347,7 +342,9 @@ export function OnDeviceFoldersDialog({
                           </p>
                           <Tooltip>
                             <TooltipTrigger asChild={true}>
-                              <p className="block w-full truncate font-mono text-[10.5px] text-muted-foreground">
+                              <p
+                                className="block w-full truncate font-mono text-[10.5px] text-muted-foreground"
+                              >
                                 {folder.path}
                               </p>
                             </TooltipTrigger>
@@ -375,10 +372,7 @@ export function OnDeviceFoldersDialog({
                                 />
                               </button>
                             </TooltipTrigger>
-                            <TooltipContent
-                              side="left"
-                              className="tooltip-compact"
-                            >
+                            <TooltipContent side="left" className="tooltip-compact">
                               Open in file manager
                             </TooltipContent>
                           </Tooltip>
@@ -403,10 +397,7 @@ export function OnDeviceFoldersDialog({
                               )}
                             </button>
                           </TooltipTrigger>
-                          <TooltipContent
-                            side="left"
-                            className="tooltip-compact"
-                          >
+                          <TooltipContent side="left" className="tooltip-compact">
                             Remove from list
                           </TooltipContent>
                         </Tooltip>

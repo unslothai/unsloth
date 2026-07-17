@@ -204,6 +204,11 @@ export function applyActiveModelStatusToStore(
     ggufContextLength: currentGgufContextLength,
     ggufMaxContextLength,
     ggufNativeContextLength,
+    // A non-GGUF status must also drop a stale native-path token: without this the
+    // isGguf OR (activeGgufVariant || activeNativePathToken || ggufContextLength)
+    // stays true after switching from a native GGUF to a transformers model, so a
+    // Codex-only detection would auto-select for a model its preflight rejects. A real
+    // GGUF load reports is_gguf: true, so its token is preserved (the load path owns it).
     ...(status.is_gguf ? {} : { activeNativePathToken: null }),
     modelRequiresTrustRemoteCode: status.requires_trust_remote_code ?? false,
     defaultChatTemplate: nextDefaultChatTemplate,

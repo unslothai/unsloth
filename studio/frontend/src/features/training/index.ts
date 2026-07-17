@@ -24,8 +24,8 @@ export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-sp
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export { listLocalDatasets, uploadTrainingDataset } from "./api/datasets-api";
 export type { LocalDatasetInfo } from "./types/datasets";
-export { getModelConfig, listLocalModels } from "./api/models-api";
-export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
+export { listLocalModels } from "./api/models-api";
+export type { LocalModelInfo } from "./api/models-api";
 export type {
   TrainingPhase,
   TrainingViewData,

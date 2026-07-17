@@ -14,7 +14,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
-import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
+import {
+  type BrowseFoldersResponse,
+  browseFolders,
+} from "@/features/chat/api/chat-api";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
@@ -87,43 +90,47 @@ export function FolderBrowser({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  function navigate(
-    target: string | undefined,
-    hidden: boolean,
-    opts?: { fallbackOnError?: boolean },
-  ) {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setLoading(true);
-    setError(null);
-    // Forward the signal so cancelled navigation aborts the backend
-    // enumeration, not just the response.
-    browseFolders(target, hidden, ctrl.signal)
-      .then((res) => {
-        if (ctrl.signal.aborted) return;
-        setData(res);
-        setPath(res.current);
-      })
-      .catch((err) => {
-        if (ctrl.signal.aborted) return;
-        // Surface the error; if the first request (e.g. a bad initialPath)
-        // fails, fall back to HOME so the modal stays navigable.
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-        if (opts?.fallbackOnError && target !== undefined) {
-          // Re-issue without a target -> backend defaults to HOME.
-          // Don't recurse if HOME itself fails (allowlist always has HOME).
-          queueMicrotask(() => navigate(undefined, hidden));
-        }
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
-  }
+  const navigate = useCallback(
+    (
+      target: string | undefined,
+      hidden: boolean,
+      opts?: { fallbackOnError?: boolean },
+    ) => {
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setLoading(true);
+      setError(null);
+      // Forward the signal so cancelled navigation aborts the backend
+      // enumeration, not just the response.
+      browseFolders(target, hidden, ctrl.signal)
+        .then((res) => {
+          if (ctrl.signal.aborted) return;
+          setData(res);
+          setPath(res.current);
+        })
+        .catch((err) => {
+          if (ctrl.signal.aborted) return;
+          // Surface the error; if the first request (e.g. a bad initialPath)
+          // fails, fall back to HOME so the modal stays navigable.
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
+          if (opts?.fallbackOnError && target !== undefined) {
+            // Re-issue without a target -> backend defaults to HOME.
+            // Don't recurse if HOME itself fails (allowlist always has HOME).
+            queueMicrotask(() => navigate(undefined, hidden));
+          }
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setLoading(false);
+        });
+    },
+    [],
+  );
 
   // Fetch only on closed -> open; later navigation is driven by `navigate()`,
   // so `path` is deliberately kept out of the dependency list.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
     // fallbackOnError: recover into HOME if initialPath is bad, rather than
@@ -140,7 +147,7 @@ export function FolderBrowser({
 
   const crumbs = useMemo(
     () => (data?.current ? splitBreadcrumb(data.current) : []),
-    [data],
+    [data?.current],
   );
 
   return (
