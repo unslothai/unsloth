@@ -15,6 +15,7 @@ parses tool calls from the cumulative text and dispatches via
 """
 
 import bisect
+import inspect
 import re
 import threading
 from typing import Callable, Generator, Optional
@@ -56,10 +57,12 @@ from core.tool_healing import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     coerce_tool_arguments,
     status_for_tool,
     tool_event_provenance,
 )
+from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -402,6 +405,22 @@ def _tool_event_provenance(**flags: object) -> dict[str, object]:
     return tool_event_provenance(**flags)
 
 
+def _accepts_output_callback(func: Callable[..., str]) -> bool:
+    """Whether an injectable ``execute_tool`` supports ``output_callback``.
+
+    The loop's ``execute_tool`` is a parameter (tests inject fakes), so forward
+    the live-output kwarg only when the callable declares it or takes ``**kwargs``.
+    """
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    if "output_callback" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def _call_single_turn(single_turn, conversation: list, active_tools: list[dict]):
     """Call a single-turn generator with active tool schemas when supported."""
     try:
@@ -424,9 +443,11 @@ def run_safetensors_tool_loop(
     max_tool_iterations: int = 25,
     tool_call_timeout: int = 300,
     session_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
     bypass_permissions: bool = False,
+    permission_mode: Optional[str] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -452,10 +473,27 @@ def run_safetensors_tool_loop(
     """
     conversation = list(messages)
 
-    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to web_search.
+    # Normalize the mode (mirrors the GGUF loop): "full" and
+    # bypass_permissions are the same switch; unset/unknown behaves as "ask".
+    # "off" keeps the sandbox but never prompts.
+    if permission_mode == "full":
+        bypass_permissions = True
+    elif bypass_permissions:
+        permission_mode = "full"
+    elif permission_mode not in ("ask", "auto", "off"):
+        permission_mode = "ask"
+
+    # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
+    # web_search. Skip only when a retrieval call would actually prompt (ask
+    # mode); auto never gates the safe search_knowledge_base tool.
     from core.inference.tools import build_rag_autoinject
 
-    _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+    # off never prompts, so (like auto) it must not lose first-pass retrieval
+    # even if a direct caller passes a stale confirm_tool_calls flag.
+    _skip_autoinject = (
+        confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+    )
+    _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
             yield _ev
@@ -533,12 +571,24 @@ def run_safetensors_tool_loop(
         provisional_render_html_started = False
         provisional_resolved = False
         provisional_render_html_id = f"call_{next_call_id}"
+        # Live-args offset for the provisional render_html card: the drained call
+        # text streams as tool_args so the canvas shows the HTML being written.
+        _live_args_streamed_upto = -1
         # When a human confirmation gate is active the real tool_start is keyed
         # by an approval id and carries awaiting_confirmation, so an early
         # provisional card (keyed by tool_call_id, no approval) would show the
         # tool as "running" before the user has approved it. Suppress the early
         # card in that case and let the gated tool_start be the first signal.
-        _provisional_confirm_gated = bool(confirm_tool_calls) and not bypass_permissions
+        # In auto mode render_html is always safe and never prompts, so keep its
+        # early canvas card (the frontend sends confirm_tool_calls=true alongside
+        # auto); mirrors the GGUF path's _confirm_gated exemption.
+        from core.inference.tools import is_always_safe_tool
+
+        _provisional_confirm_gated = (
+            bool(confirm_tool_calls)
+            and not bypass_permissions
+            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        )
 
         gen = _call_single_turn(single_turn, conversation, active_tools)
         prev_cumulative = ""
@@ -595,6 +645,30 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
+                    # Backlog first: everything drained so far.
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum,
+                    }
+                    _live_args_streamed_upto = len(content_accum)
+                elif (
+                    provisional_render_html_started
+                    and not provisional_resolved
+                    and _live_args_streamed_upto >= 0
+                    and len(content_accum) > _live_args_streamed_upto
+                ):
+                    # Still writing the call: stream the fragment so the canvas
+                    # renders live. Display only; content_accum still feeds the
+                    # stream-end parser verbatim.
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum[_live_args_streamed_upto:],
+                    }
+                    _live_args_streamed_upto = len(content_accum)
                 continue
 
             if detect_state == _state_streaming:
@@ -635,6 +709,13 @@ def run_safetensors_tool_loop(
                             "arguments": {},
                             "provenance": _tool_event_provenance(provisional = True),
                         }
+                        yield {
+                            "type": "tool_args",
+                            "tool_call_id": provisional_render_html_id,
+                            "tool_name": "render_html",
+                            "text": content_accum,
+                        }
+                        _live_args_streamed_upto = len(content_accum)
                     continue
                 cumulative_display = candidate
                 cleaned = strip_tool_markup_streaming(
@@ -791,6 +872,13 @@ def run_safetensors_tool_loop(
                         "arguments": {},
                         "provenance": _tool_event_provenance(provisional = True),
                     }
+                    yield {
+                        "type": "tool_args",
+                        "tool_call_id": provisional_render_html_id,
+                        "tool_name": "render_html",
+                        "text": content_accum,
+                    }
+                    _live_args_streamed_upto = len(content_accum)
             elif is_prefix and (is_rehearsal_prefix or len(stripped) < _MAX_BUFFER_CHARS):
                 # A rehearsal prefix is self-bounded; the buffer cap must not cut long MCP names short.
                 continue
@@ -1012,6 +1100,9 @@ def run_safetensors_tool_loop(
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
+        # Collect no-op nudges and flush them after the batch, so a no-op doesn't
+        # abort it and drop the parallel calls that follow.
+        deferred_noop_msgs: list = []
 
         for tc in tool_calls or []:
             func = tc.get("function", {}) or {}
@@ -1040,12 +1131,12 @@ def run_safetensors_tool_loop(
                         "provenance": decision.provenance,
                     }
                 completion = tool_controller.record_noop(decision)
-                conversation.append(completion.model_message())
+                deferred_noop_msgs.append(completion.model_message())
                 logger.info(
                     "Suppressed local safetensors tool call as internal no-op: "
                     f"action={decision.action} tool={decision.tool_name}"
                 )
-                break
+                continue
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
@@ -1055,8 +1146,17 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins over the confirm gate at the loop level too, so a
-            # direct internal caller passing both flags never prompts.
-            needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+            # direct internal caller passing both flags never prompts. In
+            # "auto" mode only calls detected as potentially unsafe pause.
+            # "off" never prompts (sandbox stays on).
+            needs_confirm = (
+                bool(confirm_tool_calls) and not bypass_permissions and permission_mode != "off"
+            )
+            if needs_confirm and permission_mode == "auto":
+                from core.inference.tools import is_potentially_unsafe_tool_call
+                needs_confirm = is_potentially_unsafe_tool_call(
+                    decision.tool_name, decision.arguments
+                )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
@@ -1109,15 +1209,29 @@ def run_safetensors_tool_loop(
             ):
                 result = RAG_SEARCH_CAP_NUDGE
             else:
-                try:
-                    result = execute_tool(
-                        decision.tool_name,
-                        decision.arguments,
+                # Execute in a worker thread so live stdout chunks and heartbeats
+                # stream while the tool blocks (the SSE route turns heartbeats into
+                # keepalives). execute_tool is injectable; pass output_callback
+                # only when it accepts it.
+                def _invoke_tool(_output_callback, _decision = decision):
+                    kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
                         session_id = session_id,
+                        thread_id = thread_id,
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
+                    )
+                    if _accepts_output_callback(execute_tool):
+                        kwargs["output_callback"] = _output_callback
+                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+
+                try:
+                    result = yield from stream_tool_execution(
+                        _invoke_tool,
+                        tool_name = decision.tool_name,
+                        tool_call_id = decision.tool_call_id,
+                        cancel_event = cancel_event,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)
@@ -1132,6 +1246,8 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+
+        append_deferred_nudges(conversation, deferred_noop_msgs)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
