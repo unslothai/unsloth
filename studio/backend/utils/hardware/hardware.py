@@ -676,6 +676,81 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         return None, None
 
 
+def _rocm_linux_sysfs_vram_per_card_gb() -> list[tuple[float, float]]:
+    """Per-card system-wide AMD VRAM via Linux DRM sysfs, ordered by card number.
+
+    Reads /sys/class/drm/card<N>/device/mem_info_vram_{used,total} (amdgpu-only
+    files, kernel-updated across all processes) so each GPU gets its own figure,
+    unlike _rocm_linux_sysfs_vram_gb which sums the host. Returns
+    [(used_gb, total_gb), ...]; empty on failure or off Linux.
+    """
+    if platform.system() != "Linux":
+        return []
+    cards: list[tuple[int, float, float]] = []
+    try:
+        for used_path in glob.glob("/sys/class/drm/card*/device/mem_info_vram_used"):
+            m = re.search(r"card(\d+)", used_path)
+            if m is None:
+                continue
+            total_path = used_path.replace("mem_info_vram_used", "mem_info_vram_total")
+            try:
+                used_bytes = int(open(used_path).read().strip())
+                total_bytes = int(open(total_path).read().strip())
+            except (OSError, ValueError):
+                continue
+            if total_bytes <= 0:
+                continue
+            cards.append(
+                (int(m.group(1)), round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2))
+            )
+    except Exception:
+        return []
+    cards.sort(key = lambda c: c[0])
+    return [(used, total) for _n, used, total in cards]
+
+
+def _rocm_windows_perf_counter_vram_per_adapter_gb() -> dict[int, float]:
+    """Per-adapter dedicated VRAM usage via Windows Performance Counters.
+
+    Instance names carry the physical adapter index (``luid_..._phys_<N>``), so
+    usage can be attributed per GPU -- unlike _rocm_windows_perf_counter_vram_gb,
+    which sums every adapter. Returns {phys_index: used_gb}; empty on failure.
+    """
+    if platform.system() != "Windows":
+        return {}
+    try:
+        ps = (
+            "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
+            " -ErrorAction SilentlyContinue).CounterSamples;"
+            "if($s){$s|ForEach-Object{\"$($_.InstanceName)|$($_.CookedValue)\"}}"
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return {}
+        by_adapter: dict[int, float] = {}
+        for line in r.stdout.strip().splitlines():
+            name, sep, raw = line.rpartition("|")
+            if not sep:
+                continue
+            m = re.search(r"phys_(\d+)", name)
+            if m is None:
+                continue
+            try:
+                used_bytes = float(raw.strip())
+            except ValueError:
+                continue
+            idx = int(m.group(1))
+            by_adapter[idx] = by_adapter.get(idx, 0.0) + used_bytes
+        return {idx: round(v / (1024**3), 2) for idx, v in by_adapter.items()}
+    except Exception:
+        return {}
+
+
 def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
     """Query system-wide dedicated GPU VRAM via Windows Performance Counters.
 
@@ -911,6 +986,40 @@ def _reconcile_primary_rocm_unified_memory(
     _apply_unified_memory_correction(utilization, torch_devices[0])
 
 
+def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
+    """Replace process-local torch VRAM figures with system-wide ones (ROCm).
+
+    The torch fallback cannot see other processes' VRAM on Windows (WDDM hands
+    each process its own budget), so a model served by the separate llama-server
+    process reads as ~0 used even with the GPU full (#7072). Overlay the same
+    system-wide sources the primary-GPU endpoint already trusts: per-adapter
+    Windows Performance Counters (Task Manager's source) and per-card Linux DRM
+    sysfs. Best-effort, in place; devices are left untouched when no source
+    yields an unambiguous per-GPU mapping."""
+    if not devices:
+        return
+    if platform.system() == "Windows":
+        per_adapter = _rocm_windows_perf_counter_vram_per_adapter_gb()
+        for dev in devices:
+            used = per_adapter.get(dev.get("index"))
+            if used is None:
+                continue
+            total = dev.get("vram_total_gb") or 0.0
+            dev["vram_used_gb"] = min(used, total) if total > 0 else used
+            dev["vram_utilization_pct"] = (
+                round((dev["vram_used_gb"] / total) * 100, 1) if total > 0 else None
+            )
+        return
+    per_card = _rocm_linux_sysfs_vram_per_card_gb()
+    if len(per_card) != len(devices):
+        # Ambiguous card->device mapping (masked GPUs, extra iGPU): keep torch.
+        return
+    for dev, (used, total) in zip(devices, per_card):
+        dev["vram_used_gb"] = used
+        dev["vram_total_gb"] = total
+        dev["vram_utilization_pct"] = round((used / total) * 100, 1) if total > 0 else None
+
+
 def get_visible_gpu_utilization() -> Dict[str, Any]:
     device = get_device()
 
@@ -963,6 +1072,12 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                         "power_utilization_pct": None,
                     }
                 )
+            if IS_ROCM:
+                # Torch VRAM here is process-local; swap in system-wide readings
+                # (Windows perf counters / Linux sysfs) so a model held by the
+                # separate llama-server process shows up (#7072). Mirrors the
+                # fallbacks get_gpu_utilization already applies to the primary GPU.
+                _overlay_system_wide_vram(devices)
             return {
                 "available": True,
                 "backend": _backend_label(device),
