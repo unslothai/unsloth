@@ -208,7 +208,6 @@ def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
     backend = LlamaCppBackend()
-    backend._nextn_predict_layers = 1  # embedded MTP head (Qwen-style)
     monkeypatch.setattr(
         LlamaCppBackend, "probe_server_capabilities", lambda self, binary = None: caps
     )
@@ -221,10 +220,12 @@ def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
         gpus = True,
         binary = "/fake/llama-server",
         dflash_draft_path = "/d/dflash.gguf",
+        mtp_draft_path = "/d/mtp.gguf",
     )
     assert "draft-dflash" not in flags
-    assert backend._speculative_type != "default"
-    assert backend._spec_fallback_reason != "binary_no_dflash"
+    assert flags[flags.index("--model-draft") + 1] == "/d/mtp.gguf"
+    assert backend._speculative_type == "draft-mtp"
+    assert backend._spec_fallback_reason == "binary_no_dflash"
     assert backend.dflash_retry_needed is False
 
 
@@ -299,6 +300,18 @@ def test_already_in_target_state_dedups_same_dflash_drafter(dflash_pair):
     assert _in_target(backend, str(weight), str(drafter)) is True
 
 
+def test_already_in_target_state_retries_after_binary_gains_dflash(monkeypatch, dflash_pair):
+    weight, drafter = dflash_pair
+    backend = _dflash_backend(str(weight), str(drafter))
+    backend._spec_fallback_reason = "binary_no_dflash"
+    caps = {"dflash_token": None}
+    monkeypatch.setattr(backend, "probe_server_capabilities", lambda binary = None: caps)
+
+    assert _in_target(backend, str(weight), str(drafter)) is True
+    caps["dflash_token"] = "draft-dflash"
+    assert _in_target(backend, str(weight), str(drafter)) is False
+
+
 def test_already_in_target_state_reloads_when_dflash_drafter_appears(dflash_pair):
     weight, drafter = dflash_pair
     backend = _dflash_backend(str(weight), None)
@@ -338,7 +351,7 @@ def test_hf_auto_resolves_dflash_before_mtp():
     dflash_fetch = "dflash_draft_path=self._download_dflash("
     mtp_fetch = "mtp_draft_path=self._download_mtp("
     assert compact.index(dflash_fetch) < compact.index(mtp_fetch)
-    assert 'not(_spec_canon=="auto"anddflash_draft_path)' in compact
+    assert "andnot_dflash_can_launch" in compact
 
 
 def test_text_only_vlm_downloads_dflash():
@@ -424,6 +437,15 @@ def test_hf_load_retries_transient_dflash_download(routes, tmp_path):
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
     backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
     backend._dflash_retry_needed = True
+    assert routes._request_matches_loaded_settings(req, backend) is False
+
+
+def test_route_retries_after_binary_gains_dflash(routes, dflash_pair, monkeypatch):
+    weight, drafter = dflash_pair
+    req = LoadRequest(model_path = str(weight))
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._dflash_draft_path = str(drafter.resolve())
+    monkeypatch.setattr(backend, "spec_binary_fallback_can_retry", lambda: True)
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 

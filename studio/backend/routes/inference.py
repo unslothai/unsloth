@@ -3170,6 +3170,12 @@ def _request_matches_loaded_settings(
     ):
         return False
     if (
+        req_mode in ("auto", "mtp", "mtp+ngram")
+        and not _extra_args_set_spec_type(effective_extra)
+        and llama_backend.spec_binary_fallback_can_retry()
+    ):
+        return False
+    if (
         llama_backend.dflash_retry_needed
         and req_mode == "auto"
         and not _extra_args_set_spec_type(effective_extra)

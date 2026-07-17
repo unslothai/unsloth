@@ -1803,6 +1803,20 @@ class LlamaCppBackend:
     def dflash_retry_needed(self) -> bool:
         return self._dflash_retry_needed
 
+    def spec_binary_fallback_can_retry(self) -> bool:
+        """Whether the current binary gained a previously missing spec mode."""
+        capability = {
+            "binary_no_mtp": "mtp_token",
+            "binary_no_dflash": "dflash_token",
+        }.get(self._spec_fallback_reason)
+        if capability is None:
+            return False
+        try:
+            return bool((self.probe_server_capabilities() or {}).get(capability))
+        except Exception as e:
+            logger.debug("Could not recheck speculative capability: %s", e)
+            return False
+
     @property
     def spec_fallback_reason(self) -> Optional[str]:
         """Why MTP was disabled on the last MTP-requesting load, else None."""
@@ -5714,11 +5728,19 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             weight_name = Path(model_path).name if model_path else None,
                         )
+                    _dflash_can_launch = False
+                    if dflash_draft_path and _spec_canon == "auto":
+                        try:
+                            _dflash_can_launch = bool(
+                                (self.probe_server_capabilities(binary) or {}).get("dflash_token")
+                            )
+                        except Exception as e:
+                            logger.warning("Could not verify DFlash support: %s", e)
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
                         and not _extra_args_set_spec_type(extra_args)
-                        and not (_spec_canon == "auto" and dflash_draft_path)
+                        and not _dflash_can_launch
                     ):
                         mtp_draft_path = self._download_mtp(
                             hf_repo = hf_repo,
@@ -7694,11 +7716,11 @@ class LlamaCppBackend:
             caps = self.probe_server_capabilities(binary)
             dflash_token = caps.get("dflash_token") if caps else None
             if not dflash_token:
-                # Leave state untouched so Auto can fall through to MTP or ngram.
                 logger.warning(
                     "Requested DFlash speculative decoding but llama-server "
                     "lacks --spec-type draft-dflash; run `unsloth studio update`."
                 )
+                self._spec_fallback_reason = "binary_no_dflash"
                 return False
             if spec_draft_n_max is not None:
                 draft_n_max = int(spec_draft_n_max)
@@ -7954,6 +7976,12 @@ class LlamaCppBackend:
             self._spec_fallback_reason == "drafter_not_found"
             and gguf_path is None
             and req_mode in ("auto", "mtp", "mtp+ngram")
+        ):
+            return False
+
+        if (
+            req_mode in ("auto", "mtp", "mtp+ngram")
+            and self.spec_binary_fallback_can_retry()
         ):
             return False
 
