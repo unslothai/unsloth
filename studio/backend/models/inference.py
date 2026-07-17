@@ -58,9 +58,15 @@ class LoadRequest(BaseModel):
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value.strip() == "":
+        if value is None:
             return None
-        if value is not None and len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+        # Reject on character count first (a lower bound on the UTF-8 byte length)
+        # so an oversized template is rejected before allocating the encoded bytes.
+        if len(value) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        if value.strip() == "":
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
             raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
