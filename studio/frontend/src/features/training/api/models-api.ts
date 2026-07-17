@@ -99,8 +99,9 @@ export async function checkVisionModel(
   hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-vision/${encoded}${query}`);
+  const response = await authFetch(`/api/models/check-vision/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-vision
     return false;
@@ -115,8 +116,9 @@ export async function checkEmbeddingModel(
   hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-embedding/${encoded}${query}`);
+  const response = await authFetch(`/api/models/check-embedding/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-embedding
     return false;

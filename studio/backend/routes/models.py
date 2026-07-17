@@ -2528,6 +2528,7 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 async def check_vision_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2535,6 +2536,7 @@ async def check_vision_model(
 
     This endpoint wraps the backend is_vision_model function.
     """
+    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
@@ -2560,6 +2562,7 @@ async def check_vision_model(
 async def check_embedding_model(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2567,6 +2570,7 @@ async def check_embedding_model(
 
     This endpoint wraps the backend is_embedding_model function.
     """
+    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
         is_embedding = is_embedding_model(model_name, hf_token = hf_token)
