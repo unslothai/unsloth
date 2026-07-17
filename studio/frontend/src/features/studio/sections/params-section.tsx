@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
 import { SectionCard } from "@/components/section-card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -9,7 +8,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
 import {
   Combobox,
   ComboboxContent,
@@ -18,6 +16,7 @@ import {
   ComboboxItem,
   ComboboxList,
 } from "@/components/ui/combobox";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -32,6 +31,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import {
   CONTEXT_LENGTHS,
   CPT_TARGET_MODULES,
@@ -39,18 +39,27 @@ import {
   OPTIMIZER_OPTIONS,
   TARGET_MODULES,
 } from "@/config/training";
-import { useMaxStepsEpochsToggle, useTrainingConfigStore } from "@/features/training";
+import {
+  useMaxStepsEpochsToggle,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
+import { useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { isAdapterMethod } from "@/types/training";
 import type { GradientCheckpointing } from "@/types/training";
 import {
-  ArrowDown01Icon,
   InformationCircleIcon,
   Settings04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
-import { useT } from "@/i18n";
+import {
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 type StudioT = ReturnType<typeof useT>;
 
@@ -122,7 +131,7 @@ function SliderRow({
           min={min}
           max={max}
           step={step}
-          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+          className="w-12 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
         />
       </div>
     </Row>
@@ -183,7 +192,6 @@ export function ParamsSection(): ReactElement {
   const showVisionImageSize = showVisionLora && !isDeepseekOcr;
   const [loraOpen, setLoraOpen] = useState(false);
   const [hyperOpen, setHyperOpen] = useState(false);
-  const needsExpandedHeight = isCpt || (isLora && loraOpen) || hyperOpen;
   const [ctxInput, setCtxInput] = useState(String(store.contextLength));
   const ctxAnchorRef = useRef<HTMLDivElement>(null);
   const ctxItems = CONTEXT_LENGTHS.map(String);
@@ -224,9 +232,7 @@ export function ParamsSection(): ReactElement {
         title={t("studio.params.title")}
         description={t("studio.params.description")}
         accent="orange"
-        className={`${needsExpandedHeight
-          ? "min-h-studio-config-column"
-          : "h-studio-config-column"} duration-150`}
+        className="min-h-studio-config-column"
       >
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
@@ -255,7 +261,9 @@ export function ParamsSection(): ReactElement {
             >
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                  {useEpochs ? t("studio.params.epochs") : t("studio.params.maxSteps")}
+                  {useEpochs
+                    ? t("studio.params.epochs")
+                    : t("studio.params.maxSteps")}
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <button
@@ -289,7 +297,9 @@ export function ParamsSection(): ReactElement {
                     onClick={toggleUseEpochs}
                     className="text-xs text-primary underline cursor-pointer"
                   >
-                    {useEpochs ? t("studio.params.useMaxSteps") : t("studio.params.useEpochs")}
+                    {useEpochs
+                      ? t("studio.params.useMaxSteps")
+                      : t("studio.params.useEpochs")}
                   </button>
                   <input
                     type="number"
@@ -310,7 +320,7 @@ export function ParamsSection(): ReactElement {
                     min={1}
                     max={useEpochs ? epochsSliderMax : maxStepsSliderMax}
                     step={1}
-                    className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-primary/30 [&::-webkit-inner-spin-button]:appearance-none"
+                    className="w-16 text-right font-mono text-xs font-medium bg-muted/50 border border-border rounded-lg px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-ring [&::-webkit-inner-spin-button]:appearance-none"
                   />
                 </div>
               </div>
@@ -387,9 +397,13 @@ export function ParamsSection(): ReactElement {
                     setCtxInput(String(store.contextLength));
                   }}
                   onKeyDown={(e) => {
-                    if (e.key !== "Enter") { return; }
+                    if (e.key !== "Enter") {
+                      return;
+                    }
                     const n = trySetContextLength(ctxInput);
-                    if (n === null) { return; }
+                    if (n === null) {
+                      return;
+                    }
                     if (!ctxItems.includes(ctxInput.trim())) {
                       e.stopPropagation();
                       e.preventDefault();
@@ -398,7 +412,9 @@ export function ParamsSection(): ReactElement {
                   }}
                 />
                 <ComboboxContent anchor={ctxAnchorRef}>
-                  <ComboboxEmpty>{t("studio.params.customContextLength")}</ComboboxEmpty>
+                  <ComboboxEmpty>
+                    {t("studio.params.customContextLength")}
+                  </ComboboxEmpty>
                   <ComboboxList className="p-1">
                     {(id: string) => (
                       <ComboboxItem key={id} value={id} className="font-mono">
@@ -506,194 +522,204 @@ export function ParamsSection(): ReactElement {
             <Collapsible open={loraOpen} onOpenChange={setLoraOpen}>
               <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   className={`size-3.5 transition-transform ${loraOpen ? "rotate-180" : ""}`}
                 />
                 {t("studio.params.loraSettings")}
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-3 data-[state=open]:overflow-visible">
                 <div className="pt-1.5 flex flex-col gap-4">
-                <SliderRow
-                  label={t("studio.params.rank")}
-                  tooltip={
-                    <>
-                      {t("studio.params.rankTooltip")}{" "}
-                      <a
-                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline"
-                      >
-                        {t("studio.params.readMore")}
-                      </a>
-                    </>
-                  }
-                  value={store.loraRank}
-                  onChange={store.setLoraRank}
-                  min={4}
-                  max={128}
-                  step={4}
-                />
-                <SliderRow
-                  label={t("studio.params.alpha")}
-                  tooltip={
-                    <>
-                      {t("studio.params.alphaTooltip")}{" "}
-                      <a
-                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline"
-                      >
-                        {t("studio.params.readMore")}
-                      </a>
-                    </>
-                  }
-                  value={store.loraAlpha}
-                  onChange={store.setLoraAlpha}
-                  min={4}
-                  max={256}
-                  step={4}
-                />
-                <SliderRow
-                  label={t("studio.params.dropout")}
-                  tooltip={
-                    <>
-                      {t("studio.params.dropoutTooltip")}{" "}
-                      <a
-                        href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary underline"
-                      >
-                        {t("studio.params.readMore")}
-                      </a>
-                    </>
-                  }
-                  value={store.loraDropout}
-                  onChange={store.setLoraDropout}
-                  min={0}
-                  max={0.5}
-                  step={0.01}
-                  format={(v) => v.toFixed(2)}
-                />
+                  <SliderRow
+                    label={t("studio.params.rank")}
+                    tooltip={
+                      <>
+                        {t("studio.params.rankTooltip")}{" "}
+                        <a
+                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline"
+                        >
+                          {t("studio.params.readMore")}
+                        </a>
+                      </>
+                    }
+                    value={store.loraRank}
+                    onChange={store.setLoraRank}
+                    min={4}
+                    max={128}
+                    step={4}
+                  />
+                  <SliderRow
+                    label={t("studio.params.alpha")}
+                    tooltip={
+                      <>
+                        {t("studio.params.alphaTooltip")}{" "}
+                        <a
+                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline"
+                        >
+                          {t("studio.params.readMore")}
+                        </a>
+                      </>
+                    }
+                    value={store.loraAlpha}
+                    onChange={store.setLoraAlpha}
+                    min={4}
+                    max={256}
+                    step={4}
+                  />
+                  <SliderRow
+                    label={t("studio.params.dropout")}
+                    tooltip={
+                      <>
+                        {t("studio.params.dropoutTooltip")}{" "}
+                        <a
+                          href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary underline"
+                        >
+                          {t("studio.params.readMore")}
+                        </a>
+                      </>
+                    }
+                    value={store.loraDropout}
+                    onChange={store.setLoraDropout}
+                    min={0}
+                    max={0.5}
+                    step={0.01}
+                    format={(v) => v.toFixed(2)}
+                  />
 
-                {/* Vision checkboxes */}
-                {showVisionLora && (
-                  <div className="flex flex-col gap-2 pt-1">
+                  {/* Vision checkboxes */}
+                  {showVisionLora && (
+                    <div className="flex flex-col gap-2 pt-1">
+                      {(
+                        [
+                          [
+                            "finetuneVisionLayers",
+                            t("studio.params.visionLayers"),
+                            store.finetuneVisionLayers,
+                            store.setFinetuneVisionLayers,
+                          ],
+                          [
+                            "finetuneLanguageLayers",
+                            t("studio.params.languageLayers"),
+                            store.finetuneLanguageLayers,
+                            store.setFinetuneLanguageLayers,
+                          ],
+                          [
+                            "finetuneAttentionModules",
+                            t("studio.params.attentionModules"),
+                            store.finetuneAttentionModules,
+                            store.setFinetuneAttentionModules,
+                          ],
+                          [
+                            "finetuneMLPModules",
+                            t("studio.params.mlpModules"),
+                            store.finetuneMLPModules,
+                            store.setFinetuneMLPModules,
+                          ],
+                        ] as const
+                      ).map(([key, label, value, setter]) => (
+                        <div key={key} className="flex items-center gap-2">
+                          <Checkbox
+                            id={key}
+                            checked={value as boolean}
+                            onCheckedChange={(v) =>
+                              (setter as (v: boolean) => void)(!!v)
+                            }
+                          />
+                          <label
+                            htmlFor={key}
+                            className="text-xs cursor-pointer text-muted-foreground"
+                          >
+                            {label}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Text target modules */}
+                  {!showVisionLora && (
+                    <div className="flex flex-col gap-2 pt-1">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        {t("studio.params.targetModules")}
+                      </span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map(
+                          (mod) => {
+                            const active = store.targetModules.includes(mod);
+                            return (
+                              <button
+                                key={mod}
+                                type="button"
+                                onClick={() => {
+                                  store.setTargetModules(
+                                    active
+                                      ? store.targetModules.filter(
+                                          (m) => m !== mod,
+                                        )
+                                      : [...store.targetModules, mod],
+                                  );
+                                }}
+                                className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-[11px] font-mono transition-colors ${
+                                  active
+                                    ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
+                                    : "text-muted-foreground hover:bg-muted/50"
+                                }`}
+                              >
+                                {mod}
+                              </button>
+                            );
+                          },
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* LoRA variant */}
+                  <div className="flex gap-2">
                     {(
                       [
-                        [
-                          "finetuneVisionLayers",
-                          t("studio.params.visionLayers"),
-                          store.finetuneVisionLayers,
-                          store.setFinetuneVisionLayers,
-                        ],
-                        [
-                          "finetuneLanguageLayers",
-                          t("studio.params.languageLayers"),
-                          store.finetuneLanguageLayers,
-                          store.setFinetuneLanguageLayers,
-                        ],
-                        [
-                          "finetuneAttentionModules",
-                          t("studio.params.attentionModules"),
-                          store.finetuneAttentionModules,
-                          store.setFinetuneAttentionModules,
-                        ],
-                        [
-                          "finetuneMLPModules",
-                          t("studio.params.mlpModules"),
-                          store.finetuneMLPModules,
-                          store.setFinetuneMLPModules,
-                        ],
+                        {
+                          value: "lora",
+                          label: t("studio.params.enableLora"),
+                          desc: t("studio.params.trainWithLora"),
+                        },
+                        {
+                          value: "rslora",
+                          label: "RS-LoRA",
+                          desc: t("studio.params.stableRank"),
+                        },
+                        {
+                          value: "loftq",
+                          label: "LoftQ",
+                          desc: t("studio.params.memoryEfficient"),
+                        },
                       ] as const
-                    ).map(([key, label, value, setter]) => (
-                      <div key={key} className="flex items-center gap-2">
-                        <Checkbox
-                          id={key}
-                          checked={value as boolean}
-                          onCheckedChange={(v) =>
-                            (setter as (v: boolean) => void)(!!v)
-                          }
-                        />
-                        <label
-                          htmlFor={key}
-                          className="text-xs cursor-pointer text-muted-foreground"
-                        >
-                          {label}
-                        </label>
-                      </div>
+                    ).map((opt) => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => store.setLoraVariant(opt.value)}
+                        className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${
+                          store.loraVariant === opt.value
+                            ? "border-ring-strong bg-primary/5"
+                            : "border-border hover:border-foreground/20"
+                        }`}
+                      >
+                        <p className="text-xs font-medium">{opt.label}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {opt.desc}
+                        </p>
+                      </button>
                     ))}
                   </div>
-                )}
-
-                {/* Text target modules */}
-                {!showVisionLora && (
-                  <div className="flex flex-col gap-2 pt-1">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {t("studio.params.targetModules")}
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((mod) => {
-                        const active = store.targetModules.includes(mod);
-                        return (
-                          <button
-                            key={mod}
-                            type="button"
-                            onClick={() => {
-                              store.setTargetModules(
-                                active
-                                  ? store.targetModules.filter((m) => m !== mod)
-                                  : [...store.targetModules, mod],
-                              );
-                            }}
-                            className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-[11px] font-mono transition-colors ${active
-                                ? "border-orange-300 bg-orange-50 text-orange-700 dark:border-orange-700 dark:bg-orange-950 dark:text-orange-300"
-                                : "text-muted-foreground hover:bg-muted/50"
-                              }`}
-                          >
-                            {mod}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* LoRA variant */}
-                <div className="flex gap-2">
-                  {(
-                    [
-                      {
-                        value: "lora",
-                        label: t("studio.params.enableLora"),
-                        desc: t("studio.params.trainWithLora"),
-                      },
-                      { value: "rslora", label: "RS-LoRA", desc: t("studio.params.stableRank") },
-                      {
-                        value: "loftq",
-                        label: "LoftQ",
-                        desc: t("studio.params.memoryEfficient"),
-                      },
-                    ] as const
-                  ).map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => store.setLoraVariant(opt.value)}
-                      className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer ${store.loraVariant === opt.value
-                          ? "border-primary/50 bg-primary/5 ring-1 ring-primary/20"
-                          : "border-border hover:border-foreground/20"
-                        }`}
-                    >
-                      <p className="text-xs font-medium">{opt.label}</p>
-                      <p className="text-[10px] text-muted-foreground">
-                        {opt.desc}
-                      </p>
-                    </button>
-                  ))}
-                </div>
                 </div>
               </CollapsibleContent>
             </Collapsible>
@@ -703,7 +729,7 @@ export function ParamsSection(): ReactElement {
           <Collapsible open={hyperOpen} onOpenChange={setHyperOpen}>
             <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
               <HugeiconsIcon
-                icon={ArrowDown01Icon}
+                icon={ChevronDownStandardIcon}
                 className={`size-3.5 transition-transform ${hyperOpen ? "rotate-180" : ""}`}
               />
               {t("studio.params.trainingHyperparameters")}
@@ -760,10 +786,7 @@ export function ParamsSection(): ReactElement {
                       </SelectTrigger>
                       <SelectContent>
                         {OPTIMIZER_OPTIONS.map((opt) => (
-                          <SelectItem
-                            key={opt.value}
-                            value={opt.value}
-                          >
+                          <SelectItem key={opt.value} value={opt.value}>
                             {formatOptimizerLabel(opt.value, opt.label, t)}
                           </SelectItem>
                         ))}
@@ -795,10 +818,7 @@ export function ParamsSection(): ReactElement {
                       </SelectTrigger>
                       <SelectContent>
                         {LR_SCHEDULER_OPTIONS.map((opt) => (
-                          <SelectItem
-                            key={opt.value}
-                            value={opt.value}
-                          >
+                          <SelectItem key={opt.value} value={opt.value}>
                             {formatSchedulerLabel(opt.value, opt.label, t)}
                           </SelectItem>
                         ))}
@@ -942,7 +962,9 @@ export function ParamsSection(): ReactElement {
                     <Input
                       type="number"
                       value={store.saveSteps}
-                      onChange={(e) => store.setSaveSteps(Number(e.target.value))}
+                      onChange={(e) =>
+                        store.setSaveSteps(Number(e.target.value))
+                      }
                       className="w-28 font-mono"
                     />
                   </Row>
@@ -956,11 +978,16 @@ export function ParamsSection(): ReactElement {
                       min="0.0"
                       max="1.0"
                       value={store.evalSteps}
-                      onChange={(e) => store.setEvalSteps(Number(e.target.value))}
+                      onChange={(e) =>
+                        store.setEvalSteps(Number(e.target.value))
+                      }
                       className="w-28 font-mono"
                     />
                   </Row>
-                  <Row label={t("studio.params.seed")} tooltip={t("studio.params.seedTooltip")}>
+                  <Row
+                    label={t("studio.params.seed")}
+                    tooltip={t("studio.params.seedTooltip")}
+                  >
                     <Input
                       type="number"
                       value={store.randomSeed}
@@ -972,14 +999,18 @@ export function ParamsSection(): ReactElement {
                   </Row>
                 </TabsContent>
 
-                <TabsContent value="memory" className="mt-3 flex flex-col gap-3">
+                <TabsContent
+                  value="memory"
+                  className="mt-3 flex flex-col gap-3"
+                >
                   {showVisionImageSize && (
                     <Row
                       label="Image Size"
                       tooltip={
                         <>
                           Resize images by maximum side length. Default uses the
-                          model image size. Larger images use up more context. Does not upscale or change aspect ratio.{" "}
+                          model image size. Larger images use up more context.
+                          Does not upscale or change aspect ratio.{" "}
                           <a
                             href="https://unsloth.ai/docs/basics/vision-fine-tuning"
                             target="_blank"
@@ -1014,9 +1045,7 @@ export function ParamsSection(): ReactElement {
                             !visionImageSizePresets.includes(
                               store.visionImageSize,
                             ) && (
-                              <SelectItem
-                                value={String(store.visionImageSize)}
-                              >
+                              <SelectItem value={String(store.visionImageSize)}>
                                 {store.visionImageSize}
                               </SelectItem>
                             )}
@@ -1048,15 +1077,21 @@ export function ParamsSection(): ReactElement {
                     <Select
                       value={store.gradientCheckpointing}
                       onValueChange={(v) =>
-                        store.setGradientCheckpointing(v as GradientCheckpointing)
+                        store.setGradientCheckpointing(
+                          v as GradientCheckpointing,
+                        )
                       }
                     >
                       <SelectTrigger className="w-32">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">{t("studio.params.none")}</SelectItem>
-                        <SelectItem value="true">{t("studio.params.standard")}</SelectItem>
+                        <SelectItem value="none">
+                          {t("studio.params.none")}
+                        </SelectItem>
+                        <SelectItem value="true">
+                          {t("studio.params.standard")}
+                        </SelectItem>
                         {platformDeviceType === "mac" ? (
                           <SelectItem value="mlx">MLX</SelectItem>
                         ) : (
@@ -1086,7 +1121,9 @@ export function ParamsSection(): ReactElement {
                         id="trainOnCompletions"
                         checked={store.trainOnCompletions}
                         disabled={store.datasetStreaming}
-                        onCheckedChange={(v) => store.setTrainOnCompletions(!!v)}
+                        onCheckedChange={(v) =>
+                          store.setTrainOnCompletions(!!v)
+                        }
                       />
                       <label
                         htmlFor="trainOnCompletions"

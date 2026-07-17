@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
+from utils.transformers_dtype import dtype_kwargs
 from utils.utils import format_error_message
 from utils.hardware import (
     get_device,
@@ -440,7 +441,7 @@ class InferenceBackend:
                         feature_extractor = tokenizer.feature_extractor,
                         processor = tokenizer,
                         return_language = True,
-                        torch_dtype = torch.float16,
+                        **dtype_kwargs(torch.float16),
                     )
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
@@ -832,6 +833,7 @@ class InferenceBackend:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
     ):
@@ -885,6 +887,7 @@ class InferenceBackend:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            thread_id = thread_id,
             rag_scope = rag_scope,
         )
 
