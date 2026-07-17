@@ -277,6 +277,29 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // 17B MoE DiT + four text encoders. The repos are open (MIT weights) but ship no
+    // Llama text_encoder_4; the backend assembles it from the open unsloth mirror at
+    // load time, adding ~16 GB: ~63 GB bf16-resident total, so this stays a
+    // datacenter-GPU pick. Full is the undistilled base; Dev and Fast are its
+    // guidance-free distillations with their own step defaults. city96's GGUF is not
+    // wired: the GGUF path would need the same TE4 assembly for tiny demand.
+    canonicalId: "HiDream-ai/HiDream-I1-Full",
+    displayName: "HiDream I1",
+    description: "Text-to-image",
+    scope: "image",
+    artifacts: [
+      bf16Pipeline("HiDream-ai/HiDream-I1-Full", 63),
+      bf16Pipeline("HiDream-ai/HiDream-I1-Dev", 63, {
+        label: "BF16 - Dev (distilled)",
+        keywords: ["bf16", "dev", "distilled"],
+      }),
+      bf16Pipeline("HiDream-ai/HiDream-I1-Fast", 63, {
+        label: "BF16 - Fast (distilled)",
+        keywords: ["bf16", "fast", "distilled"],
+      }),
+    ],
+  },
+  {
     // No bf16 repo exists for Ideogram 4: -fp8 stores its two DiTs as raw
     // float8 (~46 GB resident after the bf16 cast); -nf4-diffusers is the
     // bnb-4bit export (~11 GB).
