@@ -144,9 +144,9 @@ def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path,
     )
 
     assert result is new
-    assert not any(name.startswith("tokenizer_") for name in os.listdir(location)), (
-        "the fast-only scratch dir was not reclaimed"
-    )
+    assert not any(
+        name.startswith("tokenizer_") for name in os.listdir(location)
+    ), "the fast-only scratch dir was not reclaimed"
 
 
 def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
@@ -166,8 +166,12 @@ def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
     old1, new1 = _tokenizers()
     old2, new2 = _tokenizers()
     # Hold both returned tokenizers so their scratch dirs stay alive.
-    tok1 = fix_sentencepiece_tokenizer(old1, new1, {"</s>": "<|im_end|>"}, temporary_location = location)
-    tok2 = fix_sentencepiece_tokenizer(old2, new2, {"</s>": "<|im_end|>"}, temporary_location = location)
+    tok1 = fix_sentencepiece_tokenizer(
+        old1, new1, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
+    tok2 = fix_sentencepiece_tokenizer(
+        old2, new2, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
 
     work1, work2 = loaded[0], loaded[1]
     assert work1 != work2, "two calls reused the same directory"
@@ -286,7 +290,12 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    pieces = [("<s>", 0.0, CONTROL), ("aa", -1.0, NORMAL), ("bb", -1.0, NORMAL), ("X", -1.0, NORMAL)]
+    pieces = [
+        ("<s>", 0.0, CONTROL),
+        ("aa", -1.0, NORMAL),
+        ("bb", -1.0, NORMAL),
+        ("X", -1.0, NORMAL),
+    ]
     old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"aa": 1, "bb": 2})
     new = _FakeTokenizer("new")
 
