@@ -56,7 +56,9 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 
 # DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Must stay
 # in sync with the DiT trainer's own specs (kept separate to avoid an import cycle).
-_FORCE_BF16_FAMILIES: frozenset[str] = frozenset({"qwen-image", "z-image", "krea-2"})
+_FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
+    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"}
+)
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -234,7 +236,7 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
         return run_diffusion_lora_training
-    if key in ("flux.1", "qwen-image", "z-image", "krea-2"):
+    if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"):
         from core.training.diffusion_dit_trainer import run_dit_lora_training
         return run_dit_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
@@ -251,6 +253,9 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     # The Krea 2 authors' recommended starting point (their DreamBooth script defaults):
     # rank/alpha 32, lr 3e-4, 512px.
     "krea-2": {"lora_rank": 32, "learning_rate": 3e-4, "resolution": 512},
+    # The upstream FLUX.2 DreamBooth references default to rank 16 / lr 1e-4.
+    "flux.2-klein": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
+    "flux.2-dev": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 512},
 }
 
 
@@ -267,6 +272,8 @@ _FAMILY_LABELS = {
     "qwen-image": "Qwen-Image",
     "z-image": "Z-Image",
     "krea-2": "Krea 2",
+    "flux.2-klein": "FLUX.2 Klein",
+    "flux.2-dev": "FLUX.2-dev",
 }
 _FAMILY_VRAM_NOTES = {
     "sdxl": "Trains on ~12 GB+ (bf16 LoRA). The lightest, fastest option.",
@@ -280,12 +287,19 @@ _FAMILY_VRAM_NOTES = {
         "12B model, QLoRA (nf4) by default (~18 GB+). bf16 only. Trains on the "
         "undistilled Krea-2-Raw (Krea's guidance: train on Raw, run adapters on Turbo)."
     ),
+    "flux.2-klein": "4B model, QLoRA (nf4) by default (~10 GB+). bf16 only.",
+    "flux.2-dev": (
+        "32B model, QLoRA (nf4) by default (~28 GB+). bf16 only. Gated on Hugging Face: "
+        "accept the FLUX.2-dev license and add your HF token before training."
+    ),
 }
 
 # The flow-matching DiT families (run by diffusion_dit_trainer). They expose the base_precision /
 # compile levers and require bf16 compute on CUDA; SDXL is absent (it uses its own mixed_precision
 # path). A set so the UI gate, the bf16 preflight, and any future dispatch stay in sync.
-_DIT_TRAIN_FAMILIES = frozenset({"flux.1", "qwen-image", "z-image", "krea-2"})
+_DIT_TRAIN_FAMILIES = frozenset(
+    {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"}
+)
 
 
 def native_bf16_supported() -> bool:
@@ -890,6 +904,18 @@ def _restore_perf_flags(snap: Optional[dict]) -> None:
         pass
 
 
+# Official safetensors-only TRAINING bases trusted in addition to the inference allowlist
+# (_TRUSTED_NON_GGUF_REPOS in core/inference/diffusion.py): the FLUX.2 bases train LoRAs but
+# are not (yet) non-GGUF inference bases. Exact-match lowercased, same rules as the loader
+# list: extend deliberately; never add pickled weights or remote code.
+_TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
+    {
+        "black-forest-labs/flux.2-dev",
+        "black-forest-labs/flux.2-klein-4b",
+    }
+)
+
+
 def _assert_trusted_base_model(base_model: str) -> None:
     """Gate the training base model the same way the inference backend gates non-GGUF loads:
     a local path or a trusted repo (``unsloth/*`` or an allowlisted official base). This runs
@@ -897,7 +923,11 @@ def _assert_trusted_base_model(base_model: str) -> None:
     is never fetched or deserialised."""
     from core.inference.diffusion import _assert_local_base_is_pipeline, _is_trusted_diffusion_repo
 
-    if not _is_trusted_diffusion_repo(base_model):
+    trusted = (
+        _is_trusted_diffusion_repo(base_model)
+        or str(base_model or "").strip().lower() in _TRAIN_EXTRA_TRUSTED_REPOS
+    )
+    if not trusted:
         raise ValueError(
             f"Refusing to train from untrusted base model '{base_model}'. Use a local path or "
             f"a trusted repo (an unsloth/* repo or an official base)."

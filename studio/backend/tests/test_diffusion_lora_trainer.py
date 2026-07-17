@@ -488,13 +488,13 @@ def test_get_trainer_resolves_sdxl():
 def test_get_trainer_unknown_family_raises():
     from core.training.diffusion_lora_trainer import get_trainer
     with pytest.raises(ValueError, match = "No trainer"):
-        get_trainer("flux.2-dev")  # a real family with no registered trainer
+        get_trainer("flux.1-kontext")  # a real family with no registered trainer
 
 
 def test_get_trainer_resolves_dit_families():
     from core.training.diffusion_dit_trainer import run_dit_lora_training
     from core.training.diffusion_lora_trainer import get_trainer
-    for fam in ("flux.1", "qwen-image", "z-image"):
+    for fam in ("flux.1", "qwen-image", "z-image", "flux.2-klein", "flux.2-dev"):
         assert get_trainer(fam) is run_dit_lora_training
 
 
