@@ -6620,6 +6620,29 @@ class TestApiMonitorAudioInput:
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
 
+            def failing_chunks():
+                yield "partial"
+                raise RuntimeError("generation failed")
+
+            self._patch_audio_backend(monkeypatch, failing_chunks())
+            error_monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", error_monitor)
+            error_response = await openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            error_chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in error_response.body_iterator
+            ]
+
+            assert '"type": "server_error"' in error_chunks[-1]
+            assert error_chunks[-1].endswith("data: [DONE]\n\n")
+            [error_entry] = error_monitor.snapshot()
+            assert error_entry["status"] == "error"
+            assert error_monitor.active_count() == 0
+
         asyncio.run(_run())
 
     def test_non_gguf_tts_auto_route_records_monitor(self, monkeypatch):

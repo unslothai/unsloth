@@ -7093,8 +7093,11 @@ async def openai_chat_completions(
                         raise
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
-                        api_monitor.fail(monitor_id, _friendly_error(e))
-                        yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
+                        _msg = _friendly_error(e)
+                        api_monitor.fail(monitor_id, _msg)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": _msg, "type": "server_error"}}
+                        )
                     finally:
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
@@ -8667,12 +8670,9 @@ async def openai_chat_completions(
 
     # GGUF parity: enable_thinking templates prefill an unclosed <think>; split into
     # reasoning_content deltas so the UI renders the block for safetensors and MLX.
-    # Safetensors and MLX streams use explicit <think> tags as their canonical
-    # reasoning contract, including tags synthesized after a worker lazily selects
-    # a native template. Parse explicit tags independently of the parent process's
-    # load-time capability mirror. Capability flags remain necessary only for the
-    # prompt-prefilled mode, whose output begins without an opening tag.
-    _sf_parse_think = True
+    _sf_parse_think = bool(
+        _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
+    )
     # Prefilled-open only for prefill styles with thinking on; gpt-oss uses the normal mode.
     _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
         _sf_features,
