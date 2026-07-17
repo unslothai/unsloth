@@ -103,6 +103,7 @@ export const zhCN = {
       connections: "连接",
       apiKeys: "API",
       about: "关于",
+      voice: "语音",
     },
     general: {
       title: "通用",
@@ -342,10 +343,6 @@ export const zhCN = {
         fontSmoothing: {
           label: "字体平滑",
           description: "使用平滑的字体抗锯齿。",
-        },
-        edgeFades: {
-          label: "边缘淡出",
-          description: "在面板边缘淡出内容。关闭后显示细分隔线。",
         },
         contrast: {
           label: "对比度",

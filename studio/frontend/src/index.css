@@ -93,47 +93,6 @@
 		);
 		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 	}
-
-	/* Edge fades off (Appearance setting): every dissolve above becomes a
-	   thin divider line at the same boundary. */
-	html.no-edge-fades .sidebar-scroll-fade.is-scrolled,
-	html.no-edge-fades .model-list-scroll.is-scrolled,
-	html.no-edge-fades .model-list-scroll.is-bottom-faded,
-	html.no-edge-fades .model-list-scroll.is-scrolled.is-bottom-faded,
-	html.no-edge-fades .rag-docs-bottom-fade {
-		-webkit-mask-image: none;
-		mask-image: none;
-	}
-	html.no-edge-fades .sidebar-scroll-fade.is-scrolled {
-		border-top: 1px solid var(--sidebar-border);
-	}
-	html.no-edge-fades .sidebar-bottom-fade::after {
-		height: 1px;
-		background: var(--sidebar-border);
-	}
-	html.no-edge-fades .model-list-scroll.is-scrolled {
-		border-top: 1px solid var(--border);
-	}
-	html.no-edge-fades .model-list-scroll.is-bottom-faded {
-		border-bottom: 1px solid var(--border);
-	}
-	html.no-edge-fades .rag-docs-bottom-fade {
-		border-bottom: 1px solid var(--border);
-	}
-	/* Chat thread: gradient wash above the composer becomes a hairline at
-	   its top edge; the chat header's under-fade becomes a hairline too.
-	   !important beats the Tailwind gradient/mask utilities on the nodes. */
-	html.no-edge-fades .thread-bottom-fade {
-		background: none !important;
-		backdrop-filter: none !important;
-		-webkit-mask-image: none !important;
-		mask-image: none !important;
-		border-top: 1px solid var(--border);
-	}
-	html.no-edge-fades .chat-header-fade {
-		background: none !important;
-		border-top: 1px solid var(--border);
-	}
 }
 
 @layer base {
@@ -1450,6 +1409,7 @@ html[data-chat-font] .aui-root {
 
 	.chat-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-1 pt-2 outline-none transition-shadow;
+		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
@@ -1482,6 +1442,15 @@ html[data-chat-font] .aui-root {
 
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
+	}
+	/* Permission-level pill: higher-contrast grey than the resting pills so
+	   the active level stays legible (darker in light mode, lighter in dark).
+	   Full access keeps the danger yellow below. */
+	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 60%, transparent);
+	}
+	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+		color: color-mix(in oklab, var(--foreground) 72%, transparent);
 	}
 	/* Bypass permissions badge: bright yellow text, no resting fill; the
 	   rounded hover pill picks up the yellow accent like other toggles. */
@@ -1601,6 +1570,7 @@ html[data-chat-font] .aui-root {
 	/* Pill composer; own classes so compare-mode keeps its stacked layout. */
 	.unsloth-composer-surface {
 		@apply relative flex w-full flex-col rounded-[32px] bg-background dark:bg-card px-3 py-3 outline-none transition-shadow;
+		container-type: inline-size;
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
@@ -1774,6 +1744,28 @@ html[data-chat-font] .aui-root {
 		/* See .unsloth-composer-plus: re-enable pointer-events on the open trigger. */
 		pointer-events: auto;
 		cursor: pointer;
+	}
+
+	/* Keep Thinking on the control row in narrow split layouts. */
+	@container (max-width: 36rem) {
+		.unsloth-thinking-pill {
+			@apply size-8 justify-center gap-0 px-0;
+			min-height: 2rem;
+		}
+
+		.unsloth-thinking-label,
+		.unsloth-thinking-caret {
+			display: none;
+		}
+
+		.unsloth-thinking-pill[data-pill-label] {
+			position: relative;
+		}
+
+		.unsloth-thinking-pill[data-pill-label]:not([data-state="open"]):hover::after {
+			content: attr(data-pill-label);
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		}
 	}
 
 	/* Smaller tick for selected Thinking options. */
@@ -2056,13 +2048,9 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
+	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
 	.min-h-studio-config-column {
 		@apply md:min-h-[520px];
-	}
-
-	.h-studio-config-column {
-		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {
