@@ -1225,7 +1225,7 @@ export function SharedComposer({
         if (!isGgufLoad) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
           store.setParams({
-            ...store.params,
+            ...useChatRuntimeStore.getState().params,
             maxSeqLength: effectiveMaxSeqLength,
           });
         }
