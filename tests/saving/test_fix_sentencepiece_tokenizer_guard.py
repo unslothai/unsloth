@@ -233,3 +233,55 @@ def test_clearing_keeps_the_converted_tokenizer_source_subdirectory(tmp_path, mo
 
     assert os.path.isfile(source_model), "converted tokenizer source subdirectory was deleted"
     assert "<|im_end|>" in _read_pieces(f"{location}/tokenizer.model")
+
+
+class _TopLevelSourceTokenizer:
+    """A tokenizer whose sentencepiece source IS the top-level tokenizer.model, like
+    the tokenizer returned from AutoTokenizer.from_pretrained(temporary_location) on a
+    previous call. save_pretrained is a no-op copy onto itself (source == dest).
+    """
+
+    def __init__(self, model_path):
+        self.eos_token = "</s>"
+        self.pad_token = "<pad>"
+        self.vocab_file = model_path
+
+    def save_pretrained(self, location):
+        os.makedirs(location, exist_ok = True)
+        # Source already lives at location/tokenizer.model, so there is nothing to copy.
+
+    def __call__(self, texts, add_special_tokens = False):
+        class _Encoded:
+            pass
+
+        encoded = _Encoded()
+        encoded.input_ids = [[2] for _ in texts]
+        return encoded
+
+
+def test_clearing_keeps_the_current_tokenizers_own_source_vocab(tmp_path, monkeypatch):
+    """On a repeated call the returned tokenizer's vocab_file points back at the
+    top-level tokenizer.model. Clearing must not delete that source before saving,
+    or the guard returns the tokenizer unpatched, while a stale sibling file from a
+    different tokenizer is still removed.
+    """
+    _stub_auto_tokenizer(monkeypatch)
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+    os.makedirs(location, exist_ok = True)
+
+    pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL), ("</s>", 0.0, CONTROL)]
+    source_model = os.path.join(location, "tokenizer.model")
+    with open(source_model, "wb") as f:
+        f.write(_spm_bytes(pieces))
+
+    # A stale artifact from a different tokenizer that must still be cleared.
+    stale = os.path.join(location, "added_tokens.json")
+    with open(stale, "w") as f:
+        f.write('{"<stale>": 999}')
+
+    old = _TopLevelSourceTokenizer(source_model)
+    new = _FakeTokenizer("new")
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert "<|im_end|>" in _read_pieces(source_model), "own source vocab was deleted before saving"
+    assert not os.path.isfile(stale), "stale sibling artifact was not cleared"
