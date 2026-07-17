@@ -1113,8 +1113,9 @@ class TrainingBackend:
         watched_job_id: Optional[str] = None,
     ) -> None:
         """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
-        even if the worker is wedged in driver teardown; preserves output_dir so a saved
-        checkpoint is kept. No-ops if a new run already replaced the watched worker, so a
+        even if the worker is wedged in driver teardown; preserves output_dir on a save so
+        the checkpoint is kept, and clears it on a cancel (Stop without saving must not
+        offer resume/export). No-ops if a new run already replaced the watched worker, so a
         stale watchdog never marks a fresh run stopped or drops its handle.
 
         Supersession is checked on both the watched proc and job id: start_training sets
@@ -1148,7 +1149,11 @@ class TrainingBackend:
             batch: list = []
             final_step = final_loss = duration = None
             loss_history: list = []
-            output_dir = self._output_dir
+            clear_output_dir = self._cancel_requested
+            output_dir = None if clear_output_dir else self._output_dir
+            if clear_output_dir:
+                # /status serializes _output_dir; a cancelled run must not expose it.
+                self._output_dir = None
             if claim:
                 self._run_finalized = True  # claim this run's finalize
                 batch = list(self._metric_buffer)
@@ -1161,7 +1166,14 @@ class TrainingBackend:
                 loss_history = list(self.loss_history)
         if claim:
             self._finish_stopped_run(
-                run_id, output_dir, batch, final_step, final_loss, duration, loss_history
+                run_id,
+                output_dir,
+                batch,
+                final_step,
+                final_loss,
+                duration,
+                loss_history,
+                clear_output_dir = clear_output_dir,
             )
         with self._lock:
             if target_proc is None or self._proc is target_proc:
@@ -1176,6 +1188,7 @@ class TrainingBackend:
         final_loss: Optional[float],
         duration: Optional[float],
         loss_history: list,
+        clear_output_dir: bool = False,
     ) -> None:
         """Record a force-stopped run finished by its captured id, from state snapshotted
         under the lock. insert_metrics_batch upserts and finish_run is an idempotent UPDATE,
@@ -1202,6 +1215,7 @@ class TrainingBackend:
                     loss_sparkline = _json.dumps(sparkline),
                     output_dir = output_dir,
                     error_message = None,
+                    clear_output_dir = clear_output_dir,
                 )
                 return
             except Exception:
