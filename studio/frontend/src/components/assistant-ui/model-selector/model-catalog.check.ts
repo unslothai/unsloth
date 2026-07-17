@@ -371,6 +371,25 @@ assert.equal(
   "Alpha-VLLM/Lumina-Image-2.0",
 );
 assert.equal(loadSpecFor("Alpha-VLLM/Lumina-Image-2.0", IMAGE_CATALOG)?.kind, "pipeline");
+// HunyuanImage 2.1: the 50 GB bf16 pipeline does NOT fit a 24 GB card, so a bare
+// click routes to the QuantStack GGUF; on a large GPU the bf16 wins. The mirror id
+// and the GGUF id resolve to one group.
+const hyimage = groupForRepoId(
+  "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+  IMAGE_CATALOG,
+);
+assert.ok(hyimage);
+assert.equal(
+  pickDefaultArtifact(hyimage, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
+    .repoId,
+  "QuantStack/HunyuanImage-2.1-GGUF",
+);
+assert.equal(
+  pickDefaultArtifact(hyimage, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+assert.equal(groupForRepoId("QuantStack/HunyuanImage-2.1-GGUF", IMAGE_CATALOG), hyimage);
 // FLUX.1-schnell is Apache-2.0 (not gated): its BF16 IS auto-routed on a GPU that fits it.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);

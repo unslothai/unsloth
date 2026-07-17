@@ -264,6 +264,19 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11)],
   },
   {
+    // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror's guider
+    // components load natively on diffusers 0.39. ~50 GB bf16-resident, so consumer
+    // GPUs route to the QuantStack GGUF quants.
+    canonicalId: "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
+    displayName: "HunyuanImage 2.1",
+    description: "Text-to-image",
+    scope: "image",
+    artifacts: [
+      bf16Pipeline("hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 50),
+      gguf("QuantStack/HunyuanImage-2.1-GGUF"),
+    ],
+  },
+  {
     // No bf16 repo exists for Ideogram 4: -fp8 stores its two DiTs as raw
     // float8 (~46 GB resident after the bf16 cast); -nf4-diffusers is the
     // bnb-4bit export (~11 GB).
