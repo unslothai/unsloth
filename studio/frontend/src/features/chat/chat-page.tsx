@@ -1867,6 +1867,11 @@ export function ChatPage({
               description:
                 "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
             });
+          } else if (outcome === "busy") {
+            toast.info("Download already in progress", {
+              description:
+                "Another download for this model is still running. Reselect it once that finishes to load it.",
+            });
           }
         } else {
           toast.info("Another model is already loading", {
@@ -1965,10 +1970,15 @@ export function ChatPage({
         return;
       }
       if (outcome === "conflict") {
+        // Keep pendingHubAutoLoad bound so this surface's cleanup does not wipe
+        // the conflict just recorded by requestStart (which the toast points the
+        // user to); resolving it from the Hub completes the download and this
+        // surface's onComplete auto-loads, mirroring the "started" branch.
         toast.info("Resume this download from the Hub", {
           description:
             "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
         });
+        return;
       }
       if (outcome === "busy") {
         toast.info("Download already in progress", {
