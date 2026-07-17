@@ -54,7 +54,7 @@ import {
 // Imported directly from the store module rather than the "@/features/training"
 // barrel to avoid an import cycle (the barrel re-exports this section's siblings).
 import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
-import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useDebouncedValue } from "@/hooks";
 import { translate, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -398,9 +398,6 @@ export function DatasetSection() {
     enabled: pickerTab === "huggingface",
   });
 
-  const { error: tokenValidationError, isChecking: isCheckingToken } =
-    useHfTokenValidation(hfToken);
-
   const hfResultIds = useMemo(() => {
     const ids = hfResults.map((r) => r.id);
     if (dataset && !ids.includes(dataset)) {
@@ -683,11 +680,7 @@ export function DatasetSection() {
         title={t("studio.dataset.title")}
         description={t("studio.dataset.description")}
         accent="indigo"
-        className={`dark:shadow-border ${
-          advancedOpen || (datasetSource === "upload" && uploadedFile)
-            ? "min-h-studio-config-column"
-            : "h-studio-config-column"
-        }`}
+        className="dark:shadow-border min-h-studio-config-column"
       >
         <div className="flex min-w-0 flex-col gap-4">
           {(() => {
@@ -1009,9 +1002,9 @@ export function DatasetSection() {
                   </ComboboxContent>
                 </Combobox>
               </div>
-              {(tokenValidationError ?? hfSearchError) && (
+              {hfSearchError && (
                 <p className="text-xs text-destructive">
-                  {tokenValidationError ?? hfSearchError}
+                  {hfSearchError}
                   {" — "}
                   <a
                     href="https://huggingface.co/settings/tokens"
@@ -1021,11 +1014,6 @@ export function DatasetSection() {
                   >
                     {t("studio.dataset.getOrUpdateToken")}
                   </a>
-                </p>
-              )}
-              {isCheckingToken && (
-                <p className="text-xs text-muted-foreground">
-                  {t("studio.dataset.checkingToken")}
                 </p>
               )}
               {pickerTab !== activeSourceTab && (

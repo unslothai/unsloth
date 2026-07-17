@@ -1527,16 +1527,3 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
 body[data-scroll-locked] .hub-modal-pe-guard {
   pointer-events: none !important;
 }
-
-@layer components {
-  /* Edge fades off (Appearance setting): hub scroll dissolves become thin
-     divider lines. */
-  html.no-edge-fades .hub-page .hub-detail-bar::after {
-    height: 1px;
-    background: var(--border);
-  }
-  html.no-edge-fades .hub-page .hub-scroll-fade {
-    background: none;
-    border-top: 1px solid var(--border);
-  }
-}
