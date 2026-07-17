@@ -49,15 +49,14 @@ export interface LoadModelRequest {
   cache_type_kv?: string | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
-   * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
-   * (force draft-mtp), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
-   * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
-   * "ngram-simple" are still accepted by the backend.
+   * (platform-aware: DFlash when a matching drafter is present, otherwise MTP
+   * on MTP GGUFs or ngram-mod for sub-3B), "mtp" (force draft-mtp), "ngram"
+   * (force ngram-mod), "mtp+ngram" (ngram-mod + draft-mtp chain), "off".
+   * Legacy "default"/"draft-mtp"/"ngram-mod"/"ngram-simple" are accepted.
    */
   speculative_type?: string | null;
   /**
-   * Override --spec-draft-n-max for MTP speculative decoding. Applied only
-   * when speculative_type resolves to "mtp" or "mtp+ngram".
+   * Override --spec-draft-n-max for MTP or auto-detected DFlash decoding.
    */
   spec_draft_n_max?: number | null;
   /**
@@ -204,7 +203,7 @@ export interface InferenceStatusResponse {
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
   /**
-   * Why MTP was disabled on the loaded model despite being requested.
+   * Why model-draft speculative decoding fell back on the loaded model.
    * "binary_no_mtp" / "binary_no_dflash" / "binary_outdated" -> updating
    * llama.cpp would re-enable it; "runtime_error" -> the current build could not run it;
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models

@@ -998,6 +998,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1037,6 +1038,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -3849,8 +3851,11 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        # Vision loads suppress DFlash, so don't charge its drafter there.
-        _cfg_is_vision = bool(getattr(config, "gguf_mmproj_file", None))
+        # DFlash is suppressed only when the mmproj is active. A local VLM
+        # loaded text-only with --no-mmproj can still engage its DFlash sibling.
+        _cfg_is_vision = bool(getattr(config, "gguf_mmproj_file", None)) and not (
+            extra_args_disable_mmproj(llama_extra_args)
+        )
         for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
             if attr == "gguf_dflash_file" and _cfg_is_vision:
                 continue

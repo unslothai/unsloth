@@ -559,7 +559,7 @@ export function ChatSettingsPanel({
   );
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
   // Only binary fallback states are solved by a newer prebuilt.
-  const mtpUpdatable =
+  const specBinaryUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_no_dflash" ||
     specFallbackReason === "binary_outdated";
@@ -568,14 +568,16 @@ export function ChatSettingsPanel({
     applying: llamaUpdating,
     apply: applyLlamaUpdate,
   } = useLlamaUpdateCheck({
-    enabled: mtpUpdatable,
+    enabled: specBinaryUpdatable,
     onReloadRequired: resyncInferenceStatusAfterServerModelChange,
   });
-  const handleMtpUpdate = useCallback(async () => {
+  const handleSpecBinaryUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
+      const feature =
+        specFallbackReason === "binary_no_dflash" ? "DFlash" : "MTP";
       const reloadHint = result.reloadRequired
-        ? " Reload your model to enable MTP."
+        ? ` Reload your model to enable ${feature}.`
         : "";
       toast.success(
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
@@ -583,7 +585,7 @@ export function ChatSettingsPanel({
     } else {
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
     }
-  }, [applyLlamaUpdate]);
+  }, [applyLlamaUpdate, specFallbackReason]);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const setSpecDraftNMax = useChatRuntimeStore((s) => s.setSpecDraftNMax);
   const loadedSpecDraftNMax = useChatRuntimeStore(
@@ -1145,11 +1147,12 @@ export function ChatSettingsPanel({
                                   ? " Update llama.cpp to enable it."
                                   : "")}
                       </p>
-                      {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                      {specBinaryUpdatable &&
+                        llamaUpdateStatus?.update_available && (
                         <Button
                           size="sm"
                           className="corner-squircle mt-2 h-7 text-[12px]"
-                          onClick={handleMtpUpdate}
+                          onClick={handleSpecBinaryUpdate}
                           disabled={llamaUpdating}
                           data-test-id="mtp-update-button"
                         >

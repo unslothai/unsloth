@@ -165,6 +165,8 @@ def test_dflash_pairs_weight_by_model_name():
     assert _dflash_pairs_weight("dflash-Qwen3-8B.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
     # A 4B drafter must not attach to an 8B weight (multi-model repo).
     assert _dflash_pairs_weight("Qwen3-4B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
+    # A partial model token must end at a delimiter, not inside another token.
+    assert _dflash_pairs_weight("dflash-Qwen.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
     # The quant suffix side never pairs a quant-only weight name.
     assert _dflash_pairs_weight("OtherModel-DFlash-q8_0.gguf", "Q8_0.gguf") is False
     # Unknown weight (None) pairs with any dflash drafter; a non-dflash file never.
@@ -197,12 +199,10 @@ def test_detect_dflash_file_prefers_quantized_over_bf16(tmp_path):
 
 _CAPS_WITH_DFLASH = {
     "dflash_token": "draft-dflash",
-    "supports_dflash": True,
     "spec_draft_n_max_flag": "--spec-draft-n-max",
 }
 _CAPS_WITHOUT_DFLASH = {
     "dflash_token": None,
-    "supports_dflash": False,
     "spec_draft_n_max_flag": "--spec-draft-n-max",
 }
 
@@ -273,7 +273,6 @@ def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
         "mtp_token": "mtp",
         "supports_mtp": True,
         "dflash_token": None,
-        "supports_dflash": False,
         "spec_draft_n_max_flag": "--spec-draft-n-max",
     }
     backend = LlamaCppBackend()

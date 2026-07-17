@@ -567,6 +567,34 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         ):
             self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
 
+    def test_local_text_only_vision_load_counts_dflash(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            main = root / "model.gguf"
+            mmproj = root / "mmproj-F16.gguf"
+            dflash = root / "model-DFlash-q8_0.gguf"
+            main.write_bytes(b"m" * 100)
+            mmproj.write_bytes(b"v" * 20)
+            dflash.write_bytes(b"d" * 30)
+            cfg = SimpleNamespace(
+                gguf_file = str(main),
+                gguf_mmproj_file = str(mmproj),
+                gguf_mtp_file = None,
+                gguf_dflash_file = str(dflash),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                vision_gb = self.route._estimate_gguf_required_gb(cfg)
+                text_only_gb = self.route._estimate_gguf_required_gb(
+                    cfg, llama_extra_args = ["--no-mmproj"]
+                )
+
+        self.assertAlmostEqual(vision_gb, 120 / (1024**3), places = 12)
+        self.assertAlmostEqual(text_only_gb, 150 / (1024**3), places = 12)
+
     def test_local_adds_kv_cache(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

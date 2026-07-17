@@ -836,6 +836,15 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
 _DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
 
 
+def _is_mtp_drafter_gguf_path(path: str) -> bool:
+    """True only for a separate-file MTP drafter."""
+    p = path.lower()
+    if not p.endswith(".gguf"):
+        return False
+    name = p.rsplit("/", 1)[-1]
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+
+
 def _is_companion_gguf_path(path: str) -> bool:
     """True for a non-main GGUF: vision mmproj or a separate drafter -- the
     MTP repo-root ``mtp-*.gguf`` / ``MTP/`` subdir copies (Gemma 4), or a DFlash
@@ -851,7 +860,7 @@ def _is_companion_gguf_path(path: str) -> bool:
     if "mmproj" in p:
         return True
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
+    return _is_mtp_drafter_gguf_path(p) or bool(_DFLASH_DRAFTER_RE.search(name))
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -2276,7 +2285,6 @@ class LlamaCppBackend:
                 "mtp_token": None,
                 "supports_mtp": False,
                 "dflash_token": None,
-                "supports_dflash": False,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
@@ -2416,7 +2424,6 @@ class LlamaCppBackend:
             "mtp_token": mtp_token,
             "supports_mtp": mtp_token is not None,
             "dflash_token": dflash_token,
-            "supports_dflash": dflash_token is not None,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
@@ -4839,7 +4846,7 @@ class LlamaCppBackend:
             subdirs: list[Path] = []
             for snap in _iter_hf_cache_snapshots(hf_repo):  # newest first
                 for f in sorted(_gguf_snapshot_files(snap)):
-                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
+                    if _is_mtp_drafter_gguf_path(f):
                         (roots if "/" not in f else subdirs).append(snap / f)
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.

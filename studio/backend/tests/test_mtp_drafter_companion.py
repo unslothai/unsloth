@@ -450,6 +450,17 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it-BF16.gguf"
 
 
+def test_cached_mtp_drafter_ignores_dflash(tmp_path, monkeypatch):
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = _seed_snapshot(tmp_path, ["Qwen3-4B-DFlash-q8_0.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
+
+    got = LlamaCppBackend()._cached_repo_mtp_drafter("unsloth/Qwen3-4B-GGUF")
+    assert got is None
+
+
 def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatch):
     # A newer partial snapshot holds only the MTP/ copy; an older one has the
     # root. Must still return the small root, not the large subdir copy.

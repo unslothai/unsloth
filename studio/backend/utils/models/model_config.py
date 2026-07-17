@@ -1181,7 +1181,10 @@ def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) 
     if weight_basename is None:
         return True
     weight = weight_basename.lower()
-    return any(weight.startswith(c) for c in candidates)
+    return any(
+        weight.startswith(c) and (len(weight) == len(c) or not weight[len(c)].isalnum())
+        for c in candidates
+    )
 
 
 def _is_mtp_drafter(path: str) -> bool:
