@@ -1,17 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { cn } from "@/lib/utils";
 import {
+  getTrainingRun,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingViewData } from "@/features/training";
+import { cn } from "@/lib/utils";
 import type { ReactElement } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
+import {
+  type RunConfigOverride,
+  mapRunConfigToOverride,
+} from "./sections/run-config-override";
 import { TrainingStartOverlay } from "./training-start-overlay";
+
+/** The fetched run config only applies while it belongs to the active job;
+ * a stale record from a previous run falls back to the form store. */
+function activeRunOverride(
+  fetched: { jobId: string; override: RunConfigOverride | undefined } | null,
+  jobId: string | null,
+): RunConfigOverride | undefined {
+  if (fetched === null || fetched.jobId !== jobId) {
+    return undefined;
+  }
+  return fetched.override;
+}
 
 export function LiveTrainingView(): ReactElement {
   const runtime = useTrainingRuntimeStore(
@@ -51,6 +69,37 @@ export function LiveTrainingView(): ReactElement {
       trainingMethod: state.trainingMethod,
     })),
   );
+
+  // The Training Config popover must show the ACTIVE run's saved config, not
+  // the editable form store, which the user may have changed since starting
+  // the run (#6853). The run record (with its config snapshot) is created at
+  // job start, so fetch it as soon as the job id is known; until it loads (or
+  // if the fetch fails) ProgressSection falls back to the form store. The
+  // fetched config is keyed by job id and filtered at render time, so no
+  // synchronous state reset is needed when the job changes.
+  const [fetchedRunConfig, setFetchedRunConfig] = useState<{
+    jobId: string;
+    override: RunConfigOverride | undefined;
+  } | null>(null);
+  useEffect(() => {
+    if (!runtime.jobId) {
+      return;
+    }
+    const jobId = runtime.jobId;
+    const controller = new AbortController();
+    getTrainingRun(jobId, controller.signal)
+      .then((detail) => {
+        setFetchedRunConfig({
+          jobId,
+          override: mapRunConfigToOverride(detail.config),
+        });
+      })
+      .catch(() => {
+        // Run record not available (yet): keep the form-store fallback.
+      });
+    return () => controller.abort();
+  }, [runtime.jobId]);
+  const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
 
   const activeProjectName =
     runtime.startProjectName !== null
@@ -105,7 +154,11 @@ export function LiveTrainingView(): ReactElement {
         )}
       >
         <div data-tour="studio-training-progress">
-          <ProgressSection key={runtime.jobId ?? "no-job"} data={viewData} />
+          <ProgressSection
+            key={runtime.jobId ?? "no-job"}
+            data={viewData}
+            configOverride={runConfigOverride}
+          />
         </div>
         <ChartsSection
           currentStep={viewData.currentStep}

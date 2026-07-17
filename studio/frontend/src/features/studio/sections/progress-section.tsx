@@ -28,6 +28,7 @@ import {
 } from "@/features/training";
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import type { RunConfigOverride } from "./run-config-override";
 import { useGpuUtilization } from "@/hooks";
 import { cn } from "@/lib/utils";
 import {
@@ -80,19 +81,7 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
-  configOverride?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: string;
-    maxSteps?: number;
-    contextLength?: number;
-    warmupSteps?: number;
-    optimizerType?: string;
-    loraRank?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    loraVariant?: string;
-  };
+  configOverride?: RunConfigOverride;
 }
 
 export function ProgressSection({
@@ -183,17 +172,21 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  // Prefer the run's saved config snapshot whenever one is available — the
+  // live Current Run view passes it too, so the popover can't drift to the
+  // editable form store while a run is in flight (#6853). The store remains
+  // the fallback until the run record has loaded.
+  const cfgEpochs = configOverride ? configOverride.epochs : config.epochs;
+  const cfgBatchSize = configOverride ? configOverride.batchSize : config.batchSize;
+  const cfgLearningRate = configOverride ? configOverride.learningRate : config.learningRate;
+  const cfgMaxSteps = configOverride ? configOverride.maxSteps : config.maxSteps;
+  const cfgContextLength = configOverride ? configOverride.contextLength : config.contextLength;
+  const cfgWarmupSteps = configOverride ? configOverride.warmupSteps : config.warmupSteps;
+  const cfgOptimizerType = configOverride ? configOverride.optimizerType : config.optimizerType;
+  const cfgLoraRank = configOverride ? configOverride.loraRank : config.loraRank;
+  const cfgLoraAlpha = configOverride ? configOverride.loraAlpha : config.loraAlpha;
+  const cfgLoraDropout = configOverride ? configOverride.loraDropout : config.loraDropout;
+  const cfgLoraVariant = configOverride ? configOverride.loraVariant : config.loraVariant;
 
   const optimizerLabel =
     OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
