@@ -2681,6 +2681,45 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(fake_runtime, 
     assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
 
+def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
+    # krea's repo ships transformers-5.x configs and no top-level tokenizer files, so
+    # Pipeline.from_pretrained dies in the tokenizer (vocab_file = None). The quant fast
+    # path must assemble per-component via load_krea2_pipeline like every other krea load.
+    from core.inference import diffusion as dmod
+
+    calls: dict = {}
+
+    class Pipe:
+        def to(self, device):
+            calls["device"] = device
+            return self
+
+    def fake_loader(base, dtype, hf_token = None, transformer = None):
+        calls["base"] = base
+        calls["transformer"] = transformer
+        return Pipe()
+
+    monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
+
+    class ExplodingPipeline:
+        @staticmethod
+        def from_pretrained(*a, **k):
+            raise AssertionError("krea-2 must not go through Pipeline.from_pretrained")
+
+    marker = object()
+    pipe = dmod.DiffusionBackend._assemble_pipe(
+        ExplodingPipeline,
+        "krea/Krea-2-Turbo",
+        marker,
+        "bf16",
+        None,
+        "cuda:0",
+        fam = types.SimpleNamespace(name = "krea-2"),
+    )
+    assert isinstance(pipe, Pipe)
+    assert calls == {"base": "krea/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+
+
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):
     # A request-supplied transformer_prequant_path the loader refuses (missing, or outside
     # UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH) resolves to NO usable prequant source, so the
