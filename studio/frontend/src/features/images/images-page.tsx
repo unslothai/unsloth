@@ -156,6 +156,10 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
   { match: "kontext", steps: 28, guidance: 2.5 },
+  // Krea's FLUX.1-dev finetune runs its card recipe (28 steps, guidance 4.5); before
+  // the generic flux.1 key. It never hits the krea-2 keys above ("krea-2" is not a
+  // substring of "flux.1-krea-dev").
+  { match: "flux.1-krea", steps: 28, guidance: 4.5 },
   { match: "flux.1", steps: 28, guidance: 3.5 },
   { match: "flux.2-klein", steps: 4, guidance: 0 },
   // FLUX.2-dev is the full (non-distilled) model: more steps + real guidance, unlike klein.

@@ -284,6 +284,9 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "black-forest-labs/flux.1-dev",
         "black-forest-labs/flux.1-schnell",
         "black-forest-labs/flux.1-kontext-dev",
+        # Krea's guidance-distilled FLUX.1-dev finetune: same arch/layout as dev (FluxPipeline,
+        # CLIP+T5+ae), gated like dev. Detected as the flux.1 family via the "flux.1" token.
+        "black-forest-labs/flux.1-krea-dev",
         "tongyi-mai/z-image-turbo",
         "qwen/qwen-image",
         "qwen/qwen-image-2512",

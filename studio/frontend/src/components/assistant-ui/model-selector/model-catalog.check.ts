@@ -348,6 +348,19 @@ assert.equal(
   }).repoId,
   "black-forest-labs/FLUX.1-dev",
 );
+// FLUX.1 Krea dev: gated BF16 skipped when undownloaded -> the open QuantStack GGUF; the
+// GGUF repo id also resolves to the group (cross-owner via the artifact list).
+const kreaDevRoute = groupForRepoId("black-forest-labs/FLUX.1-Krea-dev", IMAGE_CATALOG);
+assert.ok(kreaDevRoute);
+assert.equal(
+  pickDefaultArtifact(kreaDevRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .repoId,
+  "QuantStack/FLUX.1-Krea-dev-GGUF",
+);
+assert.equal(
+  groupForRepoId("QuantStack/FLUX.1-Krea-dev-GGUF", IMAGE_CATALOG),
+  kreaDevRoute,
+);
 // FLUX.1-schnell is Apache-2.0 (not gated): its BF16 IS auto-routed on a GPU that fits it.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);

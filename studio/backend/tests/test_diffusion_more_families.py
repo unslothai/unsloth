@@ -53,6 +53,38 @@ def test_ideogram4_repos_are_trusted_non_gguf():
     assert not _is_trusted_diffusion_repo("ideogram-ai/some-future-repo")
 
 
+# ── FLUX.1 Krea dev (flux.1 family variant) ──────────────────────────────────
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "black-forest-labs/FLUX.1-Krea-dev",
+        "QuantStack/FLUX.1-Krea-dev-GGUF",
+        # A local GGUF pick where the family keyword lives in the filename.
+        "QuantStack/FLUX.1-Krea-dev-GGUF/flux1-krea-dev-Q4_K_M.gguf",
+    ],
+)
+def test_detect_family_flux1_krea_dev(repo_id):
+    # Krea's FLUX.1-dev finetune keeps the exact dev layout, so it must resolve to the
+    # existing flux.1 family (FluxPipeline), never to krea-2 (a different arch).
+    fam = detect_family(repo_id)
+    assert fam is not None and fam.name == "flux.1"
+    assert fam.pipeline_class == "FluxPipeline"
+
+
+def test_flux1_krea_dev_is_trusted_non_gguf():
+    # The gated official pipeline loads via from_pretrained -> needs the allowlist.
+    assert _is_trusted_diffusion_repo("black-forest-labs/FLUX.1-Krea-dev")
+
+
+def test_flux1_krea_dev_generation_defaults():
+    # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Krea-2-Turbo's
+    # 8-step no-CFG shape) must NOT swallow it, and the krea-2 defaults must stay intact.
+    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (28, 4.5)
+    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (28, 4.5)
+    assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
+    assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
+
+
 def test_ideogram4_generation_defaults():
     # Model-card settings: 48 steps, guidance 7 (the backend keeps the pipeline's
     # recommended tapered schedule when the request matches exactly).
