@@ -371,18 +371,14 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Work in a fresh per-call subdirectory. A shared directory let concurrent or
-    # repeated calls interfere: one call could delete or overwrite tokenizer.model after
-    # another had saved it (tripping the piece assertion or reloading the wrong model),
-    # and stale files from an earlier tokenizer could leak into the reload below. A
-    # unique directory isolates each call without deleting anything the caller owns.
+    # Fresh per-call subdir so concurrent/repeated calls can't clobber each other's
+    # tokenizer.model or leak stale files, without deleting anything the caller owns.
     temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
 
-    # Check if tokenizer.model exists -- only a sentencepiece tokenizer writes one,
-    # so this has to run after the save that would produce it.
+    # Only sentencepiece tokenizers write tokenizer.model, so check after the save.
     if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
         return new_tokenizer
 

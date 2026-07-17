@@ -1929,8 +1929,7 @@ def get_chat_template(
             string_vocab = tokenizer._tokenizer.to_str()
 
             skipped = 0
-            # Only the mappings actually applied to the fast tokenizer JSON should be
-            # mirrored into the sentencepiece model; a skipped mapping left in would
+            # Only mirror applied mappings into the spm model; a skipped one would
             # rename a piece the JSON never changed and desync the two.
             applied_mapping = {}
             for old_token, new_token in token_mapping.items():
@@ -2002,8 +2001,7 @@ def get_chat_template(
                 string_vocab = string_vocab.replace(old_eos_token, temporary_stop_token)
                 string_vocab = string_vocab.replace(stop_word, old_eos_token)
                 string_vocab = string_vocab.replace(temporary_stop_token, stop_word)
-                # The JSON swapped both tokens, so the sentencepiece model must swap both
-                # too; mapping only old_eos_token would leave two stop_word pieces.
+                # JSON swapped both, so swap both here too; a one-way map leaves two stop_word pieces.
                 sentencepiece_mapping = { old_eos_token : stop_word, stop_word : old_eos_token, }
             else:
                 string_vocab = string_vocab.replace(old_eos_token, stop_word)
