@@ -230,6 +230,12 @@ def take_kv_resume():
         return manifest
 
 
+def purge_kv_resume() -> None:
+    resume = take_kv_resume()
+    if resume:
+        _delete_resume_files(resume)
+
+
 def restore_kv_resume(backend, manifest) -> None:
     try:
         gguf = manifest.get("gguf")
@@ -362,13 +368,17 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             # Track by (id, variant): a (re)loaded model -- including the same repo
             # at a different quant -- counts as activity so it survives one TTL
             # before its first request (loads bypass the activity middleware).
-            current = _loaded_identity(backend)
-            if current != seen_model:
-                seen_model = current
-                if current is not None:
-                    _note_activity()
-                    _set_last_unloaded(None)  # a model is loaded; drop stale stash
             async with _unload_gate():
+                # Under the gate: a mid-reload backend can report loaded before
+                # note_model_loaded() has consumed the saved-KV manifest, and
+                # purging the "stale" stash here would delete it out from under
+                # the restore.
+                current = _loaded_identity(backend)
+                if current != seen_model:
+                    seen_model = current
+                    if current is not None:
+                        _note_activity()
+                        _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and _is_idle(ttl):
                     freed = _loaded_identity(backend)
                     manifest = None

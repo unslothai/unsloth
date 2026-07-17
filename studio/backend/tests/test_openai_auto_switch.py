@@ -3435,6 +3435,53 @@ def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
         settings.set_openai_auto_switch(True, 60, "garbage")
 
 
+def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
+    # A mid-reload backend reports loaded before note_model_loaded() restores the
+    # saved KV; the loop's stale-stash purge must wait on the lifecycle gate the
+    # reload holds instead of deleting the manifest out from under it.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 3600)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic()
+    backend = _FakeBackend("unsloth/New-GGUF")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    kw._kv_resume = manifest
+    kw._last_unloaded_model = ("unsloth/A-GGUF", "Q4_K_M")
+
+    assert kw._lifecycle_lock.acquire(blocking = False)  # simulate in-flight reload
+    try:
+        _drive_idle_loop(kw)
+        assert kw._kv_resume is manifest  # purge deferred while the gate is held
+        assert state_file.exists()
+    finally:
+        kw._lifecycle_lock.release()
+    _drive_idle_loop(kw)
+    assert kw._kv_resume is None  # gate freed: genuinely stale stash purged
+    assert not state_file.exists()
+
+
+def test_put_route_disabling_keep_kv_purges_saved_state(monkeypatch, tmp_path):
+    import routes.settings as settings_route
+    import storage.studio_db as db
+    from core.inference import llama_keepwarm as kw
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    monkeypatch.setattr(kw, "_kv_resume", manifest)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True, auto_unload_keep_kv = False)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    assert resp.auto_unload_keep_kv is False
+    assert kw._kv_resume is None
+    assert not state_file.exists()
+
+
 def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     # Flipping the keep-KV toggle while idle unload runs purely off
     # UNSLOTH_MODEL_IDLE_TTL must not materialize the env TTL as a stored value,

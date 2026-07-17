@@ -8389,7 +8389,7 @@ class LlamaCppBackend:
         # state-file structure, so the server would restore them undetected.
         return (
             tuple(self._extra_args or ()),
-            getattr(self, "_context_length", None),
+            self._requested_n_ctx,
             getattr(self, "_cache_type_kv", None),
             self.effective_parallel_slots,
         )
