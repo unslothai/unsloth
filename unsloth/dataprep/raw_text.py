@@ -236,9 +236,8 @@ class RawTextDataLoader:
 
     def _extract_text_from_json(self, data):
         """Extract text from JSON object using common field names."""
-        # A JSON line is not necessarily an object: `"context"` and `[1, 2]` are
-        # both valid, and `field in data` would then be a substring/membership
-        # test rather than a key lookup.
+        # Skip non-object lines (str/list/number): `field in data` would be a
+        # substring/membership test, not a key lookup, and `data[field]` raises.
         if not isinstance(data, dict):
             return ""
         for field in self._TEXT_FIELDS:
