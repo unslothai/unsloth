@@ -8,8 +8,9 @@
 #
 # Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
 # makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh    # skip PyTorch (GGUF-only)
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh       # skip PyTorch (GGUF-only)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh # do not prompt to launch
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 # Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
 #
@@ -49,6 +50,7 @@ PACKAGE_NAME="unsloth"
 TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
+_SKIP_AUTOSTART=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -88,6 +90,7 @@ done
 
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
+case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -159,6 +162,12 @@ run_maybe_quiet() {
 run_install_cmd() {
     _label="$1"
     shift
+    # Installer-pinned index installs (torch) must beat an inherited uv mirror
+    # (#6898): when we pass --default-index, neutralize every uv index env var so
+    # the pinned index wins. Other installs keep the user's mirror.
+    case " $* " in
+        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL "$@" ;;
+    esac
     if _is_verbose; then
         "$@" && return 0
         _rc=$?
@@ -1625,6 +1634,7 @@ _maybe_reroute_strixhalo_to_2404() {
     # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
     # GPU instead of falling back to the desktop-app prompt path.
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
+    [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
@@ -2190,9 +2200,9 @@ _expected_torch_flavor_tag() {
     esac
 }
 
-# Whether index ($1) supports a plain --index-url reinstall. pytorch.org cuXXX /
+# Whether index ($1) supports a plain --default-index reinstall. pytorch.org cuXXX /
 # rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
-# resolves (torch + every transitive dep) via --index-url -- the same URLs the
+# resolves (torch + every transitive dep) via --default-index -- the same URLs the
 # fresh-install paths above already use -- so a stale wheel is auto-repairable.
 # Unknown/odd-mirror leaves -> no, so we warn rather than risk a wrong reinstall.
 _torch_index_repairable() {
@@ -2706,7 +2716,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2721,7 +2731,7 @@ if [ "$_MIGRATED" = true ]; then
         # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2744,7 +2754,7 @@ if [ "$_MIGRATED" = true ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
                     run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --index-url "$TORCH_INDEX_URL" \
+                        --default-index "$TORCH_INDEX_URL" \
                         --force-reinstall
                 fi
                 ;;
@@ -2870,7 +2880,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                     run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --index-url "$TORCH_INDEX_URL"
+                        --default-index "$TORCH_INDEX_URL"
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
                     # Pass explicit wheel URLs so the matched trio is
@@ -2893,18 +2903,18 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
                 run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                     "$TORCH_CONSTRAINT" torchvision torchaudio \
-                    --index-url "$TORCH_INDEX_URL"
+                    --default-index "$TORCH_INDEX_URL"
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
             run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                 "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --index-url "$TORCH_INDEX_URL"
+                --default-index "$TORCH_INDEX_URL"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
         run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --index-url "$TORCH_INDEX_URL"
+            --default-index "$TORCH_INDEX_URL"
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
     # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
@@ -2925,7 +2935,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2943,7 +2953,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2964,7 +2974,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
                     run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --index-url "$TORCH_INDEX_URL" \
+                        --default-index "$TORCH_INDEX_URL" \
                         --force-reinstall
                 fi
                 ;;
@@ -2975,7 +2985,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.2" "unsloth>=2026.7.2" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2999,14 +3009,14 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
         _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
         _installed_torch_tag=""
         [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
-        # Repair when flavor is wrong AND the index is plain --index-url reinstallable
+        # Repair when flavor is wrong AND the index is plain --default-index reinstallable
         # (cuXXX / rocmX.Y / repo.amd.com gfx*); an unknown mirror leaf -> warn only.
         if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ] \
            && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
             run_install_cmd "reinstall PyTorch ($_expected_torch_tag)" uv pip install --python "$_VENV_PY" \
                 "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --index-url "$TORCH_INDEX_URL" \
+                --default-index "$TORCH_INDEX_URL" \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
             _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
             _installed_torch_tag=""
@@ -3017,7 +3027,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
             substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
-            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" torchvision torchaudio --index-url $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" torchvision torchaudio --default-index $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
 fi
@@ -3217,9 +3227,10 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# In interactive terminals, ask the user before starting Studio.
+# In interactive terminals, ask the user before starting Studio unless the
+# caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 1 ]; then
+if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
@@ -3255,8 +3266,8 @@ if [ -t 1 ]; then
         *)
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
-            substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+            substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+            substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3277,7 +3288,7 @@ else
         substep "source $_li_act_q"
         substep "unsloth studio -p 8888"
     fi
-    substep "(add -H 0.0.0.0 to allow network / cloud access)"
-    substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
 fi

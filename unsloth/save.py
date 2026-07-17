@@ -1734,6 +1734,33 @@ def get_executable(executables):
     return None
 
 
+# Output types convert_hf_to_gguf.py can emit directly via --outtype.
+_DIRECT_CONVERT_OUTTYPES = ("f32", "f16", "bf16", "q8_0")
+
+
+def _choose_first_conversion(
+    quantization_methods,
+    model_dtype,
+    has_imatrix = False,
+):
+    """Pick the dtype of the initial HF -> GGUF conversion.
+
+    Single-pass fast path: when exactly one output type is requested and
+    convert_hf_to_gguf.py can emit it directly (f32/f16/bf16/q8_0), convert straight to
+    it - the llama-quantize pass and the 16-bit intermediate file are skipped entirely.
+    An imatrix forces the two-pass route since only llama-quantize can apply one.
+
+    Every other case converts to the source dtype first, so each requested method is
+    quantized from weights identical to the checkpoint's.
+    """
+    unique_methods = set(quantization_methods)
+    if len(unique_methods) == 1 and not has_imatrix:
+        only_method = next(iter(unique_methods))
+        if only_method in _DIRECT_CONVERT_OUTTYPES:
+            return only_method
+    return model_dtype
+
+
 def save_to_gguf(
     model_name: str,
     model_type: str,
@@ -1781,10 +1808,6 @@ def save_to_gguf(
             "We shall switch instead to f16."
         )
         model_dtype = "f16"
-
-    # Check first_conversion as well
-    if first_conversion is None:
-        first_conversion = model_dtype
 
     has_imatrix = imatrix is not None and str(imatrix) != ""
     if has_imatrix:
@@ -1834,32 +1857,12 @@ def save_to_gguf(
         first_conversion = "None"  # No quantization for GPT-OSS
         # Only keep one conversion method since GPT-OSS doesn't quantize
         quantization_method = ["None"]
-    else:
-        if first_conversion is None:
-            # Check if q8_0 is the ONLY quantization method requested
-            if len(quantization_method) == 1 and quantization_method[0] == "q8_0":
-                first_conversion = "None"  # Let llama-quantize do the direct conversion
-            else:
-                # For all other cases, choose the highest precision format
-                # that can be requantized to all requested formats
-                strength = 0
-                for quant_method in quantization_method:
-                    if quant_method == "f32":
-                        strength = max(strength, 3)
-                    elif quant_method == "f16":
-                        strength = max(strength, 2)
-                    elif quant_method == "bf16":
-                        strength = max(strength, 1)
-                    # Note: we don't set strength for q8_0 here since we handle it above
-
-                if strength >= 3:
-                    first_conversion = "f32"
-                elif strength >= 2:
-                    first_conversion = "f16"
-                elif strength >= 1:
-                    first_conversion = "bf16"
-                else:
-                    first_conversion = "bf16"  # requantizing from q8_0 disallowed in new llama.cpp default to bf16.
+    elif first_conversion is None:
+        first_conversion = _choose_first_conversion(
+            quantization_method,
+            model_dtype,
+            has_imatrix = has_imatrix,
+        )
 
     # Check bfloat16 support again for first_conversion
     if first_conversion == "bf16" and not torch.cuda.is_bf16_supported():
@@ -1868,12 +1871,19 @@ def save_to_gguf(
 
     first_conversion_dtype = "" if first_conversion == "None" else first_conversion
     # Print conversion info
+    needs_quantize_pass = any(m != first_conversion for m in quantization_method)
+    if needs_quantize_pass:
+        second_step = f"[2] Converting GGUF {first_conversion_dtype} to {quantization_method} might take 10 minutes each."
+        total_line = "In total, you will have to wait at least 16 minutes."
+    else:
+        second_step = f"[2] Single-pass export: converting straight to {quantization_method} - no separate quantize step."
+        total_line = "In total, you will have to wait at least 6 minutes."
     print_info = (
         f"==((====))==  Unsloth: Conversion from HF to GGUF information\n"
         f"   {chr(92)}{chr(92)}   /|    [0] Installing llama.cpp might take 3 minutes.\n"
         f"O^O/ {chr(92)}_/ {chr(92)}    [1] Converting HF to GGUF {first_conversion_dtype} might take 3 minutes.\n"
-        f"{chr(92)}        /    [2] Converting GGUF {first_conversion_dtype} to {quantization_method} might take 10 minutes each.\n"
-        f' "-____-"     In total, you will have to wait at least 16 minutes.\n'
+        f"{chr(92)}        /    {second_step}\n"
+        f' "-____-"     {total_line}\n'
     )
     print(print_info)
 
@@ -1959,75 +1969,154 @@ def save_to_gguf(
 
     if not is_gpt_oss:
         base_gguf = initial_files[0]
-        quants_created = False
-        for quant_method in quantization_method:
-            if quant_method != first_conversion:
+
+        # Deduplicate while keeping order; methods equal to the base conversion already
+        # exist on disk and need no quantize pass.
+        methods_to_quantize = [
+            m for m in dict.fromkeys(quantization_method) if m != first_conversion
+        ]
+
+        def _quantize_one(quant_method, n_threads = None):
+            output_location = os.path.join(
+                gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
+            )
+            try:
+                if quant_method == "q2_k_l":
+                    return _quantize_q2_k_l(
+                        input_gguf = base_gguf,
+                        output_gguf = output_location,
+                        quantizer_location = quantizer_location,
+                        n_threads = n_threads if n_threads is not None else n_cpus,
+                        print_output = print_output,
+                        imatrix = imatrix,
+                    )
+                else:
+                    # Use unsloth-zoo's standard quantization for all other methods. Only pass
+                    # imatrix when set so older unsloth_zoo (no imatrix kwarg) still works for
+                    # plain quants; an imatrix that cannot be applied was rejected above.
+                    quant_kwargs = dict(
+                        input_gguf = base_gguf,
+                        output_gguf = output_location,
+                        quant_type = quant_method,
+                        quantizer_location = quantizer_location,
+                        print_output = print_output,
+                    )
+                    if has_imatrix:
+                        quant_kwargs["imatrix"] = imatrix
+                    if n_threads is not None:
+                        quant_kwargs["n_threads"] = n_threads
+                    return quantize_gguf(**quant_kwargs)
+            except Exception as e:
+                if IS_KAGGLE_ENVIRONMENT:
+                    raise RuntimeError(
+                        f"Unsloth: Quantization failed for {output_location}\n"
+                        "You are in a Kaggle environment, which might be the reason this is failing.\n"
+                        "Kaggle only provides 20GB of disk space in the working directory.\n"
+                        "Merging to 16bit for 7b models use 16GB of space.\n"
+                        "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"
+                        "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"
+                        "You can try saving it to the `/tmp` directory for larger disk space.\n"
+                        "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
+                        f"Error: {e}"
+                    )
+                else:
+                    if IS_WINDOWS:
+                        build_instructions = (
+                            f'cd "{LLAMA_CPP_DEFAULT_DIR}"\n'
+                            f"cmake -S . -B build -DBUILD_SHARED_LIBS=OFF\n"
+                            f"cmake --build build --config Release"
+                        )
+                    else:
+                        build_instructions = (
+                            f'cd "{LLAMA_CPP_DEFAULT_DIR}" && make clean && make all -j'
+                        )
+
+                    raise RuntimeError(
+                        f"Unsloth: Quantization failed for {output_location}\n"
+                        "You might have to compile llama.cpp yourself, then run this again.\n"
+                        "You do not need to close this Python program. Run the following commands in a new terminal:\n"
+                        f'git clone --recursive https://github.com/ggerganov/llama.cpp "{LLAMA_CPP_DEFAULT_DIR}"\n'
+                        f"{build_instructions}\n"
+                        "Once that's done, redo the quantization.\n"
+                        f"Error: {e}"
+                    )
+
+        # Outputs already on disk pre-date this run; never delete them on a failure.
+        preexisting_outputs = {
+            m
+            for m in methods_to_quantize
+            if os.path.exists(os.path.join(gguf_directory, f"{model_name}.{m.upper()}.gguf"))
+        }
+        # Each llama-quantize pass loads the whole base GGUF into RAM, so only run two at
+        # once when the host has headroom for two copies, else a multi-quant export that
+        # fit sequentially could OOM.
+        try:
+            base_bytes = sum(
+                os.path.getsize(f)
+                for f in initial_files
+                if "-mmproj" not in os.path.basename(f).lower()
+            )
+            mem_ok = psutil.virtual_memory().available >= int(2.5 * base_bytes)
+        except Exception:
+            mem_ok = False
+        # Independent llama-quantize runs on the same base GGUF can overlap. Kept at 2
+        # workers; run sequentially when streaming logs (UNSLOTH_ENABLE_LOGGING), on
+        # Kaggle/Colab, when RAM is tight, or when the kill switch (0/false/no/off/empty)
+        # is set.
+        _parallel_flag = os.environ.get("UNSLOTH_PARALLEL_GGUF_QUANTS", "1").strip().lower()
+        parallel_quants = (
+            len(methods_to_quantize) > 1
+            and not print_output
+            and not IS_KAGGLE_ENVIRONMENT
+            and not IS_COLAB_ENVIRONMENT
+            and mem_ok
+            and _parallel_flag not in ("0", "false", "no", "off", "")
+        )
+        if parallel_quants:
+            max_workers = min(2, len(methods_to_quantize))
+            # Split the thread budget so total threads match the sequential run.
+            per_worker_threads = max(1, n_cpus // max_workers)
+            print(
+                f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into "
+                f"{methods_to_quantize}, {max_workers} at a time. This might take 10 minutes each..."
+            )
+            from concurrent.futures import ThreadPoolExecutor, wait, FIRST_EXCEPTION
+
+            quantized_files = [None] * len(methods_to_quantize)
+            with ThreadPoolExecutor(max_workers = max_workers) as pool:
+                future_to_idx = {
+                    pool.submit(_quantize_one, method, per_worker_threads): i
+                    for i, method in enumerate(methods_to_quantize)
+                }
+                done, pending = wait(future_to_idx, return_when = FIRST_EXCEPTION)
+                # Do not start queued passes after a failure (avoid filling the disk).
+                for fut in pending:
+                    fut.cancel()
+                first_exc = next((f.exception() for f in done if f.exception() is not None), None)
+                if first_exc is not None:
+                    # Remove only outputs this run newly created; a file that pre-dated the
+                    # run (or a canceled pass that never wrote) is left intact, so a rerun
+                    # never deletes a prior artifact. Base kept for retry.
+                    wait(future_to_idx)
+                    for method in methods_to_quantize:
+                        if method in preexisting_outputs:
+                            continue
+                        Path(
+                            os.path.join(gguf_directory, f"{model_name}.{method.upper()}.gguf")
+                        ).unlink(missing_ok = True)
+                    raise first_exc
+                for fut, i in future_to_idx.items():
+                    quantized_files[i] = fut.result()
+        else:
+            quantized_files = []
+            for quant_method in methods_to_quantize:
                 print(
                     f"Unsloth: [2] Converting GGUF {first_conversion_dtype} into {quant_method}. This might take 10 minutes..."
                 )
-                output_location = os.path.join(
-                    gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
-                )
-                try:
-                    if quant_method == "q2_k_l":
-                        quantized_file = _quantize_q2_k_l(
-                            input_gguf = base_gguf,
-                            output_gguf = output_location,
-                            quantizer_location = quantizer_location,
-                            n_threads = n_cpus,
-                            print_output = print_output,
-                            imatrix = imatrix,
-                        )
-                    else:
-                        # Use unsloth-zoo's standard quantization for all other methods. Only pass
-                        # imatrix when set so older unsloth_zoo (no imatrix kwarg) still works for
-                        # plain quants; an imatrix that cannot be applied was rejected above.
-                        quant_kwargs = dict(
-                            input_gguf = base_gguf,
-                            output_gguf = output_location,
-                            quant_type = quant_method,
-                            quantizer_location = quantizer_location,
-                            print_output = print_output,
-                        )
-                        if has_imatrix:
-                            quant_kwargs["imatrix"] = imatrix
-                        quantized_file = quantize_gguf(**quant_kwargs)
-                    all_saved_locations.append(quantized_file)
-                    quants_created = True
-                except Exception as e:
-                    if IS_KAGGLE_ENVIRONMENT:
-                        raise RuntimeError(
-                            f"Unsloth: Quantization failed for {output_location}\n"
-                            "You are in a Kaggle environment, which might be the reason this is failing.\n"
-                            "Kaggle only provides 20GB of disk space in the working directory.\n"
-                            "Merging to 16bit for 7b models use 16GB of space.\n"
-                            "This means using `model.{save_pretrained/push_to_hub}_merged` works, but\n"
-                            "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"
-                            "You can try saving it to the `/tmp` directory for larger disk space.\n"
-                            "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
-                            f"Error: {e}"
-                        )
-                    else:
-                        if IS_WINDOWS:
-                            build_instructions = (
-                                f'cd "{LLAMA_CPP_DEFAULT_DIR}"\n'
-                                f"cmake -S . -B build -DBUILD_SHARED_LIBS=OFF\n"
-                                f"cmake --build build --config Release"
-                            )
-                        else:
-                            build_instructions = (
-                                f'cd "{LLAMA_CPP_DEFAULT_DIR}" && make clean && make all -j'
-                            )
+                quantized_files.append(_quantize_one(quant_method))
 
-                        raise RuntimeError(
-                            f"Unsloth: Quantization failed for {output_location}\n"
-                            "You might have to compile llama.cpp yourself, then run this again.\n"
-                            "You do not need to close this Python program. Run the following commands in a new terminal:\n"
-                            f'git clone --recursive https://github.com/ggerganov/llama.cpp "{LLAMA_CPP_DEFAULT_DIR}"\n'
-                            f"{build_instructions}\n"
-                            "Once that's done, redo the quantization.\n"
-                            f"Error: {e}"
-                        )
+        all_saved_locations.extend(quantized_files)
+        quants_created = len(quantized_files) > 0
         print("Unsloth: Model files cleanup...")
         want_full_precision = first_conversion in quantization_method
         if quants_created:

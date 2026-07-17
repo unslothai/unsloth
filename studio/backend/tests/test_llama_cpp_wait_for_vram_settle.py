@@ -373,6 +373,7 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         n = LlamaCppBackend._kill_orphaned_servers()
     assert n == 1, "only the Studio-owned orphan should be counted"
@@ -384,9 +385,51 @@ def test_kill_orphaned_servers_returns_count():
     with (
         patch.dict(sys.modules, {"psutil": fake_psutil}),
         patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
     ):
         assert LlamaCppBackend._kill_orphaned_servers() == 0
     assert killed == []
+
+
+def test_kill_orphaned_servers_spares_live_parent():
+    """A Studio-owned llama-server whose parent is still running is not an
+    orphan (a live Studio or the user's shell owns it) and must never be
+    killed; only the true orphan (parent gone) is reaped."""
+    import os
+
+    mypid = os.getpid()
+    fake_path = "/tmp/unsloth-test-llama/llama-server"
+    killed: list[int] = []
+
+    class _FakeProc:
+        def __init__(self, pid, name, exe):
+            self.info = {"pid": pid, "name": name, "exe": exe}
+
+        def kill(self):
+            killed.append(self.info["pid"])
+
+    live_parent = _FakeProc(mypid + 1, "llama-server", fake_path)
+    true_orphan = _FakeProc(mypid + 2, "llama-server", fake_path)
+
+    fake_psutil = _types.ModuleType("psutil")
+    fake_psutil.NoSuchProcess = type("NoSuchProcess", (Exception,), {})
+    fake_psutil.AccessDenied = type("AccessDenied", (Exception,), {})
+    fake_psutil.ZombieProcess = type("ZombieProcess", (Exception,), {})
+    fake_psutil.process_iter = lambda attrs = None: [live_parent, true_orphan]
+
+    with (
+        patch.dict(sys.modules, {"psutil": fake_psutil}),
+        patch.dict(os.environ, {"LLAMA_SERVER_PATH": fake_path}),
+        patch.object(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0)),
+        patch.object(
+            LlamaCppBackend,
+            "_pid_parent_is_alive",
+            staticmethod(lambda pid: pid == mypid + 1),
+        ),
+    ):
+        n = LlamaCppBackend._kill_orphaned_servers()
+    assert n == 1, "only the true orphan should be reaped"
+    assert killed == [mypid + 2], "the live-parent server must be spared"
 
 
 def test_startup_reaper_arms_settle_timestamp():

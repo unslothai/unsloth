@@ -393,6 +393,9 @@ def test_start_update_source_build_installs_prebuilt(monkeypatch, tmp_path):
     assert "--llama-tag" in cmd and "latest" in cmd
     assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx110x"
     assert "--simple-policy" not in cmd and "--cpu-fallback" not in cmd
+    # No pin: source-build detection and the unpinned apply share the same
+    # "latest" resolver, so they already agree.
+    assert "--published-release-tag" not in cmd
 
 
 def test_start_update_happy_path(monkeypatch, tmp_path):
@@ -448,6 +451,48 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
+def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
+    # A Vulkan install (marker asset carries 'vulkan') must re-assert
+    # UNSLOTH_FORCE_VULKAN on update, or detect_host on a GPU box re-routes to
+    # CUDA/ROCm and silently replaces the Vulkan build.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(
+        install_dir,
+        "b9493",
+        repo = "ggml-org/llama.cpp",
+        asset = "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+
+    def _on_start(cmd):
+        _write_install(
+            install_dir,
+            "b9518",
+            repo = "ggml-org/llama.cpp",
+            asset = "llama-b9518-bin-ubuntu-vulkan-x64.tar.gz",
+        )
+
+    popen_kwargs: dict = {}
+    _patch_installer_popen(
+        monkeypatch,
+        lines = ["installed\n"],
+        on_start = _on_start,
+        captured_kwargs = popen_kwargs,
+    )
+
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+    assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
+
+
 def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(install_dir, "b9595")
@@ -475,6 +520,57 @@ def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9596-mix-e6f2453"
     assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
+
+
+def _run_start_update_to_completion():
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            return job
+        time.sleep(0.05)
+    return upd.get_update_status()["job"]
+
+
+def test_start_update_pinned_tag_mismatch_fails(monkeypatch, tmp_path):
+    # Installer stays on the pinned repo but produces a different tag -> it
+    # ignored the pin (the silent mismatch this pin exists to prevent). Fail loud.
+    monkeypatch.setattr(sys, "platform", "linux")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906"
+    )
+    _patch_installer_popen(
+        monkeypatch,
+        on_start = lambda cmd: _write_install(install_dir, "b9500", release_tag = "b9500-mix-deadbee"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "error", job
+    assert "b9601-mix-a0e2906" in (job["error"] or "")
+
+
+def test_start_update_pinned_reroute_to_other_repo_ok(monkeypatch, tmp_path):
+    # A Vulkan/Intel host reroutes fork->upstream and drops the pin, installing a
+    # different-repo tag. Legitimate: the pin check must not flag the repo switch.
+    monkeypatch.setattr(sys, "platform", "linux")
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595", repo = "unslothai/llama.cpp")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9601-mix-a0e2906"
+    )
+    _patch_installer_popen(
+        monkeypatch,
+        on_start = lambda cmd: _write_install(install_dir, "b9601", repo = "ggml-org/llama.cpp"),
+    )
+    job = _run_start_update_to_completion()
+    assert job["state"] == "success", job
 
 
 def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
@@ -619,6 +715,33 @@ def test_install_cmd_cuda_marker_minimal_and_backward_compatible(monkeypatch, tm
     assert "--rocm-gfx" not in cmd
     assert "--has-rocm" not in cmd
     assert "--cpu-fallback" not in cmd
+
+
+def test_install_cmd_pins_offered_release_tag(monkeypatch, tmp_path):
+    # Apply must install exactly the release the banner offered. The installer's
+    # own "latest" comes from commit-date-ordered sources, which can lag the
+    # published_at-newest tag detection picked; unpinned, that lag makes Update
+    # reinstall the current build while the banner never clears.
+    monkeypatch.setattr(sys, "platform", "linux")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path, latest = "b9601-mix-a0e2906")
+    # The full release identity is pinned, not the bare upstream base.
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9601-mix-a0e2906"
+
+
+def test_install_cmd_pins_on_windows(monkeypatch, tmp_path):
+    # The darwin exemption must not leak to other platforms.
+    monkeypatch.setattr(sys, "platform", "win32")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path)
+    assert cmd[cmd.index("--published-release-tag") + 1] == "b9518"
+
+
+def test_install_cmd_does_not_pin_on_macos(monkeypatch, tmp_path):
+    # A pinned tag disables the installer's older-release walk-back, which macOS
+    # needs to skip prebuilts built for a newer macOS than the host.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    cmd = _capture_install_cmd(monkeypatch, tmp_path)
+    assert "--published-release-tag" not in cmd
+    assert "--llama-tag" in cmd and "latest" in cmd
 
 
 # --- refusal + maintenance-state coordination ---

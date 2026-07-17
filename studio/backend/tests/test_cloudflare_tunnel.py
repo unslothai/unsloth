@@ -691,13 +691,14 @@ def _argparse_default(source, option):
     return None
 
 
-def test_run_server_cloudflare_default_true():
+def test_run_server_cloudflare_default_off():
     defaults = _func_param_defaults(_RUN_PY.read_text(), "run_server")
-    assert defaults.get("cloudflare") is True
+    assert "cloudflare" in defaults
+    assert defaults["cloudflare"] is None
 
 
-def test_argparse_cloudflare_default_true():
-    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
+def test_argparse_cloudflare_default_off():
+    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is None
 
 
 def test_verify_global_reachability_marks_private_address_unreachable():
@@ -830,6 +831,31 @@ def test_cloudflare_line_states_disabled_when_off(monkeypatch):
     )
     assert "Cloudflare tunnel: OFF" in out
     assert "local network only" in out
+
+
+def test_cloudflare_line_labels_unset_as_default(monkeypatch):
+    # None = off by default (no flag) -> banner says "(default)", not "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = None,
+    )
+    assert "Cloudflare tunnel: OFF (default)" in out
+    assert "--no-cloudflare" not in out
+
+
+def test_cloudflare_line_labels_explicit_no_cloudflare(monkeypatch):
+    # False = explicit --no-cloudflare -> banner says "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF (--no-cloudflare)" in out
 
 
 def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):

@@ -23,7 +23,11 @@ if _BACKEND_DIR not in sys.path:
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import is_mtp_drafter_path
-from hub.utils.gguf_plan import build_gguf_variant_plans, plan_from_expected_files
+from hub.utils.gguf_plan import (
+    build_gguf_variant_plans,
+    plan_from_expected_files,
+    preferred_mtp_sibling,
+)
 from utils.models.model_config import (
     _is_mtp_drafter,
     detect_gguf_model,
@@ -37,6 +41,8 @@ from utils.models.model_config import (
 DRAFTER_CASES = [
     ("mtp-gemma-4-12b-it.gguf", True),
     ("MTP/gemma-4-12b-it-Q8_0-MTP.gguf", True),
+    # New-scheme MTP/ copies carry the mtp- basename prefix too.
+    ("MTP/mtp-gemma-4-E4B-it-BF16.gguf", True),
     ("foo/MTP/bar.gguf", True),
     ("gemma-4-12b-it-Q8_0.gguf", False),
     # Baked-in Qwen MTP repos: the head is inside the main GGUF, the file
@@ -326,3 +332,178 @@ def test_detect_gguf_model_rejects_mtp_subdir_copy(tmp_path):
     assert detect_gguf_model(str(copy)) is None
     # Selecting the MTP dir itself must not surface the copies as models.
     assert detect_gguf_model(str(sub)) is None
+
+
+# ── Root drafter wins over new-scheme MTP/ copies ────────────────────
+# The MTP/ copies were renamed to share the mtp- basename prefix (e.g.
+# MTP/mtp-gemma-4-E4B-it-BF16.gguf). Auto-fetch/load must still resolve the
+# small repo-root drafter, not a sort-first MTP/ copy (uppercase precedes
+# lowercase, so the subdir path would otherwise win).
+
+NEW_SCHEME_SIBLINGS = [
+    _sib("gemma-4-12b-it-Q4_K_M.gguf", 4_000, "main-q4"),
+    _sib("gemma-4-12b-it-Q8_0.gguf", 8_000, "main-q8"),
+    _sib("mtp-gemma-4-12b-it.gguf", 100, "drafter"),
+    _sib("MTP/mtp-gemma-4-12b-it-Q8_0.gguf", 100, "mtp-sub-q8"),
+    _sib("MTP/mtp-gemma-4-12b-it-BF16.gguf", 200, "mtp-sub-bf16"),
+    _sib("mmproj-F16.gguf", 500, "mmproj"),
+]
+
+
+def test_preferred_mtp_sibling_prefers_root_over_new_scheme_copies():
+    picked = preferred_mtp_sibling(NEW_SCHEME_SIBLINGS)
+    assert picked is not None and picked.rfilename == "mtp-gemma-4-12b-it.gguf"
+
+
+def test_variant_plans_new_scheme_uses_root_drafter():
+    plans = build_gguf_variant_plans(NEW_SCHEME_SIBLINGS)
+    assert set(plans) == {"q4_k_m", "q8_0"}
+    for plan in plans.values():
+        assert "mtp-gemma-4-12b-it.gguf" in plan.target_filenames
+        assert not any("MTP/" in name for name in plan.target_filenames)
+        assert "drafter" in plan.companion_hashes
+    # Download size = main + mmproj + root drafter (not the 200-byte BF16 copy).
+    assert plans["q4_k_m"].download_size_bytes == 4_600
+
+
+def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
+    # _pick_mtp is nested; capture it via the companion-download seam.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)  # online: skip reuse probe
+    captured = {}
+
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+    ):
+        captured["pick"] = pick
+        return None
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+
+    repo_files = [
+        "MTP/mtp-gemma-4-E4B-it-BF16.gguf",
+        "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf",
+        "MTP/mtp-gemma-4-E4B-it-Q8_0.gguf",
+        "gemma-4-E4B-it-qat-UD-Q2_K_XL.gguf",
+        "mmproj-F16.gguf",
+        "mtp-gemma-4-E4B-it.gguf",
+    ]
+    assert captured["pick"](repo_files) == "mtp-gemma-4-E4B-it.gguf"
+
+
+# ── Reuse an on-disk drafter offline; fetch fresh online ─────────────
+
+
+def _seed_snapshot(tmp_path, names):
+    snap = tmp_path / "snap"
+    for rel in names:
+        f = snap / rel
+        f.parent.mkdir(parents = True, exist_ok = True)
+        f.write_bytes(b"x")
+    return snap
+
+
+def test_download_mtp_reuses_cached_root_drafter_offline(tmp_path, monkeypatch):
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    snap = _seed_snapshot(
+        tmp_path,
+        [
+            "gemma-4-E4B-it-qat-UD-Q2_K_XL.gguf",
+            "mtp-gemma-4-E4B-it.gguf",
+            "MTP/mtp-gemma-4-E4B-it-BF16.gguf",
+            "mmproj-F16.gguf",
+        ],
+    )
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
+
+    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
+
+
+def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, monkeypatch):
+    # Pre-fix build may have fetched only the MTP/ copy; reuse it offline.
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    snap = _seed_snapshot(
+        tmp_path,
+        [
+            "gemma-4-E4B-it-qat-UD-Q2_K_XL.gguf",
+            "MTP/mtp-gemma-4-E4B-it-BF16.gguf",
+        ],
+    )
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
+
+    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it-BF16.gguf"
+
+
+def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatch):
+    # A newer partial snapshot holds only the MTP/ copy; an older one has the
+    # root. Must still return the small root, not the large subdir copy.
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    snap_partial = _seed_snapshot(tmp_path / "new", ["MTP/mtp-gemma-4-E4B-it-BF16.gguf"])
+    snap_full = _seed_snapshot(tmp_path / "old", ["mtp-gemma-4-E4B-it.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap_partial, snap_full])
+
+    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it.gguf"
+
+
+def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch):
+    # Two snapshots both hold a root drafter; newest-first order must win so a
+    # fresh main GGUF is not paired with a stale drafter revision.
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    newest = _seed_snapshot(tmp_path / "newest", ["mtp-gemma-4-E4B-it.gguf"])
+    oldest = _seed_snapshot(tmp_path / "oldest", ["mtp-gemma-4-E4B-it.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [newest, oldest])
+
+    got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
+    assert got is not None and Path(got).parent.parent.name == "newest"
+
+
+def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
+    # Online, do not reuse a cached copy: go to the download path so a changed
+    # drafter is refetched (hf_hub_download checks the current revision).
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    snap = _seed_snapshot(tmp_path, ["mtp-gemma-4-E4B-it.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
+
+    reached = {}
+
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+    ):
+        reached["hit"] = True
+        return None
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    assert b._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF") is None
+    assert reached.get("hit") is True
