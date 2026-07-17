@@ -20,8 +20,14 @@ class BearerTokenMiddleware:
     """Require an exact bearer token when Studio MCP is exposed remotely."""
 
     def __init__(self, app: Any, token: str) -> None:
+        if not token or not token.strip():
+            raise ValueError("Studio MCP bearer token must be a non-empty value")
         self.app = app
-        self.token = token
+        # Keep the expected token as bytes and compare against the raw header
+        # bytes: a client can send any byte value (including non-ASCII), and
+        # str-based hmac.compare_digest raises on non-ASCII input, which would
+        # surface as a 500 instead of a clean 401.
+        self.expected = token.encode("utf-8")
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         scope_type = scope.get("type")
@@ -30,9 +36,9 @@ class BearerTokenMiddleware:
             return
 
         headers = dict(scope.get("headers", []))
-        raw_auth = headers.get(b"authorization", b"").decode("latin-1")
-        scheme, _, supplied = raw_auth.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(supplied, self.token):
+        raw_auth = headers.get(b"authorization", b"")
+        scheme, _, supplied = raw_auth.partition(b" ")
+        if scheme.lower() != b"bearer" or not hmac.compare_digest(supplied, self.expected):
             await _send_unauthorized(send, scope_type)
             return
 
@@ -64,6 +70,15 @@ def _dump(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode = "json")
     return value
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    """Clamp an MCP-supplied integer into an inclusive range.
+
+    MCP tools call the Studio route functions directly, which skips FastAPI's
+    Query(ge=, le=) validation, so we re-apply the same bounds here.
+    """
+    return max(low, min(value, high))
 
 
 def create_studio_mcp() -> FastMCP:
@@ -121,7 +136,10 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_training as start
 
         request = TrainingStartRequest.model_validate(config)
-        return _dump(await start(request, current_subject = "mcp"))
+        # Pass via_api_key explicitly: a direct call would otherwise leave it as
+        # the FastAPI Depends default object. MCP drives a local Studio like the
+        # UI session, so it coexists with and frees VRAM as the UI does.
+        return _dump(await start(request, current_subject = "mcp", via_api_key = False))
 
     @mcp.tool
     async def stop_training(save: bool = True) -> dict[str, Any]:
@@ -133,6 +151,11 @@ def create_studio_mcp() -> FastMCP:
     async def list_training_runs(limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """List completed and stopped training runs, newest first."""
         from routes.training_history import list_training_runs as list_runs
+
+        # Direct calls skip FastAPI Query validation, so clamp to the same bounds
+        # the HTTP route enforces (a negative SQLite LIMIT means "no limit").
+        limit = _clamp(limit, 1, 200)
+        offset = max(0, offset)
         return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
 
     @mcp.tool
@@ -157,6 +180,11 @@ def create_studio_mcp() -> FastMCP:
     ) -> dict[str, Any]:
         """Read a bounded page of generated Data Recipe rows."""
         from routes.data_recipe.jobs import job_dataset
+
+        # Direct calls skip FastAPI Query validation, so clamp to the same bounds
+        # the HTTP route enforces.
+        limit = _clamp(limit, 1, 500)
+        offset = max(0, offset)
         return _dump(job_dataset(job_id, limit = limit, offset = offset))
 
     @mcp.tool
@@ -165,8 +193,17 @@ def create_studio_mcp() -> FastMCP:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        approved_remote_code_fingerprint: str | None = None,
+        hf_token: str | None = None,
     ) -> dict[str, Any]:
-        """Load a checkpoint into the export backend after freeing conflicting GPU work."""
+        """Load a checkpoint into the export backend.
+
+        Export runs in its own subprocess and coexists with training and
+        inference; it does not unload them, so a load can fail with a clear
+        out-of-memory error if the GPU is already full. Pass hf_token to load a
+        gated checkpoint, and approved_remote_code_fingerprint to retry a
+        trust_remote_code load that was blocked pending review.
+        """
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
@@ -175,17 +212,28 @@ def create_studio_mcp() -> FastMCP:
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
+            approved_remote_code_fingerprint = approved_remote_code_fingerprint,
+            hf_token = hf_token,
         )
         return _dump(await load(request, current_subject = "mcp"))
 
     @mcp.tool
     async def export_gguf(
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method: str | list[str] = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: str | None = None,
+        hf_token: str | None = None,
+        imatrix: bool = False,
+        imatrix_path: str | None = None,
     ) -> dict[str, Any]:
-        """Export the loaded model to GGUF using Studio's existing path validation."""
+        """Export the loaded model to GGUF using Studio's existing path validation.
+
+        quantization_method may be a single method or a list to produce several
+        GGUFs from one load. Pass hf_token when push_to_hub is set (the backend
+        rejects a Hub upload without it). Set imatrix (or imatrix_path) for the
+        IQ low-bit quants that require an importance matrix.
+        """
         from models import ExportGGUFRequest
         from routes.export import export_gguf as export
 
@@ -194,6 +242,9 @@ def create_studio_mcp() -> FastMCP:
             quantization_method = quantization_method,
             push_to_hub = push_to_hub,
             repo_id = repo_id,
+            hf_token = hf_token,
+            imatrix = imatrix,
+            imatrix_path = imatrix_path,
         )
         return _dump(await export(request, current_subject = "mcp"))
 
