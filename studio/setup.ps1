@@ -491,6 +491,67 @@ function Test-PipRocmFamilyLeaf {
     return ($Leaf -like 'gfx*') -or ($Leaf -match '^rocm[0-9]+(\.[0-9]+)?$')
 }
 
+# Stale-venv ROCm comparison for a pinned gfx*/rocm* index. Returns @{ Expected; Installed }
+# so the caller rebuilds when they differ. Mirrors _rocm_pin_family_mismatch (same rocmX.Y
+# / gfx cases). An untagged (no +rocm) wheel never satisfies a ROCm pin -> stale.
+function Get-RocmPinStaleTags {
+    param([string]$PinLeaf, [string]$TorchVersion)
+    $_pinRocm = [regex]::Match($PinLeaf, '^rocm(\d+)\.(\d+)')
+    $_pinVer = if ($_pinRocm.Success) { "$($_pinRocm.Groups[1].Value).$($_pinRocm.Groups[2].Value)" } else { $null }
+    # Installed rocm version and whether the wheel is a per-arch (three-part) build.
+    $_instRocm = [regex]::Match($TorchVersion, '\+rocm(\d+)\.(\d+)')
+    $_instVer = if ($_instRocm.Success) { "$($_instRocm.Groups[1].Value).$($_instRocm.Groups[2].Value)" } else { $null }
+    $_instPerArch = [regex]::IsMatch($TorchVersion, '\+rocm\d+\.\d+\.\d+')
+    # A ROCm build MUST carry a +rocm tag; an untagged wheel can't satisfy any ROCm pin.
+    $_instHasRocm = [regex]::IsMatch($TorchVersion, '\+rocm')
+    $_instRel = [regex]::Match($TorchVersion, '^(\d+)\.(\d+)')
+    $_instIs211 = $false
+    if ($_instRel.Success) {
+        $_instIs211 = ([int]$_instRel.Groups[1].Value -gt 2) -or ([int]$_instRel.Groups[1].Value -eq 2 -and [int]$_instRel.Groups[2].Value -ge 11)
+    }
+
+    if ($PinLeaf -like 'gfx*') {
+        if (Test-RocmGfx211Leaf $PinLeaf) {
+            # Expect the AMD per-arch (three-part) 2.11 wheel: satisfied only when BOTH
+            # a 2.11 release AND a three-part rocm tag are installed.
+            $installed = if ($_instIs211 -and $_instPerArch) { "rocm-perarch(torch>=2.11)" } else { "rocm-generic-or-old" }
+            return @{ Expected = "rocm-perarch(torch>=2.11)"; Installed = $installed }
+        }
+        # Non-2.11 gfx leaf (<2.11 spec): stale on an untagged wheel or a 2.11+ build.
+        $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+        return @{
+            Expected  = "rocm(torch<2.11)"
+            Installed = $installed
+        }
+    }
+
+    # rocmX.Y pin.
+    if ($_pinVer -and $_instVer) {
+        # Both readable: exact compare. When they match AND the pin is KNOWN-2.11, the
+        # installed release must also be 2.11 (a +rocm7.2 wheel drifted to 2.12 shares the
+        # tag but violates the spec), so fold the release into the tag. Mirrors _rocm_pin_family_mismatch.
+        $_pinKnown211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
+        $_instOn211 = $_instRel.Success -and [int]$_instRel.Groups[1].Value -eq 2 -and [int]$_instRel.Groups[2].Value -eq 11
+        if ($_pinKnown211 -and -not $_instOn211) {
+            return @{ Expected = "rocm$_pinVer(torch2.11)"; Installed = "rocm$_instVer(torch-off-2.11)" }
+        }
+        return @{ Expected = "rocm$_pinVer"; Installed = "rocm$_instVer" }
+    }
+    $_pinNeeds211 = $false
+    if ($_pinRocm.Success) {
+        # Only KNOWN-2.11 rocm (rocm7.2) is on the 2.11 line (no speculative floor).
+        # Matches _ROCM_KNOWN_TORCH211_VERSIONS.
+        $_pinNeeds211 = Test-RocmKnown211Version -Major ([int]$_pinRocm.Groups[1].Value) -Minor ([int]$_pinRocm.Groups[2].Value)
+    }
+    # Fallback (installed rocm version unreadable): compare on the 2.11 line; an untagged
+    # wheel never satisfies a rocmX.Y pin -> stale.
+    $installed = if (-not $_instHasRocm) { "not-rocm" } elseif ($_instIs211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+    return @{
+        Expected  = if ($_pinNeeds211) { "rocm(torch>=2.11)" } else { "rocm(torch<2.11)" }
+        Installed = $installed
+    }
+}
+
 # VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
 # (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
@@ -2638,9 +2699,13 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             # Digit-gated like the install selection: a custom rocm-* leaf (rocm-current /
             # rocm-rel-7.2.1) is NOT a ROCm family and must not be stale-compared.
             if (Test-PipRocmFamilyLeaf $_pinLeaf) {
-                # A pinned ROCm/gfx leaf expects a +rocm wheel; finer-grained staleness
-                # (rocm version / per-arch switches) is a follow-up.
-                $expectedTorchTag = "rocm"
+                # Don't collapse a pinned ROCm/gfx leaf to a generic "rocm" (would mask a
+                # family change, rocm6.4 -> gfx1151). Get-RocmPinStaleTags uses the SAME 2.11
+                # allowlist as the install path, so a gfx110X-all/gfx90a/gfx908 pin on a
+                # valid <2.11 wheel is NOT stale.
+                $_rocmTags = Get-RocmPinStaleTags -PinLeaf $_pinLeaf -TorchVersion $torchVer
+                $expectedTorchTag  = $_rocmTags.Expected
+                $installedTorchTag = $_rocmTags.Installed
             } elseif ((Test-CudaFamilyLeaf $_pinLeaf) -or $_pinLeaf -eq 'cpu') {
                 # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds;
                 # /custom and /current fall through to the unknown-index branch below.

@@ -1162,6 +1162,56 @@ def _explicit_rocm_torch_index_url() -> "str | None":
     return url if _is_pip_rocm_family_leaf(_torch_index_leaf(url)) else None
 
 
+def _rocm_pin_family_mismatch(pin_url: str, installed_ver: str) -> bool:
+    """True when an explicit ROCm pin names a different ROCm family than the installed
+    ROCm torch, so the pin needs a reinstall. Mirrors setup.ps1's stale-venv comparison;
+    same three pin-leaf cases as _ensure_rocm_torch. A same-family pin is NOT a mismatch.
+    """
+    leaf = _torch_index_leaf(pin_url)
+    # Pinned ROCm version (rocmX.Y leaf).
+    _pin_rocm = re.match(r"^rocm(\d+)\.(\d+)", leaf)
+    _pin_ver = (int(_pin_rocm.group(1)), int(_pin_rocm.group(2))) if _pin_rocm else None
+    # Installed +rocmX.Y version; a THREE-part +rocmA.B.C tag is the AMD per-arch
+    # (repo.amd.com/gfx*) signature vs a two-part pytorch.org wheel.
+    _inst_rocm = re.search(r"\+rocm(\d+)\.(\d+)", installed_ver)
+    _inst_ver = (int(_inst_rocm.group(1)), int(_inst_rocm.group(2))) if _inst_rocm else None
+    _inst_is_perarch = re.search(r"\+rocm\d+\.\d+\.\d+", installed_ver) is not None
+    # A ROCm build MUST carry a +rocm tag; an untagged wheel never satisfies a ROCm pin.
+    _inst_has_rocm = re.search(r"\+rocm", installed_ver) is not None
+    # Installed torch RELEASE (before "+") is 2.11+.
+    _inst_rel = re.match(r"^(\d+)\.(\d+)", installed_ver)
+    _inst_is_211 = (
+        (int(_inst_rel.group(1)), int(_inst_rel.group(2))) >= (2, 11) if _inst_rel else False
+    )
+
+    if leaf.startswith("gfx"):
+        # 2.11-allowlist arches expect the AMD per-arch wheel (three-part +rocmA.B.C,
+        # torch 2.11+); a generic or pre-2.11 build is a mismatch.
+        if leaf in _ROCM_GFX_TORCH211_LEAVES:
+            return not (_inst_is_211 and _inst_is_perarch)
+        # Non-2.11 gfx leaf (<2.11 specs): mismatch on an untagged wheel or torch 2.11+.
+        return (not _inst_has_rocm) or _inst_is_211
+
+    # rocmX.Y pin. Only KNOWN-2.11 rocm is the 2.11 line (no speculative floor).
+    _pin_is_211 = _pin_ver in _ROCM_KNOWN_TORCH211_VERSIONS if _pin_ver is not None else False
+    if _pin_ver is not None and _inst_ver is not None:
+        # Both readable: exact (major, minor) compare (rocm7.2 pin over +rocm7.13.x ->
+        # mismatch, reinstall the pinned wheel).
+        if _pin_ver != _inst_ver:
+            return True
+        # Same family: a KNOWN-2.11 pin whose release drifted off 2.11 (2.12+rocm7.2)
+        # violates the spec -> reinstall to floor (exact compare, not >=2.11).
+        if _pin_is_211 and _inst_rel is not None:
+            if (int(_inst_rel.group(1)), int(_inst_rel.group(2))) != (2, 11):
+                return True
+        return False
+    # rocm pin, unreadable installed version: compare on the 2.11 line, but an untagged
+    # wheel never satisfies a rocmX.Y pin -> mismatch.
+    if not _inst_has_rocm:
+        return True
+    return _pin_is_211 != _inst_is_211
+
+
 def _explicit_cpu_torch_index_url() -> "str | None":
     """The pinned wheel index URL when it names the CPU family (leaf == cpu), else None.
 
@@ -1579,9 +1629,9 @@ def _ensure_rocm_torch() -> None:
         # is fine (sentinel keeps ver comparisons defined).
         ver = (0, 0)
 
-    # Probe whether torch already links against HIP (ROCm already working).
-    # Do NOT skip for CUDA-only builds: they are unusable on AMD-only hosts
-    # (the NVIDIA check above already handled mixed AMD+NVIDIA setups).
+    # Probe whether torch links against HIP, capturing the installed ROCm tag for
+    # pin-mismatch detection. Emit ONE "<hip_marker>|<version>" line: marker before "|"
+    # (HIP version, "rocm" sentinel, or empty for CPU/CUDA), wheel version after.
     try:
         probe = subprocess.run(
             [
@@ -1591,10 +1641,10 @@ def _ensure_rocm_torch() -> None:
                     "import torch; "
                     "hip=getattr(torch.version,'hip','') or ''; "
                     "ver=getattr(torch,'__version__','').lower(); "
-                    # Print the HIP version when present (back-compat), else a
-                    # "rocm" sentinel when only torch.__version__ flags ROCm
-                    # (AMD SDK / Radeon wheels). Empty string = CPU/CUDA.
-                    "print(hip if hip else ('rocm' if 'rocm' in ver else ''))"
+                    # HIP version if present, else a "rocm" sentinel when only the
+                    # version string flags ROCm; empty marker = CPU/CUDA torch.
+                    "marker=hip if hip else ('rocm' if 'rocm' in ver else ''); "
+                    "print(marker + '|' + ver)"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1603,11 +1653,29 @@ def _ensure_rocm_torch() -> None:
         )
     except (OSError, subprocess.TimeoutExpired):
         probe = None
-    has_hip_torch = (
-        probe is not None and probe.returncode == 0 and probe.stdout.decode().strip() != ""
+    # Last non-empty line, split on the FIRST "|" so the empty HIP field is preserved.
+    _marker_lines = (
+        [ln.strip() for ln in probe.stdout.decode(errors = "replace").splitlines() if ln.strip()]
+        if (probe is not None and probe.returncode == 0)
+        else []
+    )
+    _hip_marker, _sep, _installed_torch_ver = (
+        _marker_lines[-1].partition("|") if _marker_lines else ("", "", "")
+    )
+    # A "|"-delimited line is required; without it treat HIP as absent -> reinstall.
+    has_hip_torch = bool(_sep) and _hip_marker != ""
+
+    # An explicit ROCm pin whose family differs from the installed torch must reinstall,
+    # or a rocm7.2/gfx* pin over an older +rocm6.4/7.1 build never applies. Version-tag
+    # heuristic only: a same-tag per-arch switch (gfx1151 -> gfx120X-all, both
+    # +rocm7.13.0) is not detectable from the wheel and stays a documented follow-up.
+    _rocm_pin_mismatch = (
+        _rocm_pin_family_mismatch(_rocm_pin, _installed_torch_ver)
+        if (has_hip_torch and _rocm_pin is not None)
+        else False
     )
 
-    rocm_torch_ready = has_hip_torch
+    rocm_torch_ready = has_hip_torch and not _rocm_pin_mismatch
 
     # Strix Halo / Point (gfx1151 / gfx1150) segfault under ROCm 7.1 in torch._grouped_mm;
     # AMD's per-gfx repo ships 2.11.0+rocm7.13.0 with the fix, so route those hosts there
@@ -1674,8 +1742,9 @@ def _ensure_rocm_torch() -> None:
             constrain = False,
         )
         rocm_torch_ready = True
-    elif not has_hip_torch:
-        # Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
+    elif not has_hip_torch or _rocm_pin_mismatch:
+        # Reinstall when torch is not ROCm yet, OR a ROCm build's family differs from an
+        # explicit pin. Honour a ROCm pin verbatim; else pick the newest wheel tag <= host.
         _override_idx = _explicit_rocm_torch_index_url()
         if _override_idx is not None:
             index_url = _override_idx
