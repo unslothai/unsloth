@@ -24,7 +24,13 @@ from typer.testing import CliRunner
 import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
-MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
+MODEL = {
+    "id": "unsloth/gemma-4-26B-A4B-it-GGUF",
+    "context_length": 131072,
+    "loaded": True,
+    "source": "huggingface",
+    "hf_repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+}
 
 
 # --no-launch prints shell setup as POSIX (export/unset) on Unix/WSL and
@@ -524,17 +530,19 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
-def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
+def test_connect_codex_attaches_loaded_hub_case_variant(fake_studio, tmp_path):
+    requested = "unsloth/gemma-4-26b-a4b-it-gguf"
     result = CliRunner().invoke(
         start.start_app,
         [
             "codex",
             "--no-launch",
             "--model",
-            "unsloth/gemma-4-26b-a4b-it-gguf",
+            requested,
         ],
     )
     assert result.exit_code == 0, result.output
+    assert not any(url.endswith("/api/inference/load") for _, url, _ in fake_studio)
     home = tmp_path / "agents" / "codex"
     profile = _parse_toml((home / "unsloth_api.config.toml").read_text())
     assert profile["model"] == MODEL["id"]
@@ -619,8 +627,44 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
+def test_resolve_model_attaches_to_annotated_loaded_hub_case_variant_without_reload(monkeypatch):
+    # New Studio versions mark live HF GGUF loads explicitly, so the CLI can
+    # preserve a case-only Hub spelling difference without calling /load.
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": True,
+                        "source": "huggingface",
+                        "hf_repo": "unsloth/Gemma-4-GGUF",
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
 def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
-    # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
+    # The mirror case: an exact loaded entry (loaded == True) attaches with
     # no /api/inference/load call.
     calls = []
 
@@ -641,16 +685,16 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
     monkeypatch.setattr(start, "_http_json", http_json)
 
-    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/Gemma-4-GGUF")
 
     assert entry["id"] == "unsloth/Gemma-4-GGUF"
     assert not any(u.endswith("/api/inference/load") for _, u in calls)
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
-    # Against a remote Studio the local existence probe cannot see server-side paths,
-    # so a case-variant loaded id must NOT attach without a load: it could be a distinct
-    # server-side path on a case-sensitive host. The load endpoint resolves the request.
+    # Against a remote Studio a case-variant loaded id must NOT attach without a load:
+    # it could be a distinct server-side path on a case-sensitive host. The load
+    # endpoint resolves the request.
     calls = []
     state = {"loaded": False}
 
@@ -665,7 +709,15 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
         calls.append((method, url))
         if url.endswith("/v1/models"):
             return {
-                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": True,
+                        "source": "huggingface",
+                        "hf_repo": "unsloth/Gemma-4-GGUF",
+                        "context_length": 131072,
+                    }
+                ]
             }
         if url.endswith("/api/inference/load"):
             state["loaded"] = True
@@ -682,27 +734,189 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
     assert any(u.endswith("/api/inference/load") for _, u in calls)
 
 
-def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
+def test_resolve_model_loopback_does_not_casefold_weight_file_paths(monkeypatch):
+    # Even on loopback, the CLI cwd may differ from the Studio server cwd. A
+    # two-segment server-relative weight file path is not a hub id, so differently
+    # cased paths must not attach without asking the server to load the request.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "models/foo.gguf" if state["loaded"] else "Models/Foo.gguf"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "models/foo.gguf"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "models/foo.gguf")
+
+    assert entry["id"] == "models/foo.gguf"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
+def test_resolve_model_loopback_does_not_casefold_model_directory_paths(monkeypatch):
+    # Even without a weight-file suffix, Models/Foo can be a server-relative
+    # directory under Studio's ./models root. Do not casefold it to models/foo;
+    # ask the server to resolve/load the requested spelling instead.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "models/foo" if state["loaded"] else "Models/Foo"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "models/foo"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "models/foo")
+
+    assert entry["id"] == "models/foo"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
+def test_resolve_model_loopback_does_not_casefold_visible_local_paths(tmp_path, monkeypatch):
+    # Preserve the old local-path behavior for two-segment paths the CLI can see.
+    # When Studio and the CLI share a cwd, Outputs/Run1 and outputs/run1 are
+    # distinct local directories on case-sensitive filesystems, not Hub IDs.
+    (tmp_path / "Outputs" / "Run1").mkdir(parents = True)
+    (tmp_path / "outputs" / "run1").mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "outputs/run1" if state["loaded"] else "Outputs/Run1"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "outputs/run1"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "outputs/run1")
+
+    assert entry["id"] == "outputs/run1"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
+def test_resolve_model_loopback_does_not_casefold_ambiguous_two_segment_paths(monkeypatch):
+    # If Studio runs from a different cwd, the CLI cannot see whether Runs/Foo
+    # exists there. Treat every one-slash case variant as ambiguous and let the
+    # server resolve the requested spelling through /api/inference/load.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            model_id = "runs/foo" if state["loaded"] else "Runs/Foo"
+            return {"data": [{"id": model_id, "loaded": True, "context_length": 131072}]}
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "runs/foo"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "runs/foo")
+
+    assert entry["id"] == "runs/foo"
+    assert any(u.endswith("/api/inference/load") for _, u, _ in calls)
+
+
+def test_model_id_matching_does_not_casefold_local_paths(tmp_path, monkeypatch):
     existing_local = tmp_path / "Org" / "Foo"
     existing_local.mkdir(parents = True)
 
-    assert start._model_id_matches("Org/Foo", "org/foo")
+    # Bare /v1/models case variants never attach directly: any one-slash id
+    # can also be a server-relative local path in Studio's cwd. Only a live
+    # loopback entry that Studio explicitly marks as a HF GGUF source may
+    # casefold-attach.
+    assert not start._model_id_matches("Org/Foo", "org/foo")
+    assert start._model_id_matches("Org/Foo", "Org/Foo")
     assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
     assert not start._model_id_matches("./Models/Foo", "./models/foo")
     assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
-    # A server-side relative path (extra path segments) is not a hub id even when it
-    # does not exist on the CLI host, so it must not casefold-match a differently
-    # cased path on a case-sensitive server filesystem.
-    assert not start._is_hub_model_id("models/Llama/Foo.gguf")
-    assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
-    # A genuine two-segment hub id still matches case-insensitively.
-    assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
-    assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
-    # Casefolding is gated to loopback studios (allow_casefold). With it disabled (a
-    # remote studio, where a two-segment string could be a server-side path), even a
-    # genuine hub-id case variant must not match, so the load endpoint resolves it.
-    assert not start._model_id_matches(
-        "unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf", allow_casefold = False
+
+    assert not start._model_entry_matches({"id": "Models/Foo"}, "models/foo", allow_casefold = True)
+    assert not start._model_entry_matches({"id": "Runs/Foo"}, "runs/foo", allow_casefold = True)
+
+    visible_local = tmp_path / "Outputs" / "Run1"
+    visible_local.mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    assert not start._model_entry_matches(
+        {"id": "Outputs/Run1"}, "outputs/run1", allow_casefold = True
+    )
+
+    assert not start._model_entry_matches(
+        {"id": "Models/Foo.gguf"}, "models/foo.gguf", allow_casefold = True
+    )
+    assert not start._model_entry_matches(
+        {"id": "models/Llama/Foo.gguf"}, "models/llama/foo.gguf", allow_casefold = True
+    )
+    assert not start._model_entry_matches(
+        {"id": "unsloth/Gemma-3-4b-it-GGUF"},
+        "unsloth/gemma-3-4b-it-gguf",
+        allow_casefold = True,
+    )
+    assert start._model_entry_matches(
+        {
+            "id": "unsloth/Gemma-3-4b-it-GGUF",
+            "source": "huggingface",
+            "hf_repo": "unsloth/Gemma-3-4b-it-GGUF",
+        },
+        "unsloth/gemma-3-4b-it-gguf",
+        allow_casefold = True,
+    )
+    assert not start._model_entry_matches(
+        {
+            "id": "unsloth/Gemma-3-4b-it-GGUF",
+            "source": "huggingface",
+            "hf_repo": "unsloth/Gemma-3-4b-it-GGUF",
+        },
+        "unsloth/gemma-3-4b-it-gguf",
+        allow_casefold = False,
     )
     assert start._model_id_matches("unsloth/Foo", "unsloth/Foo", allow_casefold = False)
 

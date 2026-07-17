@@ -649,57 +649,44 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
-_HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
-def _is_hub_model_id(value: object) -> bool:
-    if not isinstance(value, str):
-        return False
-    text = value.strip()
-    if "\\" in text:
-        return False
-    if text.startswith(("/", "./", "../", "~")):
-        return False
-    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
-        return False
-    # A hub id is exactly "namespace/name" over a restricted charset. Anything with
-    # extra path segments (e.g. a server-side relative path such as
-    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
-    # casefold-matched against a differently cased path on a case-sensitive
-    # filesystem. This is host independent, unlike the existence probe below which
-    # cannot see a path that only exists on the server.
-    parts = text.split("/")
-    if len(parts) != 2:
-        return False
-    if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
-        return False
-    try:
-        if Path(os.path.expanduser(text)).exists():
-            return False
-    except OSError:
-        return False
-    return True
-
-
 def _model_id_matches(
     actual: object,
     requested: object,
     *,
-    allow_casefold: bool = True,
+    allow_casefold: bool = False,
 ) -> bool:
     if actual == requested:
         return True
-    # Case-insensitive matching is only safe when the local existence probe in
-    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
-    # Against a remote Studio a two-segment string is indistinguishable from a
-    # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
-    # could attach to the wrong model on a case-sensitive server; defer to an exact
-    # match there and let the load endpoint resolve the requested path.
-    if not allow_casefold:
+    if not allow_casefold or not isinstance(actual, str) or not isinstance(requested, str):
         return False
-    if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
+    return actual.casefold() == requested.casefold()
+
+
+def _model_entry_allows_casefold(model: object) -> bool:
+    if not isinstance(model, dict):
         return False
-    return str(actual).casefold() == str(requested).casefold()
+    # Only trust the Studio-owned source marker added for live HF GGUF loads. A
+    # bare one-slash id in /v1/models remains ambiguous: it may be a
+    # server-relative local path in Studio's cwd, which the CLI cannot probe.
+    return model.get("source") == "huggingface" and isinstance(model.get("hf_repo"), str)
+
+
+def _model_entry_matches(
+    model: object,
+    requested: object,
+    *,
+    allow_casefold: bool = False,
+) -> bool:
+    if not isinstance(model, dict):
+        return False
+    actual = model.get("id")
+    if _model_id_matches(actual, requested):
+        return True
+    if not allow_casefold or not _model_entry_allows_casefold(model):
+        return False
+    return _model_id_matches(actual, requested, allow_casefold = True) or _model_id_matches(
+        model.get("hf_repo"), requested, allow_casefold = True
+    )
 
 
 def _resolve_model(
@@ -709,8 +696,10 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
-    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
-    # local existence probe can actually reject a server-side path; see the note there.
+    # Loopback Studio annotates live HF GGUF entries with source="huggingface"
+    # and hf_repo. Only those annotated entries may casefold-attach; all bare
+    # one-slash ids still fall through to /api/inference/load so Studio resolves
+    # possible local paths from its own cwd.
     allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
@@ -731,7 +720,7 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                if _model_entry_matches(m, requested, allow_casefold = allow_casefold)
                 and m.get("loaded") is not False
             ),
             None,
@@ -774,9 +763,7 @@ def _resolve_model(
             (
                 m
                 for m in models
-                if any(
-                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
-                )
+                if any(_model_entry_matches(m, w, allow_casefold = allow_casefold) for w in wanted)
             ),
             None,
         )

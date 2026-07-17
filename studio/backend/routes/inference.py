@@ -9519,6 +9519,7 @@ def _openai_model_objects() -> list[dict]:
         # Advertise the repo id an auto-switch load recorded, not the concrete
         # on-disk load path, so /v1/models never leaks a host path or lists a
         # model twice (path plus repo id).
+        hf_repo = getattr(llama_backend, "hf_repo", None)
         entry = {
             # Advertised repo id after an auto-switch load, else a clean public id,
             # never the absolute .gguf path (which leaks the host filesystem layout).
@@ -9526,7 +9527,13 @@ def _openai_model_objects() -> list[dict]:
             "object": "model",
             "created": _created,
             "owned_by": _OWNED_BY,
+            # Let trusted local clients distinguish live HF GGUF ids from path-like
+            # local ids. A one-slash id alone is ambiguous (could be ./Runs/Foo),
+            # so clients must not casefold-match without this marker.
+            "source": "huggingface" if hf_repo else "local",
         }
+        if hf_repo:
+            entry["hf_repo"] = hf_repo
         _ctx = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if _ctx is not None:
             entry["context_length"] = _ctx
