@@ -273,3 +273,26 @@ def test_text_only_vision_fallback_dedupes_projector_off_reload():
         )
         is True
     )
+
+
+def test_text_only_vision_extra_dedupes_effective_projector_off_reload():
+    backend = _loaded_backend(
+        _is_vision = False,
+        _load_mmproj = False,
+        _extra_args = ["--no-mmproj"],
+    )
+    assert (
+        backend._already_in_target_state(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = ["--no-mmproj"],
+            is_vision = True,
+            load_mmproj = True,
+        )
+        is True
+    )

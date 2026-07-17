@@ -998,6 +998,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1035,6 +1036,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -3119,8 +3121,6 @@ def _request_matches_loaded_settings(
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
         return False
-    if bool(request.load_mmproj) != bool(llama_backend.load_mmproj):
-        return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
     ):
@@ -3138,6 +3138,11 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
         )
     )
+    requested_load_mmproj = bool(request.load_mmproj)
+    if requested_load_mmproj and not llama_backend.load_mmproj:
+        requested_load_mmproj = not extra_args_disable_mmproj(effective_extra)
+    if requested_load_mmproj != bool(llama_backend.load_mmproj):
+        return False
     if not _tensor_parallel_matches_loaded(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
@@ -3524,11 +3529,15 @@ async def _maybe_auto_switch_model(
                 or getattr(get_inference_backend(), "active_model_name", None)
             ):
                 return
-            if len(last) == 3:
+            if len(last) >= 4:
+                target_id, variant, override_id, load_mmproj = last[:4]
+            elif len(last) == 3:
                 target_id, variant, override_id = last
+                load_mmproj = True
             else:  # pre-3-tuple stash: fall back to the path as the override key
                 target_id, variant = last
                 override_id = target_id
+                load_mmproj = True
         else:
             # load_path is a concrete local path (never the bare repo id), so /load
             # takes the local branch and cannot trigger a download. override_id is the
@@ -3638,6 +3647,8 @@ async def _maybe_auto_switch_model(
                         # Apply this model's saved launch flags so the swap honors the config.
                         override = get_model_override(override_id)
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                        if resolved is None:
+                            load_kwargs["load_mmproj"] = load_mmproj
                         if override.get("llama_extra_args") is not None:
                             load_kwargs["llama_extra_args"] = override["llama_extra_args"]
                         if override.get("max_seq_length") is not None:

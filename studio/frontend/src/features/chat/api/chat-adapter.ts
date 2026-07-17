@@ -1490,13 +1490,14 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
+    load_mmproj?: boolean;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
-      load_mmproj: loadVisionProjectorEnabled,
+      load_mmproj: payload.load_mmproj ?? loadVisionProjectorEnabled,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
@@ -1543,12 +1544,15 @@ async function autoLoadSmallestModel(): Promise<{
       remembered?.speculativeType ?? specSettings.speculativeType;
     const effectiveSpecDraftNMax =
       remembered?.specDraftNMax ?? specSettings.specDraftNMax;
+    const effectiveVisionProjectorEnabled =
+      remembered?.visionProjectorEnabled ?? loadVisionProjectorEnabled;
     if (
       !(await canAutoLoad({
         model_path: candidate.id,
         max_seq_length: effectiveMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        load_mmproj: effectiveVisionProjectorEnabled,
       }))
     ) {
       skippedAutoLoadCandidates.add(
@@ -1569,7 +1573,7 @@ async function autoLoadSmallestModel(): Promise<{
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: remembered?.tensorParallel ?? false,
-      load_mmproj: loadVisionProjectorEnabled,
+      load_mmproj: effectiveVisionProjectorEnabled,
     });
     saveSpeculativeType(effectiveSpeculativeType);
     useChatRuntimeStore

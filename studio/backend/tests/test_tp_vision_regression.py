@@ -652,6 +652,19 @@ def test_tensor_off_echo_preserves_multi_gpu_fallback():
     )
 
 
+def test_inherited_mmproj_disable_matches_text_only_loaded_state():
+    from models.inference import LoadRequest
+
+    inference_routes = _load_inference_routes_module()
+    backend = _fallback_loaded_backend(layer_preserves_tensor_intent = False)
+    backend._load_mmproj = False
+    backend._extra_args = ["--no-mmproj"]
+
+    req = LoadRequest(model_path = "owner/repo")
+    assert req.llama_extra_args is None
+    assert inference_routes._request_matches_loaded_settings(req, backend) is True
+
+
 def test_explicit_split_mode_layer_extras_reloads_after_multi_gpu_fallback():
     """Tensor intent can be dropped via extras too: an explicit --split-mode layer
     matches the stored fallback extras but must still reload (reviewer.py P1, #6659)."""

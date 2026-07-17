@@ -23,11 +23,13 @@ class _FakeBackend:
         loaded_id = None,
         hf_variant = None,
         advertised_id = None,
+        load_mmproj = True,
     ):
         self.model_identifier = loaded_id
         self.is_loaded = loaded_id is not None
         self.hf_variant = hf_variant
         self._openai_advertised_id = advertised_id
+        self.load_mmproj = load_mmproj
 
 
 class _LoadRecorder:
@@ -422,7 +424,11 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     kw._last_unloaded_model = None
 
     unloads = []
-    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend = _FakeBackend(
+        "unsloth/Idle-GGUF",
+        hf_variant = "Q4_K_M",
+        load_mmproj = False,
+    )
 
     def _unload():
         unloads.append(1)
@@ -444,6 +450,7 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert unloads == [1]  # freed once, not repeatedly
     stash = kw.get_last_unloaded_model()
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
+    assert stash[3] is False
 
 
 def test_audio_generate_is_tracked_as_inference_path():
@@ -909,6 +916,28 @@ def test_alias_reloads_model_freed_by_idle_unload_with_quant(monkeypatch):
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "unsloth/A-GGUF"
     assert rec.calls[0].gguf_variant == "Q4_K_M"  # exact freed quant restored
+    assert rec.calls[0].load_mmproj is True
+
+
+def test_alias_reload_restores_text_only_projector_state(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(
+        kw,
+        "_last_unloaded_model",
+        ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF", False),
+    )
+
+    _run_hook("gpt-4o-mini")
+
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"
+    assert rec.calls[0].load_mmproj is False
 
 
 def test_alias_does_not_reload_when_model_already_loaded(monkeypatch):

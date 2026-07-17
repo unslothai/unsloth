@@ -26,9 +26,9 @@ _inflight = 0
 # loop must not unload while one is waiting (it would unload out from under it).
 _pending = 0
 _last_active = time.monotonic()
-# The (id, quant) idle-unload last freed, so an alias/unknown request that would
-# otherwise 503 against an empty backend can reload it (set on unload, cleared on
-# reload). Storing the quant means the reload restores the exact freed variant.
+# The (id, quant, advertised id, mmproj state) idle-unload last freed, so an
+# alias/unknown request that would otherwise 503 against an empty backend can
+# restore the same effective load (set on unload, cleared on reload).
 _last_unloaded_model = None
 # Guards inflight bumps against the idle-check-then-unload race, and blocks new
 # inference from starting mid-swap. Process-wide, not per-loop: the backend slot is
@@ -261,7 +261,12 @@ def _loaded_identity(backend):
     # backend; it's the override key, so an idle stash keyed by the concrete load
     # path doesn't drop the user's saved launch flags on the alias reload.
     advertised = getattr(backend, "_openai_advertised_id", None) or backend.model_identifier
-    return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
+    return (
+        backend.model_identifier,
+        getattr(backend, "hf_variant", None),
+        advertised,
+        bool(getattr(backend, "load_mmproj", True)),
+    )
 
 
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
@@ -278,9 +283,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             from routes.inference import get_llama_cpp_backend
 
             backend = get_llama_cpp_backend()
-            # Track by (id, variant): a (re)loaded model -- including the same repo
-            # at a different quant -- counts as activity so it survives one TTL
-            # before its first request (loads bypass the activity middleware).
+            # Track the full reload identity: a newly loaded model or changed
+            # projector state counts as activity so it survives one TTL before
+            # its first request (loads bypass the activity middleware).
             current = _loaded_identity(backend)
             if current != seen_model:
                 seen_model = current

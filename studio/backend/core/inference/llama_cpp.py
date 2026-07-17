@@ -7740,7 +7740,10 @@ class LlamaCppBackend:
             return False
         if self._requested_n_ctx != int(n_ctx):
             return False
-        if bool(getattr(self, "_load_mmproj", True)) != bool(load_mmproj):
+        requested_load_mmproj = bool(
+            load_mmproj and (not is_vision or not extra_args_disable_mmproj(extra_args))
+        )
+        if bool(getattr(self, "_load_mmproj", True)) != requested_load_mmproj:
             return False
 
         def _norm(value):

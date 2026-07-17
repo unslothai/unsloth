@@ -1815,7 +1815,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
         visionProjectorEnabled: true,
-        loadedVisionProjectorEnabled: null,
       };
     });
   },
