@@ -162,18 +162,8 @@ def _is_vision_dataset(dataset) -> bool:
     column_names = getattr(dataset, "column_names", None)
     if column_names is not None:
         return not _VISION_DATASET_KEYS.isdisjoint(column_names)
-    try:
-        iterator = iter(dataset)
-    except TypeError:
-        return False
-    if iterator is dataset:
-        # Modality is unknown, but probing a one-shot stream would drop its first sample.
-        return True
-    try:
-        sample = next(iterator)
-    except StopIteration:
-        return False
-    return isinstance(sample, dict) and not _VISION_DATASET_KEYS.isdisjoint(sample)
+    # Unknown-schema streams cannot be safely probed without potentially dropping a sample.
+    return True
 
 
 # Unsloth gradient accumulation fix:

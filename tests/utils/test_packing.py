@@ -261,10 +261,7 @@ def test_stateful_stream_is_not_consumed_during_detection(data_collator):
             self.rows = iter([{"text": "first"}, {"text": "second"}])
 
         def __iter__(self):
-            return self
-
-        def __next__(self):
-            return next(self.rows)
+            return (row for row in self.rows)
 
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -280,7 +277,45 @@ def test_stateful_stream_is_not_consumed_during_detection(data_collator):
 
     assert config.packing is False
     assert config.padding_free is False
-    assert next(dataset)["text"] == "first"
+    assert next(iter(dataset))["text"] == "first"
+
+
+def test_bfd_packing_truncates_before_packing(monkeypatch):
+    class CharacterTokenizer:
+        bos_token = None
+        eos_token = None
+        chat_template = None
+
+        def __call__(self, texts, **kwargs):
+            if isinstance(texts, list):
+                return {"input_ids": [[ord(char) for char in text] for text in texts]}
+            return {"input_ids": [ord(char) for char in texts]}
+
+    args = SimpleNamespace(
+        dataset_num_proc = 1,
+        dataset_text_field = "text",
+        max_length = 4,
+        packing_strategy = "bfd",
+    )
+    trainer = SimpleNamespace(model = None)
+    dataset = Dataset.from_dict({"prompt": ["abc"], "completion": ["defghij"]})
+    prepare_globals = SFTTrainer._prepare_dataset.__globals__
+
+    def passthrough_pack_dataset(dataset, seq_length, strategy, map_kwargs):
+        return dataset
+
+    monkeypatch.setitem(prepare_globals, "pack_dataset", passthrough_pack_dataset)
+    packed = SFTTrainer._prepare_dataset(
+        trainer,
+        dataset,
+        CharacterTokenizer(),
+        args,
+        True,
+        None,
+        "train",
+    )
+
+    assert len(packed["input_ids"][0]) == args.max_length
 
 
 def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):

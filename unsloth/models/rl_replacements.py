@@ -464,7 +464,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             )
             function = function.replace(
                 "if do_truncation and max_seq_length > 0:",
-                "if do_truncation and not packing and max_seq_length > 0:",
+                'if do_truncation and getattr(args, "packing_strategy", "bfd") != "wrapped" and max_seq_length > 0:',
             )
             function = function.replace(
                 """dataset = pack_dataset(
