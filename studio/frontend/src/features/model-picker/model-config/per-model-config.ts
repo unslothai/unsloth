@@ -105,6 +105,14 @@ export function normalizeMaxSeqLength(value: unknown): number | null {
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(MAX_SEQ_LENGTH_MAX, snapped));
 }
 
+export function floorMaxSeqLength(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const snapped = Math.floor(value / MAX_SEQ_LENGTH_STEP) * MAX_SEQ_LENGTH_STEP;
+  return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(MAX_SEQ_LENGTH_MAX, snapped));
+}
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }

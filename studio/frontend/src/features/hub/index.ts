@@ -43,6 +43,7 @@ export {
   mirrorHfTokenInto,
   useHfTokenStore,
 } from "./stores/hf-token-store";
+export { useInventoryVersion } from "./stores/inventory-events";
 export { looksLikeLocalPath } from "./lib/local-path";
 export { hubTokenHeader } from "./lib/hub-token-header";
 export {

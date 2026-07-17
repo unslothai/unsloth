@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHfTokenStore } from "@/features/hub";
+import { useHfTokenStore, useInventoryVersion } from "@/features/hub";
 import { useEffect, useState } from "react";
 import { fetchModelMaxPositionEmbeddings } from "../api/model-metadata";
 import { fetchDefaultChatTemplate } from "../api/templates";
@@ -52,8 +52,11 @@ export function useDefaultChatTemplate(
   enabled: boolean,
 ): DefaultChatTemplateState {
   const token = useHfTokenStore((s) => s.token);
+  const inventoryVersion = useInventoryVersion();
   const cacheKey =
-    enabled && modelId ? `${modelId}::${ggufVariant ?? ""}::${token}` : null;
+    enabled && modelId
+      ? `${modelId}::${ggufVariant ?? ""}::${token}::${inventoryVersion}`
+      : null;
   const [fetched, setFetched] = useState<{
     key: string;
     state: DefaultChatTemplateState;
@@ -118,7 +121,9 @@ export function useModelMaxPositionEmbeddings(
   enabled: boolean,
 ): ModelMaxPositionState {
   const token = useHfTokenStore((s) => s.token);
-  const cacheKey = enabled && modelId ? `${modelId}::${token}` : null;
+  const inventoryVersion = useInventoryVersion();
+  const cacheKey =
+    enabled && modelId ? `${modelId}::${token}::${inventoryVersion}` : null;
   const [fetched, setFetched] = useState<{
     key: string;
     state: ModelMaxPositionState;

@@ -39,6 +39,7 @@ import {
   type PerModelConfig,
   SPECULATIVE_TYPES,
   deletePerModelConfig,
+  floorMaxSeqLength,
   isDefaultConfig,
   normalizeMaxSeqLength,
   resolveInitialConfig,
@@ -467,7 +468,7 @@ export function ModelConfigPage({
       DEFAULT_PER_MODEL_CONFIG,
     );
   const nativeMaxSeqLength =
-    normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
+    floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
   const maxSeqLengthValue =
     normalizeMaxSeqLength(config.maxSeqLength) ??

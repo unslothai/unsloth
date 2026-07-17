@@ -1805,9 +1805,11 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
 async def get_model_config(
     model_name: str,
     hf_token: Optional[str] = Query(None),
+    header_hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         if not is_local_path(model_name):
             resolved = resolve_cached_repo_id_case(model_name)

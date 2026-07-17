@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -130,8 +131,10 @@ export async function getModelConfig(
   hfToken?: string,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
+  const response = await authFetch(`/api/models/config/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }
