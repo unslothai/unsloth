@@ -1155,7 +1155,7 @@ _GGUF_QUANT_SUFFIX_RE = re.compile(rf"[-_.]{_GGUF_QUANT_TAG_PATTERN}$", re.IGNOR
 
 def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) -> bool:
     """Return whether a DFlash filename identifies the selected target model."""
-    name = drafter_basename.lower()
+    name = drafter_basename.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if not name.endswith(".gguf"):
         return False
     stem = name[: -len(".gguf")]
@@ -1169,7 +1169,7 @@ def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) 
             candidates.append(candidate)
     if weight_basename is None:
         return True
-    weight = weight_basename.lower()
+    weight = weight_basename.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return any(
         weight.startswith(c) and (len(weight) == len(c) or not weight[len(c)].isalnum())
         for c in candidates
@@ -1681,6 +1681,13 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     gguf_dir = gguf_path.parent
     if not gguf_dir.name:
         return str(gguf_dir)
+
+    # Hugging Face cache files can live in any subdirectory below
+    # ``snapshots/<revision>``. Companions remain repo-wide, so always scan the
+    # snapshot root instead of recognizing only quant-named subdirectories.
+    for candidate in (gguf_dir, *gguf_dir.parents):
+        if candidate.parent.name == "snapshots":
+            return str(candidate)
 
     quant_dir_re = (
         r"(UD-)?("

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ if _BACKEND_DIR not in sys.path:
 
 from hub.utils.gguf import is_mtp_drafter_path
 from utils.models.model_config import (
+    _local_gguf_companion_search_root,
     _is_mtp_drafter,
     detect_dflash_file,
     detect_gguf_model,
@@ -113,6 +115,7 @@ def test_dflash_pairs_weight_by_model_name():
     assert _dflash_pairs_weight("Qwen3-8B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
     assert _dflash_pairs_weight("dflash-Qwen3-8B.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
     assert _dflash_pairs_weight("dflash-Qwen3-8B-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
+    assert _dflash_pairs_weight("Qwen3-8B-DFlash-q8_0.gguf", "Q4_K_M/Qwen3-8B-Q4_K_M.gguf") is True
     assert _dflash_pairs_weight("Qwen3-4B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
     assert _dflash_pairs_weight("dflash-Qwen.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
     assert _dflash_pairs_weight("OtherModel-DFlash-q8_0.gguf", "Q8_0.gguf") is False
@@ -269,7 +272,13 @@ def _dflash_backend(gguf_path, dflash_path):
     return backend
 
 
-def _in_target(backend, gguf_path, dflash_draft_path):
+def _in_target(
+    backend,
+    gguf_path,
+    dflash_draft_path,
+    *,
+    extra_args = None,
+):
     return backend._already_in_target_state(
         gguf_path = gguf_path,
         dflash_draft_path = dflash_draft_path,
@@ -279,7 +288,7 @@ def _in_target(backend, gguf_path, dflash_draft_path):
         cache_type_kv = None,
         speculative_type = "auto",
         chat_template_override = None,
-        extra_args = None,
+        extra_args = extra_args,
         is_vision = False,
     )
 
@@ -304,6 +313,20 @@ def test_already_in_target_state_retries_fallback_after_binary_change(
     assert _in_target(backend, str(weight), str(drafter)) is True
     binary.write_bytes(b"new-binary")
     assert _in_target(backend, str(weight), str(drafter)) is False
+
+
+def test_already_in_target_state_retries_manual_dflash_after_drafter_change(dflash_pair):
+    weight, drafter = dflash_pair
+    extra_args = ["--spec-type", "draft-dflash", "--model-draft", str(drafter)]
+    backend = _dflash_backend(str(weight), None)
+    backend._requested_spec_mode = None
+    backend._extra_args = list(extra_args)
+    backend._spec_fallback_reason = "dflash_runtime_error"
+    backend._remember_dflash_fallback_inputs(None, str(drafter))
+
+    assert _in_target(backend, str(weight), None, extra_args = extra_args) is True
+    drafter.write_bytes(b"replacement")
+    assert _in_target(backend, str(weight), None, extra_args = extra_args) is False
 
 
 def test_already_in_target_state_reloads_when_dflash_drafter_appears(dflash_pair):
@@ -347,6 +370,18 @@ def test_extra_args_requests_dflash():
         )
         is False
     )
+
+
+def test_dflash_budget_reserves_after_transient_capability_probe_error():
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert "_dflash_probe_raised=True" in compact
+    assert "_dflash_binary_okor_dflash_probe_raised" in compact
+
+
+def test_dflash_fallback_tracks_the_launched_drafter_path():
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert "_extra_args_mtp_draft_path(cmd,env=env)" in compact
+    assert "_remember_dflash_fallback_inputs(binary,_launched_dflash_draft_path)" in compact
 
 
 def test_text_only_vlm_downloads_dflash():
@@ -482,6 +517,22 @@ def test_remote_companion_bytes_counts_preferred_dflash(routes, monkeypatch):
     assert auto_total == 575
 
 
+def test_remote_companion_bytes_pairs_subdirectory_weight(routes, monkeypatch):
+    import huggingface_hub
+
+    siblings = [SimpleNamespace(rfilename = "Qwen3-4B-DFlash-q8_0.gguf", size = 575)]
+    monkeypatch.setattr(
+        huggingface_hub, "model_info", lambda *a, **k: SimpleNamespace(siblings = siblings)
+    )
+    total = routes._remote_gguf_companion_bytes(
+        "org/repo",
+        hf_token = None,
+        include_mmproj = False,
+        weight_name = "Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
+    )
+    assert total == 575
+
+
 def test_remote_companion_bytes_skips_foreign_dflash(routes, monkeypatch):
     import huggingface_hub
 
@@ -512,6 +563,22 @@ def test_dflash_reload_dedup_finds_root_sibling(routes, tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 
+def test_hf_dflash_reload_dedup_finds_snapshot_root_from_nonquant_subdir(routes, tmp_path):
+    snapshot = tmp_path / "models--org--repo" / "snapshots" / "revision"
+    sub = snapshot / "weights"
+    sub.mkdir(parents = True)
+    weight = sub / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    drafter = snapshot / "dflash-Qwen3-4B.gguf"
+    drafter.touch()
+
+    assert _local_gguf_companion_search_root(str(weight), str(weight)) == str(snapshot)
+    backend = _route_dedup_backend(str(weight), hf_repo = "org/repo")
+    backend._dflash_draft_path = str(drafter.resolve())
+    req = LoadRequest(model_path = "org/repo", gguf_variant = "Q4_K_M")
+    assert routes._request_matches_loaded_settings(req, backend) is True
+
+
 def test_dflash_failure_retries_after_drafter_change(routes, dflash_pair):
     weight, drafter = dflash_pair
     backend = _route_dedup_backend(str(weight), hf_repo = None)
@@ -521,6 +588,20 @@ def test_dflash_failure_retries_after_drafter_change(routes, dflash_pair):
     req = LoadRequest(model_path = str(weight))
     assert routes._request_matches_loaded_settings(req, backend) is True
 
+    drafter.write_bytes(b"replacement")
+    assert routes._request_matches_loaded_settings(req, backend) is False
+
+
+def test_manual_dflash_failure_retries_after_drafter_change(routes, dflash_pair):
+    weight, drafter = dflash_pair
+    extra_args = ["--spec-type", "draft-dflash", "--model-draft", str(drafter)]
+    backend = _route_dedup_backend(str(weight), hf_repo = None)
+    backend._extra_args = list(extra_args)
+    backend._spec_fallback_reason = "dflash_runtime_error"
+    backend._remember_dflash_fallback_inputs(None, str(drafter))
+    req = LoadRequest(model_path = str(weight), llama_extra_args = extra_args)
+
+    assert routes._request_matches_loaded_settings(req, backend) is True
     drafter.write_bytes(b"replacement")
     assert routes._request_matches_loaded_settings(req, backend) is False
 

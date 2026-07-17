@@ -6070,6 +6070,7 @@ class LlamaCppBackend:
                         and not effective_is_vision
                     )
                     _dflash_binary_ok = False
+                    _dflash_probe_raised = False
                     if _dflash_wanted:
                         try:
                             _dflash_binary_ok = bool(
@@ -6077,7 +6078,10 @@ class LlamaCppBackend:
                             )
                         except Exception:
                             _dflash_binary_ok = False
-                    _auto_studio_dflash = _dflash_wanted and _dflash_binary_ok
+                            _dflash_probe_raised = True
+                    _auto_studio_dflash = _dflash_wanted and (
+                        _dflash_binary_ok or _dflash_probe_raised
+                    )
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras
                         or _user_draft_via_extras
@@ -7331,6 +7335,12 @@ class LlamaCppBackend:
                 _spec_requested_dflash = any(
                     "dflash" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
+                # Track the path that the failed command actually selected.
+                # User extras are appended after Studio flags, and inherited
+                # environment values apply only when no CLI draft path wins.
+                _launched_dflash_draft_path = (
+                    _extra_args_mtp_draft_path(cmd, env = env) if _spec_requested_dflash else None
+                )
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
@@ -7500,7 +7510,7 @@ class LlamaCppBackend:
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
                 if self._spec_fallback_reason in _DFLASH_FALLBACK_REASONS:
-                    self._remember_dflash_fallback_inputs(binary, launch_dflash_draft_path)
+                    self._remember_dflash_fallback_inputs(binary, _launched_dflash_draft_path)
                 else:
                     self._dflash_fallback_inputs = None
 
@@ -8004,6 +8014,9 @@ class LlamaCppBackend:
             return False
 
         current_dflash_draft_path = dflash_draft_path
+        manual_dflash_requested = _extra_args_requests_dflash(extra_args, env = {})
+        if manual_dflash_requested:
+            current_dflash_draft_path = _extra_args_mtp_draft_path(extra_args, env = os.environ)
         if (
             gguf_path is None
             and self._hf_repo
@@ -8031,10 +8044,8 @@ class LlamaCppBackend:
                 return False
 
         if (
-            req_mode == "auto"
-            and not self._is_vision
-            and self.dflash_fallback_inputs_changed(current_dflash_draft_path)
-        ):
+            manual_dflash_requested or (req_mode == "auto" and not self._is_vision)
+        ) and self.dflash_fallback_inputs_changed(current_dflash_draft_path):
             return False
 
         # Auto keeps its requested mode, so compare depth on the resolved mode.

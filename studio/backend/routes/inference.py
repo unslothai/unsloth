@@ -3217,6 +3217,13 @@ def _request_matches_loaded_settings(
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
+    # A failed manual DFlash request is keyed by the actual --model-draft
+    # file, not the auto-detected companion. Replacing that file in place must
+    # bypass both route and backend deduplication.
+    if _extra_args_requests_dflash(effective_extra, env = {}):
+        manual_dflash_path = _extra_args_mtp_draft_path(effective_extra, env = os.environ)
+        if llama_backend.dflash_fallback_inputs_changed(manual_dflash_path):
+            return False
     # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
     # next to the loaded weights changes the launch command (--model-draft),
     # so a duplicate /load must reload rather than dedupe. Always compare the
@@ -3904,7 +3911,7 @@ def _estimate_gguf_required_gb(
                 include_mtp = not manual_dflash_engages,
                 include_dflash = auto_dflash_engages and not remote_is_vision,
                 dflash_precedes_mtp = auto_dflash_engages and not remote_is_vision,
-                weight_name = selected_variant.filename,
+                weight_name = Path(selected_variant.filename).name,
             )
             return (selected_variant.size_bytes + companions + manual_dflash_bytes) / (1024**3)
         return None
