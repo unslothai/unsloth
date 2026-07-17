@@ -221,3 +221,41 @@ def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monk
         "</s>",
     ], "the original source vocab was modified"
     assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")
+
+
+def test_swap_mapping_swaps_both_pieces_without_duplicating(tmp_path, monkeypatch):
+    """When the caller swaps eos and stop_word in the fast JSON it must pass both
+    directions here; a one-way mapping would leave two stop_word pieces and no eos.
+    """
+    loaded = _stub_auto_tokenizer(monkeypatch)
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+
+    pieces = [("<s>", 0.0, CONTROL), ("<|im_end|>", -1.0, NORMAL), ("</s>", 0.0, CONTROL)]
+    old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"</s>": 2, "<|im_end|>": 1})
+    new = _FakeTokenizer("new")
+
+    fix_sentencepiece_tokenizer(
+        old, new, {"</s>": "<|im_end|>", "<|im_end|>": "</s>"}, temporary_location = location
+    )
+
+    result = _read_pieces(f"{loaded[-1]}/tokenizer.model")
+    assert result.count("<|im_end|>") == 1 and result.count("</s>") == 1, result
+
+
+def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
+    """When the caller skips a mapping whose target already exists, it must not
+    pass that mapping here, or the skipped source token gets renamed anyway and
+    duplicates the existing target in the model.
+    """
+    loaded = _stub_auto_tokenizer(monkeypatch)
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+
+    pieces = [("<s>", 0.0, CONTROL), ("aa", -1.0, NORMAL), ("bb", -1.0, NORMAL), ("X", -1.0, NORMAL)]
+    old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"aa": 1, "bb": 2})
+    new = _FakeTokenizer("new")
+
+    # Caller skipped aa->X (X already exists) and applied bb->Y, so only bb->Y is passed.
+    fix_sentencepiece_tokenizer(old, new, {"bb": "Y"}, temporary_location = location)
+
+    result = _read_pieces(f"{loaded[-1]}/tokenizer.model")
+    assert result.count("X") == 1 and "Y" in result and "aa" in result, result
