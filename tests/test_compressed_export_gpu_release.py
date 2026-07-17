@@ -38,9 +38,7 @@ class _FakeLogger:
 def _load_helpers(fake_torch, fake_logger):
     tree = ast.parse(_SAVE_PY.read_text(encoding = "utf-8"))
     keep = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in _WANTED
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in _WANTED
     ]
     assert len(keep) == len(_WANTED), "release helpers missing from save.py"
     namespace = {"torch": fake_torch, "logger": fake_logger}
@@ -58,7 +56,12 @@ def _fake_torch(cuda_available = True):
 
 
 class _FakeModel:
-    def __init__(self, device_map = None, devices = ("cuda:0",), quantized = False):
+    def __init__(
+        self,
+        device_map = None,
+        devices = ("cuda:0",),
+        quantized = False,
+    ):
         if device_map is not None:
             self.hf_device_map = device_map
         self._devices = [types.SimpleNamespace(device = d) for d in devices]

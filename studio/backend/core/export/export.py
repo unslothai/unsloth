@@ -51,6 +51,7 @@ def _multi_gpu_device_map_kwargs() -> dict:
         return {}
     try:
         from utils.hardware import get_device_map, get_parent_visible_gpu_ids
+
         visible = get_parent_visible_gpu_ids()
         if len(visible) > 1:
             device_map = get_device_map(visible)
