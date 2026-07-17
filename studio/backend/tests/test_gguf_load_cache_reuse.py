@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Loads reuse cached GGUFs; loads and hub downloads never race.
+"""Tests for cached GGUF reuse and load/download exclusion.
 
-When unsloth re-uploads a GGUF repo (new revision, new blob hashes), the load
-path used to re-resolve against the current revision, count a fully-downloaded
-older copy as "0.0 GB already cached", and silently re-download the whole
-model -- with no consent step, while the explicit hub update flow (which asks
-first) sat unused. Loads must run what is on disk; only the update/download
-flow fetches new revisions.
-
-Separately, the load path's in-process downloader and the hub download
-manager's worker knew nothing about each other, so both could write the same
-repo's cache blobs concurrently (the hub worker's cache preparation purges
-partial blobs it does not own, stalling the other download). The two entry
-points refuse to start a second writer for the same repo.
-
-No GPU, no network, no subprocess. Linux/macOS/Windows compatible.
+No GPU, network, or subprocesses are required.
 """
 
 from __future__ import annotations
@@ -34,8 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy/unavailable external deps before importing the modules under
-# test (same pattern as other studio backend tests).
+# Stub optional dependencies before importing the modules under test.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -131,7 +117,7 @@ def _fail_get_paths_info(*_args, **_kwargs):
 
 class TestLoadReusesCachedCopy:
     def test_online_reuse_after_revision_bump(self, hf_cache):
-        """A re-uploaded repo (same filename, new blobs) must not re-download."""
+        """A new repo revision does not replace a complete cached model."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
 
@@ -145,7 +131,7 @@ class TestLoadReusesCachedCopy:
         assert out == str(snap / MAIN)
 
     def test_online_reuse_when_reupload_renamed_the_file(self, hf_cache):
-        """The variant label is the identity: a rename must not re-download."""
+        """A renamed variant still reuses its cached file."""
         backend = LlamaCppBackend()
         old_name = f"gemma-test-old-{VARIANT}.gguf"
         snap = _build_cache(hf_cache, REPO, {old_name: 4})
@@ -191,7 +177,7 @@ class TestLoadReusesCachedCopy:
         assert out == f"/fake/{REPO}/{MAIN}"
 
     def test_force_redownloads_despite_cache(self, hf_cache):
-        """The explicit update path re-fetches even with a complete cached copy."""
+        """A forced download ignores a complete cached copy."""
         backend = LlamaCppBackend()
         _build_cache(hf_cache, REPO, {MAIN: 4})
         downloaded: list[str] = []
@@ -240,7 +226,7 @@ class TestLoadReusesCachedCopy:
         assert out == str(snap / shard1)
 
     def test_partial_split_set_downloads(self, hf_cache):
-        """One cached shard of two must not be reused alone."""
+        """A partial split set is not reused."""
         backend = LlamaCppBackend()
         shard1 = f"gemma-test-{VARIANT}-00001-of-00002.gguf"
         shard2 = f"gemma-test-{VARIANT}-00002-of-00002.gguf"
@@ -275,8 +261,7 @@ class TestLoadReusesCachedCopy:
         assert out == f"/fake/{REPO}/{shard1}"
 
     def test_reuse_prefers_newest_snapshot_after_update(self, hf_cache):
-        """After the update flow downloads the new revision, loads pick it up
-        (snapshots iterate newest-first), not the older copy."""
+        """Loads prefer the newest complete snapshot."""
         import os
 
         backend = LlamaCppBackend()
@@ -295,7 +280,7 @@ class TestLoadReusesCachedCopy:
         assert out == str(new_snap / MAIN)
 
     def test_companion_prefers_main_snapshot_sibling(self, hf_cache):
-        """mmproj co-located with the reused main must not be re-fetched."""
+        """A cached mmproj is reused from the main model's snapshot."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4, "mmproj-F16.gguf": 2})
 

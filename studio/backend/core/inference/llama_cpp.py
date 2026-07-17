@@ -1000,9 +1000,7 @@ def _cached_colocated_split_main(
 
 
 def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[str], list[str]]:
-    """Resolve a variant label to (main GGUF, extra shards) from the local HF
-    cache snapshots; ``(None, [])`` when nothing matches. Matches the
-    snapshot-relative path so subdir layouts (``BF16/foo.gguf``) are findable."""
+    """Find a cached main GGUF and its shards for a variant."""
     try:
         from utils.models.model_config import _iter_hf_cache_snapshots
         for snap in _iter_hf_cache_snapshots(repo_id):
@@ -1019,28 +1017,20 @@ def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[
 def _cached_complete_gguf(
     repo_id: str, gguf_filename: Optional[str], shards: list[str]
 ) -> Optional[str]:
-    """Path of a complete cached copy of ``gguf_filename`` (every shard
-    co-located for splits), from any snapshot of ANY revision: a load runs what
-    is on disk; fetching a re-uploaded repo's current revision is the update
-    flow's job. Snapshot files are complete by construction (the HF cache links
-    a blob into a snapshot only after its download finished)."""
+    """Return the main file of a complete cached GGUF, or None."""
     if not gguf_filename:
         return None
     if shards:
         return _cached_colocated_split_main(repo_id, gguf_filename, shards, {})
     m = _SHARD_FULL_RE.match(gguf_filename)
     if m and m.group(3) != "00001":
-        # A split-set shard with unresolved siblings; reusing it alone would
-        # hand llama-server an incomplete set.
+        # Do not reuse a split shard without its siblings.
         return None
     return _cached_hf_snapshot_file(repo_id, gguf_filename)
 
 
 def cached_gguf_for_load(hf_repo: str, hf_variant: Optional[str]) -> Optional[str]:
-    """A complete cached main GGUF a load of (repo, variant) reuses without
-    downloading; None when a load would have to download. No network. Shared by
-    ``_download_gguf``'s reuse fallback and the /load-vs-hub-download 409 guard
-    so the two cannot disagree."""
+    """Return a cached GGUF that can be loaded without downloading."""
     if not hf_variant:
         return None
     hf_repo = _resolve_repo_id_casing(hf_repo)
@@ -1049,8 +1039,7 @@ def cached_gguf_for_load(hf_repo: str, hf_variant: Optional[str]) -> Optional[st
 
 
 def _snapshot_dir_of(path: str) -> Optional[Path]:
-    """The HF-cache snapshot dir containing ``path`` (the ancestor whose parent
-    is named ``snapshots``), or None for non-cache paths (native/local files)."""
+    """Return the HF cache snapshot containing path, if any."""
     try:
         p = Path(path).resolve()
     except OSError:
@@ -1064,7 +1053,7 @@ def _snapshot_dir_of(path: str) -> Optional[Path]:
 def _companion_snapshot_sibling(
     near_path: str, pick: Callable[[list[str]], Optional[str]]
 ) -> Optional[str]:
-    """A companion picked from ``near_path``'s own cache snapshot, or None."""
+    """Find a companion in the same snapshot as near_path."""
     snap = _snapshot_dir_of(near_path)
     if snap is None:
         return None
@@ -1078,18 +1067,14 @@ def _companion_snapshot_sibling(
     return str(candidate) if candidate.is_file() else None
 
 
-# Repo ids with an in-flight /load, marked by the route. The hub download
-# manager checks this so it never starts a second writer on cache blobs the
-# load path may be writing (its worker purges partial blobs it does not own).
-# Keys are .strip().lower(), matching the hub registry's normalize_repo_key.
+# Active GGUF loads by normalized repo ID.
 _LOADS_IN_FLIGHT: dict[str, int] = {}
 _LOADS_IN_FLIGHT_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
 def gguf_load_in_flight(hf_repo: Optional[str]):
-    """Mark an HF GGUF load in flight for *hf_repo*. Counted so overlapping
-    same-repo loads keep the mark; no-op for local loads (no repo)."""
+    """Track an HF GGUF load until the context exits."""
     key = (hf_repo or "").strip().lower()
     if not key:
         yield
@@ -1108,7 +1093,7 @@ def gguf_load_in_flight(hf_repo: Optional[str]):
 
 
 def hf_gguf_load_in_flight(hf_repo: str) -> bool:
-    """Whether a /load for *hf_repo* is currently in flight (see above)."""
+    """Return whether a GGUF load is active for hf_repo."""
     key = (hf_repo or "").strip().lower()
     if not key:
         return False
@@ -4563,10 +4548,7 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
-            # Offline / listing failure: resolve variant -> filename from the
-            # local HF cache. The heuristic below assumes filenames echo the
-            # repo name, which breaks for e.g. Qwen3.6-27B-MTP-GGUF (no "MTP"
-            # in file).
+            # Fall back to the local cache when the repo listing is unavailable.
             if not gguf_filename:
                 cached_name, cached_shards = _cached_variant_resolution(hf_repo, hf_variant)
                 if cached_name:
@@ -4582,18 +4564,11 @@ class LlamaCppBackend:
                 repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                 gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
-        # ── Reuse a complete cached copy before any sizing or fetch ──────
-        # A load runs what is on disk; fetching the current revision of a
-        # re-uploaded repo is the consent-gated update flow's job. Otherwise a
-        # quant re-upload turns every load of a downloaded model into a full
-        # re-download (the preflight keys on the new revision's blobs).
-        # ``force`` still re-fetches.
+        # Prefer the existing model. Updates use force=True to fetch a new revision.
         if not force:
             cached_main = _cached_complete_gguf(hf_repo, gguf_filename, gguf_extra_shards)
             if cached_main is None and hf_variant:
-                # A re-upload can also rename the file; the variant label is
-                # the identity. Same probe as the /load 409 guard, so the
-                # guard's verdict cannot drift from load behavior.
+                # A new revision may use a different filename for the same variant.
                 cached_main = cached_gguf_for_load(hf_repo, hf_variant)
             if cached_main is not None:
                 logger.info(f"Reusing cached GGUF: {cached_main}")
@@ -4613,13 +4588,9 @@ class LlamaCppBackend:
             # cold whenever free disk is below the full weight footprint,
             # even though nothing needs downloading.
             already_cached_bytes = 0
-            # The reuse probe above missed (or ``force``), so cached credit
-            # only covers current-revision blobs hf_hub_download resumes.
+            # Count only files that can resume this download.
             offline = _hf_env_offline()
-            # Offline, a split set not co-located in one snapshot (the probe
-            # scanned and missed) is refetched whole, so its shards must not
-            # count as cached. Online, shards resume individually, so
-            # per-shard credit stays valid.
+            # Offline split sets are reusable only when every shard shares a snapshot.
             split_needs_refetch = bool(offline and not force and gguf_extra_shards)
             if not force and not split_needs_refetch:
                 for p in path_infos:
@@ -4719,8 +4690,6 @@ class LlamaCppBackend:
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
-            # No complete cached copy exists (or ``force``): fetch the current
-            # revision / resume partials.
             local_path = hf_hub_download_with_xet_fallback(
                 hf_repo,
                 gguf_filename,
@@ -4777,9 +4746,7 @@ class LlamaCppBackend:
         if cancel_event.is_set():
             return None
 
-        # A sibling in the main GGUF's own snapshot keeps the pair
-        # revision-consistent and avoids re-fetching companions the user
-        # already has when the main file was reused from cache.
+        # Keep companion files in the main GGUF's snapshot.
         if near_path:
             cached = _companion_snapshot_sibling(near_path, pick)
             if cached:

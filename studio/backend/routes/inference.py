@@ -4187,11 +4187,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
-            # Refuse early (before the unload side effect below): a hub
-            # download for this repo may be writing the shared HF cache, and
-            # its worker purges partial blobs it does not own. Only a load
-            # that would DOWNLOAD races it; a cached-copy reuse never touches
-            # the in-flight blobs, so it proceeds.
+            # Block cache writes that would race the download manager.
+            # Check before unloading the current model.
             if config.gguf_hf_repo:
                 try:
                     from hub.utils.download_registry import get_models_registry
@@ -4422,8 +4419,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # falls back to layer split so the checkbox never blocks a model from
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
-            # Marked in flight for the whole attempt (retries included) so the
-            # hub download manager refuses a second downloader for this repo.
+            # Prevent the download manager from writing this repo during the load.
             from core.inference.llama_cpp import gguf_load_in_flight
 
             with gguf_load_in_flight(config.gguf_hf_repo):

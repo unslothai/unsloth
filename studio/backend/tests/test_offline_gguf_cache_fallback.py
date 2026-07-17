@@ -244,8 +244,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_older_snapshot_when_current_ref_snapshot_is_partial(
         self, monkeypatch, hf_cache
     ):
-        # Pins the offline-resilience path; online reuse is covered in
-        # test_gguf_load_cache_reuse.py.
+        # Keep coverage for offline reuse; online reuse is tested separately.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
@@ -291,7 +290,7 @@ class TestGgufVariantFileResolution:
     def test_download_reuses_cached_gguf_when_lowercase_partial_cache_shadows_it(
         self, monkeypatch, hf_cache
     ):
-        # Case-variant cross-dir reuse, pinned offline (its original shape).
+        # Keep coverage for case-insensitive offline cache lookup.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         backend = LlamaCppBackend()
         canonical_repo = "unsloth/gemma-4-E2B-it-GGUF"
@@ -347,10 +346,7 @@ class TestGgufVariantFileResolution:
         assert seen_repos
 
     def test_download_online_reuses_complete_cached_snapshot(self, monkeypatch, hf_cache):
-        # Policy reversal (see test_gguf_load_cache_reuse.py): online, a
-        # complete cached copy is served even when the repo has moved to a
-        # newer revision. Loads run what is on disk; only the consent-gated
-        # update flow fetches a new revision.
+        # Loads reuse complete cached models across repo revisions.
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
