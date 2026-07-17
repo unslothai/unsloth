@@ -2100,6 +2100,23 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
+    def _stop_checkpoint_ok() -> bool:
+        if _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
+            return True
+        _send(
+            "error",
+            error = (
+                "Failed to save a resumable checkpoint after stop. "
+                "Model files were saved, but this run cannot be resumed."
+            ),
+            # A user stop normally finalizes as 'stopped'; this failure
+            # must keep its error status so history explains it.
+            keep_error_status = True,
+            # Older checkpoints are stale; resuming would roll back past this stop.
+            resume_blocked = True,
+        )
+        return False
+
     if trainer.stop_requested:
         if not _stop_save[0]:
             # Cancel (save=False): skip saving.
@@ -2108,26 +2125,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("status", status_message = "Saving stopped model...")
             mx.synchronize()
             trainer.save_model(output_dir)
+            # Stop-and-save promises a resumable checkpoint, not just model files.
+            if not _stop_checkpoint_ok():
+                return
             _send("complete", output_dir = output_dir, status_message = "Training stopped")
     else:
         _send("status", status_message = "Saving model...")
         mx.synchronize()
         trainer.save_model(output_dir)
-        if trainer.stop_requested:
-            if not _write_mlx_stop_checkpoint(trainer, _opt_ref[0], output_dir):
-                _send(
-                    "error",
-                    error = (
-                        "Failed to save a resumable checkpoint after stop. "
-                        "Model files were saved, but this run cannot be resumed."
-                    ),
-                    # A user stop normally finalizes as 'stopped'; this failure
-                    # must keep its error status so history explains it.
-                    keep_error_status = True,
-                    # Older checkpoints are stale; resuming would roll back past this stop.
-                    resume_blocked = True,
-                )
-                return
+        # A save-stop can race the natural final save; it made the same promise.
+        if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
+            return
         _send("complete", output_dir = output_dir, status_message = "Training completed")
 
     if tb_writer is not None:

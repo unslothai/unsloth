@@ -1610,10 +1610,10 @@ class TrainingBackend:
 
                 self._ensure_db_run_created()
                 with self._lock:
+                    # A crash keeps the dir too: checkpoints under it may still
+                    # exist, and the early persist_output_dir write is best-effort.
                     interrupted_output_dir = (
-                        self._output_dir
-                        if self._should_stop and not self._cancel_requested
-                        else None
+                        None if self._cancel_requested else self._output_dir
                     )
                     interrupted_clear_output_dir = self._cancel_requested
                     if interrupted_clear_output_dir:

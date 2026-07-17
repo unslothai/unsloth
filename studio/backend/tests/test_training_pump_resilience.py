@@ -354,6 +354,27 @@ def test_interrupted_stop_and_save_keeps_in_memory_output_dir(monkeypatch):
     assert finalized.get("clear_output_dir") is False
 
 
+def test_dead_worker_crash_preserves_output_dir(monkeypatch):
+    # A crash (no stop requested) after output_dir was emitted must keep the
+    # dir in the error finalize: checkpoints under it may still exist, and the
+    # early persist_output_dir write is best-effort.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert finalized.get("status") == "error"
+    assert finalized.get("output_dir") == "/out/x"
+    assert finalized.get("clear_output_dir") is False
+
+
 def test_start_training_clears_stale_pump_running_flag():
     # A prior pump that died abnormally leaves _pump_running True. The next
     # start_training must clear it during reset so the start-time watchdog can't
