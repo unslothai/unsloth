@@ -1588,6 +1588,10 @@ _INKLING_REASONING_EFFORT = {
     "max": 0.99,
 }
 
+_DFLASH_FALLBACK_REASONS = frozenset(
+    {"binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"}
+)
+
 
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
@@ -1619,6 +1623,7 @@ class LlamaCppBackend:
         self._mtp_draft_path: Optional[str] = None
         self._dflash_draft_path: Optional[str] = None
         self._dflash_retry_needed = False
+        self._dflash_fallback_inputs = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -1802,6 +1807,46 @@ class LlamaCppBackend:
     @property
     def dflash_retry_needed(self) -> bool:
         return self._dflash_retry_needed
+
+    @staticmethod
+    def _file_revision(path: Optional[str]):
+        if not path:
+            return None
+        candidate = Path(path)
+        try:
+            resolved = str(candidate.resolve())
+        except OSError:
+            resolved = os.path.abspath(path)
+        try:
+            stat = candidate.stat()
+        except OSError:
+            return (resolved, None, None)
+        return (resolved, stat.st_mtime_ns, stat.st_size)
+
+    def _remember_dflash_fallback_inputs(
+        self, binary: Optional[str], dflash_draft_path: Optional[str]
+    ) -> None:
+        self._dflash_fallback_inputs = (
+            self._file_revision(binary),
+            self._file_revision(dflash_draft_path),
+        )
+
+    def dflash_fallback_inputs_changed(self, dflash_draft_path: Optional[str]) -> bool:
+        """Whether the binary or drafter differs from the failed DFlash attempt."""
+        if (
+            self._spec_fallback_reason not in _DFLASH_FALLBACK_REASONS
+            or self._dflash_fallback_inputs is None
+        ):
+            return False
+        binary_revision, drafter_revision = self._dflash_fallback_inputs
+        current_binary = self._find_llama_server_binary()
+        if (
+            current_binary
+            and binary_revision is not None
+            and self._file_revision(current_binary) != binary_revision
+        ):
+            return True
+        return self._file_revision(dflash_draft_path) != drafter_revision
 
     @property
     def spec_fallback_reason(self) -> Optional[str]:
@@ -2262,8 +2307,8 @@ class LlamaCppBackend:
 
     # ── llama-server capability probe ─────────────────────────────
 
-    # Cached on (path, mtime); `unsloth studio update` bumps mtime.
-    _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
+    # Cached on the binary revision; `unsloth studio update` replaces the file.
+    _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
@@ -2301,10 +2346,13 @@ class LlamaCppBackend:
                 "supports_metrics": False,
             }
         try:
-            mtime = int(Path(bin_path).stat().st_mtime)
+            binary_stat = Path(bin_path).stat()
+            mtime_ns = binary_stat.st_mtime_ns
+            size = binary_stat.st_size
         except OSError:
-            mtime = 0
-        cache_key = (bin_path, mtime)
+            mtime_ns = 0
+            size = 0
+        cache_key = (bin_path, mtime_ns, size)
         cached = cls._capability_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -7451,6 +7499,10 @@ class LlamaCppBackend:
 
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
+                if self._spec_fallback_reason in _DFLASH_FALLBACK_REASONS:
+                    self._remember_dflash_fallback_inputs(binary, launch_dflash_draft_path)
+                else:
+                    self._dflash_fallback_inputs = None
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -7951,11 +8003,13 @@ class LlamaCppBackend:
         if self._dflash_retry_needed and req_mode == "auto":
             return False
 
+        current_dflash_draft_path = dflash_draft_path
         if (
             gguf_path is None
             and self._hf_repo
             and self._gguf_path
             and req_mode == "auto"
+            and not self._is_vision
             and not _extra_args_set_spec_type(extra_args)
         ):
             from utils.models.model_config import (
@@ -7965,6 +8019,7 @@ class LlamaCppBackend:
 
             search_root = _local_gguf_companion_search_root(self._gguf_path, self._gguf_path)
             detected = detect_dflash_file(self._gguf_path, search_root = search_root)
+            current_dflash_draft_path = detected
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
                 stored_resolved = (
@@ -7975,11 +8030,10 @@ class LlamaCppBackend:
             if detected_resolved != stored_resolved:
                 return False
 
-        # Retry DFlash fallbacks after a binary update or drafter replacement.
-        if self._spec_fallback_reason in (
-            "binary_no_dflash",
-            "dflash_drafter_incompatible",
-            "dflash_runtime_error",
+        if (
+            req_mode == "auto"
+            and not self._is_vision
+            and self.dflash_fallback_inputs_changed(current_dflash_draft_path)
         ):
             return False
 
@@ -8014,6 +8068,7 @@ class LlamaCppBackend:
         if (
             gguf_path is not None
             and req_mode == "auto"
+            and not self._is_vision
             and (dflash_draft_path or None) != (self._dflash_draft_path or None)
         ):
             return False
@@ -8055,6 +8110,7 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._dflash_draft_path = None
             self._dflash_retry_needed = False
+            self._dflash_fallback_inputs = None
             self._spec_fallback_reason = None
             self._last_load_kwargs = None
             self._mtp_runtime_fallback_active = False

@@ -663,6 +663,32 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(text_only_off_gb, 100 / (1024**3), places = 12)
         self.assertAlmostEqual(text_only_unsupported_gb, 100 / (1024**3), places = 12)
 
+    def test_local_auto_dflash_skips_unused_mtp(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            main = root / "model.gguf"
+            mtp = root / "mtp-model.gguf"
+            dflash = root / "model-DFlash-q8_0.gguf"
+            main.write_bytes(b"m" * 100)
+            mtp.write_bytes(b"t" * 20)
+            dflash.write_bytes(b"d" * 30)
+            cfg = SimpleNamespace(
+                gguf_file = str(main),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_dflash_file = str(dflash),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                auto_gb = self.route._estimate_gguf_required_gb(cfg)
+                unsupported_gb = self.route._estimate_gguf_required_gb(cfg, dflash_supported = False)
+
+        self.assertAlmostEqual(auto_gb, 130 / (1024**3), places = 12)
+        self.assertAlmostEqual(unsupported_gb, 120 / (1024**3), places = 12)
+
     def test_local_adds_kv_cache(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:

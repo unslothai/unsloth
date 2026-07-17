@@ -3179,13 +3179,6 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
-    # Retry DFlash fallbacks after a binary update or drafter replacement.
-    if llama_backend.spec_fallback_reason in (
-        "binary_no_dflash",
-        "dflash_drafter_incompatible",
-        "dflash_runtime_error",
-    ):
-        return False
     # Auto keeps its requested mode, so use the resolved mode for draft depth.
     _draft_n_max_engaged = backend_mode in ("mtp", "mtp+ngram") or (
         llama_backend.speculative_type in ("draft-mtp", "draft-dflash")
@@ -3270,6 +3263,8 @@ def _request_matches_loaded_settings(
             except OSError:
                 return False
             if detected_resolved != stored_resolved:
+                return False
+            if llama_backend.dflash_fallback_inputs_changed(detected):
                 return False
     return True
 
@@ -3760,6 +3755,7 @@ def _remote_gguf_companion_bytes(
     hf_token: Optional[str],
     include_mmproj: bool,
     include_dflash: bool = True,
+    dflash_precedes_mtp: bool = False,
     weight_name: Optional[str] = None,
 ) -> int:
     """Return auto-downloaded companion bytes, or 0 if they cannot be sized."""
@@ -3770,6 +3766,7 @@ def _remote_gguf_companion_bytes(
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         siblings = info.siblings or []
+        dflash = preferred_dflash_sibling(siblings, weight_name) if include_dflash else None
         total = 0
         for sibling in siblings:
             name = sibling.rfilename or ""
@@ -3779,13 +3776,13 @@ def _remote_gguf_companion_bytes(
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if is_root_mtp or (include_mmproj and "mmproj" in base):
+            if (is_root_mtp and not (dflash_precedes_mtp and dflash is not None)) or (
+                include_mmproj and "mmproj" in base
+            ):
                 total += getattr(sibling, "size", 0) or 0
         # Count only the DFlash build the loader selects.
-        if include_dflash:
-            dflash = preferred_dflash_sibling(siblings, weight_name)
-            if dflash is not None:
-                total += getattr(dflash, "size", 0) or 0
+        if dflash is not None:
+            total += getattr(dflash, "size", 0) or 0
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -3836,11 +3833,15 @@ def _estimate_gguf_required_gb(
     resolves so the caller default-denies."""
     try:
         total_bytes = 0
-        if _extra_args_set_spec_type(llama_extra_args):
+        user_owns_spec_type = _extra_args_set_spec_type(llama_extra_args)
+        if user_owns_spec_type:
             dflash_engages = _extra_args_requests_dflash(llama_extra_args, env = {})
+            auto_dflash_engages = False
         else:
-            dflash_engages = (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+            auto_dflash_engages = (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+            dflash_engages = auto_dflash_engages
         dflash_engages = dflash_engages and dflash_supported
+        auto_dflash_engages = auto_dflash_engages and dflash_supported
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
@@ -3848,8 +3849,17 @@ def _estimate_gguf_required_gb(
         _cfg_is_vision = bool(getattr(config, "gguf_mmproj_file", None)) and not (
             extra_args_disable_mmproj(llama_extra_args)
         )
+        dflash_file = getattr(config, "gguf_dflash_file", None)
+        local_dflash_wins = bool(
+            auto_dflash_engages
+            and not _cfg_is_vision
+            and dflash_file
+            and Path(dflash_file).is_file()
+        )
         for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
             if attr == "gguf_mmproj_file" and not _cfg_is_vision:
+                continue
+            if attr == "gguf_mtp_file" and local_dflash_wins:
                 continue
             if attr == "gguf_dflash_file" and (_cfg_is_vision or not dflash_engages):
                 continue
@@ -3878,6 +3888,7 @@ def _estimate_gguf_required_gb(
                 hf_token = hf_token,
                 include_mmproj = remote_is_vision,
                 include_dflash = dflash_engages and not remote_is_vision,
+                dflash_precedes_mtp = auto_dflash_engages and not remote_is_vision,
                 weight_name = selected_variant.filename,
             )
             return (selected_variant.size_bytes + companions) / (1024**3)

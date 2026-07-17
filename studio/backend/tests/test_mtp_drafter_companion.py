@@ -148,6 +148,20 @@ def test_variant_plans_carry_dflash_drafter_preferring_quant():
     assert plan.download_size_bytes == 4_575
 
 
+def test_variant_plans_pair_dflash_with_subdirectory_weight():
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Q4_K_M/Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
+            _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+        ]
+    )
+
+    assert plans["q4_k_m"].target_filenames == (
+        "Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
+        "Qwen3-4B-DFlash-q8_0.gguf",
+    )
+
+
 def test_variant_plans_skip_dflash_for_vision_repos():
     # A vision repo suppresses DFlash at load, so the download plan must not
     # fetch the drafter with every variant.

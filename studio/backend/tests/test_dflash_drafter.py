@@ -289,14 +289,19 @@ def test_already_in_target_state_dedups_same_dflash_drafter(dflash_pair):
     assert _in_target(backend, str(weight), str(drafter)) is True
 
 
-@pytest.mark.parametrize(
-    "reason",
-    ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
-)
-def test_already_in_target_state_bypasses_after_dflash_fallback(dflash_pair, reason):
+def test_already_in_target_state_retries_fallback_after_binary_change(
+    monkeypatch, dflash_pair, tmp_path
+):
     weight, drafter = dflash_pair
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"old")
     backend = _dflash_backend(str(weight), str(drafter))
-    backend._spec_fallback_reason = reason
+    backend._spec_fallback_reason = "binary_no_dflash"
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda: str(binary))
+    backend._remember_dflash_fallback_inputs(str(binary), str(drafter))
+
+    assert _in_target(backend, str(weight), str(drafter)) is True
+    binary.write_bytes(b"new-binary")
     assert _in_target(backend, str(weight), str(drafter)) is False
 
 
@@ -318,6 +323,14 @@ def test_hf_backend_reloads_when_cached_dflash_appears(dflash_pair):
     backend = _dflash_backend(str(weight), None)
     backend._hf_repo = "unsloth/Qwen3-4B-GGUF"
     assert _in_target(backend, None, None) is False
+
+
+def test_hf_vision_backend_ignores_cached_dflash(dflash_pair):
+    weight, _ = dflash_pair
+    backend = _dflash_backend(str(weight), None)
+    backend._hf_repo = "unsloth/Qwen3-VL-4B-GGUF"
+    backend._is_vision = True
+    assert _in_target(backend, None, None) is True
 
 
 def test_extra_args_requests_dflash():
@@ -444,6 +457,7 @@ def test_remote_companion_bytes_counts_preferred_dflash(routes, monkeypatch):
 
     siblings = [
         SimpleNamespace(rfilename = "Qwen3-4B-Q4_K_M.gguf", size = 4_000),
+        SimpleNamespace(rfilename = "mtp-Qwen3-4B.gguf", size = 100),
         SimpleNamespace(rfilename = "Qwen3-4B-DFlash-bf16.gguf", size = 1_200),
         SimpleNamespace(rfilename = "Qwen3-4B-DFlash-q8_0.gguf", size = 575),
     ]
@@ -456,7 +470,15 @@ def test_remote_companion_bytes_counts_preferred_dflash(routes, monkeypatch):
         include_mmproj = True,
         weight_name = "Qwen3-4B-Q4_K_M.gguf",
     )
-    assert total == 575
+    assert total == 675
+    auto_total = routes._remote_gguf_companion_bytes(
+        "org/repo",
+        hf_token = None,
+        include_mmproj = True,
+        dflash_precedes_mtp = True,
+        weight_name = "Qwen3-4B-Q4_K_M.gguf",
+    )
+    assert auto_total == 575
 
 
 def test_remote_companion_bytes_skips_foreign_dflash(routes, monkeypatch):
@@ -489,16 +511,16 @@ def test_dflash_reload_dedup_finds_root_sibling(routes, tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 
-@pytest.mark.parametrize(
-    "reason",
-    ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
-)
-def test_dflash_failure_forces_reload_to_retry(routes, dflash_pair, reason):
+def test_dflash_failure_retries_after_drafter_change(routes, dflash_pair):
     weight, drafter = dflash_pair
     backend = _route_dedup_backend(str(weight), hf_repo = None)
     backend._dflash_draft_path = str(drafter.resolve())
-    backend._spec_fallback_reason = reason
+    backend._spec_fallback_reason = "dflash_drafter_incompatible"
+    backend._remember_dflash_fallback_inputs(None, str(drafter))
     req = LoadRequest(model_path = str(weight))
+    assert routes._request_matches_loaded_settings(req, backend) is True
+
+    drafter.write_bytes(b"replacement")
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
