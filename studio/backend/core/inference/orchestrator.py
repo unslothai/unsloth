@@ -1512,7 +1512,10 @@ class InferenceOrchestrator:
         try:
             for chunk in stream:
                 if isinstance(chunk, GenStreamError):
-                    raise RuntimeError(str(chunk))
+                    # Preserve the public/operational flag so the route can surface
+                    # the real message (e.g. "model is being unloaded") instead of a
+                    # generic error. Mirrors the safetensors tool loop's _single_turn.
+                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
                 yield chunk
         finally:
             close = getattr(stream, "close", None)
