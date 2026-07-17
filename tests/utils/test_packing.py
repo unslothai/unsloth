@@ -215,6 +215,25 @@ def test_vlm_vision_dataset_still_disables_packing():
     assert config.padding_free is False
 
 
+@pytest.mark.parametrize(
+    "vision_column",
+    ("pixel_values", "pixel_attention_mask", "image_grid_thw"),
+)
+def test_vlm_preprocessed_vision_dataset_disables_packing(vision_column):
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    fake_trainer(
+        model = _vlm_model(),
+        args = config,
+        processing_class = object(),
+        train_dataset = Dataset.from_dict({"input_ids": [[1]], vision_column: [None]}),
+    )
+
+    assert config.packing is False
+    assert config.padding_free is False
+
+
 def test_vlm_streaming_vision_dataset_without_metadata_disables_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -233,6 +252,35 @@ def test_vlm_streaming_vision_dataset_without_metadata_disables_packing():
     assert config.packing is False
     assert config.padding_free is False
     assert next(iter(dataset))["text"] == "multimodal sample"
+
+
+@pytest.mark.parametrize("data_collator", (None, object()))
+def test_stateful_stream_is_not_consumed_during_detection(data_collator):
+    class StatefulDataset:
+        def __init__(self):
+            self.rows = iter([{"text": "first"}, {"text": "second"}])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.rows)
+
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    dataset = StatefulDataset()
+
+    fake_trainer(
+        model = _vlm_model(),
+        args = config,
+        processing_class = object(),
+        data_collator = data_collator,
+        train_dataset = dataset,
+    )
+
+    assert config.packing is False
+    assert config.padding_free is False
+    assert next(dataset)["text"] == "first"
 
 
 def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):

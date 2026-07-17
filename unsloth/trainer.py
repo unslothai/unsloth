@@ -137,17 +137,43 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
 
 
+_VISION_DATASET_KEYS = frozenset(
+    {
+        "image",
+        "images",
+        "image_grid_thw",
+        "image_position_ids",
+        "image_sizes",
+        "mm_token_type_ids",
+        "pixel_attention_mask",
+        "pixel_position_ids",
+        "pixel_values",
+        "pixel_values_videos",
+        "video",
+        "videos",
+        "video_grid_thw",
+    }
+)
+
+
 def _is_vision_dataset(dataset) -> bool:
     if dataset is None:
         return False
     column_names = getattr(dataset, "column_names", None)
     if column_names is not None:
-        return "image" in column_names or "images" in column_names
+        return not _VISION_DATASET_KEYS.isdisjoint(column_names)
     try:
-        sample = next(iter(dataset))
-    except (StopIteration, TypeError):
+        iterator = iter(dataset)
+    except TypeError:
         return False
-    return isinstance(sample, dict) and ("image" in sample or "images" in sample)
+    if iterator is dataset:
+        # Modality is unknown, but probing a one-shot stream would drop its first sample.
+        return True
+    try:
+        sample = next(iterator)
+    except StopIteration:
+        return False
+    return isinstance(sample, dict) and not _VISION_DATASET_KEYS.isdisjoint(sample)
 
 
 # Unsloth gradient accumulation fix:
@@ -522,12 +548,15 @@ def _patch_sft_trainer_auto_packing(trl_module):
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
         data_collator = kwargs.get("data_collator")
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
-        is_vision_dataset = _is_vision_dataset(train_dataset)
+        is_processor = isinstance(processing_class, ProcessorMixin)
+        is_vision_dataset = (
+            data_collator is None and not is_processor and _is_vision_dataset(train_dataset)
+        )
 
         # Disable padding-free for VLMs / custom collators / blocklisted models
         blocked = (
             (data_collator is not None)
-            or isinstance(processing_class, ProcessorMixin)
+            or is_processor
             or is_vision_dataset
             or is_unsupported_model
             or (
@@ -543,7 +572,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         if blocked and requested_pack:
             reason = "custom data collator"
-            if data_collator is None and isinstance(processing_class, ProcessorMixin):
+            if data_collator is None and is_processor:
                 reason = "processor-based model"
             elif is_vision_dataset:
                 reason = "vision dataset"
