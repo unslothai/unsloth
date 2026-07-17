@@ -3839,9 +3839,7 @@ def _estimate_gguf_required_gb(
         if _extra_args_set_spec_type(llama_extra_args):
             dflash_engages = _extra_args_requests_dflash(llama_extra_args, env = {})
         else:
-            dflash_engages = (
-                _canonicalize_spec_mode(speculative_type) or "auto"
-            ) == "auto"
+            dflash_engages = (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
         dflash_engages = dflash_engages and dflash_supported
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
@@ -3920,9 +3918,7 @@ def _guard_chat_load_against_training(
     if is_gguf:
         try:
             dflash_supported = bool(
-                (get_llama_cpp_backend().probe_server_capabilities() or {}).get(
-                    "dflash_token"
-                )
+                (get_llama_cpp_backend().probe_server_capabilities() or {}).get("dflash_token")
             )
         except Exception:
             dflash_supported = False

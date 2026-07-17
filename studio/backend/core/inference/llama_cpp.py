@@ -7964,16 +7964,12 @@ class LlamaCppBackend:
                 detect_dflash_file,
             )
 
-            search_root = _local_gguf_companion_search_root(
-                self._gguf_path, self._gguf_path
-            )
+            search_root = _local_gguf_companion_search_root(self._gguf_path, self._gguf_path)
             detected = detect_dflash_file(self._gguf_path, search_root = search_root)
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
                 stored_resolved = (
-                    Path(self._dflash_draft_path).resolve()
-                    if self._dflash_draft_path
-                    else None
+                    Path(self._dflash_draft_path).resolve() if self._dflash_draft_path else None
                 )
             except OSError:
                 return False
