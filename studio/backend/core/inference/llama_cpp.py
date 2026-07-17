@@ -7979,10 +7979,7 @@ class LlamaCppBackend:
         ):
             return False
 
-        if (
-            req_mode in ("auto", "mtp", "mtp+ngram")
-            and self.spec_binary_fallback_can_retry()
-        ):
+        if req_mode in ("auto", "mtp", "mtp+ngram") and self.spec_binary_fallback_can_retry():
             return False
 
         if self._dflash_retry_needed and req_mode == "auto":
