@@ -146,7 +146,7 @@ def test_bearer_token_middleware_rejects_non_ascii_token():
 
     # non-ASCII tokens cannot be transmitted in an HTTP header by a standard
     # client, so they are rejected at construction instead of locking out.
-    for bad in ("töken", "\U0001F600"):
+    for bad in ("töken", "\U0001f600"):
         with pytest.raises(ValueError):
             BearerTokenMiddleware(app, bad)
 
