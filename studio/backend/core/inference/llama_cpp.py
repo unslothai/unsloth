@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
+import functools
 import json
 import os
 import re
@@ -1174,9 +1175,44 @@ def _pick_mmproj(candidates: list[str]) -> Optional[str]:
 def _hub_download_in_flight(hf_repo: str) -> bool:
     try:
         from hub.utils.download_registry import get_models_registry
-        return bool(get_models_registry().active_jobs(hf_repo))
+        return bool(get_models_registry().active_job_refs(hf_repo))
     except Exception:
         return False
+
+
+def _hub_download_blocks_gguf_load(
+    hf_repo: str,
+    hf_variant: Optional[str],
+    *,
+    require_mmproj: bool = False,
+    hf_token: Optional[str] = None,
+) -> bool:
+    """Whether an active Hub job makes this GGUF load unsafe.
+
+    Same-variant jobs can reclaim the stale snapshot a load would reuse, so
+    they always block. Other jobs block only when this load lacks a complete
+    cached copy and would write to the shared cache itself.
+    """
+    try:
+        from hub.utils.download_registry import get_models_registry
+
+        registry = get_models_registry()
+        if not registry.active_job_refs(hf_repo):
+            return False
+        if registry.has_active_variant(hf_repo, hf_variant):
+            return True
+    except Exception:
+        return False
+    return (
+        cached_gguf_for_load(
+            hf_repo,
+            hf_variant,
+            require_mmproj = require_mmproj,
+            verify_sizes = True,
+            hf_token = hf_token,
+        )
+        is None
+    )
 
 
 # Active GGUF loads by normalized repo ID.
@@ -1211,6 +1247,30 @@ def hf_gguf_load_in_flight(hf_repo: str) -> bool:
         return False
     with _LOADS_IN_FLIGHT_LOCK:
         return _LOADS_IN_FLIGHT.get(key, 0) > 0
+
+
+def _with_gguf_load_marker(load: Callable):
+    """Keep an HF repo marked for the full synchronous load call."""
+
+    @functools.wraps(load)
+    def wrapped(self, *args, **kwargs):
+        hf_repo = kwargs.get("hf_repo")
+        with gguf_load_in_flight(hf_repo):
+            if hf_repo and _hub_download_blocks_gguf_load(
+                hf_repo,
+                kwargs.get("hf_variant"),
+                require_mmproj = bool(
+                    kwargs.get("is_vision")
+                    and not extra_args_disable_mmproj(kwargs.get("extra_args"))
+                ),
+                hf_token = kwargs.get("hf_token"),
+            ):
+                raise RuntimeError(
+                    f"'{hf_repo}' is currently being downloaded by the download manager"
+                )
+            return load(self, *args, **kwargs)
+
+    return wrapped
 
 
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
@@ -5634,6 +5694,7 @@ class LlamaCppBackend:
         )
         self._stdout_thread.start()
 
+    @_with_gguf_load_marker
     def load_model(
         self,
         *,

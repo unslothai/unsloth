@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import types as _types
 from pathlib import Path
 from unittest.mock import patch
@@ -442,7 +443,7 @@ class TestLoadReusesCachedCopy:
     def test_companion_does_not_download_during_hub_job(self, hf_cache):
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
-        registry = _types.SimpleNamespace(active_jobs = lambda _repo: {REPO: "running"})
+        registry = _types.SimpleNamespace(active_job_refs = lambda _repo: [object()])
 
         with (
             patch("huggingface_hub.list_repo_files", _fail_download),
@@ -608,6 +609,107 @@ class TestLoadHubDownloadExclusion:
         assert state == "admission_blocked"
         assert registry.active_jobs(REPO) == {}
 
+    def test_same_variant_job_stays_visible_during_retry_handoff(self):
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_XET
+        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+
+        registry = DownloadRegistry()
+        key = f"{REPO}::{VARIANT}"
+        claimed, _ = registry.claim(
+            key,
+            TRANSPORT_XET,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = VARIANT,
+        )
+        assert claimed is True
+        assert registry.has_active_variant(REPO, VARIANT.lower()) is True
+
+        registry.release_active_slot(key)
+
+        assert registry.active_jobs(REPO) == {}
+        assert registry.active_job_refs(REPO)
+        assert registry.has_active_variant(REPO, VARIANT) is True
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                side_effect = AssertionError("same-variant jobs must block before cache reuse"),
+            ),
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, VARIANT) is True
+
+        registry.set_job(key, "complete")
+        assert registry.has_active_variant(REPO, VARIANT) is False
+
+    def test_other_variant_job_still_allows_complete_cached_load(self):
+        from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+        from hub.utils.download_registry import DownloadRegistry, TRANSPORT_HTTP
+
+        registry = DownloadRegistry()
+        registry.claim(
+            f"{REPO}::Q8_0",
+            TRANSPORT_HTTP,
+            repo_type = "model",
+            repo_id = REPO,
+            variant = "Q8_0",
+        )
+        with (
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch(
+                "core.inference.llama_cpp.cached_gguf_for_load",
+                return_value = "/cached/model.gguf",
+            ) as cached_probe,
+        ):
+            assert _hub_download_blocks_gguf_load(REPO, VARIANT) is False
+
+        cached_probe.assert_called_once_with(
+            REPO,
+            VARIANT,
+            require_mmproj = False,
+            verify_sizes = True,
+            hf_token = None,
+        )
+
+    def test_cancelled_request_keeps_marker_until_load_thread_finishes(self):
+        from core.inference.llama_cpp import _with_gguf_load_marker
+
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        class FakeBackend:
+            @_with_gguf_load_marker
+            def load_model(self, *, hf_repo):
+                started.set()
+                release.wait(timeout = 2)
+                finished.set()
+                return True
+
+        async def scenario():
+            with patch(
+                "core.inference.llama_cpp._hub_download_blocks_gguf_load",
+                return_value = False,
+            ):
+                task = asyncio.create_task(
+                    asyncio.to_thread(FakeBackend().load_model, hf_repo = REPO)
+                )
+                assert await asyncio.to_thread(started.wait, 1)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert hf_gguf_load_in_flight(REPO)
+
+                release.set()
+                assert await asyncio.to_thread(finished.wait, 1)
+                for _ in range(100):
+                    if not hf_gguf_load_in_flight(REPO):
+                        break
+                    await asyncio.sleep(0.001)
+                assert not hf_gguf_load_in_flight(REPO)
+
+        asyncio.run(scenario())
+
     def test_load_marker_precedes_hub_guard_and_unload(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
         gguf_branch = source[source.index("if config.is_gguf:") :]
@@ -615,6 +717,10 @@ class TestLoadHubDownloadExclusion:
         assert (
             gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("if request.llama_extra_args is None")
-            < gguf_branch.index("active_jobs(config.gguf_hf_repo)")
+            < gguf_branch.index("_hub_download_blocks_gguf_load")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
+        llama_source = (
+            Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        ).read_text()
+        assert "@_with_gguf_load_marker\n    def load_model(" in llama_source

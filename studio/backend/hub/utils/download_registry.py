@@ -1042,8 +1042,8 @@ class DownloadRegistry:
             # Run the final external admission check while the registry lock is
             # held, immediately before inspecting and publishing active state.
             # The GGUF load path establishes its marker before calling
-            # active_jobs(), so either this claim observes that marker or the
-            # load's later active_jobs() observes this claim.
+            # its active-job probe, so either this claim observes that marker
+            # or the load's later probe observes this claim.
             if admission_check is not None and not admission_check():
                 return False, "admission_blocked"
             deleting_scopes = self._deleting.get(repo)
@@ -1229,6 +1229,23 @@ class DownloadRegistry:
                     )
                 )
             return refs
+
+    def has_active_variant(self, repo_id: str, variant: Optional[str]) -> bool:
+        """Whether an active model job targets this exact GGUF variant.
+
+        Scans the job table rather than only ``_repo_active`` so an XET-to-HTTP
+        retry handoff remains visible while it has temporarily released its
+        active slot.
+        """
+        repo_key = normalize_repo_key(repo_id)
+        target = (variant or "").strip().lower() or None
+        with self._lock:
+            for key, job in self._jobs.items():
+                if _repo_of_key(key) != repo_key or job.state not in _ACTIVE_STATES:
+                    continue
+                if self._active_job_variant_locked(key) == target:
+                    return True
+        return False
 
     def begin_delete(
         self,

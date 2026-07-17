@@ -4277,34 +4277,24 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # after pass-through argument inheritance so a carried --no-mmproj
             # changes the companion requirement exactly as it does for the load.
             if config.gguf_hf_repo:
-                try:
-                    from hub.utils.download_registry import get_models_registry
-                    _active_hub_jobs = get_models_registry().active_jobs(config.gguf_hf_repo)
-                except Exception:
-                    _active_hub_jobs = {}
-                if _active_hub_jobs:
-                    from core.inference.llama_cpp import cached_gguf_for_load
-                    if (
-                        await asyncio.to_thread(
-                            cached_gguf_for_load,
-                            config.gguf_hf_repo,
-                            config.gguf_variant,
-                            require_mmproj = bool(
-                                config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
-                            ),
-                            verify_sizes = True,
-                            hf_token = request.hf_token,
-                        )
-                        is None
-                    ):
-                        raise HTTPException(
-                            status_code = 409,
-                            detail = (
-                                f"'{model_log_label}' is currently being downloaded "
-                                "by the download manager. Wait for the download to "
-                                "finish (or cancel it), then load the model."
-                            ),
-                        )
+                from core.inference.llama_cpp import _hub_download_blocks_gguf_load
+                if await asyncio.to_thread(
+                    _hub_download_blocks_gguf_load,
+                    config.gguf_hf_repo,
+                    config.gguf_variant,
+                    require_mmproj = bool(
+                        config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                    ),
+                    hf_token = request.hf_token,
+                ):
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = (
+                            f"'{model_log_label}' is currently being downloaded "
+                            "by the download manager. Wait for the download to "
+                            "finish (or cancel it), then load the model."
+                        ),
+                    )
 
             # Unload any active Unsloth model only after every hub conflict check.
             if unsloth_backend.active_model_name:
