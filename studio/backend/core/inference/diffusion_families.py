@@ -309,6 +309,20 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Exported bf16-only; fp16 unvalidated upstream, so keep the fp16 fallback off like z-image.
         fp16_incompatible = True,
     ),
+    # Lumina Image 2.0: a 2.6B single-stream DiT with a Gemma2-2B encoder and a standard
+    # 16-channel AutoencoderKL, all transformers-4.x-compatible, so the generic
+    # from_pretrained pipeline path loads it. No GGUF/sd.cpp mapping exists upstream.
+    # NOT aliased to bare "lumina": Lumina-Next checkpoints are a different arch
+    # (LuminaText2ImgPipeline) and must stay unknown rather than crash mid-load.
+    DiffusionFamily(
+        name = "lumina-2",
+        pipeline_class = "Lumina2Pipeline",
+        transformer_class = "Lumina2Transformer2DModel",
+        base_repo = "Alpha-VLLM/Lumina-Image-2.0",
+        aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
+        # Published and validated bf16-only upstream; keep the fp16 fallback off like z-image.
+        fp16_incompatible = True,
+    ),
     # Ideogram 4 (diffusers >= 0.39): a 34-layer DiT PAIR (conditional + unconditional_transformer
     # for dual-branch CFG, both ~9B, so memory planning counts two DiTs) with a Qwen3-VL encoder.
     # No bf16 checkpoint: ideogram-4-fp8 (raw float8, upcast on load) is the highest-precision
@@ -358,6 +372,10 @@ def trainable_family_names() -> tuple[str, ...]:
 # The family whose CFG uses a guidance_scale/guidance_schedule pair (the loader special-cases the
 # call). Named here so the two modules can't drift.
 IDEOGRAM4_FAMILY_NAME = "ideogram-4"
+
+# The family whose generate call carries the card's CFG-truncation ratio (the loader
+# special-cases the call). Named here so the two modules can't drift.
+LUMINA2_FAMILY_NAME = "lumina-2"
 
 
 # Models Studio deliberately does NOT support, reason surfaced verbatim in the load error (vs the
@@ -484,6 +502,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.2-dev", 28, 4.0),  # full (non-distilled)
     ("qwen-image", 20, 4.0),
     ("z-image", 20, 4.0),
+    # Lumina Image 2.0 model-card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the
+    # loader passes itself; see LUMINA2_FAMILY_NAME).
+    ("lumina", 50, 4.0),
     # Ideogram 4 model-card: 48 steps, guidance 7 (its schedule tapers the last 3 steps to 3.0;
     # the loader keeps that taper when the request matches these defaults exactly).
     ("ideogram", 48, 7.0),
