@@ -2054,13 +2054,9 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Fine-tuning Studio: equal default height, expandable when needed (md+) */
+	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
 	.min-h-studio-config-column {
 		@apply md:min-h-[520px];
-	}
-
-	.h-studio-config-column {
-		@apply md:h-[520px];
 	}
 
 	[data-streamdown="unordered-list"] {

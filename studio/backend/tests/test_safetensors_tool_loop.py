@@ -2843,6 +2843,61 @@ class TestLoopBehaviour:
         ]
         assert len(duplicate_nudges) == 1
 
+    def test_same_turn_duplicate_does_not_drop_later_parallel_call(self):
+        # Turn 1 runs search(x). Turn 2's batch is [search(x) duplicate, python]:
+        # the duplicate is a no-op, but python after it must still run, and the
+        # no-op nudge must land after python's result rather than splitting it.
+        captured_messages: list[list[dict]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_messages.append([dict(m) for m in messages])
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-x", "py-result"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+            )
+        )
+
+        # Turn-1 search and turn-2 python both ran; the turn-2 duplicate search did not.
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+
+        conv = captured_messages[-1]
+        turn2 = [m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+        assert [tc["function"]["name"] for tc in turn2["tool_calls"]] == ["python"]
+        after = conv[conv.index(turn2) + 1 :]
+        assert after[0]["role"] == "tool" and after[0]["content"] == "py-result"
+        assert after[1]["role"] == "user"  # deferred duplicate nudge, after the result
+        assert after[1]["content"].startswith(
+            "One earlier request to call tool 'web_search' in this batch was not executed"
+        )
+        assert "previous tool request" not in after[1]["content"].lower()
+
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
         captured_tool_names: list[list[str]] = []
