@@ -4425,6 +4425,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # Marked in flight for the whole attempt (retries included) so the
             # hub download manager refuses a second downloader for this repo.
             from core.inference.llama_cpp import gguf_load_in_flight
+
             with gguf_load_in_flight(config.gguf_hf_repo):
                 success = await load_with_tensor_fallback(
                     _attempt_gguf_load,

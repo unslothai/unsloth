@@ -163,14 +163,21 @@ class TestLoadReusesCachedCopy:
         backend = LlamaCppBackend()
         downloaded: list[str] = []
 
-        def fake_download(repo_id, filename, token = None, **_kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
 
-        def fake_get_paths_info(_repo_id, paths, token = None):
-            return [
-                _types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None
-            ]
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
@@ -189,15 +196,22 @@ class TestLoadReusesCachedCopy:
         _build_cache(hf_cache, REPO, {MAIN: 4})
         downloaded: list[str] = []
 
-        def fake_download(repo_id, filename, token = None, **kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **kwargs,
+        ):
             assert kwargs.get("force_download") is True
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
 
-        def fake_get_paths_info(_repo_id, paths, token = None):
-            return [
-                _types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None
-            ]
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = p, size = 1) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
@@ -233,14 +247,21 @@ class TestLoadReusesCachedCopy:
         _build_cache(hf_cache, REPO, {shard1: 4})
         downloaded: list[str] = []
 
-        def fake_download(repo_id, filename, token = None, **_kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
 
-        def fake_get_paths_info(_repo_id, paths, token = None):
-            return [
-                _types.SimpleNamespace(path = p, size = 4) for p in paths if p is not None
-            ]
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = p, size = 4) for p in paths if p is not None]
 
         with (
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [shard1, shard2]),

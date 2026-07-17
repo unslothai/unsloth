@@ -354,9 +354,7 @@ class TestGgufVariantFileResolution:
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         backend = LlamaCppBackend()
         repo = "unsloth/vision-GGUF"
-        snap = _build_cache(
-            hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40
-        )
+        snap = _build_cache(hf_cache, repo, {"model-UD-Q4_K_XL.gguf": 4}, snapshot_sha = "a" * 40)
 
         def fail_download(*_args, **_kwargs):
             raise AssertionError("must reuse the cached GGUF instead of downloading")

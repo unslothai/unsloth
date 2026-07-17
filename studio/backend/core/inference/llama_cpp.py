@@ -999,9 +999,7 @@ def _cached_colocated_split_main(
     return None
 
 
-def _cached_variant_resolution(
-    repo_id: str, hf_variant: str
-) -> tuple[Optional[str], list[str]]:
+def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[str], list[str]]:
     """Resolve a variant label to (main GGUF, extra shards) from the local HF
     cache snapshots; ``(None, [])`` when nothing matches. Matches the
     snapshot-relative path so subdir layouts (``BF16/foo.gguf``) are findable."""
