@@ -249,6 +249,23 @@ def build_training_kwargs(
         "s3_config": request.s3_config.model_dump() if request.s3_config else None,
     }
 
+    # Latest-sidecar models size and train 16-bit (same flip as chat load):
+    # 4-bit is disabled for brand-new architectures, so VRAM coexistence
+    # checks must not underestimate against a load the worker will refuse.
+    if training_kwargs["load_in_4bit"]:
+        from utils.transformers_version import latest_tier_active_for
+        if latest_tier_active_for(
+            training_kwargs["model_name"],
+            training_kwargs["hf_token"] or None,
+        ):
+            training_kwargs["load_in_4bit"] = False
+            logger.info(
+                "Latest-transformers sidecar active for %s - sizing and "
+                "training in 16-bit (4-bit is disabled for brand-new "
+                "architectures)",
+                training_kwargs["model_name"],
+            )
+
     # Training page has no trust_remote_code toggle, so honor the YAML default
     # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
     # local path or a name merely starting with "unsloth/".

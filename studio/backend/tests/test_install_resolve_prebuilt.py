@@ -483,3 +483,237 @@ def test_resolve_prebuilt_intel_host_routes_to_upstream(monkeypatch, capsys):
     seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == UPSTREAM
     assert out["repo"] == UPSTREAM
+
+
+# ---------------------------------------------------------------------------
+# windows_intel_gpu_in_registry: the in-process Windows Intel probe. A fake
+# winreg module stands in for the real registry so the walk runs anywhere.
+# ---------------------------------------------------------------------------
+
+
+class _FakeRegKey:
+    def __init__(
+        self,
+        subkeys = None,
+        values = None,
+        denied = False,
+    ):
+        self.subkeys = subkeys or {}
+        self.values = values or {}
+        self.denied = denied
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeWinreg:
+    HKEY_LOCAL_MACHINE = object()
+
+    def __init__(self, root_key):
+        self._root_key = root_key
+
+    def OpenKey(self, parent, name):
+        if parent is self.HKEY_LOCAL_MACHINE:
+            # Pin the production constant: a typo'd class GUID must fail here,
+            # not silently return the fake tree.
+            if name != ilp._WINDOWS_DISPLAY_CLASS_KEY:
+                raise FileNotFoundError(name)
+            if self._root_key is None:
+                raise FileNotFoundError(name)
+            return self._root_key
+        key = parent.subkeys.get(name)
+        if key is None:
+            # Real winreg raises OSError, never KeyError, for a missing key.
+            raise FileNotFoundError(name)
+        if key.denied:
+            raise PermissionError(name)
+        return key
+
+    def QueryInfoKey(self, key):
+        return (len(key.subkeys), len(key.values), 0)
+
+    def EnumKey(self, key, index):
+        return list(key.subkeys)[index]
+
+    def QueryValueEx(self, key, value_name):
+        if value_name not in key.values:
+            raise FileNotFoundError(value_name)
+        return (key.values[value_name], 1)
+
+
+def _probe_with_display_class(monkeypatch, adapters):
+    # The helper lazily does `import winreg`; plant the fake in sys.modules the
+    # same way unsloth_cli/tests/test_start.py fakes it for _refresh_windows_path.
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(_FakeRegKey(subkeys = adapters)))
+    return ilp.windows_intel_gpu_in_registry()
+
+
+def test_windows_intel_registry_matches_vendor_id(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0&SUBSYS_12345678",
+                        "DriverDesc": "Intel(R) Arc(TM) A770 Graphics",
+                    }
+                ),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_matches_driver_desc_without_device_id(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(values = {"DriverDesc": "Intel(R) UHD Graphics 630"}),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_ignores_non_intel_adapters(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684",
+                        "DriverDesc": "NVIDIA GeForce RTX 4090",
+                    }
+                ),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_1002&DEV_744C",
+                        "DriverDesc": "AMD Radeon RX 7900 XTX",
+                    }
+                ),
+            },
+        )
+        is False
+    )
+
+
+def test_windows_intel_registry_skips_restricted_properties_subkey(monkeypatch):
+    # The real class key carries an ACL-restricted "Properties" subkey and can
+    # deny access to individual adapter keys; neither may abort the walk.
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "Properties": _FakeRegKey(denied = True),
+                "0000": _FakeRegKey(denied = True),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0",
+                    }
+                ),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_missing_class_key_is_false(monkeypatch):
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(None))
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def _detect_windows_host(
+    monkeypatch,
+    winreg_fake,
+    powershell_stdout = "",
+):
+    """Drive the real detect_host() as a GPU-less Windows host with a fake
+    registry, recording every run_capture invocation. Pins the wiring the
+    unit tests above cannot see: registry-first, CIM only on a registry miss."""
+    monkeypatch.setitem(sys.modules, "winreg", winreg_fake)
+    monkeypatch.setattr(ilp.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ilp.platform, "machine", lambda: "AMD64")
+    for _env in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_PATH",
+        "ROCM_PATH",
+    ):
+        monkeypatch.delenv(_env, raising = False)
+    monkeypatch.setattr(
+        ilp.shutil,
+        "which",
+        lambda name: "powershell" if name in ("powershell", "pwsh") else None,
+    )
+    captured = []
+
+    def _fake_run_capture(command, **kwargs):
+        captured.append(command[0])
+        if command[0] == "powershell":
+            return SimpleNamespace(returncode = 0, stdout = powershell_stdout, stderr = "")
+        return SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+
+    monkeypatch.setattr(ilp, "run_capture", _fake_run_capture)
+    return ilp.detect_host(), captured
+
+
+def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(monkeypatch, winreg)
+    assert host.has_intel_gpu is True
+    assert "powershell" not in captured
+
+
+def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(
+        monkeypatch, winreg, powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured
+
+
+def test_windows_intel_registry_unexpected_error_is_false(monkeypatch):
+    # The probe is advisory: even a non-OSError bug in the walk must return
+    # False (deferring to the CIM fallback), never crash detect_host.
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    monkeypatch.setitem(sys.modules, "winreg", _ExplodingWinreg())
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def test_detect_host_cim_rescues_exploding_registry(monkeypatch):
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    host, captured = _detect_windows_host(
+        monkeypatch, _ExplodingWinreg(), powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured

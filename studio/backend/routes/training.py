@@ -123,6 +123,16 @@ async def start_training(
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
 
+        # A consented latest-transformers install stage-and-swaps .venv_t5_latest;
+        # a worker spawned mid-swap could activate a half-replaced sidecar.
+        from utils.transformers_latest import is_install_in_progress
+
+        if is_install_in_progress():
+            raise HTTPException(
+                status_code = 409,
+                detail = ("A transformers installation is in progress. Retry when it completes."),
+            )
+
         backend = get_training_backend()
 
         validate_s3_support(request)
@@ -156,14 +166,21 @@ async def start_training(
         resume_output_dir = validate_training_request(request)
 
         # load_model_defaults comes from this module so tests can patch it here.
-        success = launch_training(
-            job_id = job_id,
-            request = request,
-            resume_output_dir = resume_output_dir,
-            subject = current_subject,
-            backend = backend,
-            model_defaults_loader = load_model_defaults,
-        )
+        from utils.transformers_version import SidecarSwapInProgress
+
+        try:
+            success = launch_training(
+                job_id = job_id,
+                request = request,
+                resume_output_dir = resume_output_dir,
+                subject = current_subject,
+                backend = backend,
+                model_defaults_loader = load_model_defaults,
+            )
+        except SidecarSwapInProgress as exc:
+            # Expected loss of the race against a sidecar install: a retryable
+            # 409 matching the route-entry guard, not an internal error.
+            raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
             progress_error = backend.trainer.training_progress.error
@@ -434,7 +451,9 @@ async def stream_training_progress(
     if last_event_id is not None:
         try:
             resume_from_step = int(last_event_id)
-            logger.info(f"SSE reconnect: resuming from step {resume_from_step}")
+            # Fires on every reconnect (each tab switch); the meaningful signal is
+            # the "replayed N missed steps" line below, logged only when N > 0.
+            logger.debug(f"SSE reconnect: resuming from step {resume_from_step}")
         except ValueError:
             logger.warning(f"Invalid Last-Event-ID: {last_event_id}")
 

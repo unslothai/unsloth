@@ -270,6 +270,8 @@ class TrainingQueueManager:
             return
         if self._api_item_must_wait(item):
             return
+        if self._install_must_wait(item):
+            return
         if self._stop_runner.is_set():
             return
 
@@ -296,6 +298,22 @@ class TrainingQueueManager:
             )
             return True
         return False
+
+    def _install_must_wait(self, item: dict) -> bool:
+        # POST /start refuses to spawn while a consented transformers install
+        # stage-and-swaps the sidecar (a worker spawned mid-swap could activate
+        # a half-replaced venv). Same guard here: the item stays pending and
+        # the next tick retries, without consuming start deferrals.
+        try:
+            from utils.transformers_latest import is_install_in_progress
+            if not is_install_in_progress():
+                return False
+        except Exception:
+            return False
+        logger.debug(
+            "Queue item %s waiting: transformers install in progress", item["id"]
+        )
+        return True
 
     def _reconcile_running_items(self, backend) -> None:
         for item in studio_db.list_queue_items(statuses = ("starting", "running")):
@@ -367,6 +385,8 @@ class TrainingQueueManager:
             _skip(str(e))
             return
 
+        from utils.transformers_version import SidecarSwapInProgress
+
         job_id = generate_job_id()
         try:
             success = launch_training(
@@ -376,6 +396,13 @@ class TrainingQueueManager:
                 subject = item.get("subject") or "queue",
                 backend = backend,
             )
+        except SidecarSwapInProgress as e:
+            # Transient: a consented transformers install is mid-swap. Put the
+            # item back for the next tick instead of skipping it permanently.
+            if self._defer_start(item):
+                return
+            _skip(str(e))
+            return
         except HTTPException as e:
             _skip(str(e.detail))
             return

@@ -1061,6 +1061,80 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     ]
 
 
+def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
+    # One batch: search(a), search(a) [duplicate], search(b). The duplicate is an
+    # internal no-op, but the distinct search(b) after it must still run, and the
+    # no-op nudge must land after the tool results rather than splitting them.
+    batch = [
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a1",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "a"})},
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_a2",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "a"})},
+                    },
+                    {
+                        "index": 2,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": json.dumps({"query": "b"})},
+                    },
+                ]
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "Final answer."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [batch, final_stream], payloads)
+
+    calls: list[dict] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append(arguments)
+        return "search-result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    # Both distinct calls ran; the duplicate did not (old `break` dropped search(b)).
+    assert calls == [{"query": "a"}, {"query": "b"}]
+    assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
+        "call_a1",
+        "call_b",
+    ]
+
+    # The next generation's conversation must be well-formed: the assistant lists
+    # only the executed calls (no orphan for the duplicate), the two tool results
+    # follow contiguously, and the no-op nudge lands after them, never between.
+    conv = payloads[1]["messages"]
+    asst = next(m for m in conv if m["role"] == "assistant" and m.get("tool_calls"))
+    assert [tc.get("id") for tc in asst["tool_calls"]] == ["call_a1", "call_b"]
+    after = conv[conv.index(asst) + 1 :]
+    assert [m["role"] for m in after[:2]] == ["tool", "tool"]
+    assert [m.get("tool_call_id") for m in after[:2]] == ["call_a1", "call_b"]
+    assert after[2]["role"] == "user"  # deferred duplicate nudge, after the results
+    assert after[2]["content"].startswith(
+        "One earlier request to call tool 'web_search' in this batch was not executed"
+    )
+    assert "previous tool request" not in after[2]["content"].lower()
+
+
 def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(monkeypatch):
     same_turn_render_calls = [
         _sse(
@@ -1498,6 +1572,59 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
     assert any("Let me search." in t for t in content_texts)
 
 
+def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
+    # A textual Mistral-style call with an explicit ``id`` must reconcile onto the
+    # open provisional TEXT card (keyed "call_0"), not spawn a duplicate under the
+    # explicit id (which the parser keeps for execution).
+    big_query = "cats " * 80  # push the drained call past the provisional floor
+    call = "[TOOL_CALLS]" + json.dumps(
+        [{"name": "web_search", "arguments": {"query": big_query}, "id": "explicit-42"}]
+    )
+    assert len(call) > 256
+    # Small chunks so the provisional card opens mid-generation (a single-shot
+    # delta parses instantly and never shows a provisional to exercise).
+    chunks = [call[i : i + 24] for i in range(0, len(call), 24)]
+    streams = [
+        [_sse({"content": c}) for c in chunks] + [_done()],
+        [_sse({"content": "done"}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        calls.append((name, arguments))
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert calls == [("web_search", {"query": big_query})]
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    # Empty-args card = provisional open; full-args card = reconciled real start.
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    real = [e for e in tool_starts if e.get("arguments", {}).get("query")]
+    assert len(provisional) == 1, tool_starts  # provisional actually opened
+    prov_id = provisional[0]["tool_call_id"]
+    # Exactly one real card, sharing the provisional id, not a duplicate under
+    # the explicit "explicit-42" id.
+    assert len(real) == 1, tool_starts
+    assert real[0]["tool_call_id"] == prov_id
+    assert real[0]["tool_name"] == "web_search"
+    assert {e["tool_call_id"] for e in tool_starts} == {prov_id}
+    # A single tool_end reconciles the card; no stale empty-result close.
+    ends = [e for e in events if e.get("type") == "tool_end"]
+    assert [e["tool_call_id"] for e in ends] == [prov_id]
+    assert ends[0]["result"] == "result"
+
+
 def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
     # Same leak class for the Llama-3 built-in ``<|python_tag|>NAME.call(...)`` form.
     streams = [
@@ -1824,6 +1951,39 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
 
     assert calls == [("python", {"code": big_code})]
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "python" for e in events)
+
+
+def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
+    """render_html is no longer unconditionally safe (a networked canvas asks), so
+    with confirm_tool_calls set under permission_mode="auto" its early provisional
+    card is suppressed; the real full-argument tool_start still fires and a static
+    canvas runs without a prompt."""
+    args = {"code": "<html>" + "x" * 80 + "</html>"}
+    first_stream = _streamed_structured_tool_call("render_html", args, "call_rh")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, final_stream], payloads)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", lambda name, arguments, **_k: "OK")
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "make a card"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            max_tool_iterations = 1,
+        )
+    )
+
+    tool_starts = [e for e in events if e.get("type") == "tool_start"]
+    provisional = [e for e in tool_starts if not e.get("arguments")]
+    # The confirm gate now suppresses the early provisional card for render_html.
+    assert provisional == [], tool_starts
+    real = [e for e in tool_starts if e.get("arguments")]
+    assert real and real[0]["tool_name"] == "render_html"
+    # A static canvas is classified safe, so it still runs without an approval gate.
+    assert real[0].get("awaiting_confirmation") in (False, None)
 
 
 def test_small_python_tool_call_has_no_provisional_start(monkeypatch):
@@ -2883,3 +3043,204 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
         m.get("role") == "user" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
     ), payloads[2]["messages"]
+
+
+# ── Live tool-call argument streaming (tool_args events) ─────────────────────
+
+
+def _python_tool_schema() -> list[dict]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "python",
+                "description": "Run python code.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }
+    ]
+
+
+def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
+    """A large structured tool call must stream its arguments as tool_args events
+    to the provisional card (backlog that triggered the card, then each
+    fragment), while the executed call and the model's view stay exactly what the
+    accumulator built."""
+
+    code = "print('x')\n" + ("# pad\n" * 80)
+    args_json = json.dumps({"code": code})
+    call_id = "call_live_args"
+    split = _PROVISIONAL_ARGS_MIN_CHARS + 16
+    frag1, frag2, frag3 = (
+        args_json[:split],
+        args_json[split : split + 40],
+        args_json[split + 40 :],
+    )
+
+    def _tc_delta(fragment: str, with_header: bool) -> str:
+        entry: dict = {"index": 0, "function": {"arguments": fragment}}
+        if with_header:
+            entry.update({"id": call_id, "type": "function"})
+            entry["function"]["name"] = "python"
+        return _sse({"tool_calls": [entry]})
+
+    first_stream = [
+        _tc_delta(frag1, with_header = True),
+        _tc_delta(frag2, with_header = False),
+        _tc_delta(frag3, with_header = False),
+        _done(),
+    ]
+    second_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+        )
+    )
+
+    starts = [e for e in events if e.get("type") == "tool_start"]
+    assert starts and starts[0]["tool_call_id"] == call_id
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert args_events, "no tool_args events were streamed"
+    assert all(e["tool_call_id"] == call_id for e in args_events)
+    # First event is the backlog, the rest raw fragments; together the args JSON.
+    assert args_events[0]["text"] == frag1
+    assert "".join(e["text"] for e in args_events) == args_json
+
+    # The streamed display path must not perturb execution or the model view.
+    assert executed == [("python", {"code": code})]
+    assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
+    tc = assistant_messages[-1]["tool_calls"][0]
+    assert tc["id"] == call_id
+    # Controller re-serializes args (normalized JSON); parsed payload unchanged.
+    assert json.loads(tc["function"]["arguments"]) == {"code": code}
+
+
+def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
+    """A TEXT (XML) tool call must stream its raw call text as tool_args under the
+    id the stream-end parser assigns ("call_0"), so the provisional card and the
+    final tool_start reconcile."""
+
+    code = "print('hello')\n" + ("# filler\n" * 60)
+    call_json = json.dumps({"name": "python", "arguments": {"code": code}})
+    call_text = f"<tool_call>{call_json}</tool_call>"
+    chunks = [call_text[i : i + 48] for i in range(0, len(call_text), 48)]
+    first_stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
+    second_stream = [_sse({"content": "Done."}), _done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [first_stream, second_stream], payloads)
+
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+        )
+    )
+
+    starts = [e for e in events if e.get("type") == "tool_start"]
+    assert starts, "no tool_start emitted"
+    # Provisional card first (parser's first-call id), then the reconciling start.
+    assert starts[0]["tool_call_id"] == "call_0"
+    assert starts[0]["arguments"] == {}
+    assert starts[-1]["tool_call_id"] == "call_0"
+
+    args_events = [e for e in events if e.get("type") == "tool_args"]
+    assert args_events, "no tool_args events for the text call"
+    assert all(e["tool_call_id"] == "call_0" for e in args_events)
+    streamed = "".join(e["text"] for e in args_events)
+    # Streamed text is the drained call (display only); it must never leak into
+    # content events.
+    assert '"name": "python"' in streamed
+    assert executed == [("python", {"code": code})]
+    content_events = [e for e in events if e.get("type") == "content"]
+    assert not any("<tool_call>" in e["text"] for e in content_events)
+
+
+def test_ordinary_json_answer_streams_no_tool_args(monkeypatch):
+    """A large ordinary JSON answer (no enabled tool name) must not spawn a
+    provisional card or tool_args events; it stays a normal content answer."""
+
+    answer = json.dumps({"result": "fine", "data": ["x" * 40] * 12, "note": "not a tool call"})
+    chunks = [answer[i : i + 64] for i in range(0, len(answer), 64)]
+    stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "give me json"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert not [e for e in events if e.get("type") == "tool_args"]
+    assert not [e for e in events if e.get("type") == "tool_start"]
+    content_events = [e for e in events if e.get("type") == "content"]
+    assert content_events and answer in content_events[-1]["text"]
+
+
+def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
+    """A >=256-char enabled-name text sniff opens a provisional card; if the
+    drained text then fails to parse (auto-heal off, truncated call), the
+    DRAINING false-positive path must close the card with a tool_end instead of
+    leaving it spinning forever."""
+
+    # Truncated mid-arguments and never closed: unparseable without healing.
+    call_text = '<tool_call>{"name": "python", "arguments": {"code": "' + "x" * (
+        _PROVISIONAL_ARGS_MIN_CHARS + 64
+    )
+    chunks = [call_text[i : i + 48] for i in range(0, len(call_text), 48)]
+    stream = [_sse({"content": chunk}) for chunk in chunks] + [_done()]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+
+    executed: list[tuple[str, dict]] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run it"}],
+            tools = _python_tool_schema(),
+            max_tool_iterations = 1,
+            auto_heal_tool_calls = False,
+        )
+    )
+
+    starts = [e for e in events if e.get("type") == "tool_start"]
+    ends = [e for e in events if e.get("type") == "tool_end"]
+    assert starts and starts[0]["tool_call_id"] == "call_0"
+    assert executed == []  # nothing parsed, nothing ran
+    assert ends, "provisional card left dangling (no tool_end)"
+    assert ends[-1]["tool_call_id"] == "call_0"

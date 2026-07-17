@@ -69,6 +69,14 @@ pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
 resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
 
 
+@pytest.fixture(autouse = True)
+def _disable_download_host_fast_path(monkeypatch):
+    # This module exercises the GitHub API enumeration and asset selection against
+    # mocked releases; keep the download-host fast path (real CDN) out of the way.
+    # test_download_host_resolve.py covers the fast path itself.
+    monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
+
+
 def load_studio_run_module(monkeypatch):
     logger = types.SimpleNamespace(
         debug = lambda *a, **k: None,
@@ -1629,7 +1637,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1674,7 +1682,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1739,7 +1747,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1771,7 +1779,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1820,7 +1828,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1911,7 +1919,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -1980,7 +1988,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2030,7 +2038,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2093,7 +2101,7 @@ class TestResolveInstallAttempts:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
                 [
                     INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                         bundle = release,
@@ -2156,7 +2164,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         requested_tag, plans = _fork_manifest_release_plans(
@@ -2190,7 +2200,9 @@ class TestResolveInstallReleasePlans:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_resolved_published_releases",
-            lambda requested_tag, published_repo, published_release_tag = "": iter(releases),
+            lambda requested_tag, published_repo, published_release_tag = "", **_kwargs: iter(
+                releases
+            ),
         )
 
         _requested_tag, plans = _fork_manifest_release_plans(
