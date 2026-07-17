@@ -183,7 +183,9 @@ def resolve_dense_quant_candidate(
             # accept it (allowlisted AND present), else load_prequantized_transformer refuses it
             # and rebuilds dense after the resident pipe is unloaded (the evict-then-OOM this
             # prefetch avoids).
-            src = usable_prequant_source(fam, scheme, path_override = prequant_path)
+            src = usable_prequant_source(
+                fam, scheme, path_override = prequant_path, base_repo = base_repo
+            )
             prequant_available = src is not None
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
             prequant_available = False

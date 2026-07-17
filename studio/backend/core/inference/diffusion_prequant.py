@@ -121,18 +121,20 @@ def resolve_prequant_source(
     scheme: str,
     *,
     path_override: Optional[str] = None,
+    base_repo: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
 
     Priority: (1) explicit local ``path_override``; (2) the family's hosted repo for
-    ``scheme``; (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
+    ``scheme`` (variant-specific when ``base_repo`` names a base with its own baked
+    checkpoint); (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
     """
     override = (path_override or "").strip()
     if override:
         return PrequantSource(kind = "path", location = override, filename = None)
     try:
         from .diffusion_families import family_prequant_repo
-        repo_id = family_prequant_repo(fam, scheme)
+        repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
     except Exception:  # noqa: BLE001 — a bad family object must not break the load
         repo_id = None
     if repo_id:
@@ -150,13 +152,16 @@ def usable_prequant_source(
     scheme: str,
     *,
     path_override: Optional[str] = None,
+    base_repo: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would
     accept it: inside the allowlist AND present on disk. Otherwise resolves to None so
     memory planning falls back to dense-fit checks up front, instead of the loader refusing
     the path only after the resident pipeline was evicted and dense bf16 materialises under
     a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
-    src = resolve_prequant_source(fam, scheme, path_override = path_override)
+    src = resolve_prequant_source(
+        fam, scheme, path_override = path_override, base_repo = base_repo
+    )
     if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
         return None
     return src

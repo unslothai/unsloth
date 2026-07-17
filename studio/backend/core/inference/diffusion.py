@@ -1292,7 +1292,10 @@ class DiffusionBackend:
                             None
                             if loras
                             else usable_prequant_source(
-                                fam, scheme, path_override = transformer_prequant_path
+                                fam,
+                                scheme,
+                                path_override = transformer_prequant_path,
+                                base_repo = base,
                             )
                             if scheme is not None
                             else None
@@ -1755,7 +1758,9 @@ class DiffusionBackend:
         if fam is not None and not lora_specs:
             # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so
             # the prequant shortcut is skipped when adapters were requested.
-            source = resolve_prequant_source(fam, scheme, path_override = prequant_path)
+            source = resolve_prequant_source(
+                fam, scheme, path_override = prequant_path, base_repo = base
+            )
             if source is not None:
                 transformer = load_prequantized_transformer(
                     transformer_cls,

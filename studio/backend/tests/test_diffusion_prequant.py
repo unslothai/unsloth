@@ -26,13 +26,14 @@ from core.inference.diffusion_prequant import (
 
 
 # ── resolve_prequant_source ──────────────────────────────────────────────────────
-def _fam(prequant_repos = ()):
+def _fam(prequant_repos = (), prequant_variant_repos = ()):
     return DiffusionFamily(
         name = "z-image",
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
         prequant_repos = prequant_repos,
+        prequant_variant_repos = prequant_variant_repos,
     )
 
 
@@ -58,6 +59,57 @@ def test_prequant_repo_filename_convention():
     assert prequant_repo_filename("unsloth/Qwen-Image-2512-INT8", "int8") == "Qwen-Image-2512-INT8.pt"
     assert prequant_repo_filename("org/Some-Model-quantized", "fp8") == "Some-Model-FP8.pt"
     assert prequant_repo_filename("org/PlainRepo", "int8") == "PlainRepo-INT8.pt"
+
+
+def test_resolve_variant_base_picks_variant_repo():
+    # A base with its own baked checkpoint resolves to the variant repo; case-insensitive.
+    fam = _fam(
+        prequant_repos = (("int8", "org/default-fp8"),),
+        prequant_variant_repos = (("org/model-dev", "int8", "org/dev-fp8"),),
+    )
+    src = resolve_prequant_source(fam, "int8", base_repo = "Org/Model-DEV")
+    assert src.kind == "repo" and src.location == "org/dev-fp8"
+    assert src.filename == "dev-INT8.pt"
+
+
+def test_resolve_variant_base_falls_back_to_default():
+    # An unknown variant base (or no base at all) keeps the family default entry: the
+    # loader's base_model_id validation then refuses it and dense-quantises, as before.
+    fam = _fam(
+        prequant_repos = (("int8", "org/default-fp8"),),
+        prequant_variant_repos = (("org/model-dev", "int8", "org/dev-fp8"),),
+    )
+    assert resolve_prequant_source(fam, "int8").location == "org/default-fp8"
+    assert (
+        resolve_prequant_source(fam, "int8", base_repo = "org/other-variant").location
+        == "org/default-fp8"
+    )
+    # Scheme still has to match within the variant table.
+    assert (
+        resolve_prequant_source(fam, "int8", base_repo = "org/model-dev").location
+        == "org/dev-fp8"
+    )
+
+
+def test_flux1_variant_prequant_wiring():
+    # The real flux.1 entry serves schnell by default and dev / Krea-dev via variants.
+    from core.inference.diffusion_families import detect_family, family_prequant_repo
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/FLUX.1-schnell-FP8"
+        assert (
+            family_prequant_repo(
+                fam, scheme, base_repo = "black-forest-labs/FLUX.1-dev"
+            )
+            == "unsloth/FLUX.1-dev-FP8"
+        )
+        assert (
+            family_prequant_repo(
+                fam, scheme, base_repo = "black-forest-labs/FLUX.1-Krea-dev"
+            )
+            == "unsloth/FLUX.1-Krea-dev-FP8"
+        )
 
 
 def test_resolve_wrong_scheme_is_none():
