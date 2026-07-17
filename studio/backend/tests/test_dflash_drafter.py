@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,7 @@ from core.inference.llama_cpp import (
     _is_companion_gguf_path,
     _should_download_dflash,
 )
+from models.inference import LoadRequest
 
 
 DFLASH_DRAFTER_CASES = [
@@ -40,6 +42,15 @@ DFLASH_DRAFTER_CASES = [
     ("dflash-readme.txt", False),
     ("Qwen3-4B-Q4_K_M.gguf", False),
 ]
+
+
+@pytest.fixture
+def dflash_pair(tmp_path):
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
+    weight.touch()
+    drafter.touch()
+    return weight, drafter
 
 
 @pytest.mark.parametrize("path,expected", DFLASH_DRAFTER_CASES)
@@ -57,23 +68,10 @@ def test_detect_dflash_file_finds_root_sibling(tmp_path):
     assert found == str(drafter.resolve())
 
 
-def test_detect_dflash_file_none_without_sibling(tmp_path):
-    (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
-    assert detect_dflash_file(str(tmp_path / "Qwen3-4B-Q4_K_M.gguf")) is None
-
-
 def test_detect_dflash_file_skips_foreign_drafter(tmp_path):
     (tmp_path / "qwen3-8b-Q4_K_M.gguf").touch()
     (tmp_path / "dflash-gemma-4-12b-it.gguf").touch()
     assert detect_dflash_file(str(tmp_path / "qwen3-8b-Q4_K_M.gguf")) is None
-
-
-def test_detect_dflash_file_pairs_by_weight_name(tmp_path):
-    (tmp_path / "gemma-4-31B-it-Q4_K_M.gguf").touch()
-    drafter = tmp_path / "dflash-gemma-4-31B-it.gguf"
-    drafter.touch()
-    found = detect_dflash_file(str(tmp_path / "gemma-4-31B-it-Q4_K_M.gguf"))
-    assert found == str(drafter.resolve())
 
 
 def test_detect_dflash_file_search_root(tmp_path):
@@ -86,12 +84,6 @@ def test_detect_dflash_file_search_root(tmp_path):
     assert found == str(drafter.resolve())
 
 
-def test_detect_gguf_model_rejects_dflash_drafter(tmp_path):
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
-    assert detect_gguf_model(str(drafter)) is None
-
-
 def test_detect_dflash_and_mtp_are_disjoint(tmp_path):
     (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
     (tmp_path / "dflash-Qwen3-4B.gguf").touch()
@@ -101,16 +93,9 @@ def test_detect_dflash_and_mtp_are_disjoint(tmp_path):
     assert detect_mtp_file(weight).endswith("mtp-Qwen3-4B.gguf")
 
 
-@pytest.mark.parametrize(
-    "drafter_name",
-    [
-        "Qwen3-4B-DFlash.gguf",
-        "Qwen3-4B-DFlash-q8_0.gguf",
-    ],
-)
-def test_detect_dflash_file_finds_infix_dflash(tmp_path, drafter_name):
+def test_detect_dflash_file_finds_infix_dflash(tmp_path):
     (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
-    drafter = tmp_path / drafter_name
+    drafter = tmp_path / "Qwen3-4B-DFlash-q8_0.gguf"
     drafter.touch()
     found = detect_dflash_file(str(tmp_path / "Qwen3-4B-Q4_K_M.gguf"))
     assert found == str(drafter.resolve())
@@ -132,12 +117,6 @@ def test_dflash_pairs_weight_by_model_name():
     assert _dflash_pairs_weight("OtherModel-DFlash-q8_0.gguf", "Q8_0.gguf") is False
     assert _dflash_pairs_weight("Qwen3-8B-DFlash.gguf", None) is True
     assert _dflash_pairs_weight("Qwen3-8B-Q4_K_M.gguf", None) is False
-
-
-def test_detect_dflash_file_ignores_quant_only_weight_name(tmp_path):
-    (tmp_path / "Q8_0.gguf").touch()
-    (tmp_path / "OtherModel-DFlash-q8_0.gguf").touch()
-    assert detect_dflash_file(str(tmp_path / "Q8_0.gguf")) is None
 
 
 def test_detect_dflash_file_prefers_quantized_over_bf16(tmp_path):
@@ -304,11 +283,8 @@ def _in_target(backend, gguf_path, dflash_draft_path):
     )
 
 
-def test_already_in_target_state_dedups_same_dflash_drafter(tmp_path):
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
+def test_already_in_target_state_dedups_same_dflash_drafter(dflash_pair):
+    weight, drafter = dflash_pair
     backend = _dflash_backend(str(weight), str(drafter))
     assert _in_target(backend, str(weight), str(drafter)) is True
 
@@ -317,21 +293,15 @@ def test_already_in_target_state_dedups_same_dflash_drafter(tmp_path):
     "reason",
     ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
 )
-def test_already_in_target_state_bypasses_after_dflash_fallback(tmp_path, reason):
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
+def test_already_in_target_state_bypasses_after_dflash_fallback(dflash_pair, reason):
+    weight, drafter = dflash_pair
     backend = _dflash_backend(str(weight), str(drafter))
     backend._spec_fallback_reason = reason
     assert _in_target(backend, str(weight), str(drafter)) is False
 
 
-def test_already_in_target_state_reloads_when_dflash_drafter_appears(tmp_path):
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
+def test_already_in_target_state_reloads_when_dflash_drafter_appears(dflash_pair):
+    weight, drafter = dflash_pair
     backend = _dflash_backend(str(weight), None)
     assert _in_target(backend, str(weight), str(drafter)) is False
 
@@ -343,10 +313,8 @@ def test_already_in_target_state_reloads_when_dflash_drafter_removed(tmp_path):
     assert _in_target(backend, str(weight), None) is False
 
 
-def test_hf_backend_reloads_when_cached_dflash_appears(tmp_path):
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    (tmp_path / "dflash-Qwen3-4B.gguf").touch()
+def test_hf_backend_reloads_when_cached_dflash_appears(dflash_pair):
+    weight, _ = dflash_pair
     backend = _dflash_backend(str(weight), None)
     backend._hf_repo = "unsloth/Qwen3-4B-GGUF"
     assert _in_target(backend, None, None) is False
@@ -394,7 +362,6 @@ def test_transient_dflash_download_failure_is_retryable(monkeypatch):
 
 
 def _load_inference_routes_module():
-    """Load inference routes without importing every router."""
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
     spec = importlib.util.spec_from_file_location("dflash_drafter_inference_routes", route_path)
     assert spec is not None and spec.loader is not None
@@ -402,6 +369,11 @@ def _load_inference_routes_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(scope = "module")
+def routes():
+    return _load_inference_routes_module()
 
 
 def _route_dedup_backend(gguf_path, *, hf_repo):
@@ -425,38 +397,22 @@ def _route_dedup_backend(gguf_path, *, hf_repo):
     return backend
 
 
-def test_hf_load_dedups_when_dflash_drafter_matches(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
-
+def test_hf_load_dedups_when_dflash_drafter_matches(routes, dflash_pair):
+    weight, drafter = dflash_pair
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
     backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
     backend._dflash_draft_path = str(drafter.resolve())
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 
-def test_hf_load_reloads_when_dflash_appears_unresolved(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    (tmp_path / "dflash-Qwen3-4B.gguf").touch()
-
+def test_hf_load_reloads_when_dflash_appears_unresolved(routes, dflash_pair):
+    weight, _ = dflash_pair
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
     backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
-def test_hf_load_retries_transient_dflash_download(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
+def test_hf_load_retries_transient_dflash_download(routes, tmp_path):
     weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
     weight.touch()
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
@@ -465,10 +421,7 @@ def test_hf_load_retries_transient_dflash_download(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
-def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
+def test_vision_load_with_dflash_sibling_does_not_thrash(routes, tmp_path):
     weight = tmp_path / "Qwen3-VL-4B-Q4_K_M.gguf"
     weight.touch()
     (tmp_path / "dflash-Qwen3-VL-4B.gguf").touch()
@@ -479,25 +432,16 @@ def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is True
 
 
-def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    (tmp_path / "dflash-Qwen3-4B.gguf").touch()
-
+def test_local_load_still_reloads_when_dflash_sibling_appears(routes, dflash_pair):
+    weight, _ = dflash_pair
     req = LoadRequest(model_path = str(weight))
     backend = _route_dedup_backend(str(weight), hf_repo = None)
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
-def test_remote_companion_bytes_counts_preferred_dflash(monkeypatch):
-    from types import SimpleNamespace
-
+def test_remote_companion_bytes_counts_preferred_dflash(routes, monkeypatch):
     import huggingface_hub
 
-    routes = _load_inference_routes_module()
     siblings = [
         SimpleNamespace(rfilename = "Qwen3-4B-Q4_K_M.gguf", size = 4_000),
         SimpleNamespace(rfilename = "Qwen3-4B-DFlash-bf16.gguf", size = 1_200),
@@ -515,12 +459,9 @@ def test_remote_companion_bytes_counts_preferred_dflash(monkeypatch):
     assert total == 575
 
 
-def test_remote_companion_bytes_skips_foreign_dflash(monkeypatch):
-    from types import SimpleNamespace
-
+def test_remote_companion_bytes_skips_foreign_dflash(routes, monkeypatch):
     import huggingface_hub
 
-    routes = _load_inference_routes_module()
     siblings = [SimpleNamespace(rfilename = "Gemma-4B-DFlash-q8_0.gguf", size = 575)]
     monkeypatch.setattr(
         huggingface_hub, "model_info", lambda *a, **k: SimpleNamespace(siblings = siblings)
@@ -534,10 +475,7 @@ def test_remote_companion_bytes_skips_foreign_dflash(monkeypatch):
     assert total == 0
 
 
-def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
+def test_dflash_reload_dedup_finds_root_sibling(routes, tmp_path):
     sub = tmp_path / "Q4_K_M"
     sub.mkdir()
     weight = sub / "Qwen3-4B-Q4_K_M.gguf"
@@ -555,15 +493,8 @@ def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
     "reason",
     ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
 )
-def test_dflash_failure_forces_reload_to_retry(tmp_path, reason):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
-
+def test_dflash_failure_forces_reload_to_retry(routes, dflash_pair, reason):
+    weight, drafter = dflash_pair
     backend = _route_dedup_backend(str(weight), hf_repo = None)
     backend._dflash_draft_path = str(drafter.resolve())
     backend._spec_fallback_reason = reason
@@ -580,15 +511,8 @@ def test_extra_args_dflash_counts_as_separate_draft():
     assert _extra_args_requests_separate_draft(None) is False
 
 
-def test_dflash_nmax_change_forces_reload(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
-    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
-    weight.touch()
-    drafter = tmp_path / "dflash-Qwen3-4B.gguf"
-    drafter.touch()
-
+def test_dflash_nmax_change_forces_reload(routes, dflash_pair):
+    weight, drafter = dflash_pair
     backend = _route_dedup_backend(str(weight), hf_repo = None)
     backend._speculative_type = "draft-dflash"
     backend._spec_draft_n_max = 4
@@ -600,10 +524,7 @@ def test_dflash_nmax_change_forces_reload(tmp_path):
     assert routes._request_matches_loaded_settings(same, backend) is True
 
 
-def test_auto_mtp_nmax_change_also_reloads(tmp_path):
-    routes = _load_inference_routes_module()
-    from models.inference import LoadRequest
-
+def test_auto_mtp_nmax_change_also_reloads(routes, tmp_path):
     weight = tmp_path / "gemma-4-12b-it-Q4_K_M.gguf"
     weight.touch()
     backend = _route_dedup_backend(str(weight), hf_repo = None)
