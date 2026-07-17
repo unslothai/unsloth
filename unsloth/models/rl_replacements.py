@@ -460,7 +460,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             function = inspect.getsource(fast_sft_prepare_dataset)
             function = function.replace(
                 "    # All Unsloth Zoo code licensed under LGPLv3\n",
-                '''    # All Unsloth Zoo code licensed under LGPLv3
+                """    # All Unsloth Zoo code licensed under LGPLv3
     import inspect as _inspect
     try:
         _unsloth_pack_has_strategy = "strategy" in _inspect.signature(pack_dataset).parameters
@@ -470,7 +470,7 @@ def sft_trainer_prepare_dataset(function_name, function):
         getattr(args, "packing_strategy", None) == "wrapped"
         or not _unsloth_pack_has_strategy
     )
-''',
+""",
                 1,
             )
             function = function.replace(
