@@ -241,6 +241,11 @@ def restore_kv_resume(backend, manifest) -> None:
             # different weights between the unload and this reload.
             st = Path(current).stat()
             same_gguf = (st.st_size, int(st.st_mtime)) == tuple(manifest.get("gguf_stat") or ())
+        if same_gguf:
+            # Nor is the same file: a launch-override change (e.g. rope scaling)
+            # can invalidate KV numerics without tripping server-side checks.
+            fingerprint = getattr(backend, "_slot_launch_fingerprint", None)
+            same_gguf = callable(fingerprint) and manifest.get("launch") == fingerprint()
         if same_gguf and binary and binary == getattr(backend, "_slot_save_binary", None):
             logger.info("Restoring saved slot KV onto the reloaded model")
             backend.restore_slots_for_resume(manifest)

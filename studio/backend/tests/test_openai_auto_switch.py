@@ -40,6 +40,9 @@ class _FakeBackend:
     def restore_slots_for_resume(self, manifest):
         return None
 
+    def _slot_launch_fingerprint(self):
+        return ((), None, None, 1)
+
 
 class _LoadRecorder:
     """Stand-in for the load route: records calls and simulates a load."""
@@ -3135,6 +3138,7 @@ def _seed_kv_manifest(
         "binary": ("/bin/llama-server", 111),
         "gguf": gguf,
         "gguf_stat": (st.st_size, int(st.st_mtime)),
+        "launch": ((), None, None, 1),
         "slots": [{"id": 0, "filename": state_file.name, "n_saved": 42}],
     }
 
@@ -3314,6 +3318,22 @@ def test_restore_skipped_when_binary_changed(monkeypatch, tmp_path):
     backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
     backend._gguf_path = manifest["gguf"]
     backend._slot_save_binary = ("/bin/llama-server", 222)  # newer mtime
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    kw.restore_kv_resume(backend, manifest)
+    assert restored == []
+    assert not state_file.exists()
+
+
+def test_restore_skipped_when_launch_config_changed(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
+    state_file, manifest = _seed_kv_manifest(tmp_path)
+    backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
+    backend._gguf_path = manifest["gguf"]
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    backend._slot_launch_fingerprint = lambda: (("--rope-freq-scale", "0.5"), None, None, 1)
     restored = []
     backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
 

@@ -8383,6 +8383,17 @@ class LlamaCppBackend:
             return False
         return True
 
+    def _slot_launch_fingerprint(self) -> tuple:
+        # Launch config that saved KV validity depends on beyond the file itself:
+        # e.g. rope-scaling extra args change KV numerics without changing the
+        # state-file structure, so the server would restore them undetected.
+        return (
+            tuple(self._extra_args or ()),
+            getattr(self, "_context_length", None),
+            getattr(self, "_cache_type_kv", None),
+            self.effective_parallel_slots,
+        )
+
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None
     ) -> Optional[dict]:
@@ -8472,6 +8483,7 @@ class LlamaCppBackend:
             "binary": self._slot_save_binary,
             "gguf": str(self._gguf_path),
             "gguf_stat": (gguf_stat.st_size, int(gguf_stat.st_mtime)),
+            "launch": self._slot_launch_fingerprint(),
             "slots": entries,
         }
 
