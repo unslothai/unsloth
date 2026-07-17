@@ -1241,6 +1241,20 @@ def _extra_args_requests_separate_draft(
     )
 
 
+def _should_download_dflash(
+    speculative_type: Optional[str],
+    extra_args: Optional[Iterable[str]],
+    *,
+    is_vision: bool,
+    mmproj_path: Optional[str],
+) -> bool:
+    return (
+        (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+        and not _extra_args_set_spec_type(extra_args)
+        and not (is_vision and mmproj_path and not extra_args_disable_mmproj(extra_args))
+    )
+
+
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
     """Draft depth from extras (``--spec-draft-n-max`` or legacy ``--draft-max``), else None."""
     if not extra_args:
@@ -1604,6 +1618,7 @@ class LlamaCppBackend:
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
         self._dflash_draft_path: Optional[str] = None
+        self._dflash_download_failed = False
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -1783,6 +1798,10 @@ class LlamaCppBackend:
     @property
     def dflash_draft_path(self) -> Optional[str]:
         return self._dflash_draft_path
+
+    @property
+    def dflash_download_failed(self) -> bool:
+        return self._dflash_download_failed
 
     @property
     def spec_fallback_reason(self) -> Optional[str]:
@@ -4705,6 +4724,7 @@ class LlamaCppBackend:
         pick: Callable[[list[str]], Optional[str]],
         label: str,
         cancel_event: Optional[threading.Event] = None,
+        on_transient_failure: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
@@ -4723,22 +4743,27 @@ class LlamaCppBackend:
 
         # Retry a transient listing blip; permanent repo/auth errors and offline
         # mode are not retried (offline raises at once -> fall through to cache).
+        permanent_errors = (
+            "RepositoryNotFoundError",
+            "GatedRepoError",
+            "RevisionNotFoundError",
+            "EntryNotFoundError",
+            "OfflineModeIsEnabled",
+        )
+        listing_failed = False
         for attempt in range(3):
             if cancel_event.is_set():
                 return None
             try:
                 target = pick(list_repo_files(hf_repo, token = hf_token))
+                listing_failed = False
                 break
             except Exception as e:
-                if type(e).__name__ in (
-                    "RepositoryNotFoundError",
-                    "GatedRepoError",
-                    "RevisionNotFoundError",
-                    "EntryNotFoundError",
-                    "OfflineModeIsEnabled",
-                ):
+                if type(e).__name__ in permanent_errors:
+                    listing_failed = False
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break
+                listing_failed = True
                 logger.debug(
                     f"Could not list repo files for {label} (attempt {attempt + 1}/3): {e}"
                 )
@@ -4758,6 +4783,8 @@ class LlamaCppBackend:
                 logger.debug(f"Offline cache lookup for {label} failed: {e}")
 
         if target is None or cancel_event.is_set():
+            if target is None and listing_failed and on_transient_failure is not None:
+                on_transient_failure()
             return None
 
         # Offline, resolve the companion straight from the cache snapshot that
@@ -4782,6 +4809,13 @@ class LlamaCppBackend:
             )
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
+            if (
+                not cancel_event.is_set()
+                and type(e).__name__ not in permanent_errors
+                and not _hf_env_offline()
+                and on_transient_failure is not None
+            ):
+                on_transient_failure()
             return None
 
     def _download_mmproj(
@@ -4897,6 +4931,8 @@ class LlamaCppBackend:
         """Download the preferred DFlash drafter paired with ``weight_name``."""
         from utils.models.model_config import _dflash_pairs_weight
 
+        self._dflash_download_failed = False
+
         def _pick_dflash(candidates: list[str]) -> Optional[str]:
             dflash_files = [
                 f
@@ -4919,6 +4955,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_dflash,
             label = "DFlash drafter",
+            on_transient_failure = lambda: setattr(self, "_dflash_download_failed", True),
         )
 
     def _resolve_launch_mmproj_path(
@@ -5609,6 +5646,7 @@ class LlamaCppBackend:
                 return True
 
             self._cancel_event.clear()
+            self._dflash_download_failed = False
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:
@@ -5646,7 +5684,8 @@ class LlamaCppBackend:
                         hf_token = hf_token,
                     )
                     # Auto-download mmproj for vision models unless opted out.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
+                    _mmproj_disabled = extra_args_disable_mmproj(extra_args)
+                    if is_vision and not mmproj_path and not _mmproj_disabled:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -5671,9 +5710,12 @@ class LlamaCppBackend:
                     # Auto-fetch DFlash only for supported text-only Auto loads.
                     if (
                         not dflash_draft_path
-                        and _spec_canon == "auto"
-                        and not is_vision
-                        and not _extra_args_set_spec_type(extra_args)
+                        and _should_download_dflash(
+                            speculative_type,
+                            extra_args,
+                            is_vision = is_vision,
+                            mmproj_path = mmproj_path,
+                        )
                     ):
                         dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,
@@ -7909,6 +7951,9 @@ class LlamaCppBackend:
         ):
             return False
 
+        if self._dflash_download_failed and gguf_path is None and req_mode == "auto":
+            return False
+
         # Retry DFlash fallbacks after a binary update or drafter replacement.
         if self._spec_fallback_reason in (
             "binary_no_dflash",
@@ -7988,6 +8033,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._dflash_draft_path = None
+            self._dflash_download_failed = False
             self._spec_fallback_reason = None
             self._last_load_kwargs = None
             self._mtp_runtime_fallback_active = False

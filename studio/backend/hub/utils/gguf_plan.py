@@ -15,6 +15,7 @@ from hub.utils.gguf import (
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
+from utils.models.model_config import _dflash_pairs_weight
 
 # Prefer quantized DFlash builds over these converter outputs.
 _FULL_PRECISION_GGUF_TOKENS = ("bf16", "f16", "f32", "fp16")
@@ -128,12 +129,16 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     return candidates[0] if candidates else None
 
 
-def preferred_dflash_sibling(siblings: Sequence) -> Optional[object]:
+def preferred_dflash_sibling(
+    siblings: Sequence, weight_name: Optional[str] = None
+) -> Optional[object]:
     """Pick a DFlash sibling, preferring quantized over full-precision builds."""
     candidates = [
         s
         for s in siblings
-        if (name := _gguf_rfilename(s)) and is_dflash_drafter_path(name.rsplit("/", 1)[-1])
+        if (name := _gguf_rfilename(s))
+        and is_dflash_drafter_path(name.rsplit("/", 1)[-1])
+        and _dflash_pairs_weight(name.rsplit("/", 1)[-1], weight_name)
     ]
     if not candidates:
         return None
@@ -156,13 +161,8 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_sibling = preferred_mtp_sibling(siblings)
     mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
-    # DFlash does not support multimodal drafting.
-    dflash_sibling = None if all_mmproj else preferred_dflash_sibling(siblings)
-    dflash_expected = (
-        expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None
-    )
     companions_expected = tuple(
-        file for file in (companion_expected, mtp_expected, dflash_expected) if file is not None
+        file for file in (companion_expected, mtp_expected) if file is not None
     )
 
     for sibling in siblings:
@@ -181,12 +181,23 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
 
     plans: dict[str, GgufVariantPlan] = {}
     for quant, target_main_siblings in main.items():
+        target_weight = _gguf_rfilename(target_main_siblings[0])
+        dflash_sibling = (
+            None if all_mmproj else preferred_dflash_sibling(siblings, target_weight)
+        )
+        dflash_expected = (
+            expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None
+        )
         main_expected = tuple(
             file
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
-        expected_files = (*main_expected, *companions_expected)
+        expected_files = (
+            *main_expected,
+            *companions_expected,
+            *((dflash_expected,) if dflash_expected is not None else ()),
+        )
         plans[quant] = plan_from_expected_files(
             quant,
             expected_files,

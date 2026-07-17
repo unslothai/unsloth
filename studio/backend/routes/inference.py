@@ -3171,6 +3171,13 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
+    if (
+        llama_backend.hf_repo
+        and llama_backend.dflash_download_failed
+        and req_mode == "auto"
+        and not _extra_args_set_spec_type(effective_extra)
+    ):
+        return False
     # Retry DFlash fallbacks after a binary update or drafter replacement.
     if llama_backend.spec_fallback_reason in (
         "binary_no_dflash",
@@ -3752,6 +3759,7 @@ def _remote_gguf_companion_bytes(
     hf_token: Optional[str],
     include_mmproj: bool,
     include_dflash: bool = True,
+    weight_name: Optional[str] = None,
 ) -> int:
     """Return auto-downloaded companion bytes, or 0 if they cannot be sized."""
     try:
@@ -3774,7 +3782,7 @@ def _remote_gguf_companion_bytes(
                 total += getattr(sibling, "size", 0) or 0
         # Count only the DFlash build the loader selects.
         if include_dflash:
-            dflash = preferred_dflash_sibling(siblings)
+            dflash = preferred_dflash_sibling(siblings, weight_name)
             if dflash is not None:
                 total += getattr(dflash, "size", 0) or 0
         return total
@@ -3849,18 +3857,22 @@ def _estimate_gguf_required_gb(
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            main_bytes = next(
-                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
+            selected_variant = next(
+                (v for v in variants if v.quant.lower() == variant.lower()), None
             )
-            if main_bytes is None:
+            if selected_variant is None:
                 return None
+            remote_is_vision = bool(has_vision) and not extra_args_disable_mmproj(
+                llama_extra_args
+            )
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                include_mmproj = bool(has_vision),
-                include_dflash = not bool(has_vision),
+                include_mmproj = remote_is_vision,
+                include_dflash = not remote_is_vision,
+                weight_name = selected_variant.filename,
             )
-            return (main_bytes + companions) / (1024**3)
+            return (selected_variant.size_bytes + companions) / (1024**3)
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")

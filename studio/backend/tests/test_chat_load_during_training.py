@@ -533,7 +533,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gguf_hf_repo = "org/repo",
             gguf_variant = "Q4_K_M",
         )
-        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        variant = SimpleNamespace(
+            filename = "Qwen3-4B-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            size_bytes = 10 * 1024**3,
+        )
         captured = {}
 
         def fake_list(repo, hf_token = None):
@@ -550,6 +554,36 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+        self.assertEqual(comp.call_args.kwargs["weight_name"], variant.filename)
+
+    def test_remote_text_only_vision_load_counts_dflash(self):
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(
+            filename = "Qwen3-VL-4B-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            size_bytes = 10 * 1024**3,
+        )
+        with (
+            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
+            patch.object(
+                self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
+            ) as comp,
+        ):
+            gb = self.route._estimate_gguf_required_gb(
+                cfg, llama_extra_args = ["--no-mmproj"]
+            )
+        self.assertAlmostEqual(gb, 12.0, places = 6)
+        self.assertFalse(comp.call_args.kwargs["include_mmproj"])
+        self.assertTrue(comp.call_args.kwargs["include_dflash"])
+        self.assertEqual(comp.call_args.kwargs["weight_name"], variant.filename)
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc

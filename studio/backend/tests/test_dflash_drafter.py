@@ -26,6 +26,7 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
     _extra_args_requests_dflash,
     _is_companion_gguf_path,
+    _should_download_dflash,
 )
 
 
@@ -356,6 +357,39 @@ def test_extra_args_requests_dflash():
     )
 
 
+def test_text_only_vlm_downloads_dflash():
+    assert _should_download_dflash(
+        "auto", ["--no-mmproj"], is_vision = True, mmproj_path = None
+    )
+    assert not _should_download_dflash(
+        "auto", None, is_vision = True, mmproj_path = "/models/mmproj.gguf"
+    )
+
+
+def test_transient_dflash_download_failure_is_retryable(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    import huggingface_hub
+
+    backend = LlamaCppBackend()
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *args, **kwargs: ["Qwen3-4B-DFlash-q8_0.gguf"],
+    )
+
+    def fail_download(*args, **kwargs):
+        raise ConnectionError("temporary")
+
+    monkeypatch.setattr(llama_cpp, "hf_hub_download_with_xet_fallback", fail_download)
+    assert (
+        backend._download_dflash(
+            hf_repo = "org/repo", weight_name = "Qwen3-4B-Q4_K_M.gguf"
+        )
+        is None
+    )
+    assert backend.dflash_download_failed is True
+
+
 def _load_inference_routes_module():
     """Load inference routes without importing every router."""
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
@@ -416,6 +450,18 @@ def test_hf_load_reloads_when_dflash_appears_unresolved(tmp_path):
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
+def test_hf_load_retries_transient_dflash_download(tmp_path):
+    routes = _load_inference_routes_module()
+    from models.inference import LoadRequest
+
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
+    backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
+    backend._dflash_download_failed = True
+    assert routes._request_matches_loaded_settings(req, backend) is False
+
+
 def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
@@ -457,8 +503,32 @@ def test_remote_companion_bytes_counts_preferred_dflash(monkeypatch):
     monkeypatch.setattr(
         huggingface_hub, "model_info", lambda *a, **k: SimpleNamespace(siblings = siblings)
     )
-    total = routes._remote_gguf_companion_bytes("org/repo", hf_token = None, include_mmproj = True)
+    total = routes._remote_gguf_companion_bytes(
+        "org/repo",
+        hf_token = None,
+        include_mmproj = True,
+        weight_name = "Qwen3-4B-Q4_K_M.gguf",
+    )
     assert total == 575
+
+
+def test_remote_companion_bytes_skips_foreign_dflash(monkeypatch):
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    routes = _load_inference_routes_module()
+    siblings = [SimpleNamespace(rfilename = "Gemma-4B-DFlash-q8_0.gguf", size = 575)]
+    monkeypatch.setattr(
+        huggingface_hub, "model_info", lambda *a, **k: SimpleNamespace(siblings = siblings)
+    )
+    total = routes._remote_gguf_companion_bytes(
+        "org/repo",
+        hf_token = None,
+        include_mmproj = False,
+        weight_name = "Qwen3-4B-Q4_K_M.gguf",
+    )
+    assert total == 0
 
 
 def test_dflash_reload_dedup_finds_root_sibling(tmp_path):

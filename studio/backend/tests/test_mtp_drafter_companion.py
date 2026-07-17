@@ -178,6 +178,16 @@ def test_variant_plans_prefer_quant_over_fp16_dflash():
     assert "Qwen3-4B-DFlash-fp16.gguf" not in plan.target_filenames
 
 
+def test_variant_plans_skip_foreign_dflash():
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main"),
+            _sib("Gemma-4B-DFlash-q8_0.gguf", 575, "foreign-dflash"),
+        ]
+    )
+    assert plans["q4_k_m"].target_filenames == ("Qwen3-4B-Q4_K_M.gguf",)
+
+
 def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.
