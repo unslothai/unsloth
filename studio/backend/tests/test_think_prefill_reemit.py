@@ -19,6 +19,7 @@ sys.path.insert(0, _backend)
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
+    detect_reasoning_channel_markers_from_model_info,
     detect_think_prefill,
     render_with_native_template_fallback,
 )
@@ -164,6 +165,29 @@ def test_native_template_fallback_returns_selected_reasoning_metadata():
     )
 
     assert result.prompt == "hi|TOOLS"
+    assert result.reasoning_channel_markers == ("<|channel>thought", "<channel|>")
+
+
+def test_cached_native_template_metadata_recovers_reasoning_markers_without_tools():
+    from types import SimpleNamespace
+
+    model_info = {"chat_template_info": {"template": "native <|channel>thought\n<channel|>"}}
+
+    assert detect_reasoning_channel_markers_from_model_info(
+        SimpleNamespace(chat_template = "override has no native markers"),
+        model_info,
+        tools = None,
+    ) == ("<|channel>thought", "<channel|>")
+    result = render_with_native_template_fallback(
+        formatted_prompt = "prompt from override",
+        tokenizer = SimpleNamespace(chat_template = "override has no native markers"),
+        model_info = model_info,
+        active_model_name = "gemma-test",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = None,
+        return_metadata = True,
+    )
+    assert result.prompt == "prompt from override"
     assert result.reasoning_channel_markers == ("<|channel>thought", "<channel|>")
 
 

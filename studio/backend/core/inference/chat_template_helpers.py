@@ -104,6 +104,29 @@ def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[
     return None
 
 
+def detect_reasoning_channel_markers_from_model_info(
+    tokenizer,
+    model_info: Optional[dict] = None,
+    tools = None,
+) -> Optional[tuple[str, str]]:
+    """Return reasoning markers from the active or cached native template."""
+    markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    if markers is not None or not isinstance(model_info, dict):
+        return markers
+
+    native_templates = (
+        model_info.get("native_chat_template"),
+        (model_info.get("chat_template_info") or {}).get("template"),
+    )
+    for template in native_templates:
+        markers = _detect_reasoning_channel_markers_from_templates(
+            _selected_template_strings_from_value(template, tools)
+        )
+        if markers is not None:
+            return markers
+    return None
+
+
 @dataclass(frozen = True)
 class ChatTemplateRenderResult:
     """Prompt plus response-protocol metadata selected by the renderer."""
@@ -506,7 +529,9 @@ def render_with_native_template_fallback(
     gated/private model's native template can still be fetched. With
     ``return_metadata``, returns the selected prompt plus reasoning-channel markers
     for the exact template used by this request."""
-    live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
+    live_markers = detect_reasoning_channel_markers_from_model_info(
+        tokenizer, model_info, tools = tools
+    )
 
     def _result(prompt: str, markers = live_markers):
         if return_metadata:
