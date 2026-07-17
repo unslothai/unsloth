@@ -370,12 +370,13 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Check if tokenizer.model exists
-    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
-        return new_tokenizer
-
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
+
+    # Check if tokenizer.model exists -- only a sentencepiece tokenizer writes one,
+    # so this has to run after the save that would produce it.
+    if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
+        return new_tokenizer
 
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())

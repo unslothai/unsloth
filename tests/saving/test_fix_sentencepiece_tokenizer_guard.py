@@ -1,0 +1,134 @@
+import os
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
+import transformers
+from transformers.utils import sentencepiece_model_pb2
+
+from unsloth.tokenizer_utils import fix_sentencepiece_tokenizer
+
+
+NORMAL, CONTROL = 1, 3
+
+
+def _spm_bytes(pieces):
+    m = sentencepiece_model_pb2.ModelProto()
+    for piece, score, typ in pieces:
+        p = m.pieces.add()
+        p.piece = piece
+        p.score = score
+        p.type = typ
+    return m.SerializeToString()
+
+
+def _read_pieces(path):
+    m = sentencepiece_model_pb2.ModelProto()
+    with open(path, "rb") as f:
+        m.ParseFromString(f.read())
+    return [p.piece for p in m.pieces]
+
+
+class _FakeTokenizer:
+    """Minimal stand-in for a sentencepiece-backed slow tokenizer.
+
+    ``save_pretrained`` writes a tokenizer.model, which is what the real slow
+    tokenizers do and what fix_sentencepiece_tokenizer reads back.
+    """
+
+    def __init__(
+        self,
+        name,
+        spm_bytes = None,
+        vocab = None,
+    ):
+        self.name = name
+        self.eos_token = "</s>"
+        self.pad_token = "<pad>"
+        self._spm_bytes = spm_bytes
+        self._vocab = vocab or {}
+        self.saved_to = []
+
+    def save_pretrained(self, location):
+        self.saved_to.append(location)
+        os.makedirs(location, exist_ok = True)
+        if self._spm_bytes is not None:
+            with open(os.path.join(location, "tokenizer.model"), "wb") as f:
+                f.write(self._spm_bytes)
+
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
+        class _Encoded:
+            pass
+
+        encoded = _Encoded()
+        encoded.input_ids = [[self._vocab[text]] for text in texts]
+        return encoded
+
+
+def _tokenizers():
+    pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL), ("</s>", 0.0, CONTROL)]
+    old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"</s>": 2})
+    new = _FakeTokenizer("new")
+    return old, new
+
+
+def _stub_auto_tokenizer(monkeypatch):
+    """fix_sentencepiece_tokenizer reloads the patched directory through
+    AutoTokenizer at the end; that needs a full tokenizer on disk, which is
+    out of scope here. Record the call and hand back a sentinel.
+    """
+    loaded = []
+
+    class _StubAutoTokenizer:
+        @staticmethod
+        def from_pretrained(location, **kwargs):
+            loaded.append(location)
+            return "reloaded-tokenizer"
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _StubAutoTokenizer)
+    return loaded
+
+
+def test_old_tokenizer_is_saved_so_its_model_can_be_read(tmp_path, monkeypatch):
+    """The guard must not skip the body on a fresh temporary directory.
+
+    fix_sentencepiece_tokenizer creates the temporary directory itself and then
+    checks for a tokenizer.model inside it, but that file only appears once
+    old_tokenizer.save_pretrained() has run.
+    """
+    _stub_auto_tokenizer(monkeypatch)
+    old, new = _tokenizers()
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert old.saved_to, "old tokenizer was never saved: the body did not run"
+
+
+def test_token_mapping_is_applied_to_the_sentencepiece_model(tmp_path, monkeypatch):
+    _stub_auto_tokenizer(monkeypatch)
+    old, new = _tokenizers()
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert "<|im_end|>" in _read_pieces(f"{location}/tokenizer.model")
+
+
+def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path, monkeypatch):
+    """A fast-only tokenizer writes no tokenizer.model, so the guard still
+    short-circuits and the caller gets new_tokenizer back unchanged.
+    """
+    _stub_auto_tokenizer(monkeypatch)
+    old = _FakeTokenizer("old", spm_bytes = None)
+    new = _FakeTokenizer("new")
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+
+    result = fix_sentencepiece_tokenizer(
+        old, new, {"</s>": "<|im_end|>"}, temporary_location = location
+    )
+
+    assert result is new
