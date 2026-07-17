@@ -170,6 +170,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   { match: "ideogram", steps: 48, guidance: 7 },
   // Lumina Image 2.0 model-card recipe (the backend adds cfg_trunc_ratio itself).
   { match: "lumina", steps: 50, guidance: 4 },
+  // HunyuanImage 2.1: 50 steps; the guidance value feeds distilled_guidance_scale
+  // (default 3.25), real CFG runs inside the repo's guider components.
+  { match: "hunyuanimage", steps: 50, guidance: 3.25 },
   // SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
   // real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
   { match: "sdxl-turbo", steps: 3, guidance: 0 },
