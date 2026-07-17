@@ -14360,6 +14360,7 @@ async def load_diffusion_model(
                 transformer_cache = request.transformer_cache,
                 transformer_cache_threshold = request.transformer_cache_threshold,
                 model_kind = kind,
+                loras = [(s.id, s.weight) for s in request.loras] if request.loras else None,
             )
 
         if needs_gpu:

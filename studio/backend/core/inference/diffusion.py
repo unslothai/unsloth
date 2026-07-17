@@ -564,6 +564,7 @@ class DiffusionBackend:
                 requested = mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
+                force_dense = bool(kwargs.get("loras")),
                 logger = None,
             )
             # A prequant candidate loads a small checkpoint, not the dense transformer/ shards,
@@ -741,6 +742,7 @@ class DiffusionBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
+        loras: Optional[list[tuple[str, float]]] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         # A blank token must mean "anonymous", not an empty credential the Hub 401s.
@@ -785,6 +787,7 @@ class DiffusionBackend:
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
+                loras = loras,
                 _load_token = token,
             ),
             daemon = True,
@@ -1082,6 +1085,10 @@ class DiffusionBackend:
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
+        # LoRA adapters to BAKE into a torchao int8/fp8 build (attached on the dense
+        # transformer before quantize_ + compile). Ignored by every other load kind: bf16 /
+        # bnb loads take adapters at generation time, GGUF-as-is has no dense transformer.
+        loras: Optional[list[tuple[str, float]]] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -1230,6 +1237,9 @@ class DiffusionBackend:
                             requested = transformer_quant,
                             base_repo = base,
                             prequant_path = transformer_prequant_path,
+                            # A LoRA bake skips the prequant shortcut, so size the candidate
+                            # for the dense build it will actually run.
+                            force_dense = bool(loras),
                             logger = logger,
                         )
                         if candidate is not None:
@@ -1298,7 +1308,12 @@ class DiffusionBackend:
                         # path must NOT count as prequant here, or it skips the dense-fit re-check
                         # and OOMs materialising the dense transformer after eviction.
                         prequant = (
-                            usable_prequant_source(
+                            # A LoRA bake skips the prequant shortcut (adapters attach on the
+                            # dense transformer), so the dense-fit re-check must gate the fast
+                            # path exactly as if no prequant source existed.
+                            None
+                            if loras
+                            else usable_prequant_source(
                                 fam, scheme, path_override = transformer_prequant_path
                             )
                             if scheme is not None
@@ -1349,6 +1364,7 @@ class DiffusionBackend:
                             base_local_dir = _base_local_dir,
                             prequant_path = transformer_prequant_path,
                             allow_dense_fallback = dense_fallback_allowed,
+                            lora_specs = loras,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -1758,6 +1774,7 @@ class DiffusionBackend:
         prequant_path: Optional[str] = None,
         base_local_dir: Optional[str] = None,
         allow_dense_fallback: bool = True,
+        lora_specs: Optional[list[tuple[str, float]]] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -1770,6 +1787,13 @@ class DiffusionBackend:
         2. Dense + quantise (fallback): load the DENSE bf16 transformer from the base repo,
            place it on the device, and torchao-quantise it in place.
 
+        ``lora_specs`` bakes LoRA adapters into the build: they attach on the DENSE
+        transformer (peft's post-quant torchao dispatch needs quantizer metadata a manual
+        quantize_ never has), then quantize_ converts only the frozen base linears (the
+        ``lora_`` side path is excluded by name), then the loader compiles. That forces the
+        dense path -- the prequant shortcut is skipped -- so a baked-LoRA load pays the dense
+        peak. Verified on the Studio stack: scale 0 reproduces the quantized base exactly.
+
         Raises if the scheme is unsupported or quantisation fails, so ``load_pipeline``
         catches it and falls back to the GGUF build. Quantisation runs ON the device and
         BEFORE the loader compiles the repeated block, so the order stays quantize ->
@@ -1781,7 +1805,9 @@ class DiffusionBackend:
             # nvfp4 off Blackwell) would otherwise materialise the transformer only to fail at
             # quantize, after eviction. load_pipeline catches this and builds the GGUF pipeline.
             raise RuntimeError("transformer quant unsupported for this device/scheme")
-        if fam is not None:
+        if fam is not None and not lora_specs:
+            # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so
+            # the prequant shortcut is skipped when adapters were requested.
             source = resolve_prequant_source(fam, scheme, path_override = prequant_path)
             if source is not None:
                 transformer = load_prequantized_transformer(
@@ -1819,6 +1845,29 @@ class DiffusionBackend:
         pipe = self._assemble_pipe(
             pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir, fam = fam
         )
+        if lora_specs:
+            # Bake the adapters BEFORE quantize_: peft injects its wrappers on the dense
+            # Linears (the post-quant torchao dispatch would TypeError on a manually
+            # quantized module), then quantize_ converts only each wrapper's frozen
+            # base_layer while the "lora_" side path stays high precision.
+            baked = self._resolve_lora_set(
+                [(i, w) for (i, w) in lora_specs if w != 0],
+                family = getattr(fam, "name", None),
+                hf_token = hf_token,
+            )
+            for name, path, _weight in baked:
+                pipe.load_lora_weights(path, adapter_name = name)
+            pipe.set_adapters(
+                [n for (n, _p, _w) in baked],
+                adapter_weights = [w for (_n, _p, w) in baked],
+            )
+            pipe._unsloth_loras = baked
+            pipe._unsloth_loras_baked = True
+            logger.info(
+                "diffusion.lora_bake: %d adapter(s) attached before %s quantize",
+                len(baked),
+                scheme,
+            )
         scheme = quantize_transformer(
             pipe,
             target,
@@ -2121,6 +2170,49 @@ class DiffusionBackend:
         except (StopIteration, AttributeError, RuntimeError, TypeError):
             pass
 
+    @staticmethod
+    def _resolve_lora_set(
+        specs: list[tuple[str, float]],
+        *,
+        family: Optional[str],
+        hf_token: Optional[str],
+        cancel: Optional[threading.Event] = None,
+    ) -> tuple[tuple[str, str, float], ...]:
+        """Resolve (id, weight) specs to a ``(name, path, weight)`` tuple set for diffusers.
+
+        Shared by the generation-time apply path and the quant load-time bake so both produce
+        IDENTICAL tuples for the same request (the no-op / weight-only comparisons depend on it).
+        """
+        from core.inference import diffusion_lora
+
+        # This branch's resolve_specs has no family-scoped catalog; the parameter is kept so
+        # the caller code stays identical across branches.
+        del family
+        resolved = diffusion_lora.resolve_specs(
+            specs,
+            hf_token = hf_token,
+            cancel_event = cancel,
+        )
+        # diffusers load_lora_weights takes safetensors only; reject a .gguf adapter as a clean 400.
+        bad = [r.id for r in resolved if r.fmt != "safetensors"]
+        if bad:
+            raise ValueError(
+                "GGUF LoRA adapters are not supported on the diffusers engine "
+                f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
+            )
+        # Unique adapter names (diffusers requires distinct names; sanitized stems can collide).
+        uniq: list[tuple[str, str, float]] = []
+        seen: set[str] = set()
+        for r in resolved:
+            name = r.alias
+            n = 1
+            while name in seen:
+                n += 1
+                name = f"{r.alias}_{n}"
+            seen.add(name)
+            uniq.append((name, r.path, r.weight))
+        return tuple(uniq)
+
     def _apply_loras(
         self, state: Any, loras: Optional[list[tuple[str, float]]], cancel: threading.Event
     ) -> None:
@@ -2130,12 +2222,23 @@ class DiffusionBackend:
         The applied set is recorded on the pipe object, so an unchanged selection is a no-op
         and a model swap (a fresh pipe with no marker) resets naturally. Never fuses: fusing
         breaks on quantized (bnb-4bit / torchao) transformers and blocks live weight tweaks.
+
+        A torchao int8/fp8 pipe carries its adapters from the load-time BAKE (attached before
+        quantize_ + compile). Its module topology is frozen: weight-only changes go through
+        set_adapters (value-level, compile-guard safe); adding/removing adapters needs a reload
+        with the new selection, surfaced as a clean 400 here.
         """
         from core.inference import diffusion_lora
 
         pipe = state.pipe
         current = getattr(pipe, "_unsloth_loras", ())
         specs = [(i, w) for (i, w) in (loras or []) if w != 0]
+
+        quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
+        quant = (state.transformer_quant or "").lower()
+        if quant in ("int8", "fp8", "nvfp4", "mxfp8"):
+            self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
+            return
 
         if not specs:
             if current:
@@ -2155,32 +2258,17 @@ class DiffusionBackend:
         ):
             raise ValueError(
                 "LoRA is not supported for this model/quantisation on the diffusers engine "
-                "(GGUF-via-diffusers, torchao fp8/int8, or a torch.compile'd Speed=default/max "
-                "load). Use a bf16 or bnb-4bit load at Speed=off/eager, or the native engine "
-                "for GGUF models."
+                "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Use a bf16 "
+                "or bnb-4bit load at Speed=off/eager, or the native engine for GGUF models."
             )
 
-        resolved = diffusion_lora.resolve_specs(specs, hf_token = state.hf_token, cancel_event = cancel)
-        # diffusers load_lora_weights takes safetensors only; reject a .gguf adapter as a clean 400.
-        bad = [r.id for r in resolved if r.fmt != "safetensors"]
-        if bad:
-            raise ValueError(
-                "GGUF LoRA adapters are not supported on the diffusers engine "
-                f"({', '.join(bad)}); use a .safetensors adapter, or the native engine."
-            )
-        # Unique adapter names (diffusers requires distinct names; sanitized stems can collide).
-        uniq: list[tuple[str, str, float]] = []
-        seen: set[str] = set()
-        for r in resolved:
-            name = r.alias
-            n = 1
-            while name in seen:
-                n += 1
-                name = f"{r.alias}_{n}"
-            seen.add(name)
-            uniq.append((name, r.path, r.weight))
-
-        desired = tuple(uniq)
+        desired = self._resolve_lora_set(
+            specs,
+            family = getattr(state.family, "name", None),
+            hf_token = state.hf_token,
+            cancel = cancel,
+        )
+        uniq = list(desired)
         if desired == current:
             return
         try:
@@ -2199,6 +2287,59 @@ class DiffusionBackend:
             pipe._unsloth_loras = ()
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
+
+    def _adjust_baked_loras(
+        self,
+        state: Any,
+        pipe: Any,
+        specs: list[tuple[str, float]],
+        current: tuple,
+        quant_baked: bool,
+        cancel: threading.Event,
+    ) -> None:
+        """Generation-time LoRA handling for a torchao-quantized pipe.
+
+        The adapters (if any) were baked at load time, before quantize_ + compile, so the
+        module topology is immutable here. Allowed without a reload: weight tweaks on the
+        baked set and disabling everything (scale 0 reproduces the quantized base exactly;
+        set_adapters is value-level, so torch.compile guards absorb it). Anything that would
+        change topology (adding adapters to a bake-less load, or a different adapter set)
+        raises a clean 400 telling the client to reload with the new selection.
+        """
+        if not quant_baked:
+            if not specs:
+                return  # no adapters baked, none requested
+            raise ValueError(
+                "This quantized (int8/fp8) load was built without LoRA adapters. Reload the "
+                "model with the adapter selection to bake it into the quantized transformer."
+            )
+        if not specs:
+            # Disable every baked adapter: scale 0 reproduces the quantized base exactly.
+            names = [n for (n, _p, _w) in current]
+            if any(w != 0 for (_n, _p, w) in current):
+                pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
+                pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
+            return
+        desired = self._resolve_lora_set(
+            specs,
+            family = getattr(state.family, "name", None),
+            hf_token = state.hf_token,
+            cancel = cancel,
+        )
+        if desired == current:
+            return
+        if [(n, p) for (n, p, _w) in desired] == [(n, p) for (n, p, _w) in current]:
+            # Same adapters, new weights: value-level change on the baked topology.
+            pipe.set_adapters(
+                [n for (n, _p, _w) in desired],
+                adapter_weights = [w for (_n, _p, w) in desired],
+            )
+            pipe._unsloth_loras = desired
+            return
+        raise ValueError(
+            "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
+            "adapters at load time. Reload the model with the new adapter selection."
+        )
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:

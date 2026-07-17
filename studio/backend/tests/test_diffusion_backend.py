@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import threading
 import types
 
 import pytest
@@ -2831,6 +2832,148 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
     assert replan_calls == [True]  # genuine capacity shortfall: declined without a retry
 
 
+class _BakePipe:
+    def __init__(self):
+        self.calls: list = []
+
+    def load_lora_weights(self, path, adapter_name = None):
+        self.calls.append(("load", path, adapter_name))
+
+    def set_adapters(self, names, adapter_weights = None):
+        self.calls.append(("set", tuple(names), tuple(adapter_weights)))
+
+
+def test_dense_quant_lora_bake_attaches_before_quantize(fake_runtime, monkeypatch):
+    # A LoRA bake must (a) skip the prequant shortcut (adapters need the DENSE transformer),
+    # (b) attach the adapters BEFORE quantize_transformer (peft's post-quant torchao dispatch
+    # TypeErrors on a manually quantized module), and (c) mark the pipe as baked.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    prequant_consulted = []
+    monkeypatch.setattr(
+        dmod,
+        "resolve_prequant_source",
+        lambda *a, **k: prequant_consulted.append(True) or None,
+    )
+    order: list = []
+
+    class FakeTransformerCls:
+        @staticmethod
+        def from_pretrained(*a, **k):
+            order.append("dense_load")
+            return object()
+
+    pipe = _BakePipe()
+    monkeypatch.setattr(
+        DiffusionBackend, "_assemble_pipe", staticmethod(lambda *a, **k: pipe)
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(lambda specs, **k: (("sloth", "/adapters/sloth.safetensors", 0.8),)),
+    )
+
+    def fake_quantize(p, target, **k):
+        order.append("quantize")
+        assert any(c[0] == "load" for c in p.calls), "adapters must attach before quantize"
+        return "int8"
+
+    monkeypatch.setattr(dmod, "quantize_transformer", fake_quantize)
+    got_pipe, scheme = backend._load_dense_quant_pipeline(
+        FakeTransformerCls,
+        object,
+        "base/repo",
+        "cuda",
+        "bf16",
+        None,
+        types.SimpleNamespace(device = "cuda", dtype = "bf16"),
+        "int8",
+        fam = types.SimpleNamespace(name = "z-image"),
+        lora_specs = [("sloth", 0.8)],
+    )
+    assert scheme == "int8"
+    assert prequant_consulted == []  # prequant shortcut skipped for the bake
+    assert order == ["dense_load", "quantize"]
+    assert pipe.calls[0] == ("load", "/adapters/sloth.safetensors", "sloth")
+    assert pipe.calls[1] == ("set", ("sloth",), (0.8,))
+    assert pipe._unsloth_loras == (("sloth", "/adapters/sloth.safetensors", 0.8),)
+    assert pipe._unsloth_loras_baked is True
+
+
+def _quant_lora_state(pipe, quant = "int8"):
+    return types.SimpleNamespace(
+        pipe = pipe,
+        transformer_quant = quant,
+        kind = "gguf",
+        family = types.SimpleNamespace(name = "z-image"),
+        hf_token = None,
+        speed_optims = ("compiled",),
+    )
+
+
+def test_apply_loras_quant_unbaked_requires_reload(monkeypatch):
+    # A quantized pipe built WITHOUT adapters cannot take one at generation time (topology is
+    # frozen after quantize_ + compile): clean 400 telling the client to reload.
+    backend = DiffusionBackend()
+    pipe = _BakePipe()
+    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+        backend._apply_loras(
+            _quant_lora_state(pipe), [("sloth", 1.0)], threading.Event()
+        )
+    # ...but a no-adapter generation on the same pipe stays a plain no-op.
+    backend._apply_loras(_quant_lora_state(pipe), [], threading.Event())
+    assert pipe.calls == []
+
+
+def test_apply_loras_quant_baked_matrix(monkeypatch):
+    # Baked pipe: same set -> no-op; weight-only change -> set_adapters (value-level, no
+    # topology change); empty -> all scales 0 (reproduces the quantized base); different
+    # adapter set -> reload error.
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        staticmethod(
+            lambda specs, **k: tuple(
+                (i, f"/adapters/{i}.safetensors", w) for (i, w) in specs
+            )
+        ),
+    )
+
+    def baked_pipe():
+        pipe = _BakePipe()
+        pipe._unsloth_loras = (("sloth", "/adapters/sloth.safetensors", 0.8),)
+        pipe._unsloth_loras_baked = True
+        return pipe
+
+    ev = threading.Event()
+    # same set: no-op
+    pipe = baked_pipe()
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 0.8)], ev)
+    assert pipe.calls == []
+    # weight-only change: live set_adapters + marker update
+    pipe = baked_pipe()
+    backend._apply_loras(_quant_lora_state(pipe), [("sloth", 1.4)], ev)
+    assert pipe.calls == [("set", ("sloth",), (1.4,))]
+    assert pipe._unsloth_loras == (("sloth", "/adapters/sloth.safetensors", 1.4),)
+    # empty: scale everything to 0 (quantized base output), marker keeps paths
+    pipe = baked_pipe()
+    backend._apply_loras(_quant_lora_state(pipe), [], ev)
+    assert pipe.calls == [("set", ("sloth",), (0.0,))]
+    assert pipe._unsloth_loras == (("sloth", "/adapters/sloth.safetensors", 0.0),)
+    # empty again after zeroing: no further calls
+    backend._apply_loras(_quant_lora_state(pipe), [], ev)
+    assert len(pipe.calls) == 1
+    # different adapter set: topology change -> reload error
+    pipe = baked_pipe()
+    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+        backend._apply_loras(_quant_lora_state(pipe), [("other", 1.0)], ev)
+
+
 def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     # krea's repo ships transformers-5.x configs and no top-level tokenizer files, so
     # Pipeline.from_pretrained dies in the tokenizer (vocab_file = None). The quant fast
@@ -2992,6 +3135,7 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
         requested,
         base_repo = None,
         prequant_path = None,
+        force_dense = False,
         logger = None,
     ):
         seen.append(requested)

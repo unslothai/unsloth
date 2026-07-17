@@ -605,7 +605,12 @@ def quantize_transformer(
         # would divide a per-row scale by a zero row (_FP8_FAMILY_EXCLUDE_NAME_TOKENS). fp8 and mxfp8
         # also assert a bf16 weight, so on a mixed-precision DiT (Wan / Hunyuan) they skip non-bf16
         # linears or the pass raises. nvfp4 handles fp32, so it is not gated (_REQUIRE_BF16_SCHEMES).
-        exclude = exclude_tokens_for_scheme(scheme, family)
+        # "lora_" keeps a baked adapter's side path (lora_A/lora_B/lora_embedding) high
+        # precision when adapters were attached before this pass; the tiny ranks usually fall
+        # under min_features anyway, but an explicit token does not depend on the rank. Runtime
+        # only: NOT part of exclude_tokens_for_scheme, whose list is baked into prequant
+        # checkpoint metadata (adding it there would reject every existing checkpoint).
+        exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),

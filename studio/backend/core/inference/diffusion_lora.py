@@ -396,8 +396,15 @@ _NATIVE_LORA_FAMILY_TOKENS = (
     "sd3",
     "stable-diffusion",
 )
-# Diffusers quant schemes that cannot take LoRA cleanly (torchao tensor-subclass weights).
-_DIFFUSERS_LORA_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
+# Diffusers quant schemes whose LoRA path is the load-time BAKE (adapters attach on the
+# dense transformer BEFORE torchao quantize_ + compile; peft's post-quant TorchaoLoraLinear
+# dispatch needs quantizer metadata a manual quantize_ never has). Verified on the Studio
+# stack (peft 0.18.1 / torchao 0.17 / torch 2.10): adapter-first, quantize-base-second is
+# clean for both schemes -- scale 0 reproduces the quantized base bit-exactly and the wrapped
+# transformer compiles.
+_DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
+# Prototype schemes with no validated LoRA path (and no shipped families needing one).
+_DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
 
 
 def supports_lora(
@@ -410,19 +417,26 @@ def supports_lora(
 ) -> bool:
     """Single gate for whether the current load can apply LoRA (status + backends).
 
-    Native (sd_cpp): GGUF via sd-cli, LoRA-capable families only (Qwen excluded). Diffusers: bf16
-    or bnb-4bit, but NOT the dense torchao fp8/int8 path (tensor-subclass weights), NOT
-    GGUF-via-diffusers, and NOT a torch.compile'd transformer (diffusers requires the adapter
-    loaded BEFORE compilation). ``compiled`` is diffusers-only.
+    Native (sd_cpp): GGUF via sd-cli, LoRA-capable families only (Qwen excluded). Diffusers:
+    bf16 / bnb-4bit apply at generation time (but NOT once the transformer is torch.compile'd:
+    diffusers needs the adapter loaded before compilation); torchao int8/fp8 apply via the
+    load-time bake (select adapters when loading; a different selection needs a reload), so
+    ``compiled`` does not gate them -- the bake precedes compilation by construction. The quant
+    check runs BEFORE the gguf-kind check because the quant fast path keeps the PICKER kind
+    ("gguf") while the effective transformer is a dense torchao build. nvfp4/mxfp8 stay
+    unsupported; GGUF-via-diffusers stays on the native engine for LoRA.
     """
     fam = (family or "").lower()
     if engine == "sd_cpp":
         return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
     # diffusers
+    quant = (transformer_quant or "").lower()
+    if quant in _DIFFUSERS_LORA_BAKED_QUANT:
+        return True  # load-time bake; adapters ride inside the compiled quantized build
+    if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
+        return False
     if model_kind == "gguf":
         return False  # GGUF diffusers transformer: use the native engine for LoRA
-    if transformer_quant and transformer_quant.lower() in _DIFFUSERS_LORA_BLOCKED_QUANT:
-        return False
     if compiled:
         return False  # can't load an adapter onto an already-compiled transformer
     return True
