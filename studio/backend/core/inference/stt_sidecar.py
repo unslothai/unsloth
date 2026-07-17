@@ -228,15 +228,33 @@ def _is_missing_local_model_error(exc: BaseException) -> bool:
 
 
 def is_model_downloaded(model: Optional[str]) -> bool:
-    """True when the model's snapshot is complete in the local HF cache."""
+    """True when a usable Whisper snapshot exists in the local HF cache.
+
+    An aborted download can leave a snapshot directory holding only small
+    metadata files, and an offline cache lookup cannot know the repository's
+    full file list -- so verify the files loading actually needs.
+    """
     try:
         from huggingface_hub import snapshot_download
 
-        snapshot_download(
-            repo_id = resolve_model_repo(resolve_model_id(model)),
-            local_files_only = True,
+        snapshot = Path(
+            snapshot_download(
+                repo_id = resolve_model_repo(resolve_model_id(model)),
+                local_files_only = True,
+            )
         )
-        return True
+        # is_file() follows the cache symlinks, so a link left behind by an
+        # interrupted blob download does not count.
+        has_weights = any(
+            p.is_file()
+            for pattern in ("*.safetensors", "pytorch_model*.bin")
+            for p in snapshot.glob(pattern)
+        )
+        return (
+            has_weights
+            and (snapshot / "config.json").is_file()
+            and (snapshot / "preprocessor_config.json").is_file()
+        )
     except Exception:
         return False
 

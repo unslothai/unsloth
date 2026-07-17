@@ -5759,8 +5759,15 @@ def _stt_sidecar_for(engine: str):
 
 
 @studio_router.get("/audio/stt/status")
-async def stt_status(current_subject: str = Depends(get_current_subject)):
-    """Report STT availability and which model, if any, is resident."""
+async def stt_status(
+    model: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Report STT availability and which model, if any, is resident.
+
+    ``model`` extends the Transformers ``downloaded_models`` check to a
+    custom Hugging Face repository beyond the curated defaults.
+    """
     from core.inference import stt_ggml_sidecar, stt_sidecar
     from core.inference.stt_sidecar import (
         DEFAULT_STT_MODEL,
@@ -5771,6 +5778,11 @@ async def stt_status(current_subject: str = Depends(get_current_subject)):
 
     sidecar = get_stt_sidecar()
     ggml = stt_ggml_sidecar.get_ggml_stt_sidecar()
+    transformers_downloaded = [
+        model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
+    ]
+    if model and model not in STT_MODELS and stt_sidecar.is_model_downloaded(model):
+        transformers_downloaded.append(model)
     return JSONResponse(
         content = {
             "available": is_available(),
@@ -5791,11 +5803,7 @@ async def stt_status(current_subject: str = Depends(get_current_subject)):
                 "keep_alive_seconds": sidecar.keep_alive_seconds,
                 "default_model": DEFAULT_STT_MODEL,
                 "models": list(STT_MODELS.keys()),
-                "downloaded_models": [
-                    model_id
-                    for model_id in STT_MODELS
-                    if stt_sidecar.is_model_downloaded(model_id)
-                ],
+                "downloaded_models": transformers_downloaded,
                 "download": stt_sidecar.download_status(),
             },
             # whisper.cpp (GGUF) engine.

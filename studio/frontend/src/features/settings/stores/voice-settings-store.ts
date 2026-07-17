@@ -87,26 +87,15 @@ export function isSttModelLanguageCompatible(
   return normalized !== "auto" && normalized.split("-", 1)[0] === "en";
 }
 
-export type DictationEngine = "browser" | "model" | "gguf";
-
-/** Whether a model id is one of the five curated Whisper choices. */
-export function isCuratedSttModel(model: SttModel): boolean {
-  return (STT_MODELS as readonly string[]).includes(model.trim());
-}
+export type DictationEngine = "browser" | "model";
 
 /**
- * Both local engines offer only the curated checkpoints in the UI; a custom
- * Hugging Face repo saved by an older build falls back to the default model.
+ * Whether a model id is one of the five curated Whisper choices. Curated
+ * models run as GGML checkpoints through whisper.cpp; custom repositories
+ * are safetensors checkpoints and run through Transformers.
  */
-export function normalizeSttModelForEngine(
-  engine: DictationEngine,
-  model: SttModel,
-): SttModel {
-  const normalized = normalizeSttModel(model);
-  if (engine !== "browser" && !isCuratedSttModel(normalized)) {
-    return DEFAULT_STT_MODEL;
-  }
-  return normalized;
+export function isCuratedSttModel(model: SttModel): boolean {
+  return (STT_MODELS as readonly string[]).includes(model.trim());
 }
 
 export interface VoiceSettingsState {
@@ -115,13 +104,14 @@ export interface VoiceSettingsState {
   setMicDeviceId: (value: string) => void;
 
   /**
-   * "browser": Web Speech API. "gguf": local whisper.cpp transcription.
-   * "model": local Transformers (safetensors) transcription.
+   * "browser": Web Speech API. "model": local transcription; the selected
+   * model decides the backend (whisper.cpp for curated GGML checkpoints,
+   * Transformers for custom safetensors repositories).
    */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
-  /** STT model to use for the local dictation engines. */
+  /** STT model to use when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
@@ -163,6 +153,41 @@ export interface VoiceSettingsState {
   setTtsVolume: (value: number) => void;
 }
 
+/**
+ * localStorage wrapper that keeps the full dictation history until the
+ * browser's quota is actually hit, then drops the oldest entries instead of
+ * throwing away the whole save.
+ */
+const quotaSafeLocalStorage = {
+  getItem: (key: string) => localStorage.getItem(key),
+  removeItem: (key: string) => localStorage.removeItem(key),
+  setItem: (key: string, value: string) => {
+    try {
+      localStorage.setItem(key, value);
+      return;
+    } catch {
+      // Quota exceeded: trim dictation history, oldest first, and retry.
+    }
+    for (const keep of [QUOTA_TRIM_KEEP, 20]) {
+      try {
+        const parsed = JSON.parse(value) as {
+          state?: { recentDictations?: RecentDictation[] };
+        };
+        const state = parsed.state;
+        const recents = state?.recentDictations;
+        if (!state || !Array.isArray(recents) || recents.length <= keep) {
+          continue;
+        }
+        state.recentDictations = recents.slice(0, keep);
+        localStorage.setItem(key, JSON.stringify(parsed));
+        return;
+      } catch {
+        // Fall through to the next, more aggressive trim.
+      }
+    }
+  },
+};
+
 export const useVoiceSettingsStore = create<VoiceSettingsState>()(
   persist(
     (set) => ({
@@ -170,11 +195,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setMicDeviceId: (micDeviceId) => set({ micDeviceId }),
 
       dictationEngine: "browser",
-      setDictationEngine: (dictationEngine) =>
-        set((state) => ({
-          dictationEngine,
-          sttModel: normalizeSttModelForEngine(dictationEngine, state.sttModel),
-        })),
+      setDictationEngine: (dictationEngine) => set({ dictationEngine }),
 
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
@@ -292,14 +313,14 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         const dictationLanguage = asString(saved?.dictationLanguage, "auto");
+        // "gguf" was a short-lived separate engine choice; both local
+        // backends now live under "model".
+        const savedEngine = saved?.dictationEngine as string | undefined;
         const dictationEngine: DictationEngine =
-          saved?.dictationEngine === "model" || saved?.dictationEngine === "gguf"
-            ? saved.dictationEngine
+          savedEngine === "model" || savedEngine === "gguf"
+            ? "model"
             : "browser";
-        const savedSttModel = normalizeSttModelForEngine(
-          dictationEngine,
-          typeof saved?.sttModel === "string" ? saved.sttModel : DEFAULT_STT_MODEL,
-        );
+        const savedSttModel = normalizeSttModel(saved?.sttModel);
         const sttModel = isSttModelLanguageCompatible(
           savedSttModel,
           dictationLanguage,
@@ -331,41 +352,6 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     },
   ),
 );
-
-/**
- * localStorage wrapper that keeps the full dictation history until the
- * browser's quota is actually hit, then drops the oldest entries instead of
- * throwing away the whole save.
- */
-const quotaSafeLocalStorage = {
-  getItem: (key: string) => localStorage.getItem(key),
-  removeItem: (key: string) => localStorage.removeItem(key),
-  setItem: (key: string, value: string) => {
-    try {
-      localStorage.setItem(key, value);
-      return;
-    } catch {
-      // Quota exceeded: trim dictation history, oldest first, and retry.
-    }
-    for (const keep of [QUOTA_TRIM_KEEP, 20]) {
-      try {
-        const parsed = JSON.parse(value) as {
-          state?: { recentDictations?: RecentDictation[] };
-        };
-        const state = parsed.state;
-        const recents = state?.recentDictations;
-        if (!state || !Array.isArray(recents) || recents.length <= keep) {
-          continue;
-        }
-        state.recentDictations = recents.slice(0, keep);
-        localStorage.setItem(key, JSON.stringify(parsed));
-        return;
-      } catch {
-        // Fall through to the next, more aggressive trim.
-      }
-    }
-  },
-};
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;

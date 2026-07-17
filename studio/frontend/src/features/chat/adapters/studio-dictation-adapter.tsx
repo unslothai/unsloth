@@ -33,7 +33,7 @@ export function cancelActiveStudioDictation(): void {
  */
 /** Both local engines (Transformers and GGUF) record via MediaRecorder. */
 function usesModelRecording(dictationEngine: DictationEngine): boolean {
-  return dictationEngine === "model" || dictationEngine === "gguf";
+  return dictationEngine === "model";
 }
 
 export class StudioDictationAdapter implements DictationAdapter {

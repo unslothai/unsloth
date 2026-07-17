@@ -11,10 +11,10 @@ Metal/CPU kernels run the weights in f16 where PyTorch MPS requires fp32.
 The sidecar owns a single `whisper-server` subprocess bound to 127.0.0.1 on an
 ephemeral port. The model loads on demand, stays warm between dictations, and
 unloads after the same keep-alive as the Transformers sidecar. Curated GGML
-checkpoints are single files from the official `ggerganov/whisper.cpp`
-repository; they are downloaded individually (never the whole multi-gigabyte
-repo), which is why this engine does not go through the Model Hub flow -- the
-Hub's variant planner only handles `.gguf` chat-model layouts.
+checkpoints are single files from the Unsloth-hosted `unslothai/whisper-*-GGUF`
+repositories; they are downloaded directly, which is why this engine does not
+go through the Model Hub flow -- the Hub's variant planner only handles
+`.gguf` chat-model layouts.
 
 Binary discovery mirrors `_find_llama_server_binary`: an explicit env override
 first, then the managed Studio home, then PATH. When no binary is found the
@@ -56,10 +56,16 @@ from core.inference.stt_sidecar import (
 
 logger = get_logger(__name__)
 
-# Official whisper.cpp GGML checkpoints. Keys are the same stable ids the
-# Transformers sidecar curates so the frontend can reuse one model picker;
-# values are single files inside GGML_STT_REPO.
-GGML_STT_REPO = "ggerganov/whisper.cpp"
+# Unsloth-hosted GGML checkpoints, one repository per curated model. Keys are
+# the same stable ids the Transformers sidecar curates so the frontend can
+# reuse one model picker; values are the single file inside each repository.
+GGML_STT_REPOS: dict[str, str] = {
+    "tiny": "unslothai/whisper-tiny-GGUF",
+    "base": "unslothai/whisper-base-GGUF",
+    "small": "unslothai/whisper-small-GGUF",
+    "large-v3-turbo": "unslothai/whisper-large-v3-turbo-GGUF",
+    "large-v3": "unslothai/whisper-large-v3-GGUF",
+}
 GGML_STT_MODELS: dict[str, str] = {
     "tiny": "ggml-tiny.bin",
     "base": "ggml-base.bin",
@@ -163,10 +169,8 @@ def ensure_engine_available() -> str:
     binary = find_whisper_server_binary()
     if binary is None:
         raise SttEngineUnavailableError(
-            "The GGUF dictation engine needs whisper.cpp's whisper-server, which "
-            "is not installed. Build it with scripts/build_whisper_cpp.sh or set "
-            "WHISPER_SERVER_PATH, or switch Voice settings to the standard local "
-            "engine."
+            "The local transcription runtime is not installed. Run "
+            "`unsloth studio update` to install it."
         )
     return binary
 
@@ -182,7 +186,7 @@ def _cached_model_path(model_id: str) -> Optional[str]:
 
     try:
         return hf_hub_download(
-            repo_id = GGML_STT_REPO,
+            repo_id = GGML_STT_REPOS[model_id],
             filename = GGML_STT_MODELS[model_id],
             local_files_only = True,
         )
@@ -221,15 +225,18 @@ class _GgmlDownloadState:
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
 
+            # Callers may already hold self._lock (non-reentrant); bare
+            # attribute reads are safe without it.
+            model_id = self._model_id
+            if not model_id:
+                return None
             repo_dir = (
                 Path(HF_HUB_CACHE)
-                / f"models--{GGML_STT_REPO.replace('/', '--')}"
+                / f"models--{GGML_STT_REPOS[model_id].replace('/', '--')}"
                 / "blobs"
             )
             if not repo_dir.is_dir():
                 return None
-            # Callers may already hold self._lock (non-reentrant); a bare
-            # attribute read is safe without it.
             etag = self._etag
             if etag:
                 target = repo_dir / f"{etag}.incomplete"
@@ -263,6 +270,7 @@ class _GgmlDownloadState:
             thread.start()
 
     def _run(self, model_id: str, hf_token: Optional[str]) -> None:
+        repo_id = GGML_STT_REPOS[model_id]
         filename = GGML_STT_MODELS[model_id]
         try:
             from huggingface_hub import (
@@ -272,10 +280,9 @@ class _GgmlDownloadState:
             )
 
             try:
-                # One HEAD request; listing the whole multi-model repository
-                # with files_metadata is far too slow for a progress total.
+                # One HEAD request for the progress total and etag.
                 meta = get_hf_file_metadata(
-                    hf_hub_url(GGML_STT_REPO, filename), token = hf_token or None
+                    hf_hub_url(repo_id, filename), token = hf_token or None
                 )
                 with self._lock:
                     self._total_bytes = meta.size
@@ -283,7 +290,7 @@ class _GgmlDownloadState:
             except Exception:
                 pass
             hf_hub_download(
-                repo_id = GGML_STT_REPO,
+                repo_id = repo_id,
                 filename = filename,
                 token = hf_token or None,
             )
@@ -477,8 +484,8 @@ class GgmlSttSidecar:
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 raise SttEngineUnavailableError(
-                    "whisper-server exited before becoming ready; the model file "
-                    "may be corrupt or unsupported."
+                    "The local transcription runtime exited before becoming "
+                    "ready; the model file may be corrupt or unsupported."
                 )
             try:
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/", method = "GET")
@@ -486,7 +493,9 @@ class GgmlSttSidecar:
                     return
             except Exception:
                 time.sleep(0.2)
-        raise SttEngineUnavailableError("whisper-server did not become ready in time.")
+        raise SttEngineUnavailableError(
+            "The local transcription runtime did not start in time."
+        )
 
     # -- transcription ------------------------------------------------------
 
@@ -567,7 +576,7 @@ class GgmlSttSidecar:
             raise
         except Exception as exc:
             raise SttEngineUnavailableError(
-                "whisper-server did not answer the transcription request."
+                "The local transcription runtime did not answer the request."
             ) from exc
         text = payload.get("text")
         if not isinstance(text, str):

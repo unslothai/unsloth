@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -16,11 +22,11 @@ import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictatio
 import {
   StudioModelDictationAdapter,
   type SttDownloadStatus,
-  type SttEngine,
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
   unloadSttModel,
+  validateSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   StudioSpeechSynthesisAdapter,
@@ -30,14 +36,17 @@ import {
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { DownloadProgressBar } from "@/features/hub";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import {
   hfApiToken,
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
+import { useDebouncedValue } from "@/hooks";
 import { useT } from "@/i18n";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import { VolumeHighIcon } from "@hugeicons/core-free-icons";
+import { Search01Icon, VolumeHighIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -50,6 +59,8 @@ import {
   STT_MODELS,
   type SttModel,
   getSttModelRepo,
+  isCuratedSttModel,
+  isSttModelId,
   isSttModelLanguageCompatible,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
@@ -82,15 +93,8 @@ const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
   "large-v3-turbo": "Whisper Large v3 Turbo",
   "large-v3": "Whisper Large v3",
 };
+// Curated models run as f16 GGML files through whisper.cpp.
 const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
-  tiny: "155 MB",
-  base: "295 MB",
-  small: "970 MB",
-  "large-v3-turbo": "1.6 GB",
-  "large-v3": "3.1 GB",
-};
-// whisper.cpp GGML files are f16 single files, roughly half the safetensors.
-const STT_GGUF_MODEL_SIZES: Record<DefaultSttModel, string> = {
   tiny: "78 MB",
   base: "148 MB",
   small: "488 MB",
@@ -102,63 +106,185 @@ function sttModelName(model: SttModel): string {
   return STT_MODEL_NAMES[model as DefaultSttModel] ?? model;
 }
 
-function sttModelSize(model: SttModel, gguf = false): string {
-  const sizes = gguf ? STT_GGUF_MODEL_SIZES : STT_MODEL_SIZES;
-  return sizes[model as DefaultSttModel] ?? "";
+function sttModelSize(model: SttModel): string {
+  return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
+}
+
+/** Source repository shown under a model row. Curated models download from
+ * the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */
+function sttModelSource(model: SttModel): string {
+  return isCuratedSttModel(model)
+    ? `unslothai/whisper-${model}-GGUF`
+    : getSttModelRepo(model);
 }
 
 /**
- * Fixed picker for the local engines: both serve only the five curated
- * checkpoints, so a plain select fits better than a searchable combobox.
+ * Model picker for local transcription. Lists the curated whisper.cpp
+ * checkpoints and searches Hugging Face for other Whisper repositories,
+ * which run as safetensors through Transformers. The trigger is a plain
+ * button so the selection never renders inside a text input.
  */
-function SttCuratedModelSelect({
+function SttModelPicker({
   value,
   language,
-  gguf,
   onChange,
 }: {
   value: SttModel;
   language: string;
-  gguf: boolean;
   onChange: (model: SttModel) => void;
 }) {
-  const items: string[] = STT_MODELS.filter((model) =>
-    isSttModelLanguageCompatible(model, language),
-  );
-  if (!items.includes(value)) {
-    items.push(value);
-  }
+  const t = useT();
+  const hfToken = useHfTokenStore((state) => state.token);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [validating, setValidating] = useState(false);
+  const debouncedQuery = useDebouncedValue(query.trim());
+
+  const { results, isLoading } = useHubModelSearch(debouncedQuery, {
+    task: "automatic-speech-recognition",
+    accessToken: hfApiToken(hfToken),
+    excludeGguf: true,
+    enabled: debouncedQuery.length >= 2,
+    keepUnsupportedTags: true,
+    ownerScope: "all",
+  });
+
+  const items = useMemo(() => {
+    if (!debouncedQuery) {
+      const defaults: string[] = STT_MODELS.filter((model) =>
+        isSttModelLanguageCompatible(model, language),
+      );
+      if (!defaults.includes(value)) {
+        defaults.push(value);
+      }
+      return defaults;
+    }
+    const ids: string[] = [];
+    for (const result of results) {
+      const tags = result.tags?.map((tag) => tag.toLowerCase()) ?? [];
+      const isWhisper =
+        result.id.toLowerCase().includes("whisper") || tags.includes("whisper");
+      const isExactMatch =
+        result.id.toLowerCase() === debouncedQuery.toLowerCase();
+      if (
+        (isExactMatch ||
+          (isWhisper &&
+            result.pipelineTag === "automatic-speech-recognition")) &&
+        isSttModelLanguageCompatible(result.id, language) &&
+        !ids.includes(result.id)
+      ) {
+        ids.push(result.id);
+      }
+    }
+    return ids;
+  }, [debouncedQuery, language, results, value]);
+
+  const selectModel = async (model: string) => {
+    if (!isSttModelId(model) || validating) {
+      return;
+    }
+    if (!isCuratedSttModel(model)) {
+      setValidating(true);
+      try {
+        await validateSttModel(model, hfApiToken(hfToken));
+      } catch (error) {
+        toast.error(t("settings.voice.dictation.sttModelInvalid"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+        return;
+      } finally {
+        setValidating(false);
+      }
+    }
+    onChange(model);
+    setOpen(false);
+    setQuery("");
+  };
+
   return (
-    <Select value={value} onValueChange={onChange}>
-      <SelectTrigger
-        aria-label="Speech recognition model"
-        className="h-8 w-full"
-        size="sm"
-      >
-        <SelectValue>{sttModelName(value)}</SelectValue>
-      </SelectTrigger>
-      <SelectContent>
-        {items.map((model) => (
-          <SelectItem key={model} value={model}>
-            <span className="flex w-full min-w-0 items-center justify-between gap-3">
-              <span className="min-w-0 flex-1 truncate">
-                <span className="block truncate text-xs">
-                  {sttModelName(model)}
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
+    >
+      <PopoverTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label="Speech recognition model"
+          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+        >
+          <span className="truncate">{sttModelName(value)}</span>
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            strokeWidth={2}
+            className="text-muted-foreground pointer-events-none size-4 shrink-0"
+          />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" sideOffset={4} className="w-72 gap-0 p-0">
+        <div className="relative p-1.5 pb-0.5">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            strokeWidth={2}
+            className="text-muted-foreground pointer-events-none absolute top-[calc(50%+2px)] left-4 size-3.5 -translate-y-1/2"
+          />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t("settings.voice.dictation.sttModelSearchPlaceholder")}
+            className="h-8 pl-8 text-sm"
+            autoFocus={true}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && items.length > 0) {
+                event.preventDefault();
+                void selectModel(items[0]);
+              }
+            }}
+          />
+        </div>
+        <div className="max-h-64 overflow-y-auto p-1">
+          {(isLoading && debouncedQuery) || validating ? (
+            <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
+              <Spinner className="size-3.5" />
+              {validating
+                ? t("settings.voice.dictation.sttModelValidating")
+                : t("settings.voice.dictation.sttModelSearching")}
+            </div>
+          ) : items.length === 0 ? (
+            <div className="px-3 py-3 text-xs text-muted-foreground">
+              {t("settings.voice.dictation.sttModelNoResults")}
+            </div>
+          ) : (
+            items.map((model) => (
+              <button
+                key={model}
+                type="button"
+                onClick={() => void selectModel(model)}
+                className={`flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
+                  model === value ? "bg-muted/60" : ""
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="block truncate text-xs">
+                    {sttModelName(model)}
+                  </span>
+                  <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
+                    {sttModelSource(model)}
+                  </span>
                 </span>
-                <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
-                  {gguf ? "ggerganov/whisper.cpp" : getSttModelRepo(model)}
-                </span>
-              </span>
-              {sttModelSize(model, gguf) ? (
-                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                  {sttModelSize(model, gguf)}
-                </span>
-              ) : null}
-            </span>
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+                {sttModelSize(model) ? (
+                  <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                    {sttModelSize(model)}
+                  </span>
+                ) : null}
+              </button>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -409,9 +535,10 @@ export function VoiceTab() {
   const [statusNonce, setStatusNonce] = useState(0);
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
-  const isGgufEngine = dictationEngine === "gguf";
-  const isLocalEngine = isGgufEngine || dictationEngine === "model";
-  const sttEngine: SttEngine = isGgufEngine ? "gguf" : "transformers";
+  const isLocalEngine = dictationEngine === "model";
+  // The selected model decides the backend: curated ids run GGML files
+  // through whisper.cpp, custom repositories run through Transformers.
+  const isGgufModel = isCuratedSttModel(sttModel);
   // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
@@ -460,9 +587,9 @@ export function VoiceTab() {
       // the last phase so the status line doesn't flicker while polling.
       setSttPhase((phase) => (phase === "idle" ? "checking" : phase));
       try {
-        const status = await fetchSttStatus(statusNonce);
+        const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        const engineStatus = isGgufEngine ? status.gguf : status.transformers;
+        const engineStatus = isGgufModel ? status.gguf : status.transformers;
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;
@@ -541,7 +668,7 @@ export function VoiceTab() {
     };
   }, [
     isLocalEngine,
-    isGgufEngine,
+    isGgufModel,
     sttModel,
     sttRepoId,
     modelSttSupported,
@@ -558,9 +685,13 @@ export function VoiceTab() {
       case "on-demand":
         return t("settings.voice.dictation.sttOnDemand");
       case "ready":
-        return t("settings.voice.dictation.sttReady", {
-          device: (sttDevice ?? "cpu").toUpperCase(),
-        });
+        // The GGML backend reports its runtime name, not a device; show a
+        // plain "Loaded" rather than surfacing it.
+        return sttDevice && sttDevice !== "whisper.cpp"
+          ? t("settings.voice.dictation.sttReady", {
+              device: sttDevice.toUpperCase(),
+            })
+          : t("settings.voice.dictation.sttLoaded");
       case "unavailable":
         return t("settings.voice.dictation.sttUnavailable");
       case "error":
@@ -604,7 +735,7 @@ export function VoiceTab() {
     setSttDownloadStarting(true);
     try {
       // Engine-managed download; progress arrives via /stt/status.
-      await startSttDownload(sttModel, sttEngine, hfApiToken(hfToken));
+      await startSttDownload(sttModel, hfApiToken(hfToken));
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
@@ -782,18 +913,15 @@ export function VoiceTab() {
         <SettingsRow
           label={t("settings.voice.dictation.engineLabel")}
           description={
-            dictationEngine === "gguf"
-              ? t("settings.voice.dictation.engineGgufDescription")
-              : dictationEngine === "model"
-                ? t("settings.voice.dictation.engineModelDescription")
-                : t("settings.voice.dictation.engineBrowserDescription")
+            dictationEngine === "model"
+              ? t("settings.voice.dictation.engineModelDescription")
+              : t("settings.voice.dictation.engineBrowserDescription")
           }
         >
           <Select
             value={dictationEngine}
             onValueChange={(value) => {
-              const next =
-                value === "gguf" || value === "model" ? value : "browser";
+              const next = value === "model" ? "model" : "browser";
               if (next !== dictationEngine) {
                 // Unload whichever backend was resident for the old engine.
                 void unloadSttModel().catch(() => {});
@@ -812,9 +940,6 @@ export function VoiceTab() {
               <SelectItem value="browser">
                 {t("settings.voice.dictation.engineBrowser")}
               </SelectItem>
-              <SelectItem value="gguf">
-                {t("settings.voice.dictation.engineGguf")}
-              </SelectItem>
               <SelectItem value="model">
                 {t("settings.voice.dictation.engineModel")}
               </SelectItem>
@@ -829,10 +954,9 @@ export function VoiceTab() {
               description={t("settings.voice.dictation.sttModelDescription")}
             >
               <div className="flex w-56 flex-col items-stretch gap-2">
-                <SttCuratedModelSelect
+                <SttModelPicker
                   value={sttModel}
                   language={dictationLanguage}
-                  gguf={isGgufEngine}
                   onChange={(next) => {
                     if (next !== sttModel) {
                       void unloadSttModel().catch(() => {});

@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import {
   applyDictationDictionary,
+  isCuratedSttModel,
   recordRecentDictation,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
@@ -52,11 +53,13 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
-/** Backend STT engine for a dictation engine choice. */
+/** Backend STT engine, decided by the selected model: the curated ids run
+ * GGML checkpoints through whisper.cpp; a custom Hugging Face repository is
+ * a safetensors checkpoint and runs through Transformers. */
 export type SttEngine = "transformers" | "gguf";
 
-function sttEngineFor(dictationEngine: string): SttEngine {
-  return dictationEngine === "gguf" ? "gguf" : "transformers";
+export function sttEngineFor(model: string): SttEngine {
+  return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
 /** POST audio to the STT sidecar and return the transcript. */
@@ -72,7 +75,7 @@ export async function transcribeAudioBlob(
   const settings = useVoiceSettingsStore.getState();
   const model = options.model ?? settings.sttModel;
   const language = options.language ?? settings.dictationLanguage;
-  const engine = options.engine ?? sttEngineFor(settings.dictationEngine);
+  const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
   const response = await authFetch(
@@ -143,10 +146,19 @@ function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
   return result;
 }
 
-/** Report whether STT is installed and which model, if any, is resident. */
-export async function fetchSttStatus(refreshKey?: number): Promise<SttStatus> {
-  const suffix = refreshKey === undefined ? "" : `?refresh=${refreshKey}`;
-  const response = await authFetch(`/api/inference/audio/stt/status${suffix}`);
+/** Report whether STT is installed and which model, if any, is resident.
+ * Passing a model extends the downloaded check to custom repositories. */
+export async function fetchSttStatus(
+  refreshKey?: number,
+  model?: string,
+): Promise<SttStatus> {
+  const params = new URLSearchParams();
+  if (refreshKey !== undefined) params.set("refresh", String(refreshKey));
+  if (model) params.set("model", model);
+  const query = params.toString();
+  const response = await authFetch(
+    `/api/inference/audio/stt/status${query ? `?${query}` : ""}`,
+  );
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as SttStatus;
 }
@@ -172,10 +184,9 @@ export async function validateSttModel(
   }
 }
 
-/** Load a selected model already downloaded through Studio's Model Hub. */
+/** Load a selected model that is already downloaded. */
 export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
-  const resolvedEngine =
-    engine ?? sttEngineFor(useVoiceSettingsStore.getState().dictationEngine);
+  const resolvedEngine = engine ?? sttEngineFor(model);
   return queueSttLifecycle(async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
@@ -191,10 +202,9 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
   });
 }
 
-/** Start a background download of a curated dictation model. */
+/** Start a background download of a dictation model. */
 export async function startSttDownload(
   model: string,
-  engine: SttEngine,
   hfToken?: string,
 ): Promise<void> {
   const response = await authFetch("/api/inference/audio/stt/download", {
@@ -203,7 +213,7 @@ export async function startSttDownload(
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
-    body: JSON.stringify({ model, engine }),
+    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {
@@ -248,14 +258,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       throw new Error("Recording is not supported in this browser.");
     }
 
-    // Pin the model, language, and engine chosen when recording began so later
+    // Pin the model and language chosen when recording began so later
     // segments are not transcribed with settings the user changed mid-session.
-    const {
-      sttModel: sessionModel,
-      dictationLanguage: sessionLanguage,
-      dictationEngine,
-    } = useVoiceSettingsStore.getState();
-    const sessionEngine = sttEngineFor(dictationEngine);
+    const { sttModel: sessionModel, dictationLanguage: sessionLanguage } =
+      useVoiceSettingsStore.getState();
+    const sessionEngine = sttEngineFor(sessionModel);
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
