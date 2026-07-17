@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { captureFocusedElement } from "@/lib/focus";
 import { create } from "zustand";
 
 export type SettingsTab =
@@ -18,6 +19,10 @@ export type SettingsScrollTarget = "about-updates";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
+  // Focus-restore target overriding the activeElement capture. Needed when
+  // the caller is itself about to unmount (command palette): activeElement
+  // still points inside it, so capturing here would grab a dead element.
+  opener?: HTMLElement | null;
 }
 
 interface SettingsDialogState {
@@ -38,14 +43,6 @@ interface SettingsDialogState {
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
-}
-
-function captureOpener(): HTMLElement | null {
-  return typeof document !== "undefined" &&
-    document.activeElement instanceof HTMLElement &&
-    document.activeElement !== document.body
-    ? document.activeElement
-    : null;
 }
 
 const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
@@ -85,7 +82,10 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: tab ?? state.activeTab,
       scrollTarget: options?.scrollTarget ?? null,
-      opener: captureOpener(),
+      opener:
+        options?.opener !== undefined
+          ? options.opener
+          : captureFocusedElement(),
     })),
   openArchivedChats: () =>
     set({
@@ -93,7 +93,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       activeTab: "chat",
       scrollTarget: null,
       archivedChatsRequested: true,
-      opener: captureOpener(),
+      opener: captureFocusedElement(),
     }),
   consumeArchivedChatsRequest: () => set({ archivedChatsRequested: false }),
   consumeScrollTarget: (target) =>

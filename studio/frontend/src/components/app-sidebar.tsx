@@ -120,7 +120,11 @@ import {
   useSettingsDialogStore,
 } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
-import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import {
+  detectLocalPlatform,
+  fetchDeviceType,
+  usePlatformStore,
+} from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -142,6 +146,8 @@ import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
+
+const isMacClient = detectLocalPlatform() === "mac";
 
 type AppT = ReturnType<typeof useT>;
 
@@ -1575,7 +1581,9 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
-                    <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
+                    <DropdownMenuShortcut>
+                      {isMacClient ? "⌘," : "Ctrl+,"}
+                    </DropdownMenuShortcut>
                   </DropdownMenuItem>
                   {/* Optional items follow the order and visibility set in
                       Appearance settings; Settings above and the block after

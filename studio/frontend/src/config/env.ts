@@ -31,8 +31,10 @@ interface PlatformState {
   isChatOnly: () => boolean;
 }
 
-// Client-side fallback when backend isn't ready yet.
-function detectLocalPlatform(): DeviceType {
+// Browser-side detection. Used as a fallback when the backend isn't ready,
+// and directly for client-keyboard concerns (shortcut labels), where the
+// server-reported deviceType would be wrong for remote/tunnel sessions.
+export function detectLocalPlatform(): DeviceType {
   if (typeof navigator === "undefined") return "linux";
   const platform = navigator.platform.toLowerCase();
   const ua = navigator.userAgent.toLowerCase();

@@ -36,6 +36,10 @@ export function useAnimatedThemeToggle(duration = 400) {
     // theme looks stuck until an odd number of clicks gets through.
     if (inFlightRef.current) return
 
+    // Measure now: the anchor can unmount before transition.ready resolves
+    // when the caller closes its own UI in the same tick (command palette).
+    const anchorRect = anchorRef.current?.getBoundingClientRect() ?? null
+
     const applyTheme = () => {
       flushSync(() => {
         // Read the live class instead of React state, which can lag the DOM
@@ -58,9 +62,8 @@ export function useAnimatedThemeToggle(duration = 400) {
       const transition = document.startViewTransition(applyTheme)
       await transition.ready
 
-      const anchor = anchorRef.current
-      if (anchor) {
-        const { top, left, width, height } = anchor.getBoundingClientRect()
+      if (anchorRect) {
+        const { top, left, width, height } = anchorRect
         const x = left + width / 2
         const y = top + height / 2
         const maxRadius = Math.hypot(

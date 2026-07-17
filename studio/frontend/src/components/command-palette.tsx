@@ -13,7 +13,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
-import { usePlatformStore } from "@/config/env";
+import { detectLocalPlatform, usePlatformStore } from "@/config/env";
 import {
   clearNewChatDraft,
   useChatRuntimeStore,
@@ -39,6 +39,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Moon } from "lucide-react";
 import { useEffect, useState } from "react";
+
+const isMacClient = detectLocalPlatform() === "mac";
 
 // matches sidebar: drop interior bubble paths
 const TestTubeOutlineIcon = TestTube01Icon.slice(
@@ -102,6 +104,16 @@ function PaletteContent() {
     close();
     action();
   };
+
+  // At selection time focus still sits inside the palette (the close hasn't
+  // flushed), so Settings must restore to the palette's own opener instead
+  // of capturing document.activeElement.
+  const openSettings = (tab?: SettingsTab) =>
+    runAndClose(() => {
+      useSettingsDialogStore.getState().openDialog(tab, {
+        opener: useCommandPaletteStore.getState().opener,
+      });
+    });
 
   const openNewChat = runAndClose(() => {
     clearNewChatDraft();
@@ -168,15 +180,10 @@ function PaletteContent() {
             <HugeiconsIcon icon={DownloadSquare01Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.export")}</span>
           </CommandItem>
-          <CommandItem
-            onSelect={runAndClose(() =>
-              useSettingsDialogStore.getState().openDialog(),
-            )}
-            keywords={["preferences"]}
-          >
+          <CommandItem onSelect={openSettings()} keywords={["preferences"]}>
             <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.settings")}</span>
-            <CommandShortcut>⌘,</CommandShortcut>
+            <CommandShortcut>{isMacClient ? "⌘," : "Ctrl+,"}</CommandShortcut>
           </CommandItem>
         </CommandGroup>
         <CommandSeparator />
@@ -184,14 +191,16 @@ function PaletteContent() {
           <CommandItem onSelect={openNewChat}>
             <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.newChat")}</span>
-            <CommandShortcut>⌘⇧O</CommandShortcut>
+            <CommandShortcut>
+              {isMacClient ? "⌘⇧O" : "Ctrl+Shift+O"}
+            </CommandShortcut>
           </CommandItem>
           <CommandItem
             onSelect={runAndClose(() => useChatSearchStore.getState().open())}
           >
             <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} />
             <span>{t("shell.commandPalette.searchChats")}</span>
-            <CommandShortcut>⌘K</CommandShortcut>
+            <CommandShortcut>{isMacClient ? "⌘K" : "Ctrl+K"}</CommandShortcut>
           </CommandItem>
           <CommandItem
             ref={anchorRef as React.Ref<HTMLDivElement>}
@@ -218,9 +227,7 @@ function PaletteContent() {
                 <CommandItem
                   key={tab.id}
                   keywords={tab.keywords}
-                  onSelect={runAndClose(() =>
-                    useSettingsDialogStore.getState().openDialog(tab.id),
-                  )}
+                  onSelect={openSettings(tab.id)}
                 >
                   <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
                   <span className="text-muted-foreground">
