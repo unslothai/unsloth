@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 
 def _mlx_adapter_modules(model):
-    """Return ``(path, wrapper, base)`` entries for live MLX adapters."""
+    """Return bypassable adapter entries and unsupported wrapper paths."""
     adapters = []
     unsupported = []
     for path, module in model.named_modules():
@@ -31,12 +31,7 @@ def _mlx_adapter_modules(model):
             unsupported.append(path)
         else:
             adapters.append((path, module, base))
-    if unsupported:
-        raise RuntimeError(
-            "Unsloth MLX: cannot disable adapter layers without their base modules: "
-            + ", ".join(unsupported[:5])
-        )
-    return adapters
+    return adapters, unsupported
 
 
 @contextmanager
@@ -53,12 +48,17 @@ def _temporary_mlx_adapter_state(model, use_adapter):
     if use_adapter is not True and use_adapter is not False:
         raise TypeError("Unsloth MLX: use_adapter must be None, True, False, or a string.")
 
-    adapters = _mlx_adapter_modules(model)
+    adapters, unsupported = _mlx_adapter_modules(model)
     if use_adapter is True:
-        if not adapters:
+        if not adapters and not unsupported:
             logger.warning("MLX adapter requested, but the active model has no adapter layers")
         yield
         return
+    if unsupported:
+        raise RuntimeError(
+            "Unsloth MLX: cannot disable adapter layers without their base modules: "
+            + ", ".join(unsupported[:5])
+        )
     if not adapters:
         yield
         return

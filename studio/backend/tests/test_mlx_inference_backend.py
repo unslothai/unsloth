@@ -117,6 +117,8 @@ def test_temporary_mlx_adapter_state_validates_requests():
         pass
 
     unsupported = _AdapterTree({"proj": SimpleNamespace(lora_a = object(), lora_b = object())})
+    with _temporary_mlx_adapter_state(unsupported, True):
+        pass
     with pytest.raises(RuntimeError, match = "without their base modules"):
         with _temporary_mlx_adapter_state(unsupported, False):
             pass
