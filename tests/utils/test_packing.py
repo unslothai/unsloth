@@ -30,7 +30,7 @@ from unittest.mock import patch
 
 import pytest
 import torch
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 from trl import SFTConfig, SFTTrainer
 from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
@@ -213,6 +213,26 @@ def test_vlm_vision_dataset_still_disables_packing():
 
     assert config.packing is False
     assert config.padding_free is False
+
+
+def test_vlm_streaming_vision_dataset_without_metadata_disables_packing():
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    dataset = IterableDataset.from_generator(
+        lambda: iter([{"images": [None], "text": "multimodal sample"}])
+    )
+    assert dataset.column_names is None
+
+    fake_trainer(
+        model = _vlm_model(),
+        args = config,
+        processing_class = object(),
+        train_dataset = dataset,
+    )
+
+    assert config.packing is False
+    assert config.padding_free is False
+    assert next(iter(dataset))["text"] == "multimodal sample"
 
 
 def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):

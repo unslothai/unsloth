@@ -140,8 +140,14 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
 def _is_vision_dataset(dataset) -> bool:
     if dataset is None:
         return False
-    column_names = getattr(dataset, "column_names", None) or ()
-    return "image" in column_names or "images" in column_names
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is not None:
+        return "image" in column_names or "images" in column_names
+    try:
+        sample = next(iter(dataset))
+    except (StopIteration, TypeError):
+        return False
+    return isinstance(sample, dict) and ("image" in sample or "images" in sample)
 
 
 # Unsloth gradient accumulation fix:
