@@ -541,9 +541,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 )
 
         processing_class = (
-            args[5]
-            if len(args) >= 6
-            else kwargs.get("processing_class") or kwargs.get("tokenizer")
+            args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
         )
         data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
