@@ -6658,7 +6658,7 @@ class LlamaCppBackend:
                             os.chmod(slot_dir, 0o700)
                         cmd.extend(["--slot-save-path", str(slot_dir)])
                         self._slot_save_dir = str(slot_dir)
-                        self._slot_save_binary = (binary, int(Path(binary).stat().st_mtime))
+                        self._slot_save_binary = (binary, Path(binary).stat().st_mtime_ns)
                     except OSError:
                         self._slot_save_dir = None
                         self._slot_save_binary = None
@@ -8482,7 +8482,7 @@ class LlamaCppBackend:
             "dir": self._slot_save_dir,
             "binary": self._slot_save_binary,
             "gguf": str(self._gguf_path),
-            "gguf_stat": (gguf_stat.st_size, int(gguf_stat.st_mtime)),
+            "gguf_stat": (gguf_stat.st_size, gguf_stat.st_mtime_ns),
             "launch": self._slot_launch_fingerprint(),
             "slots": entries,
         }

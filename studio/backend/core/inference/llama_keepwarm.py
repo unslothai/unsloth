@@ -246,7 +246,7 @@ def restore_kv_resume(backend, manifest) -> None:
             # Same path is not enough: the file may have been overwritten with
             # different weights between the unload and this reload.
             st = Path(current).stat()
-            same_gguf = (st.st_size, int(st.st_mtime)) == tuple(manifest.get("gguf_stat") or ())
+            same_gguf = (st.st_size, st.st_mtime_ns) == tuple(manifest.get("gguf_stat") or ())
         if same_gguf:
             # Nor is the same file: a launch-override change (e.g. rope scaling)
             # can invalidate KV numerics without tripping server-side checks.
@@ -390,10 +390,16 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             )
                         except Exception as exc:
                             logger.debug("slot save before idle unload failed: %s", exc)
-                    if not _is_idle(ttl):
+                    # Re-read settings after the save: it can run long enough for
+                    # the user to disable idle unload or keep-KV meanwhile.
+                    ttl = get_auto_unload_idle_seconds()
+                    if ttl <= 0 or not _is_idle(ttl):
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
+                    if manifest and not get_auto_unload_keep_kv():
+                        _delete_resume_files(manifest)
+                        manifest = None
                     await asyncio.to_thread(backend.unload_model)
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:

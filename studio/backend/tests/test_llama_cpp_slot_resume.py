@@ -99,7 +99,7 @@ def test_save_collects_manifest_across_slots(monkeypatch, tmp_path):
     assert manifest["binary"] == ("/bin/llama-server", 1)
     assert manifest["gguf"] == str(tmp_path / "model.gguf")
     st = os.stat(manifest["gguf"])
-    assert manifest["gguf_stat"] == (st.st_size, int(st.st_mtime))
+    assert manifest["gguf_stat"] == (st.st_size, st.st_mtime_ns)
     assert manifest["launch"] == backend._slot_launch_fingerprint()
     assert [e["id"] for e in manifest["slots"]] == [0, 1]
     assert all(e["n_saved"] == 40 for e in manifest["slots"])

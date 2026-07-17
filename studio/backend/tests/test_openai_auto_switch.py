@@ -3137,7 +3137,7 @@ def _seed_kv_manifest(
         "dir": str(tmp_path),
         "binary": ("/bin/llama-server", 111),
         "gguf": gguf,
-        "gguf_stat": (st.st_size, int(st.st_mtime)),
+        "gguf_stat": (st.st_size, st.st_mtime_ns),
         "launch": ((), None, None, 1),
         "slots": [{"id": 0, "filename": state_file.name, "n_saved": 42}],
     }
@@ -3261,6 +3261,84 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
     assert saves == []
     assert unloads == [1]
     assert kw.take_kv_resume() is None
+
+
+def test_keep_kv_disabled_mid_save_discards_manifest(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    keep = {"on": True}
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: keep["on"])
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    state_file = tmp_path / "resume-mid-slot0.bin"
+    state_file.write_bytes(b"kv")
+    manifest = {
+        "dir": str(tmp_path),
+        "binary": ("bin", 1),
+        "slots": [{"id": 0, "filename": state_file.name, "n_saved": 1}],
+    }
+
+    def _save(should_abort = None):
+        keep["on"] = False  # user flips the toggle while the save runs
+        return manifest
+
+    def _unload():
+        unloads.append(1)
+        backend.is_loaded = False
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert unloads == [1]  # still unloads; only the stash is dropped
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
+
+
+def test_idle_ttl_disabled_mid_save_skips_unload(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    ttl = {"v": 0.005}
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: ttl["v"])
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    state_file = tmp_path / "resume-mid-slot0.bin"
+    state_file.write_bytes(b"kv")
+    manifest = {
+        "dir": str(tmp_path),
+        "binary": ("bin", 1),
+        "slots": [{"id": 0, "filename": state_file.name, "n_saved": 1}],
+    }
+
+    def _save(should_abort = None):
+        ttl["v"] = 0  # user turns idle unload off while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    _drive_idle_loop(kw)
+    assert unloads == []  # the unload was cancelled by the setting change
+    assert kw.take_kv_resume() is None
+    assert not state_file.exists()
 
 
 def test_alias_reload_restores_slots_and_deletes_files(monkeypatch, tmp_path):
