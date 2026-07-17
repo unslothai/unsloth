@@ -1927,6 +1927,35 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
         model_identifier = model_id,
         log_source = "safetensors",
     )
+    if not flags.get("supports_reasoning"):
+        try:
+            from core.inference.chat_template_helpers import (
+                detect_reasoning_channel_markers_from_template,
+            )
+
+            templates = [chat_template]
+            models = getattr(backend, "models", None)
+            model_info = (
+                models.get(model_id, {})
+                if isinstance(models, dict) and model_id is not None
+                else {}
+            )
+            if isinstance(model_info, dict):
+                templates.extend(
+                    (
+                        model_info.get("native_chat_template"),
+                        (model_info.get("chat_template_info") or {}).get("template"),
+                    )
+                )
+            if any(
+                detect_reasoning_channel_markers_from_template(template) is not None
+                for template in templates
+            ):
+                flags["supports_reasoning"] = True
+                flags["reasoning_always_on"] = True
+                logger.info("safetensors: model always reasons (native channel markers)")
+        except Exception:
+            logger.debug("safetensors_native_reasoning_marker_check_failed", exc_info = True)
     # Markers any supported parser recognises (template advertises tools but
     # uses none -> drop the pill). Reuse the parser's own signal list so this
     # gate never drifts (a hand-maintained copy lost the DeepSeek variants);

@@ -104,6 +104,15 @@ def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[
     return None
 
 
+def detect_reasoning_channel_markers_from_template(
+    template, tools = None
+) -> Optional[tuple[str, str]]:
+    """Return native Gemma thought-channel markers from a raw template value."""
+    return _detect_reasoning_channel_markers_from_templates(
+        _selected_template_strings_from_value(template, tools)
+    )
+
+
 def detect_reasoning_channel_markers_from_model_info(
     tokenizer,
     model_info: Optional[dict] = None,
@@ -119,9 +128,7 @@ def detect_reasoning_channel_markers_from_model_info(
         (model_info.get("chat_template_info") or {}).get("template"),
     )
     for template in native_templates:
-        markers = _detect_reasoning_channel_markers_from_templates(
-            _selected_template_strings_from_value(template, tools)
-        )
+        markers = detect_reasoning_channel_markers_from_template(template, tools)
         if markers is not None:
             return markers
     return None
