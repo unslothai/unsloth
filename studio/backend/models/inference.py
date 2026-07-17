@@ -19,6 +19,10 @@ from pydantic import (
 )
 
 
+# Redefined from picker/schemas.py so this core schema needn't import the picker package.
+MAX_CHAT_TEMPLATE_BYTES = 65_536
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -56,6 +60,10 @@ class LoadRequest(BaseModel):
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
         if value is not None and value.strip() == "":
             return None
+        if value is not None and len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(
+                f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit."
+            )
         return value
 
     cache_type_kv: Optional[str] = Field(
