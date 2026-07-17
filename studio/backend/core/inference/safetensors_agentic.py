@@ -96,15 +96,6 @@ def _active_tool_names(active_tools: list[dict]) -> list[str]:
     return [name for name in names if name]
 
 
-def _active_tool_names(active_tools: list[dict]) -> list[str]:
-    names = [
-        (tool.get("function") or {}).get("name")
-        for tool in active_tools
-        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
-    ]
-    return [name for name in names if name]
-
-
 # Unrestricted mode has no tool list, so any identifier may open a NAME[ARGS] rehearsal;
 # ``[`` and each ARGS letter stay optional so a chunk split after ``NAME[`` is still held.
 _UNRESTRICTED_REHEARSAL_RE = re.compile(r"[\w-]+(?:\[(?:A(?:R(?:G(?:S)?)?)?)?)?")

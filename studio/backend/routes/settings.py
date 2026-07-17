@@ -433,7 +433,21 @@ def update_embedding_model(
                 )
             )
         )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        try:
+            _security_blocked = evaluate_file_security(
+                model, hf_token = scan_token, load_subdirs = load_subdirs
+            ).blocked
+        except Exception:
+            # Fail open on a scan error (network/offline/timeout): a gate failure must
+            # not 500 the settings route. Mirrors _guard_model_security in embeddings.py,
+            # which never bricks the embedder on a scan error.
+            logger.warning(
+                "Embedding-model security scan errored for %r; allowing (fail-open)",
+                model,
+                exc_info = True,
+            )
+            _security_blocked = False
+        if _security_blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
             raise HTTPException(

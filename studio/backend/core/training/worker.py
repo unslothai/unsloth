@@ -2073,7 +2073,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _save_model = trainer.save_model
 
     def _skip_internal_final_save(*args, **kwargs):
-        raise ValueError("worker owns final save")
+        return None  # no-op: worker owns final save; raising would crash Trainer's internal saves
 
     trainer.save_model = _skip_internal_final_save
     try:
