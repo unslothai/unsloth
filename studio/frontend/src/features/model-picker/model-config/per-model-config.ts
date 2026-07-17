@@ -139,8 +139,7 @@ function deleteOldestEvictableEntry(
   protectedKeys?: ReadonlySet<string>,
 ): { key: string; value: StoredMap[string] } | null {
   for (const key of Object.keys(map)) {
-    // Never evict a future-schema entry an older client cannot interpret,
-    // matching the save/delete guards.
+    // Never evict a future-schema entry an older client can't interpret.
     if (
       protectedKeys?.has(key) ||
       storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION
@@ -271,11 +270,16 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    // Protect the just-migrated entries during eviction. If the budget cannot
-    // fit them (e.g. storage is full of future-schema records an older client
-    // cannot evict), leave the flag unset so migration retries once space frees
-    // up rather than marking it complete and dropping the migrated config.
-    if (!enforceStorageBudget(map, new Set(migratedKeys))) {
+    // Protect the just-migrated entries from eviction, but cap the protected set
+    // to MAX_ENTRIES: an oversized legacy store would otherwise deadlock the
+    // budget loop and never finish migrating. On failure the flag stays unset so
+    // migration retries once space frees.
+    const protectedKeys = new Set(
+      migratedKeys.length > MAX_ENTRIES
+        ? migratedKeys.slice(0, MAX_ENTRIES)
+        : migratedKeys,
+    );
+    if (!enforceStorageBudget(map, protectedKeys)) {
       return;
     }
     if (writeMap(map)) {
@@ -489,8 +493,7 @@ function loadPerModelConfig(
   if (!key) {
     return null;
   }
-  // Never apply a future-schema record an older client cannot interpret,
-  // matching the save/delete/evict guards.
+  // Never apply a future-schema record an older client can't interpret.
   if (storedConfigVersion(map[key]) > STORAGE_SCHEMA_VERSION) {
     return null;
   }
@@ -548,8 +551,7 @@ export function deletePerModelConfig(
   ggufVariant?: string | null,
 ): boolean {
   const map = readMap();
-  // Mirror savePerModelConfig: never let an older client destroy a
-  // future-schema entry it cannot interpret.
+  // Never let an older client destroy a future-schema entry it can't interpret.
   if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
     return false;
   }
