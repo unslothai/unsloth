@@ -398,9 +398,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         ggml = get_ggml_stt_sidecar()
         ggml_model = ggml.loaded_model
         if ggml_model:
-            logger.info(
-                "Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason
-            )
+            logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
             ggml.unload()
             freed.append(f"stt:{ggml_model}")
         return freed

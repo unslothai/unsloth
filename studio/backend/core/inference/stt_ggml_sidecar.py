@@ -183,7 +183,6 @@ def ensure_engine_available() -> str:
 def _cached_model_path(model_id: str) -> Optional[str]:
     """Path of a fully downloaded GGML file in the shared HF cache, else None."""
     from huggingface_hub import hf_hub_download
-
     try:
         return hf_hub_download(
             repo_id = GGML_STT_REPOS[model_id],
@@ -242,14 +241,16 @@ class _GgmlDownloadState:
                 target = repo_dir / f"{etag}.incomplete"
                 if target.is_file():
                     return target.stat().st_size
-            sizes = [
-                p.stat().st_size for p in repo_dir.glob("*.incomplete") if p.is_file()
-            ]
+            sizes = [p.stat().st_size for p in repo_dir.glob("*.incomplete") if p.is_file()]
             return max(sizes) if sizes else None
         except Exception:
             return None
 
-    def start(self, model_id: str, hf_token: Optional[str] = None) -> None:
+    def start(
+        self,
+        model_id: str,
+        hf_token: Optional[str] = None,
+    ) -> None:
         model_id = resolve_ggml_model_id(model_id)
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -263,9 +264,7 @@ class _GgmlDownloadState:
             self._error = None
             self._total_bytes = None
             self._etag = None
-            thread = threading.Thread(
-                target = self._run, args = (model_id, hf_token), daemon = True
-            )
+            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
             self._thread = thread
             thread.start()
 
@@ -278,12 +277,9 @@ class _GgmlDownloadState:
                 hf_hub_download,
                 hf_hub_url,
             )
-
             try:
                 # One HEAD request for the progress total and etag.
-                meta = get_hf_file_metadata(
-                    hf_hub_url(repo_id, filename), token = hf_token or None
-                )
+                meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
                 with self._lock:
                     self._total_bytes = meta.size
                     self._etag = meta.etag
@@ -383,9 +379,7 @@ class GgmlSttSidecar:
         if not self._process_alive():
             return
         generation = self._idle_generation
-        timer = threading.Timer(
-            self._keep_alive_seconds, self._idle_unload, args = (generation,)
-        )
+        timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args = (generation,))
         timer.daemon = True
         self._idle_timer = timer
         timer.start()
@@ -458,9 +452,12 @@ class GgmlSttSidecar:
             process = subprocess.Popen(
                 [
                     binary,
-                    "-m", model_path,
-                    "--host", "127.0.0.1",
-                    "--port", str(port),
+                    "-m",
+                    model_path,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(port),
                 ],
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
@@ -493,9 +490,7 @@ class GgmlSttSidecar:
                     return
             except Exception:
                 time.sleep(0.2)
-        raise SttEngineUnavailableError(
-            "The local transcription runtime did not start in time."
-        )
+        raise SttEngineUnavailableError("The local transcription runtime did not start in time.")
 
     # -- transcription ------------------------------------------------------
 

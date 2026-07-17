@@ -61,7 +61,6 @@ def test_custom_repo_ids_are_rejected():
 
 def test_curated_ids_mirror_transformers_sidecar():
     from core.inference.stt_sidecar import STT_MODELS
-
     assert list(GGML_STT_MODELS.keys()) == list(STT_MODELS.keys())
 
 

@@ -5751,17 +5751,14 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
 def _stt_sidecar_for(engine: str):
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
-
         return get_ggml_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
-
     return get_stt_sidecar()
 
 
 @studio_router.get("/audio/stt/status")
 async def stt_status(
-    model: Optional[str] = None,
-    current_subject: str = Depends(get_current_subject),
+    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ):
     """Report STT availability and which model, if any, is resident.
 
@@ -5842,11 +5839,7 @@ async def stt_download(
     from core.inference import stt_ggml_sidecar, stt_sidecar
     from core.inference.stt_sidecar import SttModelIdError
 
-    module = (
-        stt_ggml_sidecar
-        if _resolve_stt_engine(payload.engine) == "gguf"
-        else stt_sidecar
-    )
+    module = stt_ggml_sidecar if _resolve_stt_engine(payload.engine) == "gguf" else stt_sidecar
     try:
         await asyncio.to_thread(module.start_model_download, payload.model, hf_token)
     except SttModelIdError as e:

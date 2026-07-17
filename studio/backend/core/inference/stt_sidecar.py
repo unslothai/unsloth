@@ -252,9 +252,7 @@ def is_model_downloaded(model: Optional[str]) -> bool:
             weight_map = _read_json_object(index).get("weight_map")
             if not isinstance(weight_map, dict) or not weight_map:
                 return False
-            has_weights = all(
-                (snapshot / shard).is_file() for shard in set(weight_map.values())
-            )
+            has_weights = all((snapshot / shard).is_file() for shard in set(weight_map.values()))
         else:
             has_weights = any(
                 p.is_file()
@@ -317,7 +315,11 @@ class _SnapshotDownloadState:
         except Exception:
             return None
 
-    def start(self, model_id: str, hf_token: Optional[str] = None) -> None:
+    def start(
+        self,
+        model_id: str,
+        hf_token: Optional[str] = None,
+    ) -> None:
         model_id = resolve_model_id(model_id)
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -331,16 +333,13 @@ class _SnapshotDownloadState:
             self._repo = resolve_model_repo(model_id)
             self._error = None
             self._total_bytes = None
-            thread = threading.Thread(
-                target = self._run, args = (self._repo, hf_token), daemon = True
-            )
+            thread = threading.Thread(target = self._run, args = (self._repo, hf_token), daemon = True)
             self._thread = thread
             thread.start()
 
     def _run(self, repo: str, hf_token: Optional[str]) -> None:
         try:
             from huggingface_hub import HfApi, snapshot_download
-
             try:
                 info = HfApi(token = hf_token or None).model_info(
                     repo, files_metadata = True, timeout = 30

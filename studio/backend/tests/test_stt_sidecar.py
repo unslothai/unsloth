@@ -918,9 +918,7 @@ def test_download_status_is_idle_before_any_download():
 def test_download_rejects_a_second_model_while_one_is_in_flight(monkeypatch):
     state = stt_sidecar_module._SnapshotDownloadState()
     release = threading.Event()
-    monkeypatch.setattr(
-        state, "_run", lambda repo, token: release.wait(timeout = 5)
-    )
+    monkeypatch.setattr(state, "_run", lambda repo, token: release.wait(timeout = 5))
 
     state.start("small")
     try:
@@ -971,9 +969,7 @@ def test_sharded_snapshot_with_missing_shard_is_not_downloaded(monkeypatch, tmp_
 
     import huggingface_hub
 
-    monkeypatch.setattr(
-        huggingface_hub, "snapshot_download", lambda **kwargs: str(snap)
-    )
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda **kwargs: str(snap))
 
     assert stt_sidecar_module.is_model_downloaded("unsloth/whisper-small") is False
 
