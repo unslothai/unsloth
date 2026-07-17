@@ -137,6 +137,13 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
 
 
+def _is_vision_dataset(dataset) -> bool:
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None) or ()
+    return "image" in column_names or "images" in column_names
+
+
 # Unsloth gradient accumulation fix:
 from transformers import __version__ as transformers_version, ProcessorMixin
 
@@ -500,27 +507,22 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         model = kwargs.get("model")
         is_unsupported_model = False
-        is_vlm = False
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
 
-                architectures = getattr(model_config, "architectures", None)
-                if architectures is None:
-                    architectures = []
-                is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
-                is_vlm = is_vlm or hasattr(model_config, "vision_config")
-
         processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
         data_collator = kwargs.get("data_collator")
+        train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
+        is_vision_dataset = _is_vision_dataset(train_dataset)
 
         # Disable padding-free for VLMs / custom collators / blocklisted models
         blocked = (
             (data_collator is not None)
             or isinstance(processing_class, ProcessorMixin)
-            or is_vlm
+            or is_vision_dataset
             or is_unsupported_model
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
@@ -537,8 +539,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             reason = "custom data collator"
             if data_collator is None and isinstance(processing_class, ProcessorMixin):
                 reason = "processor-based model"
-            elif is_vlm:
-                reason = "vision-language model"
+            elif is_vision_dataset:
+                reason = "vision dataset"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             message = f"Unsloth: Sample packing skipped ({reason} detected)."

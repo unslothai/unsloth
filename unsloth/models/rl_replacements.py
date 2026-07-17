@@ -458,6 +458,31 @@ def sft_trainer_prepare_dataset(function_name, function):
         if matched:
             # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
+            function = function.replace(
+                "truncation = do_truncation,",
+                'truncation = do_truncation and getattr(args, "packing_strategy", "bfd") != "wrapped",',
+            )
+            function = function.replace(
+                "if do_truncation and max_seq_length > 0:",
+                "if do_truncation and not packing and max_seq_length > 0:",
+            )
+            function = function.replace(
+                '''dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            getattr(args, "packing_strategy", "bfd"),
+            map_kwargs,
+        )''',
+                '''import inspect as _inspect
+        _pack_kwargs = {"map_kwargs": map_kwargs}
+        if "strategy" in _inspect.signature(pack_dataset).parameters:
+            _pack_kwargs["strategy"] = getattr(args, "packing_strategy", "bfd")
+        dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            **_pack_kwargs,
+        )''',
+            )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
             function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")

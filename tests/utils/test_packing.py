@@ -14,6 +14,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 from unsloth import FastLanguageModel
+import unsloth.trainer as trainer_module
 from unsloth.utils import attention_dispatch as attention_dispatch_utils
 from unsloth.utils.packing import (
     configure_padding_free,
@@ -158,6 +159,107 @@ def test_configure_padding_free():
 
     assert config.padding_free is True
     assert config.remove_unused_columns is False
+
+
+def _patch_fake_sft_trainer():
+    class FakeSFTTrainer:
+        def __init__(self, *args, **kwargs):
+            self.model = args[0] if len(args) >= 1 else kwargs["model"]
+            self.args = args[1] if len(args) >= 2 else kwargs["args"]
+            self.data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
+
+    trainer_module._patch_sft_trainer_auto_packing(
+        SimpleNamespace(SFTTrainer = FakeSFTTrainer)
+    )
+    return FakeSFTTrainer
+
+
+def _vlm_model():
+    return SimpleNamespace(
+        config = SimpleNamespace(
+            architectures = ["Gemma4ForConditionalGeneration"],
+            model_type = "gemma4",
+            vision_config = SimpleNamespace(),
+        ),
+        max_seq_length = 16,
+    )
+
+
+def test_vlm_text_dataset_allows_explicit_packing():
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    trainer = fake_trainer(
+        model = _vlm_model(),
+        args = config,
+        processing_class = object(),
+        train_dataset = Dataset.from_dict({"text": ["text-only CPT sample"]}),
+    )
+
+    assert config.packing is True
+    assert config.padding_free is True
+    assert trainer.model._unsloth_allow_packed_overlength is True
+
+
+def test_vlm_vision_dataset_still_disables_packing():
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    fake_trainer(
+        _vlm_model(),
+        config,
+        None,
+        Dataset.from_dict({"images": [None], "text": ["multimodal sample"]}),
+        object(),
+    )
+
+    assert config.packing is False
+    assert config.padding_free is False
+
+
+def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):
+    class CharacterTokenizer:
+        bos_token = None
+        eos_token = None
+        chat_template = None
+
+        def __call__(self, texts, **kwargs):
+            if isinstance(texts, str):
+                texts = [texts]
+            input_ids = [[ord(char) for char in text] for text in texts]
+            if kwargs.get("truncation") and kwargs.get("max_length") is not None:
+                input_ids = [ids[: kwargs["max_length"]] for ids in input_ids]
+            return {"input_ids": input_ids}
+
+    args = SimpleNamespace(
+        dataset_num_proc = 1,
+        dataset_text_field = "text",
+        max_length = 4,
+        packing_strategy = "wrapped",
+    )
+    trainer = SimpleNamespace(model = None)
+    dataset = Dataset.from_dict({"text": ["abcdefghi"]})
+    prepare_globals = SFTTrainer._prepare_dataset.__globals__
+    pack_dataset = prepare_globals["pack_dataset"]
+
+    def legacy_pack_dataset(dataset, seq_length, map_kwargs = None):
+        return pack_dataset(dataset, seq_length, "wrapped", map_kwargs)
+
+    monkeypatch.setitem(prepare_globals, "pack_dataset", legacy_pack_dataset)
+
+    packed = SFTTrainer._prepare_dataset(
+        trainer,
+        dataset,
+        CharacterTokenizer(),
+        args,
+        True,
+        None,
+        "train",
+    )
+
+    packed_ids = packed["input_ids"]
+    assert sum(len(input_ids) for input_ids in packed_ids) == 9
+    assert all(len(input_ids) <= args.max_length for input_ids in packed_ids)
 
 
 class _DummyChild(torch.nn.Module):
