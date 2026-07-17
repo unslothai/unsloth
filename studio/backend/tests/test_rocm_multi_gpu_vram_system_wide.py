@@ -8,11 +8,13 @@ whose readings are process-local: on Windows WDDM hands each process its own
 budget, so a model held by the separate llama-server process read as ~0 VRAM
 used even with the GPU full. The primary-GPU endpoint already overlays
 system-wide sources (Windows Performance Counters, Linux DRM sysfs); the
-multi-device endpoint now applies the same per-GPU overlay.
+multi-device endpoint now applies the same per-GPU overlay, matched by
+physical device index so reordering visibility masks stay correct.
 """
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 import sys
 import types
@@ -23,22 +25,39 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
-_loggers_stub = types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-sys.modules.setdefault("loggers", _loggers_stub)
 
-_structlog_stub = types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
-sys.modules.setdefault("structlog", _structlog_stub)
+def _maybe_stub(name: str, builder):
+    # Stub only if the real module is unavailable, so this file never shadows
+    # real packages for later tests in the same pytest process.
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        sys.modules[name] = builder()
+
+
+def _build_loggers_stub():
+    m = types.ModuleType("loggers")
+    m.get_logger = lambda name: __import__("logging").getLogger(name)
+    return m
+
+
+def _build_structlog_stub():
+    m = types.ModuleType("structlog")
+    m.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
+    return m
+
+
+_maybe_stub("loggers", _build_loggers_stub)
+_maybe_stub("structlog", _build_structlog_stub)
 
 import utils.hardware.hardware as hw  # noqa: E402
 
 
-def _device(index, used, total):
+def _device(index, used, total, *, ordinal = None):
     return {
         "index": index,
         "index_kind": "physical",
-        "visible_ordinal": index,
+        "visible_ordinal": index if ordinal is None else ordinal,
         "gpu_utilization_pct": None,
         "temperature_c": None,
         "vram_used_gb": used,
@@ -50,7 +69,7 @@ def _device(index, used, total):
     }
 
 
-# ── Windows per-adapter perf counters ──
+# ── Windows per-adapter perf counters (grouped by LUID) ──
 
 
 def _mock_powershell(stdout, returncode = 0):
@@ -66,17 +85,20 @@ def _mock_powershell(stdout, returncode = 0):
     return mock.patch.object(hw.subprocess, "run", side_effect = fake_run)
 
 
-def test_windows_per_adapter_parses_and_groups(monkeypatch):
+def test_windows_per_adapter_groups_by_luid(monkeypatch):
+    # Two independent adapters: distinct LUIDs but BOTH phys_0 (the phys_<N>
+    # suffix numbers members within one logical adapter, not across adapters).
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
     out = (
-        "luid_0x00000000_0x0000d3ec_phys_0|21474836480\n"  # 20 GiB
-        "luid_0x00000000_0x0000d3ed_phys_1|1073741824\n"  # 1 GiB
-        "luid_0x00000000_0x0000d3ee_phys_1|1073741824\n"  # +1 GiB same adapter
+        "luid_0x00000000_0x0000d3ec_phys_0|21474836480\n"  # 20 GiB, adapter A
+        "luid_0x00000000_0x0000e001_phys_0|1073741824\n"  # 1 GiB, adapter B
+        "luid_0x00000000_0x0000e001_phys_0|1073741824\n"  # +1 GiB, adapter B again
         "garbage-line-without-separator\n"
-        "luid_0x0_no_phys_index|123\n"
+        "no_luid_here_phys_3|123\n"
     )
     with _mock_powershell(out):
         per_adapter = hw._rocm_windows_perf_counter_vram_per_adapter_gb()
+    # LUIDs sorted ascending -> positions 0 (0xd3ec) and 1 (0xe001).
     assert per_adapter == {0: 20.0, 1: 2.0}
 
 
@@ -133,48 +155,83 @@ def test_linux_per_card_skips_zero_total_and_bad_files(monkeypatch, tmp_path):
 # ── overlay ──
 
 
-def test_overlay_windows_replaces_matched_indices(monkeypatch):
+def test_overlay_windows_uses_props_capacity(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5})
-    devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
+    monkeypatch.setattr(
+        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5}
+    )
+    # WDDM: mem_get_info's total is the process budget; capacity must come
+    # from device properties instead.
+    monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: 45.0)
+    devices = [_device(0, used = 0.02, total = 20.0)]
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 21.5  # llama-server's usage now visible
+    assert devices[0]["vram_total_gb"] == 45.0  # props capacity, not the budget
     assert devices[0]["vram_utilization_pct"] == 47.8
-    assert devices[1]["vram_used_gb"] == 0.01  # unmatched adapter untouched
+
+
+def test_overlay_windows_unmatched_adapter_untouched(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 5.0}
+    )
+    monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: None)
+    devices = [_device(1, used = 0.01, total = 8.0)]  # only position 0 reported
+    hw._overlay_system_wide_vram(devices)
+    assert devices[0]["vram_used_gb"] == 0.01  # untouched
 
 
 def test_overlay_windows_clamps_to_total(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0})
-    devices = [_device(0, used = 0.0, total = 8.0)]
+    monkeypatch.setattr(
+        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0}
+    )
+    monkeypatch.setattr(hw, "_torch_props_total_gb", lambda ordinal: 8.0)
+    devices = [_device(0, used = 0.0, total = 6.0)]
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 8.0
+    assert devices[0]["vram_total_gb"] == 8.0
 
 
-def test_overlay_linux_replaces_in_order(monkeypatch):
-    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(
-        hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: [(30.0, 45.0), (0.5, 8.0)]
-    )
-    devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
-    hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 30.0
-    assert devices[1]["vram_used_gb"] == 0.5
-    assert devices[0]["vram_utilization_pct"] == 66.7
-
-
-def test_overlay_linux_count_mismatch_keeps_torch(monkeypatch):
-    # Extra iGPU card vs two visible devices: ambiguous mapping, keep torch data.
+def test_overlay_linux_matches_by_physical_index(monkeypatch):
+    # HIP_VISIBLE_DEVICES=1,0: devices arrive as [index 1, index 0]. Each must
+    # get ITS OWN card's figures, not the other's (positional zip would swap).
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         hw,
         "_rocm_linux_sysfs_vram_per_card_gb",
-        lambda: [(30.0, 45.0), (0.5, 8.0), (0.1, 1.0)],
+        lambda: [(30.0, 45.0), (0.5, 8.0)],  # position 0 = big card, 1 = small
     )
-    devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
+    devices = [_device(1, used = 0.01, total = 8.0), _device(0, used = 0.02, total = 45.0)]
+    hw._overlay_system_wide_vram(devices)
+    assert devices[0]["vram_used_gb"] == 0.5  # index 1 -> small card
+    assert devices[0]["vram_total_gb"] == 8.0
+    assert devices[1]["vram_used_gb"] == 30.0  # index 0 -> big card
+    assert devices[1]["vram_total_gb"] == 45.0
+
+
+def test_overlay_linux_skips_unified_memory_card(monkeypatch):
+    # Strix Halo: sysfs reports only the small dedicated slice while torch sees
+    # the GTT-backed pool; the smaller sysfs total must NOT shrink the device
+    # (mirrors _apply_unified_memory_correction's larger-total-wins rule).
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: [(0.4, 1.0)])
+    devices = [_device(0, used = 12.0, total = 96.0)]  # torch's unified pool
+    hw._overlay_system_wide_vram(devices)
+    assert devices[0]["vram_used_gb"] == 12.0
+    assert devices[0]["vram_total_gb"] == 96.0
+
+
+def test_overlay_linux_out_of_range_index_untouched(monkeypatch):
+    # A masked host exposing physical index 5 with only 2 DRM cards: no
+    # unambiguous mapping for it, keep torch data.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: [(30.0, 45.0), (0.5, 8.0)]
+    )
+    devices = [_device(5, used = 0.02, total = 45.0)]
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 0.02
-    assert devices[1]["vram_used_gb"] == 0.01
 
 
 def test_overlay_empty_devices_is_noop(monkeypatch):
