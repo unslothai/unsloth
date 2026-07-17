@@ -8412,11 +8412,18 @@ class LlamaCppBackend:
             return None
 
     def _user_disabled_prompt_cache(self) -> bool:
-        # --no-cache-prompt in a user override makes a restored slot unusable
-        # (no prompt reuse), so slot saves would be pure wasted I/O.
-        return any(
-            arg.strip().split("=", 1)[0] == "--no-cache-prompt" for arg in (self._extra_args or ())
-        )
+        # Prompt caching off (extra-args flag or inherited LLAMA_ARG_* env) makes
+        # a restored slot unusable (no prompt reuse), so slot saves would be pure
+        # wasted I/O. Flags win over env, mirroring llama.cpp's arg parser.
+        flags = {arg.strip().split("=", 1)[0] for arg in (self._extra_args or ())}
+        if "--no-cache-prompt" in flags:
+            return True
+        if "--cache-prompt" in flags:
+            return False
+        if os.environ.get("LLAMA_ARG_NO_CACHE_PROMPT") is not None:
+            return True
+        env = (os.environ.get("LLAMA_ARG_CACHE_PROMPT") or "").strip().lower()
+        return env in {"off", "disabled", "false", "0"}
 
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None
