@@ -1612,9 +1612,7 @@ class TrainingBackend:
                 with self._lock:
                     # A crash keeps the dir too: checkpoints under it may still
                     # exist, and the early persist_output_dir write is best-effort.
-                    interrupted_output_dir = (
-                        None if self._cancel_requested else self._output_dir
-                    )
+                    interrupted_output_dir = None if self._cancel_requested else self._output_dir
                     interrupted_clear_output_dir = self._cancel_requested
                     if interrupted_clear_output_dir:
                         # /status serializes _output_dir; a cancelled run must not expose it.
