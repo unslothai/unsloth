@@ -1796,7 +1796,7 @@ def _get_model_size_bytes(model_name: str, hf_token: Optional[str] = None) -> Op
 @router.get("/config/{model_name:path}")
 async def get_model_config(
     model_name: str,
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
@@ -2517,7 +2517,7 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
 async def check_vision_model(
     model_name: str,
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """
@@ -2549,7 +2549,7 @@ async def check_vision_model(
 @router.get("/check-embedding/{model_name:path}", response_model = EmbeddingCheckResponse)
 async def check_embedding_model(
     model_name: str,
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub";
 
 interface VisionCheckResponse {
   model_name: string;
@@ -98,10 +99,10 @@ export async function checkVisionModel(
   hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-vision/${encoded}${query}`);
+  const response = await authFetch(`/api/models/check-vision/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-vision
     return false;
   }
   const data = (await response.json()) as VisionCheckResponse;
@@ -114,10 +115,10 @@ export async function checkEmbeddingModel(
   hfToken?: string | null,
 ): Promise<boolean> {
   const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-embedding/${encoded}${query}`);
+  const response = await authFetch(`/api/models/check-embedding/${encoded}`, {
+    headers: hubTokenHeader(hfToken?.trim() || null),
+  });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-embedding
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;
@@ -130,8 +131,10 @@ export async function getModelConfig(
   hfToken?: string,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const params = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(`/api/models/config/${encoded}${params}`, { signal });
+  const response = await authFetch(`/api/models/config/${encoded}`, {
+    headers: hubTokenHeader(hfToken),
+    signal,
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }
