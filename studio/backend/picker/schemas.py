@@ -18,9 +18,7 @@ class ValidateChatTemplateRequest(BaseModel):
     @classmethod
     def _enforce_template_size(cls, value: str) -> str:
         if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
-            raise ValueError(
-                f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit."
-            )
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
 
