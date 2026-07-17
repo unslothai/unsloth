@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { parseBackendTrainingMethod } from "@/features/training";
+
 /** Shape of the Training Config popover's data when it is driven by a saved
  * run snapshot instead of the editable form store. */
 export interface RunConfigOverride {
+  trainingMethod?: string;
   epochs?: number;
   batchSize?: number;
   learningRate?: string;
@@ -28,6 +31,10 @@ export function mapRunConfigToOverride(
     return undefined;
   }
   return {
+    trainingMethod: parseBackendTrainingMethod(
+      config.training_type,
+      config.load_in_4bit,
+    ),
     epochs: config.num_epochs as number | undefined,
     batchSize: config.batch_size as number | undefined,
     learningRate: config.learning_rate as string | undefined,

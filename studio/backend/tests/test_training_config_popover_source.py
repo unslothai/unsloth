@@ -41,6 +41,21 @@ def test_live_view_fetches_the_active_run_config():
     assert "configOverride={runConfigOverride}" in src
 
 
+def test_live_view_retries_after_first_step():
+    # The backend creates the run row on the first progress event, so the
+    # initial fetch can 404 during preparation; the effect must re-run once
+    # firstStepReceived flips or the popover never leaves the form store.
+    src = _read("live-training-view.tsx")
+    assert "runtime.firstStepReceived, fetchedRunConfig]" in src
+
+
+def test_live_view_prefers_saved_training_method():
+    # The method label / LoRA-row visibility must come from the run snapshot,
+    # not the editable form (which may have changed since the run started).
+    src = _read("live-training-view.tsx")
+    assert "runConfigOverride?.trainingMethod ?? config.trainingMethod" in src
+
+
 def test_history_view_uses_the_shared_mapper():
     src = _read("historical-training-view.tsx")
     # Shared mapper, not a re-inlined field-by-field copy that could drift.
@@ -53,6 +68,8 @@ def test_shared_mapper_matches_backend_config_keys():
     # The mapper reads the run config JSON the backend snapshots at job start;
     # keep the key set pinned so a silent rename breaks loudly here.
     for key in (
+        "training_type",
+        "load_in_4bit",
         "num_epochs",
         "batch_size",
         "learning_rate",
