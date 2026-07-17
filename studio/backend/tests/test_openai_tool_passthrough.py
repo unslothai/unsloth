@@ -1054,7 +1054,7 @@ class TestChatCompletionRequestToolFields:
         monkeypatch.setattr(
             inference_route,
             "_detect_safetensors_features",
-            lambda backend, chat_template: {"supports_tools": True},
+            lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)

@@ -1924,13 +1924,26 @@ async def artifact_preview_frame(allow_network: bool = False):
 _BARE_JSON_NAME_MARKER_RE = _re.compile(r'\{\s*\\?"(?:name|function)\\?"\s*:')
 
 
-def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
+def _detect_safetensors_features(
+    backend,
+    chat_template: Optional[str],
+    tools = None,
+) -> dict:
     """Classify reasoning/tool capabilities via the GGUF classifier so flags
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
+    feature_template = chat_template
+    try:
+        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+
+        selected_templates = _selected_template_strings_from_value(chat_template, tools)
+        if selected_templates:
+            feature_template = selected_templates[0]
+    except Exception:
+        logger.debug("safetensors_named_template_selection_failed", exc_info = True)
     flags = detect_reasoning_flags(
-        chat_template,
+        feature_template,
         model_identifier = model_id,
         log_source = "safetensors",
     )
@@ -1955,7 +1968,7 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
                     )
                 )
             if any(
-                detect_reasoning_channel_markers_from_template(template) is not None
+                detect_reasoning_channel_markers_from_template(template, tools = tools) is not None
                 for template in templates
             ):
                 flags["supports_reasoning"] = True
@@ -1976,9 +1989,9 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     )
     if (
         flags.get("supports_tools")
-        and chat_template
-        and not any(m in chat_template for m in _PARSER_MARKERS)
-        and not _BARE_JSON_NAME_MARKER_RE.search(chat_template)
+        and isinstance(feature_template, str)
+        and not any(m in feature_template for m in _PARSER_MARKERS)
+        and not _BARE_JSON_NAME_MARKER_RE.search(feature_template)
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "
@@ -8666,19 +8679,32 @@ async def openai_chat_completions(
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
-    _sf_features = _detect_safetensors_features(backend, _sf_tpl)
-
-    # GGUF parity: enable_thinking templates prefill an unclosed <think>; split into
-    # reasoning_content deltas so the UI renders the block for safetensors and MLX.
-    _sf_parse_think = bool(
-        _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
+    # Named templates may expose native reasoning only in their ``tool_use``
+    # branch. Use a truthy placeholder for Studio-managed tools, whose concrete
+    # schemas are selected below, and the request schemas for client passthrough.
+    _sf_server_tool_intent = bool(
+        _effective_enable_tools(payload) or _explicit_studio_tool_loop_requested(payload)
     )
-    # Prefilled-open only for prefill styles with thinking on; gpt-oss uses the normal mode.
-    _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
-        _sf_features,
-        payload.enable_thinking,
-        _sf_tpl,
-        reasoning_effort = payload.reasoning_effort,
+    _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
+    if not _sf_template_tools and _sf_server_tool_intent:
+        _sf_template_tools = ({},)
+    def _sf_response_protocol(tools = None):
+        features = _detect_safetensors_features(backend, _sf_tpl, tools = tools)
+        parse_think = bool(
+            features.get("supports_reasoning") or features.get("reasoning_always_on")
+        )
+        reasoning_prefilled = _sf_reasoning_prefill_mode(
+            features,
+            payload.enable_thinking,
+            _sf_tpl,
+            reasoning_effort = payload.reasoning_effort,
+        )
+        return features, parse_think, reasoning_prefilled
+
+    # GGUF parity: split canonical <think> output into reasoning_content. The
+    # selected template branch must match whether this request renders tools.
+    _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        _sf_template_tools
     )
 
     def _new_sf_reasoning_extractor():
@@ -9183,6 +9209,14 @@ async def openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
+
+    # The potential tool context above is needed before server/client routing is
+    # known. This standard path now has the exact schemas that will be rendered,
+    # so resolve reasoning parsing again to keep empty registries, forced-tool
+    # misses, and tool_choice="none" on the marker-free template branch.
+    _, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+        gen_kwargs.get("tools")
+    )
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
