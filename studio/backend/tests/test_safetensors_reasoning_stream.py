@@ -329,18 +329,21 @@ def test_text_only_vlm_fallback_resolves_native_markers_off():
 
     backend._make_text_streamer = make_streamer
 
-    assert list(
-        backend._generate_vision_response(
-            messages = [{"role": "user", "content": "hello"}],
-            system_prompt = "",
-            image = None,
-            temperature = 0.7,
-            top_p = 0.9,
-            top_k = 40,
-            min_p = 0.0,
-            max_new_tokens = 1,
-            repetition_penalty = 1.0,
+    assert (
+        list(
+            backend._generate_vision_response(
+                messages = [{"role": "user", "content": "hello"}],
+                system_prompt = "",
+                image = None,
+                temperature = 0.7,
+                top_p = 0.9,
+                top_k = 40,
+                min_p = 0.0,
+                max_new_tokens = 1,
+                repetition_penalty = 1.0,
+            )
         )
-    ) == []
+        == []
+    )
     assert captured["reasoning_channel_markers"] is None
     assert captured["reasoning_channel_markers_resolved"] is True
