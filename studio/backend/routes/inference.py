@@ -419,6 +419,10 @@ def _openai_stream_error_chunk(exc) -> dict:
 
 
 def _openai_stream_error_sse(error: dict) -> str:
+    # Every OpenAI-family streaming error flows through here after the 200 headers, so flag
+    # the response failed: the middleware must not claim a preview-owned model on a failed stream.
+    from core.inference.llama_keepwarm import mark_current_response_failed
+    mark_current_response_failed()
     return f"data: {json.dumps(error)}\n\ndata: [DONE]\n\n"
 
 
@@ -612,6 +616,12 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
+    # Called only from stream except-handlers after the 200 headers, so flag failed up front
+    # even when we return None (the caller then swallows and finishes normally): the middleware
+    # must not claim a preview-owned model on a failed stream.
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
     _cls = _classify_llama_generation_error(exc)
     if _cls is None and not force:
         return None
@@ -1196,10 +1206,17 @@ def _openai_admission_cancelled_error(
 async def _raise_if_openai_admission_cancelled(
     reservation: LlamaAdmissionReservation, *, request: Optional[Request], cancel_event
 ) -> None:
+    # Cancelled before leasing an upstream, so the model was never used. A streaming caller
+    # has flushed the 200 headers and its `except LlamaAdmissionCancelled` just returns, so
+    # flag failed: the middleware must not treat that empty 200 as a successful generation and
+    # claim a preview-owned slot. Harmless for non-streaming callers (they surface a non-2xx).
+    from core.inference.llama_keepwarm import mark_current_response_failed
     if reservation.is_cancelled:
+        mark_current_response_failed()
         raise _openai_admission_cancelled_error(reservation)
     if await _preheader_cancelled(cancel_event, request):
         reservation.cancel()
+        mark_current_response_failed()
         raise _openai_admission_cancelled_error(reservation)
 
 
@@ -1559,7 +1576,16 @@ async def _send_stream_with_preheader_cancel(
 ) -> Optional[httpx.Response]:
     if cancel_event is None and request is None:
         return await client.send(req, stream = True)
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    def _mark_preheader_cancel() -> None:
+        # Cancelled before the upstream response started: the caller ends its 200
+        # stream without serving tokens, so flag it failed or the middleware claims
+        # a preview-owned slot for a request that never used the model.
+        mark_response_failed(getattr(request, "scope", None))
+
     if await _preheader_cancelled(cancel_event, request):
+        _mark_preheader_cancel()
         return None
 
     send_task = asyncio.create_task(client.send(req, stream = True))
@@ -1585,6 +1611,7 @@ async def _send_stream_with_preheader_cancel(
             return await send_task
 
         await _stop_send_task()
+        _mark_preheader_cancel()
         return None
     except asyncio.CancelledError:
         if mark_cancel_on_cancel and cancel_event is not None:
@@ -2782,9 +2809,18 @@ def _monitor_openai_sse_event(
     monitor_id: Optional[str],
     event: bytes,
     context_length = None,
-) -> None:
+) -> Optional[str]:
+    # Returns "error" if any line was an upstream error payload (an HTTP-200 SSE
+    # `data: {"error": ...}`), so a relay caller can mark the response failed and stop the
+    # keep-warm middleware claiming the slot on a failed stream.
+    status = None
     for line in event.decode("utf-8", errors = "ignore").splitlines():
-        _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+        result = _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+        if result == "error":
+            status = "error"
+        elif result == "done" and status is None:
+            status = "done"
+    return status
 
 
 def _monitor_anthropic_usage(
@@ -3455,6 +3491,7 @@ async def _maybe_auto_switch_model(
     current_subject: str,
     *,
     require_vision: bool = False,
+    claim_resident: bool = True,
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
@@ -3462,7 +3499,12 @@ async def _maybe_auto_switch_model(
     model different from the loaded one. Unknown names fall through (drop-in
     compat) and no remote download is triggered. ``require_vision`` rejects a swap
     to a text-only target before it runs, so an image request can't evict the
-    resident vision model only to 400 afterwards.
+    resident vision model only to 400 afterwards. ``claim_resident`` claims a
+    resident model the request adopts (clears the preview marker) at the no-load
+    exits; a route that still has its own capability/backend checks that can reject
+    (e.g. GGUF-only /v1/completions, /audio/generate) passes ``False`` and claims
+    itself only after those checks pass, so a later rejection can't strand a
+    preview-owned model as Studio-owned.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -3474,11 +3516,34 @@ async def _maybe_auto_switch_model(
         get_last_unloaded_model,
         other_inference_request_count,
         inference_lifecycle_gate,
+        note_admitted_inference,
+        preview_swapped_since_entry,
     )
+
+    # Passed auth and reached local inference, so count it in the admitted-inference tally
+    # the preview busy guard uses instead of raw _inflight (no-op for preview scopes).
+    _swap_scope = getattr(fastapi_request, "scope", None)
+    note_admitted_inference(_swap_scope)
+    # A preview swapped a different checkpoint in since this request entered; running now
+    # would serve the preview's model to Studio, so reject and let the client retry. Covers a
+    # request that waited on the gate through the swap AND one that passed the gate before it
+    # but is still pre-admission. Deferred here (not a middleware 503) so an external-provider
+    # request that untracks and returns before this hook is never rejected for a swap it never
+    # touched; over-rejecting a local request is acceptable, serving the wrong checkpoint is not.
+    if preview_swapped_since_entry(_swap_scope):
+        raise HTTPException(
+            status_code = 503,
+            detail = "A preview is loading a model. Please retry shortly.",
+            headers = {"Retry-After": "1"},
+        )
 
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
     if not isinstance(requested_model, str) or not requested_model:
+        # Omitted/default model on a non-preview call runs against the resident model,
+        # so claim it for Studio (a preview keeps its own ownership).
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
         return
     # The public preview route opts out so a caller cannot switch away from the
     # pinned preview checkpoint it just loaded.
@@ -3486,11 +3551,13 @@ async def _maybe_auto_switch_model(
     if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
         return
     auto_switch_on = get_openai_auto_switch_enabled()
-    # The reload-stash path also runs when idle-unload is active on its own (a
-    # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
-    # loop freed is restored on the next request. The resolver-based switch still
-    # requires the auto-switch toggle.
+    # The reload-stash path also runs when idle-unload is active on its own (a standalone
+    # UNSLOTH_MODEL_IDLE_TTL with auto-switch off), restoring an idle-freed model on the next
+    # request. The resolver-based switch still requires the auto-switch toggle.
     if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+        # Auto-switch off: this non-preview turn uses the resident model, claim it.
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
         return
 
     # Register by the raw requested model before resolving (which can be slow):
@@ -3513,14 +3580,18 @@ async def _maybe_auto_switch_model(
             # (path + quant + advertised id) so an alias/unknown name stays servable
             # and keeps the override keyed by the advertised id, not the load path.
             last = get_last_unloaded_model()
-            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload
-            # leaves the GGUF slot empty but is the live model, so don't resurrect
-            # the stale GGUF over it (that load would tear the active model down).
+            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload leaves the
+            # GGUF slot empty but is the live model; don't resurrect the stale GGUF over it
+            # (that load would tear the active model down).
             if (
                 not last
                 or get_llama_cpp_backend().is_loaded
                 or getattr(get_inference_backend(), "active_model_name", None)
             ):
+                # Unknown name, model already resident: the non-preview call uses it,
+                # so claim it for Studio.
+                if claim_resident:
+                    _claim_slot_for_non_preview(fastapi_request)
                 return
             if len(last) == 3:
                 target_id, variant, override_id = last
@@ -3558,13 +3629,12 @@ async def _maybe_auto_switch_model(
             return True
 
         def _record_serving_alias() -> None:
-            # When an advertised alias already resolves to the loaded model (e.g. a
-            # model loaded by local path, requested by its repo/LM Studio id), record
-            # the alias as the public id so /v1/models and responses report it (and
-            # mark it loaded) instead of the path-derived basename. Resolver branch
-            # only: the reload-stash override_id can be the bare path, not a repo id.
-            # Lock-free is safe here: an in-flight request blocks any concurrent swap
-            # (single-slot busy guard), so the loaded model can't change under this.
+            # When an advertised alias already resolves to the loaded model (e.g. loaded by
+            # local path, requested by its repo/LM Studio id), record the alias as the public
+            # id so /v1/models and responses report it (marked loaded) instead of the path
+            # basename. Resolver branch only: the reload-stash override_id can be a bare path.
+            # Lock-free is safe: an in-flight request blocks any concurrent swap (single-slot
+            # busy guard), so the loaded model can't change under this.
             if resolved is None or not override_id:
                 return
             b = get_llama_cpp_backend()
@@ -3572,6 +3642,10 @@ async def _maybe_auto_switch_model(
                 b._openai_advertised_id = override_id
 
         if _already_serving():
+            # A non-preview request adopting this model claims it for Studio, so a later
+            # preview can't swap it out from under an active OpenAI caller.
+            if claim_resident:
+                _set_preview_resident(None)
             _record_serving_alias()
             return
         # An image/audio request naming a different text-only GGUF would load it
@@ -3606,6 +3680,8 @@ async def _maybe_auto_switch_model(
                     # start on the model while it is being torn down and replaced.
                     async with inference_lifecycle_gate():
                         if _already_serving():
+                            if claim_resident:
+                                _set_preview_resident(None)
                             _record_serving_alias()
                             return
                         # Single slot: refuse a cross-model swap while another inference
@@ -3643,11 +3719,31 @@ async def _maybe_auto_switch_model(
                         # Reuse the load impl so its dedup, tensor fallback, and threading
                         # apply. Call the impl directly: we already hold the lifecycle gate
                         # the /load route would otherwise take, so the route would deadlock.
-                        await _load_model_impl(
-                            LoadRequest(**load_kwargs),
-                            fastapi_request,
-                            current_subject,
-                        )
+                        load_request = LoadRequest(**load_kwargs)
+                        # Deferred claim (claim_resident=False): _load_model_impl clears the
+                        # preview marker mid-load and can make the new model resident and then
+                        # raise while building the load response, so base ownership on what is
+                        # actually resident, in a finally that runs on that post-load failure
+                        # too. If the new target is resident, mark it preview-owned (a later
+                        # route 4xx leaves it evictable; a 2xx turn clears it via the claim,
+                        # and the in-flight busy guard blocks a concurrent preview swap);
+                        # otherwise restore the prior owner. claim_resident=True adopts the
+                        # model outright, so _load_model_impl's own marker clear stands.
+                        _switch_prior_marker = _get_preview_resident()
+                        _switch_loaded_ok = False
+                        try:
+                            await _load_model_impl(
+                                load_request,
+                                fastapi_request,
+                                current_subject,
+                            )
+                            _switch_loaded_ok = True
+                        finally:
+                            if not claim_resident:
+                                if _switch_loaded_ok or _loaded_slot_ident() == target_id:
+                                    _set_preview_resident(_loaded_slot_ident())
+                                else:
+                                    _set_preview_resident(_switch_prior_marker)
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
@@ -3676,13 +3772,247 @@ async def _auto_switch_from_request_body(request: Request, current_subject: str)
         model = body.get("model") or _RELOAD_ONLY_MODEL
     else:
         model = None
-    await _maybe_auto_switch_model(model, request, current_subject)
+    # Serves the GGUF-only /v1/completions and /v1/embeddings routes, which still 503 "No
+    # GGUF model loaded" after this returns. Don't claim here (claim_resident=False); the
+    # caller claims only once it confirms a GGUF is loaded, so that 503 can't strand a
+    # preview-owned non-GGUF model as Studio-owned.
+    await _maybe_auto_switch_model(model, request, current_subject, claim_resident = False)
     return body
 
 
+_preview_slot_lock = threading.Lock()
+_preview_resident_ident: Optional[str] = None
+
+
+def _set_preview_resident(ident: Optional[str]) -> None:
+    global _preview_resident_ident
+    with _preview_slot_lock:
+        _preview_resident_ident = ident
+
+
+def _is_preview_resident(ident: str) -> bool:
+    with _preview_slot_lock:
+        marked = _preview_resident_ident
+    return marked is not None and marked.lower() == ident.lower()
+
+
+def _preview_slot_is_owned() -> bool:
+    """True when the resident slot is currently preview-owned, so a non-preview turn
+    adopting it would clear that ownership."""
+    with _preview_slot_lock:
+        return _preview_resident_ident is not None
+
+
+def _get_preview_resident() -> Optional[str]:
+    """The current preview-ownership marker, for callers that must restore it (e.g. a
+    preview reload that fails after _load_model_impl already cleared it)."""
+    with _preview_slot_lock:
+        return _preview_resident_ident
+
+
+def _same_loaded_identifier(loaded: Optional[str], requested: str) -> bool:
+    """Whether a loaded model identifier is the exact one requested, for the
+    already-loaded dedup.
+
+    Local filesystem paths are compared filesystem-aware via os.path.normcase: on a
+    case-sensitive filesystem two checkpoint paths differing only by case are
+    different models, so they must not dedup to the already-loaded fast path (which
+    would keep serving the wrong checkpoint). Hugging Face repo IDs (e.g. unsloth/Foo)
+    are resolved case-insensitively elsewhere in the loader, so compare those
+    case-insensitively to avoid an unnecessary unload/reload of the same repo."""
+    if not loaded:
+        return False
+
+    # Local checkpoint == absolute path OR an existing relative path (ModelConfig resolves an
+    # existing relative path as a local file). Only genuine repo ids take the lower() compare.
+    def _is_local_path(ident: str) -> bool:
+        return os.path.isabs(ident) or os.path.exists(ident)
+
+    if _is_local_path(loaded) or _is_local_path(requested):
+        return os.path.normcase(loaded) == os.path.normcase(requested)
+    return loaded.lower() == requested.lower()
+
+
+def _should_validate_before_switch() -> bool:
+    """Whether a route must run its shape validation before _maybe_auto_switch_model.
+
+    True when an automatic load could run (resolver auto-switch or an idle-reload),
+    and also when the slot is preview-owned: with both features off no load runs, but
+    _maybe_auto_switch_model still claims the slot (clears the preview marker) for a
+    non-preview turn. A request rejected after that claim would have converted the
+    preview-owned model into a Studio-owned one for nothing, stranding the next
+    preview for a different checkpoint on the 503 slot guard, so validate first.
+    """
+    return _automatic_model_load_may_run() or _preview_slot_is_owned()
+
+
+def _loaded_slot_ident() -> Optional[str]:
+    active = getattr(get_inference_backend(), "active_model_name", None)
+    if active:
+        return str(active)
+    llama_backend = get_llama_cpp_backend()
+    if llama_backend.is_loaded and llama_backend.model_identifier:
+        return str(llama_backend.model_identifier)
+    return None
+
+
+def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
+    """True when the resident slot already serves the preview's checkpoint. Exact string
+    match first: it is the fast path and the only comparison that makes sense for a non-path
+    identifier (an HF repo id like ``org/model``). Otherwise compare resolved filesystem
+    paths, so a checkpoint Studio loaded through an equivalent spelling -- a relative
+    ``outputs/run`` vs the absolute path the preview resolver produces -- still borrows the
+    slot instead of 503'ing. realpath preserves case-sensitive distinct paths (it never
+    lowercases, so /outputs/Run and /outputs/run stay distinct); a non-path identifier just
+    resolves to a location under the cwd that cannot match the preview's checkpoint."""
+    if loaded == requested:
+        return True
+    try:
+        return Path(loaded).resolve() == Path(requested).resolve()
+    except OSError:
+        return False
+
+
+def _claim_slot_for_non_preview(fastapi_request) -> None:
+    """Non-preview local generation adopts the resident model for Studio.
+
+    Clearing the preview marker means a later preview for another checkpoint gets a
+    503 instead of swapping the model out from under an active Studio/OpenAI turn. A
+    ``/p`` preview request keeps its own ownership (it may still be swapped by the
+    next preview), so skip when the request is a preview -- audio previews reach
+    generate_audio through openai_chat_completions, so the path check, not the
+    handler, decides ownership.
+    """
+    from core.inference.llama_keepwarm import _is_preview_path
+
+    scope = getattr(fastapi_request, "scope", None)
+    path = scope.get("path") if isinstance(scope, dict) else None
+    if _is_preview_path(path or ""):
+        return
+    _set_preview_resident(None)
+
+
+async def load_model_for_preview(
+    request: LoadRequest, fastapi_request: Request, current_subject: str
+) -> None:
+    from core.inference.llama_keepwarm import (
+        inference_lifecycle_gate,
+        note_preview_swap,
+        note_preview_swap_begin,
+        note_preview_swap_end,
+        other_admitted_inference_count,
+        untrack_current_request,
+    )
+    from utils.transformers_version import sidecar_swap_in_progress
+
+    # A refused preview never touches the model, so it must not stamp keep-warm
+    # activity (public /p spam could otherwise pin an idle Studio model in VRAM);
+    # untrack also balances the preview in-flight counter for the dropped request.
+    scope = getattr(fastapi_request, "scope", None)
+    async with _auto_switch_lock():
+        await _acquire_swap_gate()
+        _swap_begun = False
+        try:
+            async with inference_lifecycle_gate():
+                # Preview loads bypass load_model(), so re-apply its sidecar guard:
+                # a public preview must not complete a load while a transformers
+                # install has reserved the swap, or the installer later aborts.
+                if sidecar_swap_in_progress():
+                    untrack_current_request(scope)
+                    raise HTTPException(
+                        status_code = 409,
+                        detail = "A transformers installation is in progress. Retry when it completes.",
+                        headers = {"Retry-After": "10"},
+                    )
+                loaded = _loaded_slot_ident()
+                # Borrow the resident model when it already serves this checkpoint, matching
+                # an equivalent spelling (relative vs the resolved absolute path) via realpath
+                # while keeping case-sensitive distinct paths distinct (never lowercased).
+                same_target = loaded is not None and _preview_same_checkpoint(
+                    loaded, request.model_path
+                )
+                preview_resident = loaded is not None and _is_preview_resident(loaded)
+                if loaded is not None and not same_target and not preview_resident:
+                    untrack_current_request(scope)
+                    raise HTTPException(
+                        status_code = 503,
+                        detail = "Studio already has a different model loaded. Unload it before using this preview.",
+                        headers = {"Retry-After": "10"},
+                    )
+                # For a real load (not a same-target borrow) mark the swap in progress BEFORE
+                # the admitted-count check below so the two are atomic against a concurrent
+                # non-preview request: preview_swapped_since_entry() keys on the live
+                # _preview_swap_inflight, so a Studio request reaching _maybe_auto_switch_model
+                # after this marker is rejected, while one admitted before it is caught by the
+                # busy check. Setting it only after the check left a gap where a Studio request
+                # admitted between the check and the marker ran against the slot this preview
+                # is about to replace. Skip it for a same-target borrow: that changes nothing
+                # (no counter bump), so marking would 503 concurrent Studio requests for no
+                # reason. Cleared only after the lifecycle gate releases.
+                if not same_target:
+                    note_preview_swap_begin()
+                    _swap_begun = True
+                # A same-checkpoint request would still restart a Studio-owned GGUF whose
+                # live settings differ from these bare defaults (#5401), so admitted
+                # (post-auth) Studio inference blocks first. Only admitted local inference
+                # is counted, not raw _inflight: the middleware tracks a POST before
+                # FastAPI auth, so a pre-auth or unauthenticated non-preview request would
+                # otherwise starve previews. Queued (pending) requests are likewise not
+                # counted; a genuinely queued Studio request is protected by the swap
+                # reject (it wakes to a retryable 503 rather than the swapped-in model).
+                if other_admitted_inference_count() > 0:
+                    untrack_current_request(scope)
+                    raise HTTPException(
+                        status_code = 503,
+                        detail = "The preview model is busy. Please try again shortly.",
+                        headers = {"Retry-After": "10"},
+                    )
+                if same_target:
+                    # The resident model already serves this exact checkpoint, so
+                    # borrow it as-is instead of reloading with bare preview settings
+                    # (which would reconfigure/restart an idle Studio-owned GGUF,
+                    # #5401). Ownership is unchanged: Studio's model stays Studio's, a
+                    # preview-owned one stays preview-owned.
+                    return
+                # _load_model_impl clears the preview marker mid-load (it reclaims the
+                # slot for Studio). If the load then fails while the prior model is
+                # still resident (e.g. a GPU-selection or pre-spawn error), leaving the
+                # marker cleared would make the next preview for another checkpoint see
+                # that still-preview model as Studio-owned and 503. Restore the prior
+                # ownership on failure; only a successful load takes the new marker.
+                prior_marker = _get_preview_resident()
+                loaded_ok = False
+                try:
+                    await _load_model_impl(request, fastapi_request, current_subject)
+                    loaded_ok = True
+                finally:
+                    # Base ownership on what is actually resident now: the load can make
+                    # this preview's checkpoint resident and then raise while assembling
+                    # the load response, leaving loaded_ok false. If the slot now holds
+                    # this preview's model, mark it preview-owned (it was loaded only by
+                    # this preview); only when the resident model was not replaced do we
+                    # restore the prior owner.
+                    if loaded_ok or _loaded_slot_ident() == request.model_path:
+                        _set_preview_resident(request.model_path)
+                    else:
+                        _set_preview_resident(prior_marker)
+                    # The shared model slot was touched (a partial failure can also
+                    # unload/replace it), so bump the swap counter -- still inside the
+                    # lifecycle gate, before it is released. A non-preview request that
+                    # was blocked on the gate through this load then sees the counter
+                    # advance and is rejected by the middleware rather than running
+                    # against the swapped-in preview checkpoint.
+                    note_preview_swap()
+        finally:
+            # Cleared only here, after the lifecycle gate above has been released, so a
+            # non-preview request that arrived in the post-bump/pre-release window still
+            # saw the swap in progress at entry and is rejected.
+            if _swap_begun:
+                note_preview_swap_end()
+            _auto_switch_process_lock.release()
+
+
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
-    """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
-    16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
     load_in_4bit = requested
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
@@ -4017,8 +4347,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             if (
                 llama_backend.is_loaded
                 and gguf_variant_matches
-                and llama_backend.model_identifier
-                and llama_backend.model_identifier.lower() == model_identifier.lower()
+                and _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
                     request,
@@ -4032,6 +4361,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     "Model already loaded (GGUF): "
                     f"{model_log_label} variant={request.gguf_variant or llama_backend.hf_variant}, skipping reload"
                 )
+                # A no-op Studio load of a preview-owned checkpoint still claims it.
+                _set_preview_resident(None)
                 inference_config = load_inference_config(llama_backend.model_identifier)
 
                 _gguf_audio = getattr(llama_backend, "_audio_type", None)
@@ -4069,11 +4400,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     tensor_parallel = llama_backend.tensor_parallel,
                 )
         else:
-            if (
-                backend.active_model_name
-                and backend.active_model_name.lower() == model_identifier.lower()
-            ):
+            if _same_loaded_identifier(backend.active_model_name, model_identifier):
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
+                # A no-op Studio load of a preview-owned checkpoint still claims it.
+                _set_preview_resident(None)
                 inference_config = load_inference_config(backend.active_model_name)
                 _model_info = backend.models.get(backend.active_model_name, {})
                 _chat_template = None
@@ -4182,6 +4512,22 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
         )
 
+        # About to touch the backend: reclaim the slot for Studio. Capture the prior marker
+        # first so a still-later pre-load check that rejects (the native vision-companion
+        # validation below) can restore preview ownership, or a still-resident preview
+        # checkpoint is left marked Studio-owned and later previews 503 against it.
+        _prior_preview_marker = _get_preview_resident()
+        _set_preview_resident(None)
+
+        def _restore_marker_if_prior_preview_still_resident() -> None:
+            # A failed load can leave the prior preview checkpoint resident though the marker
+            # was cleared above (a non-GGUF load unloads only the new entry; a GGUF load can
+            # raise before tearing down the old llama-server). Restore its ownership so a later
+            # preview isn't 503'd against a model Studio never adopted. Guarded on the prior
+            # model still being resident, so it never mis-marks a torn-down/replaced model.
+            if _prior_preview_marker is not None and _loaded_slot_ident() == _prior_preview_marker:
+                _set_preview_resident(_prior_preview_marker)
+
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
             llama_backend = get_llama_cpp_backend()
@@ -4193,9 +4539,16 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 logger.info(
                     f"Unloading Unsloth model '{unsloth_backend.active_model_name}' before loading GGUF"
                 )
-                await asyncio.to_thread(
-                    unsloth_backend.unload_model, unsloth_backend.active_model_name
-                )
+                try:
+                    await asyncio.to_thread(
+                        unsloth_backend.unload_model, unsloth_backend.active_model_name
+                    )
+                except Exception:
+                    # This teardown runs after the marker was cleared above; if it raises
+                    # with the prior preview-owned Unsloth model still resident, restore its
+                    # ownership so a later preview for another checkpoint is not 503'd.
+                    _restore_marker_if_prior_preview_still_resident()
+                    raise
 
             # Inherit llama_extra_args from the previous load when the request
             # omits the field (the chat-settings Apply path doesn't round-trip
@@ -4303,9 +4656,17 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                 # Local mode: llama-server loads via -m <path>
                 if native_grant_backed:
                     if config.gguf_mmproj_file:
-                        _validate_native_gguf_companion(
-                            config.gguf_mmproj_file, config.gguf_file, "vision companion"
-                        )
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_mmproj_file, config.gguf_file, "vision companion"
+                            )
+                        except HTTPException:
+                            # The resident model isn't torn down yet, so restore preview
+                            # ownership before propagating this reject: the still-resident
+                            # preview checkpoint must not be left Studio-owned (later 503s).
+                            if _prior_preview_marker is not None:
+                                _set_preview_resident(_prior_preview_marker)
+                            raise
                     if config.gguf_mtp_file:
                         # The drafter is optional (unlike mmproj for a vision
                         # model): drop it rather than fail the load.
@@ -4394,15 +4755,24 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # falls back to layer split so the checkbox never blocks a model from
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
-            success = await load_with_tensor_fallback(
-                _attempt_gguf_load,
-                requested_tensor = request.tensor_parallel,
-                extra_args = extra_llama_args,
-                label = config.identifier,
-                cancelled = llama_backend.load_cancelled,
-            )
+            try:
+                success = await load_with_tensor_fallback(
+                    _attempt_gguf_load,
+                    requested_tensor = request.tensor_parallel,
+                    extra_args = extra_llama_args,
+                    label = config.identifier,
+                    cancelled = llama_backend.load_cancelled,
+                )
+            except Exception:
+                # A GGUF load can raise before tearing down the old llama-server (e.g. an
+                # update-in-progress guard fires before _kill_process), leaving the prior
+                # preview-owned GGUF resident. Restore its marker so a later preview for
+                # another checkpoint is not 503'd against it.
+                _restore_marker_if_prior_preview_still_resident()
+                raise
 
             if not success:
+                _restore_marker_if_prior_preview_still_resident()
                 raise HTTPException(
                     status_code = 500,
                     detail = f"Failed to load GGUF model: {model_log_label if native_grant_backed else config.display_name}",
@@ -4466,7 +4836,14 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded:
             logger.info("Unloading GGUF model before loading Unsloth model")
-            llama_backend.unload_model()
+            try:
+                llama_backend.unload_model()
+            except Exception:
+                # This teardown runs after the marker was cleared above; if it raises with
+                # the prior preview-owned GGUF still resident, restore its ownership so a
+                # later preview for another checkpoint is not 503'd against it.
+                _restore_marker_if_prior_preview_still_resident()
+                raise
 
         # Shut down any export subprocess to free VRAM
         try:
@@ -4486,19 +4863,24 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
         # Load in a thread so the event loop stays free for download progress
         # polling and other requests.
-        success = await asyncio.to_thread(
-            backend.load_model,
-            config = config,
-            max_seq_length = request.max_seq_length,
-            load_in_4bit = load_in_4bit,
-            hf_token = request.hf_token,
-            trust_remote_code = request.trust_remote_code,
-            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            gpu_ids = effective_gpu_ids,
-            subject = current_subject,
-        )
+        try:
+            success = await asyncio.to_thread(
+                backend.load_model,
+                config = config,
+                max_seq_length = request.max_seq_length,
+                load_in_4bit = load_in_4bit,
+                hf_token = request.hf_token,
+                trust_remote_code = request.trust_remote_code,
+                approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
+                gpu_ids = effective_gpu_ids,
+                subject = current_subject,
+            )
+        except Exception:
+            _restore_marker_if_prior_preview_still_resident()
+            raise
 
         if not success:
+            _restore_marker_if_prior_preview_still_resident()
             # Check if YAML says this model needs trust_remote_code.
             if not request.trust_remote_code:
                 model_defaults = load_model_defaults(config.identifier)
@@ -5209,9 +5591,6 @@ async def unload_model(request: UnloadRequest, current_subject: str = Depends(ge
                 logger.info(f"Unloaded GGUF model: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
-            # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
-            # a slow SSE stream paused between tokens still holds, so a sync call would block
-            # the loop that drives the stream's next token and the lock release.
             backend = get_inference_backend()
             await asyncio.to_thread(backend.unload_model, request.model_path)
             note_model_unloaded()
@@ -5316,13 +5695,37 @@ async def generate_stream(
 
     For vision models, provide image_base64 (base64-encoded image).
     """
+    # Enforce the preview-swap reject FIRST, before reading any backend state. If a public
+    # preview loaded a different checkpoint while this native Studio request waited on the
+    # keep-warm gate, the middleware flagged the scope; the loaded-model and image-capability
+    # checks below would otherwise run against the swapped-in model and return a hard 400
+    # instead of the intended retryable 503. generate_stream skips _maybe_auto_switch_model,
+    # where this guard otherwise runs. No claim needed: the middleware claims on a 2xx.
+    from core.inference.llama_keepwarm import (
+        mark_response_failed,
+        note_admitted_inference,
+        preview_swapped_since_entry,
+    )
+
+    _gs_scope = getattr(fastapi_request, "scope", None)
+    # Passed auth and reached local inference, so count it in the admitted-inference
+    # tally the preview busy guard uses instead of raw _inflight.
+    note_admitted_inference(_gs_scope)
+    # Reject if a preview swapped in since this request entered (waited on the gate
+    # through the swap, or passed the gate before it but is still pre-admission).
+    if preview_swapped_since_entry(_gs_scope):
+        raise HTTPException(
+            status_code = 503,
+            detail = "A preview is loading a model. Please retry shortly.",
+            headers = {"Retry-After": "1"},
+        )
+
     backend = get_inference_backend()
 
     if not backend.active_model_name:
         raise HTTPException(
             status_code = 400, detail = "No model loaded. Call POST /inference/load first."
         )
-
     # Decode image if provided (vision models)
     image = None
     if request.image_base64:
@@ -5387,6 +5790,10 @@ async def generate_stream(
                     # the generator does not signal a subprocess backend, so it would
                     # keep decoding. The finally's reset is guarded, so no double-run.
                     backend.reset_generation_state()
+                    # 200 stream ends with no completion (client disconnected), so flag
+                    # failed: the middleware must not treat this cancelled stream as a
+                    # success and claim the model.
+                    mark_response_failed(_gs_scope)
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
@@ -5404,6 +5811,10 @@ async def generate_stream(
             cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
+            # The stream already sent HTTP 200, so signal the failure out-of-band: the
+            # middleware must not treat this errored stream as a success and claim a
+            # preview-owned model.
+            mark_response_failed(_gs_scope)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -5662,7 +6073,12 @@ async def generate_audio(
     # the client model through the resolver could load a text- or vision-only target
     # and evict the working audio model before the audio backend check fails. Only
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
-    await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, current_subject)
+    # Defer the resident claim: the audio-backend/capability checks below can still 400
+    # (text-only or no model), and claiming first would strand a preview-owned checkpoint
+    # as Studio-owned without ever generating.
+    await _maybe_auto_switch_model(
+        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+    )
 
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
@@ -5699,6 +6115,9 @@ async def generate_audio(
             use_adapter = payload.use_adapter,
         )
 
+    # Audio-capable backend confirmed. The middleware claims the slot on a 2xx, so no claim
+    # here: claiming before the audio backend runs could strand a preview-owned checkpoint
+    # as Studio-owned if generation then fails.
     try:
         wav_bytes, sample_rate = await asyncio.to_thread(gen)
     except Exception as e:
@@ -6754,14 +7173,15 @@ async def openai_chat_completions(
                     ),
                 )
 
-    # Reject a system-only chat before any automatic load so an invalid request
-    # never swaps or reloads the resident model (as /responses and /messages
-    # already validate before switching). Gate on every automatic-load trigger,
-    # not just auto-switch, since a standalone idle TTL can also reload here.
-    # Parse once and reuse below.
+    # Reject a system-only chat before any automatic load so an invalid request never swaps or
+    # reloads the resident model (as /responses and /messages already validate before
+    # switching). Gate on every automatic-load trigger (not just auto-switch: a standalone idle
+    # TTL can also reload here), and on a preview-owned slot: even with both features off the
+    # switch helper claims the slot, so a later-rejected request must not clear that ownership
+    # first. Parse once and reuse below.
     _pre_parsed = None
     _needs_vision = False
-    if _automatic_model_load_may_run():
+    if _should_validate_before_switch():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
             raise HTTPException(
@@ -6863,11 +7283,17 @@ async def openai_chat_completions(
             bool(_pre_parsed[2]) or _request_has_image(payload) or bool(payload.audio_base64)
         )
 
+    # Defer the resident claim: chat has several post-switch capability checks that can still
+    # reject (Whisper without audio, n>1 on a non-GGUF backend, tool or response_format
+    # passthrough), so claiming here could strand a preview-owned model for a request that
+    # never generates. The middleware instead claims the slot on a successful 2xx non-preview
+    # response.
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
         require_vision = _needs_vision,
+        claim_resident = False,
     )
 
     llama_backend = get_llama_cpp_backend()
@@ -7012,6 +7438,8 @@ async def openai_chat_completions(
                         _await_disconnect_then_cancel(request, cancel_event)
                     )
                     try:
+                        from core.inference.llama_keepwarm import mark_current_response_failed
+
                         yield _chat_role_chunk(completion_id, created, model_name)
 
                         gen = audio_input_generate()
@@ -7020,10 +7448,14 @@ async def openai_chat_completions(
                         while True:
                             if cancel_event.is_set():
                                 cancelled = True
+                                # Cancelled before completion: flag failed so the middleware
+                                # does not claim a preview-owned model.
+                                mark_current_response_failed()
                                 break
                             if await request.is_disconnected():
                                 cancel_event.set()
                                 api_monitor.finish(monitor_id, "cancelled")
+                                mark_current_response_failed()
                                 return
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
@@ -7044,6 +7476,9 @@ async def openai_chat_completions(
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
                         api_monitor.fail(monitor_id, _friendly_error(e))
+                        # In-band error after 200 headers: flag the response failed so
+                        # the keep-warm middleware does not claim a preview-owned model.
+                        mark_current_response_failed()
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -7459,6 +7894,8 @@ async def openai_chat_completions(
                     _await_disconnect_then_cancel(request, cancel_event)
                 )
                 try:
+                    from core.inference.llama_keepwarm import mark_current_response_failed
+
                     yield _chat_role_chunk(completion_id, created, model_name)
 
                     # Iterate the sync generator in a thread so the event loop
@@ -7486,9 +7923,11 @@ async def openai_chat_completions(
 
                     while True:
                         if cancel_event.is_set():
+                            mark_current_response_failed()
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
 
@@ -7617,6 +8056,12 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    # A cancel observed inside asyncio.to_thread(next, gen, ...) returns
+                    # the sentinel and breaks the loop without hitting the pre-next mark,
+                    # so flag it here too or the middleware claims the slot for a stream
+                    # the user cancelled.
+                    if cancel_event.is_set():
+                        mark_current_response_failed()
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -7925,6 +8370,12 @@ async def openai_chat_completions(
                     },
                     _monitor_context_length(),
                 )
+                # An explicit /inference/cancel breaks this tool drain mid-generation but the
+                # route still returns a JSON 200, so flag the response failed here or the
+                # middleware claims a preview-owned slot for a cancelled completion.
+                if cancel_event.is_set():
+                    from core.inference.llama_keepwarm import mark_current_response_failed
+                    mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -8053,6 +8504,8 @@ async def openai_chat_completions(
                 next_task = None
                 stream_completed = False
                 try:
+                    from core.inference.llama_keepwarm import mark_current_response_failed
+
                     yield _chat_role_chunk(completion_id, created, model_name)
 
                     # Iterate the sync generator in a thread so the event loop
@@ -8065,9 +8518,11 @@ async def openai_chat_completions(
                     _stream_finish = None
                     while True:
                         if cancel_event.is_set():
+                            mark_current_response_failed()
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            mark_current_response_failed()
                             api_monitor.finish(monitor_id, "cancelled")
                             return
                         next_task = asyncio.create_task(
@@ -8154,6 +8609,12 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    # A cancel observed inside asyncio.to_thread(next, gen, ...) returns
+                    # the sentinel and breaks the loop without hitting the pre-next mark,
+                    # so flag it here too or the middleware claims the slot for a stream
+                    # the user cancelled.
+                    if cancel_event.is_set():
+                        mark_current_response_failed()
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -8781,6 +9242,8 @@ async def openai_chat_completions(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
             try:
+                from core.inference.llama_keepwarm import mark_current_response_failed
+
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 gen = sf_generate_with_tools()
@@ -8801,10 +9264,12 @@ async def openai_chat_completions(
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         break
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
 
@@ -8903,6 +9368,12 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stats.get("usage"))
+                # A cancel observed inside asyncio.to_thread(next, gen, ...) returns the
+                # sentinel and breaks the loop without hitting the pre-next mark, so flag
+                # it here too or the middleware claims the slot for a stream the user
+                # cancelled.
+                if cancel_event.is_set():
+                    mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -8981,6 +9452,12 @@ async def openai_chat_completions(
             _stats = _sf_stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
+            # An explicit /inference/cancel breaks this tool drain mid-generation but the route
+            # still returns a JSON 200, so flag the response failed here or the middleware
+            # claims a preview-owned slot for a cancelled completion.
+            if cancel_event.is_set():
+                from core.inference.llama_keepwarm import mark_current_response_failed
+                mark_current_response_failed()
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
             if _reasoning_text:
@@ -9132,6 +9609,8 @@ async def openai_chat_completions(
                 _await_disconnect_then_cancel(request, cancel_event)
             )
             try:
+                from core.inference.llama_keepwarm import mark_current_response_failed
+
                 yield _chat_role_chunk(completion_id, created, model_name)
 
                 # Client-tool passthrough: heal text-form calls on the fly
@@ -9150,6 +9629,7 @@ async def openai_chat_completions(
                 while True:
                     if cancel_event.is_set():
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         break
                     # Stall keepalive (see safetensors tool stream) each window while
                     # next(gen) runs in a worker. next(gen, _DONE) returns _DONE rather
@@ -9171,6 +9651,7 @@ async def openai_chat_completions(
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
@@ -9264,6 +9745,11 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stats.get("usage"))
+                # A cancel observed inside the executor next() call returns the sentinel
+                # and breaks the loop without hitting the pre-next mark, so flag it here
+                # too or the middleware claims the slot for a stream the user cancelled.
+                if cancel_event.is_set():
+                    mark_current_response_failed()
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -9742,6 +10228,12 @@ def _flatten_monitor_prompt(value) -> str:
     return str(value)
 
 
+# Distinguishes an unparseable raw body (defer to the post-switch re-read, preserving the
+# pre-feature malformed-body error) from a valid JSON body that is simply not an object
+# (e.g. [] or null), which is rejected before the switch.
+_UNPARSEABLE_BODY = object()
+
+
 def _completions_prompt_present(body: dict) -> bool:
     """Whether a completions body carries a usable ``prompt`` (non-empty)."""
     prompt = body.get("prompt")
@@ -9762,14 +10254,15 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     llama_backend = get_llama_cpp_backend()
 
-    # Reject a request with no prompt before any automatic load so an invalid
-    # request never swaps or reloads the resident model (as chat/embeddings already
-    # validate before switching). Gate on every automatic-load trigger.
-    if _automatic_model_load_may_run():
+    # Reject a request with no prompt before any automatic load so an invalid request never
+    # swaps or reloads the resident model (as chat/embeddings already validate before
+    # switching). Gate on every automatic-load trigger, and on a preview-owned slot the switch
+    # helper would claim even with both features off.
+    if _should_validate_before_switch():
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
-            _pre = None
+            _pre = _UNPARSEABLE_BODY
         if isinstance(_pre, dict):
             _pre_prompt = _pre.get("prompt")
             if _pre_prompt is not None and not isinstance(_pre_prompt, (str, list, tuple)):
@@ -9779,6 +10272,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 raise HTTPException(status_code = 400, detail = "'prompt' must be a string or array.")
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
+        elif _pre is not _UNPARSEABLE_BODY:
+            # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
+            # "Request body must be a JSON object"; reject it here, before the switch, so the
+            # slot claim can't convert a preview-owned model to Studio-owned for a request
+            # that never runs.
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject)
@@ -9793,6 +10292,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
+    # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
+    # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
+    # upstream response would strand a preview-owned checkpoint as Studio-owned.
 
     _resolved_max_tokens = _effective_openai_max_tokens_from_values(body.get("max_tokens"))
     body["max_tokens"] = (
@@ -9826,6 +10330,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+            from core.inference.llama_keepwarm import mark_response_failed
+
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
@@ -9863,20 +10369,31 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
-                        _monitor_openai_sse_event(
-                            monitor_id,
-                            event,
-                            llama_backend.context_length,
-                        )
+                        if (
+                            _monitor_openai_sse_event(
+                                monitor_id,
+                                event,
+                                llama_backend.context_length,
+                            )
+                            == "error"
+                        ):
+                            # Upstream forwarded an HTTP-200 SSE error event: the stream failed,
+                            # so don't let the middleware claim the slot and evict a
+                            # preview-owned model.
+                            mark_response_failed(getattr(request, "scope", None))
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
                 if not disconnect_event.is_set() and buffer:
-                    _monitor_openai_sse_event(
-                        monitor_id,
-                        buffer,
-                        llama_backend.context_length,
-                    )
+                    if (
+                        _monitor_openai_sse_event(
+                            monitor_id,
+                            buffer,
+                            llama_backend.context_length,
+                        )
+                        == "error"
+                    ):
+                        mark_response_failed(getattr(request, "scope", None))
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
                         # Re-add the SSE separator the split consumed, so a final
@@ -9884,6 +10401,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         # terminated for the client's parser.
                         yield out + b"\n\n"
                 if disconnect_event.is_set():
+                    mark_response_failed(getattr(request, "scope", None))
                     api_monitor.finish(monitor_id, "cancelled")
                     return
                 api_monitor.finish(monitor_id)
@@ -9894,6 +10412,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse_bytes(error_chunk)
                     return
+                mark_response_failed(getattr(request, "scope", None))
                 api_monitor.finish(monitor_id, "cancelled")
                 return
             except asyncio.CancelledError:
@@ -9902,6 +10421,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 raise
             except Exception as e:
                 if disconnect_event.is_set():
+                    mark_response_failed(getattr(request, "scope", None))
                     api_monitor.finish(monitor_id, "cancelled")
                     return
                 logger.error("openai_completions stream error: %s", e)
@@ -9974,15 +10494,16 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     error (expected).
     """
     llama_backend = get_llama_cpp_backend()
-    # Reject a request with no input before any automatic load so an invalid
-    # request never swaps or reloads the resident model (as chat/responses/messages
-    # already validate before switching). Gate on every automatic-load trigger,
-    # not just auto-switch, since a standalone idle TTL can also reload here.
-    if _automatic_model_load_may_run():
+    # Reject a request with no input before any automatic load so an invalid request never
+    # swaps or reloads the resident model (as chat/responses/messages already validate before
+    # switching). Gate on every automatic-load trigger (not just auto-switch: a standalone idle
+    # TTL can also reload here), and on a preview-owned slot the switch helper would claim even
+    # with both features off.
+    if _should_validate_before_switch():
         try:
             _pre = await request.json()
         except (json.JSONDecodeError, ValueError):
-            _pre = None
+            _pre = _UNPARSEABLE_BODY
         if isinstance(_pre, dict):
             _pre_input = _pre.get("input")
             if _pre_input is not None and not isinstance(_pre_input, (str, list, tuple)):
@@ -9992,6 +10513,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+        elif _pre is not _UNPARSEABLE_BODY:
+            # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
+            # "Request body must be a JSON object"; reject it here, before the switch, so the
+            # slot claim can't convert a preview-owned model to Studio-owned for a request
+            # that never runs.
+            raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
     # Embeddings is a model-bearing inference path too, so honor auto-switch. Unlike
     # vision (cheaply pre-checked via a companion mmproj), GGUF pooling capability has
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
@@ -10009,6 +10536,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
+    # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
+    # no-pooling error on /v1/embeddings against a non-embedding GGUF), so claiming before the
+    # upstream response would strand a preview-owned checkpoint as Studio-owned.
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
@@ -10726,6 +11258,8 @@ async def _responses_stream(
     (Codex, OpenAI Python SDK) can reconstruct the call incrementally and reply
     with a ``function_call_output`` item next turn.
     """
+    from core.inference.llama_keepwarm import mark_response_failed
+
     resp_id = f"resp_{uuid.uuid4().hex[:12]}"
     created_at = int(time.time())
 
@@ -10781,6 +11315,9 @@ async def _responses_stream(
         raise _openai_admission_http_exception(exc, status_code = 429)
 
     def _responses_admission_failed_sse(exc: Exception, *, status_code: int) -> str:
+        # Emitted in-band after the 200 headers, so flag failed: the middleware must not
+        # treat this failed stream as a success and claim a preview-owned model.
+        mark_response_failed(getattr(request, "scope", None))
         return (
             "event: response.failed\n"
             "data: "
@@ -11165,6 +11702,9 @@ async def _responses_stream(
             return [item for _, item in sorted(indexed_items, key = lambda pair: pair[0])]
 
         def _failed_response_payload(exc: Exception, status_code: int) -> dict:
+            # Built only for in-band response.failed events after the 200 headers, so
+            # flag failed: the middleware must not treat a failed stream as a success.
+            mark_response_failed(getattr(request, "scope", None))
             return {
                 "type": "response.failed",
                 "response": {
@@ -11230,6 +11770,9 @@ async def _responses_stream(
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # 200 headers already flushed; this is an in-band failure, so the
+                # middleware must not claim a preview-owned model for it.
+                mark_response_failed(getattr(request, "scope", None))
                 yield _sse(
                     "response.failed",
                     {
@@ -11256,6 +11799,9 @@ async def _responses_stream(
                     err_text[:500],
                 )
                 api_monitor.fail(monitor_id, err_text[:500])
+                # 200 headers already flushed; an upstream non-200 is an in-band
+                # failure, so the middleware must not claim a preview-owned model.
+                mark_response_failed(getattr(request, "scope", None))
                 yield _sse(
                     "response.failed",
                     {
@@ -11303,6 +11849,18 @@ async def _responses_stream(
 
                 choices = chunk_data.get("choices", [])
                 if not choices:
+                    error_message = _monitor_openai_error_message(chunk_data)
+                    if error_message:
+                        # Upstream HTTP-200 SSE error payload (data: {"error": ...}) is a failed
+                        # generation, not a usage-only frame. Fail the monitor and convert to
+                        # response.failed (which flags the scope) so a later response.completed
+                        # can't fire and the middleware can't claim a preview-owned slot.
+                        api_monitor.fail(monitor_id, error_message)
+                        yield _sse(
+                            "response.failed",
+                            _failed_response_payload(RuntimeError(error_message), 502),
+                        )
+                        return
                     _apply_usage(chunk_data.get("usage"))
                     continue
 
@@ -11393,6 +11951,7 @@ async def _responses_stream(
                 return
         except Exception as e:
             if disconnect_event.is_set():
+                mark_response_failed(getattr(request, "scope", None))
                 api_monitor.finish(monitor_id, "cancelled")
                 return
             logger.error("responses stream error: %s", e)
@@ -11412,6 +11971,9 @@ async def _responses_stream(
             )
 
         if disconnect_event.is_set():
+            # Client disconnected after the 200 headers: a cancelled generation, not a
+            # success. Flag failed so the middleware doesn't clear preview ownership.
+            mark_response_failed(getattr(request, "scope", None))
             api_monitor.finish(monitor_id, "cancelled")
             return
 
@@ -11791,6 +12353,10 @@ async def openai_responses(
         request,
         current_subject,
         require_vision = _messages_have_image(messages),
+        # Streaming Responses require a GGUF backend and 400 in _responses_stream after this
+        # switch; claiming here would strand a preview-owned model as Studio-owned for a
+        # request that never generates. Defer to the middleware, which claims on a 2xx.
+        claim_resident = False,
     )
 
     if payload.stream:
@@ -11976,12 +12542,22 @@ async def anthropic_count_tokens(
     # Count with the requested model's tokenizer, like the sibling /messages.
     # Carry the vision guard too: an image count naming a text-only GGUF must not
     # evict a loaded vision model for a swap that can't serve the request.
+    _slot_before_count = _loaded_slot_ident()
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
         require_vision = _anthropic_request_has_image(payload),
+        # count_tokens only tokenizes (no generation), so it must not adopt the resident
+        # model; the middleware likewise excludes count_tokens from its claim.
+        claim_resident = False,
     )
+    # The auto-switch may still have loaded a new GGUF (clearing the preview marker). Counting
+    # never generates, so a tokenize-only switch must re-mark a newly switched-in model
+    # preview-owned (only if the slot changed) so it doesn't block later previews.
+    _slot_after_count = _loaded_slot_ident()
+    if _slot_after_count is not None and _slot_after_count != _slot_before_count:
+        _set_preview_resident(_slot_after_count)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -12154,6 +12730,10 @@ async def anthropic_messages(
         request,
         current_subject,
         require_vision = _anthropic_request_has_image(payload),
+        # The image normalization below can still 400 after this switch, so defer the claim:
+        # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
+        # model.
+        claim_resident = False,
     )
     if not llama_backend.is_loaded:
         raise HTTPException(
@@ -12519,10 +13099,15 @@ async def _anthropic_tool_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
+        from core.inference.llama_keepwarm import mark_response_failed
+
         try:
             while True:
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
+                    # Cancelled before completion: flag failed so the middleware does not
+                    # claim a preview-owned model for a stream that never finished.
+                    mark_response_failed(getattr(request, "scope", None))
                     return
                 # Stall keepalive (see GGUF tool stream): silent backend segments
                 # must not leave the SSE stream idle past proxy timeouts.
@@ -12660,10 +13245,15 @@ async def _anthropic_plain_stream(
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
+        from core.inference.llama_keepwarm import mark_response_failed
+
         try:
             while True:
                 if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
+                    # Cancelled before completion: flag failed so the middleware does not
+                    # claim a preview-owned model for a stream that never finished.
+                    mark_response_failed(getattr(request, "scope", None))
                     return
                 # Stall keepalive (see Anthropic tool stream) each window while
                 # next(gen) runs in a worker.
@@ -13095,6 +13685,12 @@ async def _anthropic_passthrough_stream(
                     resp.status_code,
                     _err_text,
                 )
+                # The outer 200 stream headers are already flushed, so flag the failure: the
+                # middleware must not claim a preview-owned model on a passthrough whose
+                # upstream errored before any SSE.
+                from core.inference.llama_keepwarm import mark_response_failed
+
+                mark_response_failed(getattr(request, "scope", None))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
@@ -13127,6 +13723,24 @@ async def _anthropic_passthrough_stream(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if isinstance(chunk, dict):
+                    error_message = _monitor_openai_error_message(chunk)
+                    if error_message:
+                        # Upstream HTTP-200 SSE error payload (data: {"error": ...}):
+                        # emitter.feed_chunk ignores chunks without choices, so the stream
+                        # would finish cleanly and the middleware would claim a preview-owned
+                        # model. Flag failed and surface an Anthropic error event instead of a
+                        # silent message_stop (mirrors the OpenAI passthrough / Responses).
+                        from core.inference.llama_keepwarm import mark_response_failed
+
+                        mark_response_failed(getattr(request, "scope", None))
+                        event = _anthropic_stream_error_event(
+                            RuntimeError(error_message),
+                            force = True,
+                        )
+                        if event is not None:
+                            yield event
+                        return
                 if disable_parallel_tool_use:
                     _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):
@@ -13135,6 +13749,12 @@ async def _anthropic_passthrough_stream(
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                # The stream already sent HTTP 200, so flag the failure: the middleware must
+                # not claim a preview-owned model on a passthrough stream that errored
+                # mid-response.
+                from core.inference.llama_keepwarm import mark_response_failed
+
+                mark_response_failed(getattr(request, "scope", None))
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -13143,6 +13763,13 @@ async def _anthropic_passthrough_stream(
                     yield event
                 return
         finally:
+            # Any cancel path ends the stream with a clean terminal frame (an explicit
+            # /inference/cancel closes the upstream, the except falls through, then
+            # emitter.finish() yields), so flag the response failed or the middleware claims
+            # a preview-owned model for a cancelled generation (mirrors the OpenAI passthrough).
+            if cancel_event.is_set():
+                from core.inference.llama_keepwarm import mark_response_failed
+                mark_response_failed(getattr(request, "scope", None))
             # Same shape as the OpenAI passthrough: a close-time CancelledError
             # re-raised by _aclose_stream_resources must not skip the tracker exit.
             try:
@@ -13909,6 +14536,9 @@ async def _openai_passthrough_stream_admitted(
     _tracker = tracker
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
+    # A mid-stream llama-server error keeps HTTP 200, so flag the scope when one is seen: the
+    # middleware must not claim a preview-owned model on a failed passthrough stream.
+    from core.inference.llama_keepwarm import mark_response_failed
 
     client = None
     resp = None
@@ -14372,6 +15002,7 @@ async def _openai_passthrough_stream_admitted(
                         # finish would fire after a failed stream.
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
+                            mark_response_failed(getattr(request, "scope", None))
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already
                     # normalized) line relays unchanged (monitored exactly as
@@ -14420,6 +15051,7 @@ async def _openai_passthrough_stream_admitted(
                         )
                         if monitor_event == "error":
                             saw_stream_error = True
+                            mark_response_failed(getattr(request, "scope", None))
                         # Relay to preserve llama-server's native id,
                         # finish_reason, delta.tool_calls, and usage chunks.
                         yield out_line + "\n\n"
@@ -14512,6 +15144,10 @@ async def _openai_passthrough_stream_admitted(
                 if not cancel_event.is_set():
                     api_monitor.fail(monitor_id, "Stream interrupted")
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                    # 200 headers already flushed and we re-raise without an error SSE, so flag
+                    # the failure: the middleware must not claim a preview-owned model on an
+                    # interrupted stream.
+                    mark_response_failed(getattr(request, "scope", None))
                     raise
                 api_monitor.finish(monitor_id, "cancelled")
             except HTTPException as exc:
@@ -14535,6 +15171,12 @@ async def _openai_passthrough_stream_admitted(
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
+                # Any cancel path ends the stream with a clean terminal frame (an explicit
+                # /inference/cancel closes the upstream and this handler finishes "cancelled"
+                # without re-raising), so flag the response failed or the middleware claims a
+                # preview-owned model for a generation that was cancelled.
+                if cancel_event.is_set():
+                    mark_response_failed(getattr(request, "scope", None))
                 # _aclose_stream_resources re-raises a close-time CancelledError
                 # only after finishing teardown, and the tracker exits either way.
                 try:

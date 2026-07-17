@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in OpenAI /v1 model auto-switch: resolver, hook, and settings coercion.
+"""Opt-in OpenAI /v1 model auto-switch: resolver, hook, settings coercion.
 
-No GPU or llama-server: the backend and the load route are mocked, mirroring
-tests/test_gguf_completion_usage.py.
+Backend and load route are mocked (no GPU/llama-server).
 """
 
 import asyncio
@@ -54,8 +53,7 @@ class _LoadRecorder:
             raise HTTPException(status_code = 503, detail = "load failed")
         self.backend.model_identifier = request.model_path
         self.backend.is_loaded = True
-        # Mirror _load_model_impl: a load advertises its own id until the
-        # auto-switch caller overwrites it with the repo id.
+        # Mirror _load_model_impl: a load advertises its own id until auto-switch overwrites it.
         self.backend._openai_advertised_id = None
         return None
 
@@ -64,8 +62,7 @@ def _wire(monkeypatch, *, enabled, resolves_to, backend, recorder):
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m: resolves_to)
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
-    # Auto-switch loads via _load_model_impl (the /load route holds the lifecycle
-    # gate that auto-switch already owns, so it calls the impl directly).
+    # Auto-switch calls _load_model_impl directly: it already holds the lifecycle gate.
     monkeypatch.setattr(inference_route, "_load_model_impl", recorder)
     monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
     monkeypatch.setattr(inference_route, "_auto_switch_request_waiters", {})
@@ -199,9 +196,8 @@ def test_same_repo_same_variant_does_not_reload(monkeypatch):
 
 
 def test_responses_endpoint_wires_auto_switch_before_dispatch():
-    # The /v1/responses endpoint must invoke the auto-switch hook before either
-    # dispatcher so streaming requests switch too. Asserted on the source, which
-    # is immune to test-ordering effects on the shared inference module.
+    # The hook must run before either dispatcher so streaming requests switch too.
+    # Asserted on source (order-independent on the shared inference module).
     import inspect
 
     src = inspect.getsource(inference_route.openai_responses)
@@ -212,8 +208,7 @@ def test_responses_endpoint_wires_auto_switch_before_dispatch():
 
 
 def test_embeddings_endpoint_wires_auto_switch_before_loaded_check():
-    # /v1/embeddings is model-bearing too, so it must auto-switch before the
-    # loaded-state gate. Asserted on the source for order-independence.
+    # /v1/embeddings must auto-switch before the loaded-state gate. Asserted on source.
     import inspect
 
     src = inspect.getsource(inference_route.openai_embeddings)
@@ -231,11 +226,9 @@ def test_count_tokens_endpoint_wires_auto_switch_before_loaded_check():
 
 
 def test_openai_compat_routes_bound_to_handlers_with_auth():
-    # Inserting a helper between a @router.post decorator and its handler silently
-    # rebinds the route to the helper and drops its auth dependency (this happened to
-    # /messages/count_tokens). The source-inspection tests above miss it because they
-    # call the handler directly. Lock the path -> (handler, auth) mapping at the route
-    # level so any decorator/handler split is caught.
+    # A helper wedged between @router.post and its handler silently rebinds the route
+    # and drops its auth dependency (this hit /messages/count_tokens). Lock the path ->
+    # (handler, auth) mapping at the route level to catch any decorator/handler split.
     expected = {
         ("POST", "/chat/completions"): "openai_chat_completions",
         ("POST", "/completions"): "openai_completions",
@@ -284,8 +277,7 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     e = resolver._local_gguf_entry("x", SimpleNamespace(path = str(bare)))
     assert e is not None and e.variants == ()
 
-    # HF-cache snapshots with a quant subdir (the nested layout the previous
-    # shallow glob missed): must still be detected.
+    # HF-cache snapshot with a quant subdir (nested layout the old shallow glob missed).
     repo = tmp_path / "models--org--repo"
     (repo / "snapshots" / "abc" / "BF16").mkdir(parents = True)
     (repo / "snapshots" / "abc" / "BF16" / "model-BF16.gguf").write_text("x")
@@ -294,10 +286,9 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
 
 
 def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
-    # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a
-    # bare mmproj projector (it only filters mmproj inside directory scans). A
-    # projector is not a servable model, so the resolver must reject it or
-    # /v1/models advertises it and a switch could load it over the real weights.
+    # Codex P2: the standalone-.gguf scan pass emits a bare mmproj projector (mmproj is
+    # only filtered inside directory scans). A projector is not servable, so the resolver
+    # must reject it, else /v1/models advertises it and a switch could load it over the weights.
     from types import SimpleNamespace
 
     proj = tmp_path / "mmproj-F16.gguf"
@@ -337,9 +328,8 @@ def test_resolver_matches_and_splits_variant(monkeypatch):
 
 
 def test_resolver_failsafe_on_internal_error(monkeypatch):
-    # Resolution is best-effort: any internal failure must fall through to None
-    # so the request still serves the loaded model instead of 500-ing. The hook
-    # calls resolve_local_gguf without its own guard, so the guard lives here.
+    # Best-effort: any internal failure falls through to None so the request still
+    # serves the loaded model instead of 500-ing (the hook has no guard of its own).
     def boom():
         raise RuntimeError("scan blew up")
 
@@ -349,16 +339,14 @@ def test_resolver_failsafe_on_internal_error(monkeypatch):
 
 
 def test_resolver_nonstring_model_is_failsafe():
-    # /v1/completions and /v1/embeddings pass body.get("model") straight through,
-    # so a non-string must not raise on .strip().
+    # Raw endpoints pass body.get("model") through, so a non-string must not raise on .strip().
     assert resolver.resolve_local_gguf(123) is None
     assert resolver.resolve_local_gguf({"a": 1}) is None
     assert resolver.resolve_local_gguf(None) is None
 
 
 def test_resolver_exact_id_with_colon_wins(monkeypatch):
-    # A local id that itself contains a colon (e.g. a Windows path) must match
-    # exactly rather than being split at the drive-letter colon.
+    # A local id containing a colon (e.g. a Windows path) matches exactly, not split at it.
     win = r"C:\models\foo.gguf"
     monkeypatch.setattr(resolver, "_build_index", lambda: {win.lower(): _entry(win)})
     resolver._scan = (0.0, {})
@@ -381,8 +369,7 @@ def test_setting_coercion():
 
 
 def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
-    # Server idle far longer than the TTL, then a model is loaded: the load
-    # transition stamps activity so the next poll must not unload it.
+    # A load stamps activity, so the next poll must not unload a freshly loaded model.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -409,9 +396,8 @@ def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
 
 
 def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
-    # The headline behavior (the other idle tests only cover the negative paths):
-    # with nothing in flight and the TTL elapsed, the loop frees the GGUF exactly
-    # once and records its identity so a later alias request can reload that variant.
+    # Headline path: TTL elapsed and nothing in flight -> free the GGUF once and stash
+    # its identity so a later alias request can reload that variant.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -447,8 +433,7 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
 
 
 def test_audio_generate_is_tracked_as_inference_path():
-    # Direct GGUF TTS uses the llama backend and can outlive the idle TTL, so
-    # the keep-warm middleware must count it as in-flight inference.
+    # Direct GGUF TTS uses the llama backend and can outlive the TTL, so it must be tracked.
     from core.inference.llama_keepwarm import _is_inference_path
 
     assert _is_inference_path("/api/inference/audio/generate") is True
@@ -457,8 +442,7 @@ def test_audio_generate_is_tracked_as_inference_path():
 
 
 def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
-    # An in-flight request (inflight > 0) must protect the model from unload
-    # even when it has been idle by wall-clock past the TTL.
+    # An in-flight request protects the model even when idle by wall-clock past the TTL.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -488,7 +472,7 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
 
 
 def test_auto_switch_applies_model_override(monkeypatch):
-    # A configured model loads with its saved launch flags, not bare defaults.
+    # A configured model loads with its saved launch flags, not defaults.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -514,7 +498,7 @@ def test_auto_switch_applies_model_override(monkeypatch):
 
 
 def test_auto_switch_applies_partial_override(monkeypatch):
-    # Only llama_extra_args is configured: it is applied, max_seq_length stays default.
+    # Only llama_extra_args configured: applied; max_seq_length stays default.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(
@@ -535,7 +519,7 @@ def test_auto_switch_applies_partial_override(monkeypatch):
 
 
 def _mock_override_store(monkeypatch):
-    """Back the override read + atomic-merge write with an in-memory dict."""
+    """In-memory dict backing the override read + atomic-merge write."""
     import storage.studio_db as db
 
     store = {}
@@ -565,7 +549,7 @@ def test_model_override_roundtrip(monkeypatch):
         "llama_extra_args": ["--n-gpu-layers", "20"],
         "max_seq_length": 4096,
     }
-    # An override with no fields removes the entry rather than storing an empty one.
+    # An empty override removes the entry rather than storing {}.
     settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
     assert settings.get_model_override("unsloth/B-GGUF") == {}
     assert settings.get_model_overrides() == {}
@@ -577,7 +561,7 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
 
     _mock_override_store(monkeypatch)
 
-    # A managed/denylisted llama-server flag is rejected with 400, not 500.
+    # A managed/denylisted llama-server flag rejects with 400, not 500.
     bad = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF", llama_extra_args = ["--port", "1234"]
     )
@@ -585,7 +569,7 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
         settings_route.update_openai_auto_switch_override(bad, "tester")
     assert excinfo.value.status_code == 400
 
-    # A valid override is stored, then an empty payload removes it through the route.
+    # Store a valid override, then an empty payload removes it through the route.
     ok = settings_route.ModelOverridePayload(
         model_id = "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
     )
@@ -599,8 +583,7 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
 
 
 def test_model_override_rejects_zero_max_seq_length():
-    # 0 is not a valid sequence length and the setter drops a falsy value, so the
-    # payload must reject it at the boundary instead of accepting then discarding it.
+    # 0 is invalid and the setter drops falsy values, so the payload must reject it at the boundary.
     import pydantic
     import routes.settings as settings_route
 
@@ -610,8 +593,7 @@ def test_model_override_rejects_zero_max_seq_length():
 
 
 def test_update_openai_auto_switch_writes_both_keys_in_one_transaction(monkeypatch):
-    # The PUT must persist enabled + idle in a single upsert so a settings write can't
-    # leave one key updated and the other stale.
+    # The PUT must persist enabled + idle in one upsert, never leaving one key stale.
     import routes.settings as settings_route
     import storage.studio_db as db
     from utils.openai_auto_switch_settings import (
@@ -638,9 +620,8 @@ def test_update_openai_auto_switch_writes_both_keys_in_one_transaction(monkeypat
 
 
 def test_settings_report_idle_unload_active_when_env_backed(monkeypatch):
-    # Codex P2: with UNSLOTH_MODEL_IDLE_TTL driving idle-unload while the toggle is
-    # off, the settings response must report idle_unload_active so the UI shows the
-    # feature as active via env rather than "needs enable".
+    # Codex P2: UNSLOTH_MODEL_IDLE_TTL drives idle-unload while the toggle is off, so
+    # the settings response must report idle_unload_active (env-active, not "needs enable").
     import routes.settings as settings_route
 
     monkeypatch.setattr(settings_route, "get_openai_auto_switch_enabled", lambda: False)
@@ -659,10 +640,9 @@ def test_settings_report_idle_unload_active_when_env_backed(monkeypatch):
 
 
 def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
-    # The resolver lowercases its index, so a retrieve that differs only in case
-    # from a catalog id must still hit (200), not 404. Guards the .lower() compare
-    # in openai_retrieve_model against a silent revert. (The full local catalog is
-    # main's #6519; only the loaded fast-path is exact, the catalog loop is lenient.)
+    # The resolver lowercases its index, so a case-differing retrieve must still hit
+    # (200), not 404. Guards the .lower() compare in openai_retrieve_model (the loaded
+    # fast-path is exact, the catalog loop is lenient; catalog is main's #6519).
     from fastapi import HTTPException
 
     monkeypatch.setattr(inference_route, "_openai_model_objects", lambda: [])  # nothing loaded
@@ -688,8 +668,8 @@ def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
 
 
 def test_index_excludes_hidden_models(tmp_path, monkeypatch):
-    # The llama.cpp validation probe and RAG embedding weights are hidden from
-    # Studio's pickers; they must never become auto-switch targets.
+    # Models hidden from Studio's pickers (validation probe, RAG weights) must never
+    # become auto-switch targets.
     from types import SimpleNamespace
     import routes.models as models_route
 
@@ -711,16 +691,16 @@ def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     resolver._scan = (0.0, {})
 
     index = resolver._index()
-    assert "org/normal-gguf" in index  # keys are normalized to lowercase
+    assert "org/normal-gguf" in index  # keys normalized to lowercase
     assert "ggml-org/models" not in index
-    # And the hidden probe cannot be auto-switched to by name.
+    # The hidden probe cannot be auto-switched to by name.
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf("ggml-org/models") is None
 
 
 def test_idle_disabled_when_auto_switch_off(monkeypatch):
-    # "Off means unchanged": a stored idle TTL must report 0 while auto-switch is
-    # off, so the idle loop and keep-warm middleware can never unload the model.
+    # Off means unchanged: a stored idle TTL reports 0 while auto-switch is off, so
+    # nothing can unload the model.
     store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 60}
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
@@ -730,8 +710,7 @@ def test_idle_disabled_when_auto_switch_off(monkeypatch):
 
 
 def test_count_tokens_is_tracked_as_inference_path():
-    # count_tokens counts via the loaded tokenizer, so idle-unload must not pull
-    # the model out from under it; it has to be a tracked in-flight path.
+    # count_tokens uses the loaded tokenizer, so it must be a tracked in-flight path.
     from core.inference.llama_keepwarm import _is_inference_path
 
     assert _is_inference_path("/v1/messages/count_tokens") is True
@@ -743,8 +722,8 @@ def test_count_tokens_is_tracked_as_inference_path():
 
 
 def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
-    # Repo already loaded as Q4_K_M; a BARE request for the same repo (resolver
-    # picks the largest local quant, Q8_0) must NOT reload a different quant.
+    # Repo loaded as Q4_K_M; a BARE request for the same repo (resolver picks Q8_0)
+    # must NOT reload a different quant.
     backend = _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M")
     rec = _LoadRecorder(backend)
     _wire(
@@ -756,7 +735,7 @@ def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
     )
     _run_hook("unsloth/B-GGUF")  # bare, no :VARIANT
     assert rec.calls == []
-    # An explicit :VARIANT request still honors the quant (reloads to Q8_0).
+    # An explicit :VARIANT still honors the quant (reloads to Q8_0).
     rec2 = _LoadRecorder(backend)
     _wire(
         monkeypatch,
@@ -770,8 +749,7 @@ def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
 
 
 def test_responses_hook_runs_after_input_validation():
-    # A request that 400s on empty input must not have triggered a model load,
-    # so the auto-switch hook must come after the input-validation guard.
+    # A 400 on empty input must not have triggered a load, so the hook runs after validation.
     import inspect
 
     src = inspect.getsource(inference_route.openai_responses)
@@ -780,9 +758,8 @@ def test_responses_hook_runs_after_input_validation():
 
 
 def test_responses_system_only_rejected_before_switch(monkeypatch):
-    # Codex P2: instructions-only input normalises to a lone system message, which
-    # passes the empty-input check; it must 400 before the switch so an invalid
-    # Responses request can't evict the resident model.
+    # Codex P2: instructions-only input normalises to a lone system message and passes
+    # the empty-input check, so it must 400 before the switch, never evicting the model.
     from fastapi import HTTPException
     from models.inference import ResponsesRequest
 
@@ -797,8 +774,8 @@ def test_responses_system_only_rejected_before_switch(monkeypatch):
 
 
 def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
-    # In-flight must be counted whenever auto-switch is on, even with idle TTL 0,
-    # so enabling idle mid-stream cannot unload an in-flight request.
+    # In-flight is counted whenever auto-switch is on (even idle TTL 0), so enabling
+    # idle mid-stream cannot unload an in-flight request.
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -838,8 +815,7 @@ def _bad_body_request():
 
 
 def test_completions_malformed_body_503_not_500_when_unloaded(monkeypatch):
-    # OFF + nothing loaded + unparseable body must still 503 (pre-feature
-    # behavior), not 500 from the early body read.
+    # OFF + nothing loaded + unparseable body still 503s (pre-feature), not 500 from the body read.
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
@@ -872,9 +848,8 @@ def test_embeddings_malformed_body_503_not_500_when_unloaded(monkeypatch):
 
 
 def test_non_string_model_falls_through_without_error(monkeypatch):
-    # A non-string model (e.g. {"model": 123} on a raw-body endpoint) must be
-    # treated as absent, never raising in the membership checks, even when a stash
-    # exists from idle-unload.
+    # A non-string model must be treated as absent (never raising in membership checks),
+    # even when an idle-unload stash exists.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)
@@ -886,8 +861,7 @@ def test_non_string_model_falls_through_without_error(monkeypatch):
 
 
 def test_anthropic_validates_max_tokens_before_auto_switch():
-    # An Anthropic request missing max_tokens must 400 before the hook runs, so an
-    # invalid request never triggers a model load. Asserted on the source order.
+    # A missing max_tokens must 400 before the hook, never loading a model. Asserted on source order.
     import inspect
 
     src = inspect.getsource(inference_route.anthropic_messages)
@@ -896,8 +870,8 @@ def test_anthropic_validates_max_tokens_before_auto_switch():
 
 
 def test_alias_reloads_model_freed_by_idle_unload_with_quant(monkeypatch):
-    # After idle-unload frees the model, an unknown/alias name (resolves to None)
-    # reloads what was freed, including the exact quant, instead of 503-ing.
+    # After idle-unload, an unknown/alias name (resolves to None) reloads the freed
+    # model with its exact quant instead of 503-ing.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # idle-unload emptied the backend
@@ -912,8 +886,8 @@ def test_alias_reloads_model_freed_by_idle_unload_with_quant(monkeypatch):
 
 
 def test_alias_does_not_reload_when_model_already_loaded(monkeypatch):
-    # The reload only triggers on an empty backend; with something loaded, an
-    # unknown name still falls through (drop-in) without resurrecting the stash.
+    # Reload only fires on an empty backend; with a model loaded, an unknown name
+    # falls through without resurrecting the stash.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("unsloth/B-GGUF")
@@ -925,8 +899,7 @@ def test_alias_does_not_reload_when_model_already_loaded(monkeypatch):
 
 
 def test_idle_loop_does_not_unload_while_request_pending(monkeypatch):
-    # A request that has marked itself pending (waiting on the unload gate) but not
-    # yet started must keep the idle loop from unloading the model.
+    # A pending request (waiting on the unload gate, not yet started) blocks idle unload.
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(kw, "_inflight", 0)
@@ -941,8 +914,7 @@ def test_idle_loop_does_not_unload_while_request_pending(monkeypatch):
 
 
 def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
-    # A stream that starts while the feature is OFF must still be counted, so
-    # enabling idle-unload mid-stream cannot unload it.
+    # A stream started while OFF is still counted, so enabling idle-unload mid-stream can't unload it.
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
@@ -970,8 +942,8 @@ def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
 
 
 def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch, tmp_path):
-    # _build_index must scan the same roots the model picker lists, else a model
-    # the UI shows is silently served as the loaded one. Verify each is consulted.
+    # _build_index must scan the same roots the picker lists, else a UI-shown model is
+    # silently served as the loaded one. Verify each root is consulted.
     from pathlib import Path
     import routes.models as models_route
     from utils import paths as upaths
@@ -1026,8 +998,7 @@ def _json_body_request(payload):
 
 
 def test_completions_list_body_is_400_not_500(monkeypatch):
-    # A valid JSON non-dict body (e.g. a list) on a loaded backend is a clean 400,
-    # not a 500 from body.get(...).
+    # A valid JSON non-dict body (a list) on a loaded backend is a clean 400, not a 500.
     from fastapi import HTTPException
 
     backend = _FakeBackend("unsloth/A-GGUF")  # loaded
@@ -1060,7 +1031,7 @@ def test_embeddings_list_body_is_400_not_500(monkeypatch):
 
 
 def test_middleware_ignores_non_post(monkeypatch):
-    # CORS preflight (OPTIONS) on an inference path must not be tracked as in-flight.
+    # CORS preflight (OPTIONS) on an inference path is not tracked as in-flight.
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(kw, "_inflight", 0)
@@ -1090,8 +1061,8 @@ def test_middleware_ignores_non_post(monkeypatch):
 
 
 def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
-    # A cross-model swap must 409 (not kill) while another inference request is in
-    # flight; the requesting call itself is excluded from the count.
+    # A cross-model swap 409s (not kills) while another inference is in flight; the
+    # requesting call itself is excluded from the count.
     from fastapi import HTTPException
     from core.inference import llama_keepwarm as kw
 
@@ -1133,8 +1104,8 @@ def test_auto_switch_swaps_when_only_caller_is_active(monkeypatch):
 
 
 def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
-    # Same repo, different quant counts as a fresh model: the idle timer resets, so
-    # the new variant is not unloaded before one TTL of its own.
+    # Same repo, different quant is a fresh model: the idle timer resets, so the new
+    # variant isn't unloaded before one TTL of its own.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -1154,7 +1125,7 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
         kw._last_active = time.monotonic() - 60  # force idle
         backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
         await asyncio.sleep(0.03)
-        assert unloads == []  # timer reset by the variant change, not unloaded
+        assert unloads == []  # timer reset by the variant change
         task.cancel()
         try:
             await task
@@ -1182,8 +1153,8 @@ def test_successful_manual_load_clears_last_unloaded_stash():
 
 
 def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
-    # An HF-cache repo resolves to its on-disk snapshot dir, so /load takes the
-    # local branch (no repo-id download). loader_id stays the repo id.
+    # An HF-cache repo resolves to its on-disk snapshot dir (local branch, no download);
+    # loader_id stays the repo id.
     from types import SimpleNamespace
 
     repo = tmp_path / "models--org--Repo"
@@ -1203,9 +1174,9 @@ def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
 
 
 def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
-    # A model loaded normally has model_identifier == repo id, but the resolver
-    # returns the concrete load path. A request for that repo must count as already
-    # serving (no reload, no 409) even with another inference active.
+    # A normal load has model_identifier == repo id while the resolver returns the
+    # concrete path. A request for that repo counts as already serving (no reload, no
+    # 409) even with another inference active.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/Repo-GGUF", hf_variant = "Q4_K_M")
@@ -1225,8 +1196,8 @@ def test_already_loaded_by_repo_id_is_not_reswapped(monkeypatch):
 
 
 def test_auto_switch_advertises_repo_id_after_load(monkeypatch):
-    # After a load-by-path, the backend advertises the repo id (override key), not
-    # the concrete path, so /v1/models and the idle stash stay name-based.
+    # After a load-by-path the backend advertises the repo id (override key), not the
+    # path, so /v1/models and the idle stash stay name-based.
     backend = _FakeBackend("org/A-GGUF")
     rec = _LoadRecorder(backend)
     _wire(
@@ -1242,10 +1213,10 @@ def test_auto_switch_advertises_repo_id_after_load(monkeypatch):
 
 
 def test_already_serving_by_path_records_advertised_alias(monkeypatch):
-    # Codex P2: a model loaded by local path and requested via an advertised alias
-    # that resolves to the same path is already serving (no reload), but /v1/models
-    # and responses would report the path basename and list the alias as loaded:false
-    # unless the alias is recorded as the advertised id on the already-serving return.
+    # Codex P2: a model loaded by path and requested via an alias resolving to that path
+    # is already serving (no reload). Unless the alias is recorded as the advertised id
+    # on the already-serving return, /v1/models reports the path basename and lists the
+    # alias as loaded:false.
     path = "/cache/models--org--Repo-GGUF/snapshots/abc"
     backend = _FakeBackend(path, hf_variant = "Q4_K_M")  # loaded by path, no advertised id
     rec = _LoadRecorder(backend)
@@ -1264,11 +1235,9 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
 
 def test_streaming_responses_uses_advertised_id_helper():
     # Codex P2: streamed /v1/responses envelopes must derive the model id from
-    # _llama_public_model_id (which prefers _openai_advertised_id), not the raw
-    # model_identifier. After an auto-switch to a cached HF GGUF the identifier is
-    # the snapshot path while the repo id lives in _openai_advertised_id, so the raw
-    # form would stream a snapshot basename while /v1/models, chat, and non-streaming
-    # responses report the repo id.
+    # _llama_public_model_id (prefers _openai_advertised_id), not raw model_identifier.
+    # After a switch to a cached HF GGUF the identifier is the snapshot path, so the raw
+    # form would stream a basename while everything else reports the repo id.
     import inspect
 
     src = inspect.getsource(inference_route._responses_stream)
@@ -1277,9 +1246,8 @@ def test_streaming_responses_uses_advertised_id_helper():
 
 
 def test_concurrent_same_target_requests_load_once(monkeypatch):
-    # Two concurrent requests for the same unloaded model must load once, not each
-    # 409 the other. Simulate the second request already waiting (registered) while
-    # the first runs the hook with _inflight counting both.
+    # Two concurrent requests for the same unloaded model load once, not 409 each other.
+    # The second is already registered while the first runs the hook, _inflight counts both.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1299,8 +1267,8 @@ def test_concurrent_same_target_requests_load_once(monkeypatch):
 
 
 def test_swap_still_refused_when_other_request_targets_different_model(monkeypatch):
-    # A concurrent request heading to a different target still blocks the swap: the
-    # same-target exclusion must not swallow a genuinely conflicting request.
+    # A concurrent request to a different target still blocks the swap: the same-target
+    # exclusion must not swallow a genuinely conflicting request.
     from fastapi import HTTPException
     from core.inference import llama_keepwarm as kw
 
@@ -1337,9 +1305,8 @@ def test_v1_models_advertises_repo_id_not_load_path(monkeypatch):
 
 
 def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
-    # The idle stash carries (load_path, quant, advertised_id). An alias reload must
-    # look up the override by the advertised repo id, not the concrete load path,
-    # so the user's saved launch flags survive the unload/reload.
+    # The stash carries (load_path, quant, advertised_id). An alias reload looks up the
+    # override by the advertised repo id, not the path, so saved launch flags survive.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # idle-unload emptied the slot
@@ -1356,8 +1323,7 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
 
 
 def test_load_route_holds_lifecycle_gate(monkeypatch):
-    # Lock the manual /load gate against silent revert: the route must wrap the
-    # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
+    # The manual /load route must wrap the load in inference_lifecycle_gate so idle-unload can't fire mid-load.
     import inspect
 
     src = inspect.getsource(inference_route.load_model)
@@ -1375,8 +1341,7 @@ def _anthropic_payload(max_tokens = None):
 
 
 def test_anthropic_503_when_unloaded_and_auto_switch_off(monkeypatch):
-    # Default-off parity: unloaded backend + auto-switch off 503s before the
-    # max_tokens 400, exactly as the pre-feature endpoint did.
+    # Default-off parity: unloaded backend + auto-switch off 503s before the max_tokens 400.
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
@@ -1388,8 +1353,7 @@ def test_anthropic_503_when_unloaded_and_auto_switch_off(monkeypatch):
 
 
 def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
-    # With auto-switch on, request-shape validation runs first: a missing
-    # max_tokens still 400s before any load is attempted.
+    # With auto-switch on, shape validation runs first: a missing max_tokens 400s before any load.
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
@@ -1404,8 +1368,8 @@ def test_anthropic_400_when_auto_switch_on_and_max_tokens_missing(monkeypatch):
 
 
 def test_pending_same_target_request_does_not_force_409(monkeypatch):
-    # A second same-target request blocked in the middleware (pending, not yet
-    # generating) must not make the first request 409: pending is excluded.
+    # A second same-target request pending in the middleware (not yet generating) must
+    # not 409 the first: pending is excluded.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1424,9 +1388,9 @@ def test_pending_same_target_request_does_not_force_409(monkeypatch):
 
 
 def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypatch):
-    # The real middleware counts a concurrent same-model request as in-flight
-    # before it resolves and registers a target waiter. The raw-request waiter,
-    # registered before resolve, must still exclude it so the first request loads.
+    # The middleware counts a concurrent same-model request in-flight before it resolves
+    # and registers a target waiter. The raw-request waiter (registered before resolve)
+    # must still exclude it so the first request loads.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1440,7 +1404,7 @@ def test_concurrent_same_target_loads_once_while_other_still_resolving(monkeypat
     )
     monkeypatch.setattr(kw, "_inflight", 2)  # caller + a still-resolving twin
     monkeypatch.setattr(kw, "_pending", 0)
-    # The twin has only registered its raw requested model (not yet a target waiter).
+    # The twin registered only its raw requested model (not yet a target waiter).
     inference_route._note_request_waiter(inference_route._request_waiter_key("org/B-GGUF:Q8_0"), 1)
     _run_hook("org/B-GGUF:Q8_0")
     assert len(rec.calls) == 1  # loads once, no 409
@@ -1459,9 +1423,165 @@ def test_external_untrack_decrements_inflight_and_is_idempotent():
     kw._inflight = 0
 
 
+def test_untrack_preview_request_balances_both_counters():
+    # A /p/ request untracking itself must drop from BOTH _inflight and the preview
+    # subset, or the busy guard sees phantom foreign traffic.
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 1
+    kw._preview_inflight = 1
+    scope = {"type": "http", "path": "/p/demorun/v1/chat/completions"}
+    kw.untrack_current_request(scope)
+    assert kw._inflight == 0
+    assert kw._preview_inflight == 0
+    assert scope.get(kw._UNTRACKED_SCOPE_KEY) is True
+    kw.untrack_current_request(scope)  # idempotent
+    assert kw._inflight == 0 and kw._preview_inflight == 0
+
+
+def test_preview_pending_counter_balances_and_flags_studio_waiters():
+    # A queued preview is not foreign to a preview swap, but a queued Studio request is;
+    # the subset tracks _pending at the same sites.
+    from core.inference import llama_keepwarm as kw
+
+    kw._pending = 0
+    kw._preview_pending = 0
+    kw._note_pending(is_preview = True)
+    assert kw._pending == 1 and kw._preview_pending == 1
+    assert kw.other_non_preview_pending_count() == 0  # queued preview is not foreign
+    kw._note_pending(is_preview = False)
+    assert kw._pending == 2 and kw._preview_pending == 1
+    assert kw.other_non_preview_pending_count() == 1  # queued Studio request is foreign
+    kw._note_start(is_preview = True)  # preview moves pending -> inflight
+    assert kw._pending == 1 and kw._preview_pending == 0
+    kw._note_unpending(is_preview = False)  # Studio request leaves the queue
+    assert kw._pending == 0 and kw._preview_pending == 0
+    kw._inflight = 0
+    kw._preview_inflight = 0
+
+
+def test_already_serving_clears_preview_marker(monkeypatch):
+    # A non-preview auto-switch adopting a preview-owned model (already serving, no
+    # reload) must claim it for Studio, else a later preview swaps it out from under
+    # the active OpenAI caller.
+    path = "/cache/models--org--Repo-GGUF/snapshots/abc"
+    backend = _FakeBackend(path, hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, "Q4_K_M", "org/Repo-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    inference_route._set_preview_resident(path)
+    assert inference_route._is_preview_resident(path)
+    _run_hook("org/Repo-GGUF:Q4_K_M")
+    assert rec.calls == []  # already serving -> no reload
+    assert not inference_route._is_preview_resident(path)  # claimed for Studio
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_should_validate_before_switch_fires_on_preview_owned_slot(monkeypatch):
+    # With both features off no load runs, but the switch helper still claims a preview-
+    # owned slot, so the pre-load validation must run: the predicate is True whenever the
+    # slot is preview-owned.
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(None)
+    assert inference_route._should_validate_before_switch() is False
+    inference_route._set_preview_resident("/outputs/run/ckpt")
+    assert inference_route._should_validate_before_switch() is True
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_chat_system_only_preserves_preview_marker_when_both_off(monkeypatch):
+    # Both features off: a rejected system-only chat still reaches the slot claim, so the
+    # pre-load validation must run (slot preview-owned) and 400 before the claim converts
+    # the preview model to Studio-owned and strands the next preview.
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    assert inference_route._is_preview_resident(path)
+    payload = ChatCompletionRequest(model = path, messages = [{"role": "system", "content": "sys"}])
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_completions_non_object_body_preserves_preview_marker(monkeypatch):
+    # A non-object body ([]) is rejected but reaches the slot claim via
+    # _auto_switch_from_request_body (model=None). Reject before the claim so a preview-
+    # owned model isn't converted to Studio-owned for a request that never runs.
+    from fastapi import HTTPException
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request([]), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_embeddings_non_object_body_preserves_preview_marker(monkeypatch):
+    # Like completions: a non-object embeddings body ([]) is rejected before the slot
+    # claim so it can't strand a preview-owned model.
+    from fastapi import HTTPException
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_json_body_request([]), "tester"))
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_completions_missing_prompt_preserves_preview_marker_when_both_off(monkeypatch):
+    # Both-off gap on /v1/completions: a no-prompt body reaches the slot claim via
+    # _auto_switch_from_request_body, so the missing-prompt 400 must fire first when the
+    # slot is preview-owned, or it strands the preview.
+    from fastapi import HTTPException
+
+    path = "/outputs/run/ckpt-a"
+    backend = _FakeBackend(path)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident(path)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(_json_body_request({"model": path}), "tester")
+        )
+    assert exc.value.status_code == 400
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident(path)  # claim never ran, preview kept
+    inference_route._set_preview_resident(None)  # cleanup
+
+
 def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
-    # A manual /unload is a deliberate action: it tears down immediately even with
-    # a request in flight (only the automatic idle loop defers). No 409.
+    # A manual /unload is deliberate: it tears down immediately even with a request in
+    # flight (only the idle loop defers). No 409.
     from core.inference import llama_keepwarm as kw
     from models.inference import UnloadRequest
 
@@ -1480,9 +1600,8 @@ def test_manual_unload_interrupts_even_while_inference_active(monkeypatch):
 
 
 def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
-    # The GGUF slot is empty but an Unsloth model is streaming (counted in-flight).
-    # _load_model_impl would unload it, so auto-switch must 409, not only when a
-    # GGUF is loaded.
+    # GGUF slot empty but an Unsloth model is streaming (in-flight). _load_model_impl
+    # would unload it, so auto-switch must 409, not only when a GGUF is loaded.
     from fastapi import HTTPException
     from core.inference import llama_keepwarm as kw
 
@@ -1506,14 +1625,13 @@ def test_auto_switch_refuses_when_unsloth_stream_active(monkeypatch):
 def test_public_model_id_prefers_advertised_over_path():
     backend = _FakeBackend("/cache/models--org--Repo/snapshots/abc/model.gguf")
     backend._openai_advertised_id = "org/Repo-GGUF"
-    # The advertised repo id from an auto-switch load wins.
+    # The advertised repo id wins.
     assert inference_route._llama_public_model_id(backend) == "org/Repo-GGUF"
     backend._openai_advertised_id = None
-    # No advertised id: the identifier is cleaned to a public id (delegates to
-    # public_model_id), never the raw on-disk .gguf path.
+    # No advertised id: the identifier is cleaned to a public id, never the raw .gguf path.
     cleaned = inference_route._llama_public_model_id(backend)
     assert cleaned and "/cache/" not in cleaned and not cleaned.endswith(".gguf")
-    # An already-clean repo id passes through unchanged.
+    # An already-clean repo id passes through.
     backend.model_identifier = "org/Repo-GGUF"
     assert inference_route._llama_public_model_id(backend) == "org/Repo-GGUF"
     backend.model_identifier = None
@@ -1521,8 +1639,7 @@ def test_public_model_id_prefers_advertised_over_path():
 
 
 def test_chat_validates_non_system_message_before_auto_switch():
-    # A system-only chat must be rejected before the hook so an invalid request
-    # never swaps the resident model. Asserted on source order.
+    # A system-only chat is rejected before the hook, never swapping the model. Source order.
     import inspect
     src = inspect.getsource(inference_route.openai_chat_completions)
     assert src.index("At least one non-system message is required.") < src.index(
@@ -1531,8 +1648,7 @@ def test_chat_validates_non_system_message_before_auto_switch():
 
 
 def test_chat_untracks_external_provider_before_proxy():
-    # The external-provider branch must untrack the request before proxying so its
-    # stream can't block a concurrent local auto-switch.
+    # The external-provider branch untracks before proxying so its stream can't block a local auto-switch.
     import inspect
     src = inspect.getsource(inference_route.openai_chat_completions)
     assert src.index("untrack_current_request") < src.index("_proxy_to_external_provider")
@@ -1559,8 +1675,8 @@ def _training_request():
 
 
 def test_api_training_refused_while_inference_active(monkeypatch):
-    # API-key caller: training is refused with 409 while a request streams, so it
-    # can't free VRAM by unloading the chat model out from under the stream.
+    # API-key caller: training 409s while a request streams, so it can't free VRAM by
+    # unloading the chat model out from under the stream.
     from fastapi import HTTPException
     from core.inference import llama_keepwarm as kw
     import routes.training as training_route
@@ -1577,8 +1693,8 @@ def test_api_training_refused_while_inference_active(monkeypatch):
 
 
 def test_ui_training_not_blocked_by_active_inference(monkeypatch):
-    # UI (session auth) caller: the API guard is skipped, so training proceeds past
-    # it even with inference active (here it hits the normal already-active path).
+    # UI (session auth) caller: the API guard is skipped, so training proceeds past it
+    # even with inference active (hits the normal already-active path).
     from types import SimpleNamespace
     from core.inference import llama_keepwarm as kw
     import routes.training as training_route
@@ -1597,8 +1713,8 @@ def test_ui_training_not_blocked_by_active_inference(monkeypatch):
 
 
 def test_env_idle_ttl_standalone_when_no_stored_value(monkeypatch):
-    # With nothing stored, the env var enables idle-unload even while auto-switch
-    # is off (headless/ops default), and the UI reader reflects it.
+    # With nothing stored, the env var enables idle-unload even while auto-switch is off
+    # (headless/ops default), and the UI reader reflects it.
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: d)  # nothing stored
     monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "600")
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
@@ -1607,8 +1723,7 @@ def test_env_idle_ttl_standalone_when_no_stored_value(monkeypatch):
 
 
 def test_stored_idle_value_overrides_env_and_stays_gated(monkeypatch):
-    # An explicit stored value wins over the env default and remains gated on the
-    # auto-switch toggle.
+    # An explicit stored value wins over the env default and stays gated on the toggle.
     store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 30}
     monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
     monkeypatch.setenv("UNSLOTH_MODEL_IDLE_TTL", "600")
@@ -1631,9 +1746,8 @@ def test_env_idle_ttl_invalid_is_ignored(monkeypatch):
 
 
 def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatch):
-    # C3: a standalone UNSLOTH_MODEL_IDLE_TTL (auto-switch OFF) freed the model on
-    # idle; the next request must restore exactly what was freed even though the
-    # resolver never runs while auto-switch is off.
+    # C3: a standalone UNSLOTH_MODEL_IDLE_TTL (auto-switch OFF) freed the model on idle;
+    # the next request restores exactly what was freed, though the resolver never runs.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # idle-unload emptied the slot
@@ -1649,16 +1763,15 @@ def test_env_idle_standalone_reloads_freed_model_with_auto_switch_off(monkeypatc
     monkeypatch.setattr(kw, "_inflight", 0)
     monkeypatch.setattr(kw, "_last_unloaded_model", ("/cache/snap/A", "Q4_K_M", "org/A-GGUF"))
     _run_hook("org/B-GGUF")
-    # Resolver skipped (auto-switch off), so only the stash reload runs: the freed A
-    # is restored, not the resolves_to target B.
+    # Resolver skipped, so only the stash reload runs: freed A is restored, not target B.
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "/cache/snap/A"
     assert rec.calls[0].gguf_variant == "Q4_K_M"
 
 
 def test_no_stash_reload_when_idle_off_and_auto_switch_off(monkeypatch):
-    # C3 guard: with both auto-switch and idle-unload off the hook is a pure no-op
-    # and must not resurrect a stashed model (that path only serves the idle feature).
+    # C3 guard: with both features off the hook is a no-op and must not resurrect a
+    # stashed model (that path only serves the idle feature).
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)
@@ -1672,9 +1785,9 @@ def test_no_stash_reload_when_idle_off_and_auto_switch_off(monkeypatch):
 
 
 def test_stash_reload_skipped_while_unsloth_model_active(monkeypatch):
-    # An Unsloth/Transformers model loaded after an idle-unload leaves the GGUF slot
-    # empty but is the live model; an unknown /v1 name must NOT resurrect the stale
-    # GGUF stash (that reload would tear the active Unsloth model down).
+    # An Unsloth/Transformers model loaded after idle-unload leaves the GGUF slot empty
+    # but is live; an unknown /v1 name must NOT resurrect the stale GGUF stash (that
+    # reload would tear the active Unsloth model down).
     from types import SimpleNamespace
     from core.inference import llama_keepwarm as kw
 
@@ -1709,7 +1822,7 @@ def test_advertised_loader_id_prefers_alias_over_abs_path():
         f(SimpleNamespace(id = "/home/me/models/x", model_id = "org/X-GGUF", display_name = "X"))
         == "org/X-GGUF"
     )
-    # No alias available: strip the path to a public id so a host path is never advertised.
+    # No alias: strip the path to a public id so a host path is never advertised.
     assert (
         f(
             SimpleNamespace(
@@ -1725,8 +1838,8 @@ def test_advertised_loader_id_prefers_alias_over_abs_path():
 
 
 def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
-    # C1 end-to-end: a scanner that reports the path as the id must not advertise the
-    # host path in /v1/models, yet the model stays resolvable by that path too.
+    # C1 end-to-end: a scanner reporting the path as the id must not advertise the host
+    # path in /v1/models, yet the model stays resolvable by that path.
     from types import SimpleNamespace
     import routes.models as models_route
 
@@ -1747,14 +1860,14 @@ def test_index_advertises_alias_not_filesystem_path(tmp_path, monkeypatch):
     # The advertised id is the alias, never the absolute path.
     advertised = sorted({entry.loader_id for entry in resolver._index().values()})
     assert advertised == ["org/Repo-GGUF"]
-    # But the model is still resolvable by its on-disk path (an indexed alias).
+    # Still resolvable by its on-disk path (an indexed alias).
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf(str(gguf)) is not None
 
 
 def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
-    # gemini: one bad scanner (e.g. a permission error on ./models) must drop only
-    # that source, not abort the whole index and lose what the others found.
+    # gemini: one bad scanner (e.g. a permission error) drops only that source, not the
+    # whole index.
     from types import SimpleNamespace
     import routes.models as models_route
     import utils.paths as paths
@@ -1785,9 +1898,8 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
 
 
 def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
-    # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models must
-    # decide GGUF-ness from the on-disk files. A standalone .gguf (no model_format)
-    # is servable; a safetensors-only dir is not.
+    # Codex: HF-cache GGUF snapshots leave model_format unset, so /v1/models decides
+    # GGUF-ness from the files: a standalone .gguf is servable, a safetensors-only dir is not.
     from types import SimpleNamespace
 
     gguf = tmp_path / "model-Q4_K_M.gguf"
@@ -1801,8 +1913,8 @@ def test_info_has_local_gguf_reads_files_not_model_format(tmp_path):
 
 
 def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
-    # Codex P2: Ollama entries come from a scanner _build_index skips, so their
-    # advertised ids never resolve; the catalog must not report them as servable.
+    # Codex P2: Ollama entries come from a scanner _build_index skips, so their ids never
+    # resolve; the catalog must not report them as servable.
     from types import SimpleNamespace
 
     links = tmp_path / ".studio_links"
@@ -1813,7 +1925,7 @@ def test_info_has_local_gguf_excludes_ollama_links(tmp_path):
         resolver.info_has_local_gguf(SimpleNamespace(id = "ollama/foo:latest", path = str(ollama_gguf)))
         is False
     )
-    # The same GGUF outside an ollama-link dir is still servable.
+    # The same GGUF outside an ollama-link dir is servable.
     plain = tmp_path / "model-Q4_K_M.gguf"
     plain.write_bytes(b"x" * 32)
     assert resolver.info_has_local_gguf(SimpleNamespace(id = str(plain), path = str(plain))) is True
@@ -1830,8 +1942,7 @@ def test_embeddings_input_present_helper():
 
 
 def test_embeddings_rejects_missing_input_before_switch(monkeypatch):
-    # C2: with auto-switch on, an embeddings request carrying no input must 400
-    # before the hook, so an invalid request never swaps the resident model.
+    # C2: an embeddings request with no input 400s before the hook, never swapping the model.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")  # loaded
@@ -1897,9 +2008,8 @@ def test_retrieve_model_resolves_raw_path_to_advertised_id(monkeypatch):
 
 
 def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
-    # Codex P2: only the non-streaming GGUF path returns multiple choices, so
-    # stream=true + n>1 is invalid on every local serving path. Both fields are
-    # known pre-switch, so it must 400 before the switch rather than loading model B.
+    # Codex P2: only the non-streaming GGUF path returns multiple choices, so stream=true
+    # + n>1 is invalid everywhere. Both fields are known pre-switch, so 400 before the switch.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -1919,8 +2029,8 @@ def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
 
 
 def test_resolver_cache_stamped_after_slow_build(monkeypatch):
-    # Codex P2: the cache must be stamped AFTER _build_index. A scan slower than the
-    # TTL would otherwise store an already-expired cache and rebuild every request.
+    # Codex P2: the cache is stamped AFTER _build_index, else a scan slower than the TTL
+    # stores an already-expired cache and rebuilds every request.
     import core.inference.local_model_resolver as r
 
     clock = {"t": 1000.0}
@@ -1940,9 +2050,8 @@ def test_resolver_cache_stamped_after_slow_build(monkeypatch):
 
 
 def test_keepwarm_does_not_stamp_activity_on_401(monkeypatch):
-    # Codex P2: the keep-warm middleware runs before auth, so a 401 must decrement
-    # the in-flight count without stamping activity, or unauthenticated probes would
-    # keep the model warm and block idle-unload.
+    # Codex P2: the middleware runs before auth, so a 401 decrements in-flight without
+    # stamping activity, else unauthenticated probes keep the model warm and block idle-unload.
     import core.inference.llama_keepwarm as kw
 
     monkeypatch.setattr(kw, "_inflight", 0)
@@ -1978,8 +2087,8 @@ def test_keepwarm_does_not_stamp_activity_on_401(monkeypatch):
 
 
 def _stash(monkeypatch, *, idle = 600):
-    """Common setup for the standalone-idle reload paths: feature off, idle TTL on,
-    an idle-freed model in the stash, nothing loaded, no in-flight requests."""
+    """Standalone-idle reload setup: feature off, idle TTL on, an idle-freed model
+    stashed, nothing loaded, no in-flight requests."""
     from core.inference import llama_keepwarm as kw
 
     monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: idle)
@@ -1997,8 +2106,8 @@ def test_completions_prompt_present_helper():
 
 
 def test_completions_rejects_missing_prompt_before_switch(monkeypatch):
-    # #1: /v1/completions had no prompt pre-check, so a malformed request naming a
-    # different downloaded GGUF loaded it before failing. Now it 400s first.
+    # #1: /v1/completions lacked a prompt pre-check, so a malformed request naming another
+    # GGUF loaded it before failing. Now it 400s first.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2021,8 +2130,8 @@ def test_completions_rejects_missing_prompt_before_switch(monkeypatch):
 
 
 def test_chat_system_only_rejected_before_idle_reload(monkeypatch):
-    # #4: the chat pre-load guard only checked auto-switch; a standalone idle TTL
-    # could still reload a system-only chat before the 400. Now it 400s first.
+    # #4: the chat pre-load guard only checked auto-switch, so a standalone idle TTL could
+    # reload a system-only chat before the 400. Now it 400s first.
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
@@ -2038,8 +2147,8 @@ def test_chat_system_only_rejected_before_idle_reload(monkeypatch):
 
 
 def test_embeddings_missing_input_rejected_before_idle_reload(monkeypatch):
-    # #5: same gap on /v1/embeddings; the missing-input 400 must fire under a
-    # standalone idle TTL too, not only when auto-switch is on.
+    # #5: same gap on /v1/embeddings; the missing-input 400 must fire under a standalone
+    # idle TTL too, not only when auto-switch is on.
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
@@ -2054,14 +2163,14 @@ def test_embeddings_missing_input_rejected_before_idle_reload(monkeypatch):
 
 def test_messages_does_not_503_before_reload_hook_when_idle_on(monkeypatch):
     # #3: /v1/messages 503'd before the reload hook when auto-switch was off, so a
-    # standalone idle TTL could never restore the freed model. The early 503 now
-    # defers to any automatic-load trigger, so the reload hook runs.
+    # standalone idle TTL never restored the freed model. The early 503 now defers to
+    # any automatic-load trigger, so the reload hook runs.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     _stash(monkeypatch)
-    # The handler proceeds past the hook to real generation (no llama-server here),
-    # so tolerate the downstream failure; the reload having run is the assertion.
+    # Proceeds past the hook to real generation (no llama-server), so tolerate the
+    # downstream failure; the reload having run is the assertion.
     try:
         asyncio.run(
             inference_route.anthropic_messages(
@@ -2082,9 +2191,8 @@ def test_messages_503_gated_on_automatic_load_predicate():
 
 
 def test_raw_body_without_model_reloads_freed_model(monkeypatch):
-    # #6: a raw completions/embeddings body that omits `model` passed None, which
-    # skipped the idle-stash reload and 503'd. A non-empty sentinel now lets the
-    # reload run while still resolving as unknown.
+    # #6: a raw body omitting `model` passed None, skipping the idle-stash reload and
+    # 503-ing. A non-empty sentinel now lets the reload run while still resolving as unknown.
     backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
@@ -2101,8 +2209,8 @@ def test_raw_body_without_model_reloads_freed_model(monkeypatch):
 
 
 def test_audio_generate_reloads_idle_freed_model(monkeypatch):
-    # #2: /audio/generate is keep-warm-tracked but had no reload hook, so an
-    # idle-freed audio GGUF stayed unloaded. The hook now restores it.
+    # #2: /audio/generate is keep-warm-tracked but had no reload hook, so an idle-freed
+    # audio GGUF stayed unloaded. The hook now restores it.
     from models.inference import ChatCompletionRequest
 
     backend = _FakeBackend(None)
@@ -2110,8 +2218,8 @@ def test_audio_generate_reloads_idle_freed_model(monkeypatch):
     _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
     _stash(monkeypatch)
     payload = ChatCompletionRequest(model = "x", messages = [{"role": "user", "content": "say hi"}])
-    # Falls through to the non-audio backend path (no real model) after the reload;
-    # tolerate that downstream failure, the reload having run is the assertion.
+    # Falls through to the non-audio backend path after the reload; tolerate the failure,
+    # the reload having run is the assertion.
     try:
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     except Exception:
@@ -2121,8 +2229,7 @@ def test_audio_generate_reloads_idle_freed_model(monkeypatch):
 
 
 def test_audio_generate_does_not_reload_on_invalid_request(monkeypatch):
-    # The audio reload hook must run after message validation, so an empty request
-    # never triggers a reload.
+    # The audio reload hook runs after message validation, so an empty request never reloads.
     from fastapi import HTTPException
     from models.inference import ChatCompletionRequest
 
@@ -2138,9 +2245,8 @@ def test_audio_generate_does_not_reload_on_invalid_request(monkeypatch):
 
 
 def test_preview_scope_disables_auto_switch(monkeypatch):
-    # #7: the public preview route delegates to the chat handler; a caller-supplied
-    # model must not switch away from the pinned checkpoint. The scope opt-out flag
-    # makes the hook a no-op.
+    # #7: the preview route delegates to the chat handler; a caller-supplied model must
+    # not switch away from the pinned checkpoint. The scope opt-out flag makes the hook a no-op.
     backend = _FakeBackend("org/A-GGUF")
     rec = _LoadRecorder(backend)
     _wire(
@@ -2167,8 +2273,8 @@ def test_preview_scope_disables_auto_switch(monkeypatch):
 
 
 def test_preview_chat_is_tracked_as_inference_path():
-    # #8: long preview streams use the same backend; the keep-warm middleware must
-    # count them so the idle loop can't unload mid-response.
+    # #8: long preview streams share the backend, so the middleware must count them and
+    # the idle loop can't unload mid-response.
     from core.inference.llama_keepwarm import _is_inference_path
 
     assert _is_inference_path("/p/my-run/v1/chat/completions") is True
@@ -2177,8 +2283,8 @@ def test_preview_chat_is_tracked_as_inference_path():
 
 
 def test_untrack_does_not_reset_idle_timer():
-    # #9: external-provider traffic was keeping the local GGUF warm forever because
-    # untrack stamped _last_active. It must decrement in-flight without restamping.
+    # #9: untrack stamped _last_active, keeping the GGUF warm on external traffic. It must
+    # decrement in-flight without restamping.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -2193,8 +2299,8 @@ def test_untrack_does_not_reset_idle_timer():
 
 
 def test_note_start_does_not_reset_idle_timer():
-    # The start stamp was removed so an external request that is later untracked
-    # cannot reset the timer at start either; in-flight count still protects it.
+    # The start stamp was removed so a later-untracked external request can't reset the
+    # timer at start; in-flight count still protects it.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -2211,13 +2317,36 @@ def test_note_start_does_not_reset_idle_timer():
         kw._note_end()  # restores _last_active stamp on completion
 
 
+def test_preview_inflight_updates_alongside_general_inflight():
+    # Both counters update under the same lock at the same call site, so a preview's
+    # inflight count can't race other_inference_request_count's decrement the way a
+    # route-level counter (torn down on body-iterator exhaustion) could.
+    from core.inference import llama_keepwarm as kw
+
+    kw._inflight = 0
+    kw._preview_inflight = 0
+    kw._note_start(is_preview = True)
+    kw._note_start(is_preview = False)
+    try:
+        assert kw._inflight == 2
+        assert kw._preview_inflight == 1
+        other_busy = kw.other_inference_request_count(
+            current_request_counted = True, include_pending = False
+        ) - kw.other_preview_inflight_count(current_request_counted = True)
+        assert other_busy == 1  # only the non-preview request reads as foreign traffic
+    finally:
+        kw._note_end(is_preview = True)
+        kw._note_end(is_preview = False)
+    assert kw._inflight == 0
+    assert kw._preview_inflight == 0
+
+
 # ── codex review (merge round): reload-only sentinel, Anthropic tool validation ──
 
 
 def test_omitted_model_does_not_resolve_to_a_named_gguf(monkeypatch):
-    # Codex P2: a raw-body request that omits `model` must never run the resolver,
-    # so a downloaded GGUF literally named "default" can't be switched to. The
-    # resolver here would switch to B if it ran; it must not.
+    # Codex P2: a raw body omitting `model` must never run the resolver, so a GGUF named
+    # "default" can't be switched to. The resolver here would switch to B if it ran.
     backend = _FakeBackend("org/A-GGUF")  # a model is already loaded
     rec = _LoadRecorder(backend)
     _wire(
@@ -2237,8 +2366,8 @@ def test_omitted_model_does_not_resolve_to_a_named_gguf(monkeypatch):
 
 
 def test_omitted_model_still_reloads_idle_freed_model(monkeypatch):
-    # The reload-only sentinel must still restore an idle-freed model (the round-9
-    # behavior), it just never runs the resolver.
+    # The reload-only sentinel still restores an idle-freed model (round-9); it just
+    # never runs the resolver.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # idle-unload emptied the slot
@@ -2267,8 +2396,8 @@ def _anthropic_payload_with_tools(tools, max_tokens = 16):
 
 
 def test_anthropic_invalid_tool_rejected_before_switch(monkeypatch):
-    # Codex P2: a malformed client tool (no input_schema, no server-tool type) must
-    # 400 before the auto-switch hook, so an invalid request never evicts the model.
+    # Codex P2: a malformed client tool (no input_schema, no server-tool type) 400s
+    # before the hook, never evicting the model.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2288,8 +2417,8 @@ def test_anthropic_invalid_tool_rejected_before_switch(monkeypatch):
 
 
 def test_anthropic_validates_tools_before_auto_switch():
-    # Lock the order at the source: tool-shape validation precedes the hook, for
-    # both /messages and /messages/count_tokens (shared helper).
+    # Source order: tool-shape validation precedes the hook, for both /messages and
+    # /messages/count_tokens (shared helper).
     import inspect
     for fn in (inference_route.anthropic_messages, inference_route.anthropic_count_tokens):
         src = inspect.getsource(fn)
@@ -2297,9 +2426,8 @@ def test_anthropic_validates_tools_before_auto_switch():
 
 
 def test_anthropic_mixed_tools_rejected_before_switch(monkeypatch):
-    # Codex P2: combining an Anthropic server tool (type) with a custom client tool
-    # (input_schema) is unsupported and must 400 before the switch, so the request
-    # can't evict the loaded model only to be rejected after the load.
+    # Codex P2: mixing an Anthropic server tool (type) with a client tool (input_schema)
+    # is unsupported and 400s before the switch, never evicting the model.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2343,8 +2471,8 @@ def _responses_payload(*, tools = None, set_model = True):
 
 
 def test_switch_model_for_payload_only_switches_when_explicit():
-    # Codex P2: an omitted `model` (pydantic fills "default") must be reload-only;
-    # an explicitly set model -- including a literal "default" -- is honored.
+    # Codex P2: an omitted `model` (pydantic fills "default") is reload-only; an explicit
+    # model -- including a literal "default" -- is honored.
     from models.inference import ChatCompletionRequest
 
     omitted = ChatCompletionRequest(messages = [_chat_msg()])
@@ -2356,8 +2484,8 @@ def test_switch_model_for_payload_only_switches_when_explicit():
 
 
 def test_omitted_schema_model_skips_resolver(monkeypatch):
-    # End to end: a schema request omitting `model` must not run the resolver, so a
-    # GGUF named "default" is never swapped to; an explicit model still switches.
+    # End to end: a schema request omitting `model` doesn't run the resolver (a GGUF named
+    # "default" is never swapped to); an explicit model still switches.
     from models.inference import ChatCompletionRequest
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2397,8 +2525,8 @@ def test_build_chat_request_propagates_omitted_model():
 
 
 def test_responses_invalid_function_tool_rejected_before_switch(monkeypatch):
-    # Codex P2: a malformed function tool (no name) must 400 before the hook, so an
-    # invalid /v1/responses request never switches or evicts the loaded model.
+    # Codex P2: a malformed function tool (no name) 400s before the hook, never switching
+    # or evicting the model.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2418,8 +2546,8 @@ def test_responses_invalid_function_tool_rejected_before_switch(monkeypatch):
 
 
 def test_responses_valid_and_builtin_tools_pass_validation(monkeypatch):
-    # A well-formed function tool and a built-in (non-function) tool must pass the
-    # pre-switch check. Stub the hook so the test stops right after validation.
+    # A well-formed function tool and a built-in tool pass the pre-switch check. Stub the
+    # hook so the test stops right after validation.
     class _Reached(Exception):
         pass
 
@@ -2435,7 +2563,7 @@ def test_responses_valid_and_builtin_tools_pass_validation(monkeypatch):
 
 
 def test_responses_validates_tools_before_auto_switch():
-    # Lock the order at the source: tool validation precedes the switch hook.
+    # Source order: tool validation precedes the switch hook.
     import inspect
     src = inspect.getsource(inference_route.openai_responses)
     assert src.index("each function tool must have a 'name'") < src.index(
@@ -2444,9 +2572,8 @@ def test_responses_validates_tools_before_auto_switch():
 
 
 def test_responses_forcing_tool_choice_without_name_rejected_before_switch(monkeypatch):
-    # Codex P2: a forcing-function tool_choice with no name (Responses shape
-    # {"type": "function"}) must 400 before the switch, so the streaming path can't
-    # forward a bad choice and an invalid request can't evict the model.
+    # Codex P2: a forcing-function tool_choice with no name ({"type": "function"}) 400s
+    # before the switch, so the streaming path can't forward a bad choice and evict the model.
     from fastapi import HTTPException
     from models.inference import ResponsesRequest
 
@@ -2458,7 +2585,7 @@ def test_responses_forcing_tool_choice_without_name_rejected_before_switch(monke
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
     assert exc.value.status_code == 400
-    # A named forcing choice is accepted (reaches the switch, which is mocked to raise).
+    # A named forcing choice is accepted (reaches the mocked-to-raise switch).
     ok = ResponsesRequest(
         model = "org/B-GGUF", input = "hi", tool_choice = {"type": "function", "name": "f"}
     )
@@ -2470,8 +2597,8 @@ def test_responses_forcing_tool_choice_without_name_rejected_before_switch(monke
 
 
 def test_swap_acquires_process_gate_before_load():
-    # Lock in the structure: the process-wide gate is acquired before the load and
-    # always released, so a cross-loop swap can't reach _load_model_impl unguarded.
+    # The process-wide gate is acquired before the load and always released, so a
+    # cross-loop swap can't reach _load_model_impl unguarded.
     import inspect
 
     src = inspect.getsource(inference_route._maybe_auto_switch_model)
@@ -2489,8 +2616,8 @@ def _chat_request(**kw):
 
 
 def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
-    # Codex P2: confirm_tool_calls=true + stream=false + local tools is an invalid
-    # shape; it must 400 before the switch hook so it can't evict the resident model.
+    # Codex P2: confirm_tool_calls=true + stream=false + local tools is invalid; it 400s
+    # before the switch hook, never evicting the model.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2512,8 +2639,8 @@ def test_chat_confirm_without_stream_rejected_before_switch(monkeypatch):
 
 
 def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
-    # bypass_permissions suppresses the confirm gate, so the pre-check must not fire;
-    # the request should reach the switch hook (stubbed here to a sentinel).
+    # bypass_permissions suppresses the confirm gate, so the pre-check doesn't fire and
+    # the request reaches the switch hook (stubbed to a sentinel).
     class _Reached(Exception):
         pass
 
@@ -2534,10 +2661,10 @@ def test_chat_confirm_with_bypass_permissions_reaches_hook(monkeypatch):
 
 
 def test_chat_audio_input_guards_target_before_switch(monkeypatch):
-    # Codex P2: a chat request carrying audio_base64 must guard the target before the
-    # switch -- audio rides the same companion mmproj as vision -- so a text-only
-    # target can't be loaded and evict the working audio model. Assert the handler
-    # flags require_vision so the hook's multimodal probe runs.
+    # Codex P2: a chat request with audio_base64 guards the target before the switch
+    # (audio rides the same companion mmproj as vision), so a text-only target can't
+    # evict the working audio model. Assert the handler flags require_vision so the
+    # hook's multimodal probe runs.
     class _Reached(Exception):
         pass
 
@@ -2549,8 +2676,10 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["require_vision"] = require_vision
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
@@ -2559,12 +2688,14 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    # Chat defers the resident claim to the middleware (on a 2xx), so post-switch
+    # capability rejections can't strand a preview-owned model.
+    assert captured["claim_resident"] is False
 
 
 def test_completions_rejects_object_prompt_before_switch(monkeypatch):
-    # Codex P2: an object prompt like {"prompt": {}} is a deterministic client error
-    # (only a string or array is valid). It must 400 before the switch so a bad shape
-    # can't load the named GGUF only to be rejected by llama-server after eviction.
+    # Codex P2: an object prompt {"prompt": {}} is a client error (only string/array
+    # valid), so it 400s before the switch, never loading the named GGUF and evicting.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2587,8 +2718,8 @@ def test_completions_rejects_object_prompt_before_switch(monkeypatch):
 
 
 def test_embeddings_rejects_object_input_before_switch(monkeypatch):
-    # Codex P2: an object input like {"input": {}} is a deterministic client error
-    # (only a string or array is valid); reject before the switch, like completions.
+    # Codex P2: an object input {"input": {}} is a client error (only string/array valid);
+    # reject before the switch, like completions.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2611,8 +2742,8 @@ def test_embeddings_rejects_object_input_before_switch(monkeypatch):
 
 
 def test_chat_oversized_audio_rejected_before_switch(monkeypatch):
-    # Codex P2: the audio size cap is a cheap, target-independent length check, so an
-    # oversized upload must 413 before the switch rather than loading a GGUF first.
+    # Codex P2: the audio size cap is a cheap target-independent check, so an oversized
+    # upload 413s before the switch, not after loading a GGUF.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2633,9 +2764,9 @@ def test_chat_oversized_audio_rejected_before_switch(monkeypatch):
 
 
 def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
-    # Codex P2: mcp_enabled opens the local tool loop on its own, so confirm+no-stream
-    # +mcp is the same invalid shape as confirm+no-stream+tools and must 400 before
-    # the switch. The old guard only checked explicit tool fields and missed it.
+    # Codex P2: mcp_enabled opens the tool loop on its own, so confirm+no-stream+mcp is the
+    # same invalid shape as confirm+no-stream+tools and 400s before the switch. The old
+    # guard only checked explicit tool fields and missed it.
     import state.tool_policy as _tp
     from fastapi import HTTPException
 
@@ -2659,8 +2790,8 @@ def test_chat_confirm_without_stream_mcp_rejected_before_switch(monkeypatch):
 
 
 def test_require_vision_rejects_text_target_before_switch(monkeypatch):
-    # Codex P2: an image request naming a different text-only GGUF must 400 before
-    # the swap, so the resident vision model is not evicted for a rejected request.
+    # Codex P2: an image request naming a text-only GGUF 400s before the swap, so the
+    # resident vision model isn't evicted for a rejected request.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2701,8 +2832,8 @@ def test_require_vision_allows_vision_target(monkeypatch):
 
 
 def test_require_vision_ignores_reload_stash(monkeypatch):
-    # The reload-stash path restores the model the request was already using; the
-    # modality check applies only to an explicit resolver target, not a restore.
+    # The reload-stash restores the model the request was already using; the modality
+    # check applies only to an explicit resolver target, not a restore.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)
@@ -2722,8 +2853,8 @@ def test_require_vision_ignores_reload_stash(monkeypatch):
 
 
 def test_chat_validates_confirm_and_modality_before_switch():
-    # Lock the order at the source: confirm-shape rejection precedes the hook, and
-    # the hook rejects a non-vision target before the load.
+    # Source order: confirm-shape rejection precedes the hook, and the hook rejects a
+    # non-vision target before the load.
     import inspect
 
     src = inspect.getsource(inference_route.openai_chat_completions)
@@ -2766,27 +2897,42 @@ def test_anthropic_request_has_image_helper():
 
 
 def test_responses_and_anthropic_wire_require_vision_from_images():
-    # P2: the modality guard must fire on /v1/responses and /v1/messages too, so an
-    # image request can't evict a vision model for a text-only target. Lock the wiring
-    # at the source: each hook derives require_vision from the request's images.
+    # P2: the modality guard must fire on /v1/responses and /v1/messages too, so an image
+    # request can't evict a vision model for a text-only target. Source: each hook derives
+    # require_vision from the request's images.
     import inspect
 
     responses_src = inspect.getsource(inference_route.openai_responses)
     assert "require_vision = _messages_have_image(" in responses_src
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
     assert "require_vision = _anthropic_request_has_image(" in anthropic_src
-    # /messages/count_tokens shares the /messages translation, so it needs the same
-    # guard: an image count must not evict a vision model for a text-only target.
+    # count_tokens shares the /messages translation, so it needs the same guard: an image
+    # count must not evict a vision model for a text-only target.
     count_src = inspect.getsource(inference_route.anthropic_count_tokens)
     assert "require_vision = _anthropic_request_has_image(" in count_src
+
+
+def test_responses_count_tokens_messages_defer_slot_claim():
+    # Codex P2: openai_responses (streaming 400s in _responses_stream), count_tokens
+    # (tokenize-only) and anthropic_messages (the image normalizer can 400 after the
+    # switch) must NOT claim the resident model in the switch hook, or a non-generating
+    # request strands a preview-owned slot as Studio-owned and 503s a later preview.
+    # They pass claim_resident=False and rely on the middleware's claim-on-2xx instead.
+    import inspect
+    for fn in (
+        inference_route.openai_responses,
+        inference_route.anthropic_count_tokens,
+        inference_route.anthropic_messages,
+    ):
+        assert "claim_resident = False" in inspect.getsource(fn), fn.__name__
 
 
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
 
 
 def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
-    # Codex P2: /v1/messages/count_tokens must reject a malformed tool before the
-    # switch, like /messages, so a count request can't evict the loaded model.
+    # Codex P2: count_tokens rejects a malformed tool before the switch, like /messages,
+    # so a count request can't evict the model.
     from fastapi import HTTPException
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2806,9 +2952,8 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
 
 
 def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
-    # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
-    # carry the same require_vision guard as /messages, so it can't evict a loaded
-    # vision model for a swap that can't serve the request.
+    # Codex P2: an image count_tokens naming a text-only GGUF carries the same
+    # require_vision guard as /messages, so it can't evict a loaded vision model.
     class _Reached(Exception):
         pass
 
@@ -2820,8 +2965,10 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["require_vision"] = require_vision
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
@@ -2830,14 +2977,47 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+    # Codex P2: count_tokens only tokenizes (no generation), so it must NOT adopt the
+    # resident model for Studio -- clearing the marker here would 503 a later preview
+    # even though Studio never generated.
+    assert captured["claim_resident"] is False
+
+
+def test_count_tokens_switch_marks_new_model_preview_owned(monkeypatch):
+    # Codex P2: a count_tokens auto-switch can load a new GGUF via _load_model_impl, which
+    # clears the preview marker. Counting never generates, so the switched-in model must be
+    # marked preview-owned, else it blocks later previews for other checkpoints.
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+
+    inference_route._set_preview_resident(None)
+    # _loaded_slot_ident() returns A before the switch, B after.
+    slots = iter(["/outputs/run/A"])
+    monkeypatch.setattr(
+        inference_route, "_loaded_slot_ident", lambda: next(slots, "/outputs/run/B")
+    )
+
+    async def _noop_switch(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    # Backend not loaded, so the route 503s right AFTER the compensation.
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    payload = _anthropic_payload_with_tools(None)
+    with pytest.raises(HTTPException):
+        asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
+    # B (switched-in) is marked preview-owned, not left Studio-owned.
+    assert inference_route._is_preview_resident("/outputs/run/B")
+    inference_route._set_preview_resident(None)  # cleanup
 
 
 def test_audio_generate_is_reload_only(monkeypatch):
-    # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
-    # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
-    # can't tell an audio projector from a vision one), so resolving the client model
-    # could evict the working audio model for a target that then fails the audio
-    # check. Only the idle-stash restore runs: the hook gets the reload-only sentinel.
+    # Codex P2: /audio/generate must not switch to a client-named GGUF. A GGUF's audio-input
+    # capability isn't a cheap pre-load probe (mmproj can't tell an audio projector from a
+    # vision one), so resolving the client model could evict the working audio model for a
+    # target that then fails the audio check. Only the idle-stash restore runs (reload-only sentinel).
     from models.inference import ChatCompletionRequest
 
     class _Reached(Exception):
@@ -2851,8 +3031,10 @@ def test_audio_generate_is_reload_only(monkeypatch):
         subject,
         *,
         require_vision = False,
+        claim_resident = True,
     ):
         captured["model"] = model
+        captured["claim_resident"] = claim_resident
         raise _Reached()
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
@@ -2862,12 +3044,64 @@ def test_audio_generate_is_reload_only(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.generate_audio(payload, object(), "tester"))
     assert captured["model"] == inference_route._RELOAD_ONLY_MODEL
+    # Audio defers the resident claim until after its modality checks.
+    assert captured["claim_resident"] is False
+
+
+def test_audio_generate_text_only_model_preserves_preview_marker(monkeypatch):
+    # A non-preview /audio/generate against a text-only resident model 400s at the audio
+    # check. The claim is deferred until after that check, so a preview-owned checkpoint
+    # isn't stranded as Studio-owned by a request that never generated.
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop)
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    infer = SimpleNamespace(
+        active_model_name = "/outputs/run/ckpt-a",
+        models = {"/outputs/run/ckpt-a": {"is_audio": False}},
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: infer)
+    inference_route._set_preview_resident("/outputs/run/ckpt-a")
+    payload = ChatCompletionRequest(model = "x", messages = [{"role": "user", "content": "hi"}])
+    fake_req = SimpleNamespace(scope = {"path": "/api/inference/audio/generate"})
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.generate_audio(payload, fake_req, "tester"))
+    assert exc.value.status_code == 400
+    assert inference_route._is_preview_resident("/outputs/run/ckpt-a")  # claim deferred
+    inference_route._set_preview_resident(None)  # cleanup
+
+
+def test_completions_no_gguf_loaded_preserves_preview_marker(monkeypatch):
+    # A non-preview /v1/completions with a preview-owned non-GGUF (transformers/LoRA)
+    # resident 503s "No GGUF model loaded". The claim is deferred to after that check,
+    # so the failed request can't strand the preview as Studio-owned.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)  # llama backend not loaded (a non-GGUF model is resident)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0)
+    inference_route._set_preview_resident("/outputs/run/lora-a")
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_completions(_json_body_request({"prompt": "hi"}), "tester")
+        )
+    assert exc.value.status_code == 503
+    assert rec.calls == []  # never switched
+    assert inference_route._is_preview_resident("/outputs/run/lora-a")  # claim deferred
+    inference_route._set_preview_resident(None)  # cleanup
 
 
 def test_note_model_unloaded_clears_reload_stash(monkeypatch):
-    # Codex P2: a deliberate unload must drop the idle reload stash so the next /v1
-    # request can't resurrect the just-unloaded model. (The idle loop unloads via the
-    # backend directly, so clearing on the route never fights keep-warm.)
+    # Codex P2: a deliberate unload drops the idle reload stash so the next /v1 request
+    # can't resurrect the just-unloaded model.
     import core.inference.llama_keepwarm as kw
 
     kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
@@ -2877,15 +3111,15 @@ def test_note_model_unloaded_clears_reload_stash(monkeypatch):
 
 
 def test_unload_route_clears_reload_stash(monkeypatch):
-    # The /unload route must clear the stash on both the GGUF and non-GGUF branches.
+    # The /unload route clears the stash on both the GGUF and non-GGUF branches.
     import inspect
     src = inspect.getsource(inference_route.unload_model)
     assert src.count("note_model_unloaded()") >= 2
 
 
 def test_non_gguf_load_clears_reload_stash():
-    # A non-GGUF (Transformers/Unsloth) load must clear the stash like the GGUF
-    # branch, so it never lingers until the idle poll (or forever, idle-unload off).
+    # A non-GGUF load clears the stash like the GGUF branch, so it never lingers until
+    # the idle poll (or forever, idle-unload off).
     import inspect
     src = inspect.getsource(inference_route._load_model_impl)
     assert src.count("note_model_loaded()") >= 2
@@ -2912,7 +3146,7 @@ def test_chat_rejects_malformed_tool_choice_before_switch(monkeypatch):
 
 
 def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
-    # A well-formed forcing object must pass the pre-check and reach the hook.
+    # A well-formed forcing object passes the pre-check and reaches the hook.
     class _Reached(Exception):
         pass
 
@@ -2929,8 +3163,8 @@ def test_chat_valid_tool_choice_reaches_hook(monkeypatch):
 
 
 def test_lifecycle_gate_serializes_across_loops():
-    # Codex P2: the lifecycle gate must be process-wide so a swap on one loop blocks
-    # inference starting on another. Two loops must never hold the gate at once.
+    # Codex P2: the lifecycle gate is process-wide so a swap on one loop blocks inference
+    # on another. Two loops must never hold it at once.
     import threading
     from core.inference import llama_keepwarm as kw
 
@@ -2961,9 +3195,8 @@ def test_lifecycle_gate_serializes_across_loops():
 
 
 def test_auto_switch_serializes_across_event_loops(monkeypatch):
-    # Codex P2: the per-loop asyncio lock can't serialize two swaps on different
-    # event loops in one process. The process-wide gate must, so the two slow loads
-    # never overlap on the single model slot.
+    # Codex P2: a per-loop asyncio lock can't serialize two swaps on different event loops;
+    # the process-wide gate does, so the two slow loads never overlap on the model slot.
     import threading
 
     backend = _FakeBackend("org/A-GGUF")
@@ -2979,7 +3212,7 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
         with slock:
             state["cur"] += 1
             state["max"] = max(state["max"], state["cur"])
-        await asyncio.sleep(0.1)  # widen the window so an unguarded race would overlap
+        await asyncio.sleep(0.1)  # widen the window so an unguarded race overlaps
         with slock:
             state["cur"] -= 1
             loaded.append(request.model_path)
@@ -3014,10 +3247,9 @@ def test_auto_switch_serializes_across_event_loops(monkeypatch):
 
 
 def test_acquire_swap_gate_is_cancellation_safe():
-    # A waiter cancelled while waiting for the gate (client disconnect mid-swap)
-    # must not leak it: after the holder releases, a fresh acquire still succeeds.
-    # The to_thread(acquire) approach would leak here -- its worker thread keeps
-    # acquiring after cancel, so the gate is taken but never released.
+    # A waiter cancelled while waiting for the gate (client disconnect mid-swap) must not
+    # leak it: after the holder releases, a fresh acquire still succeeds. A to_thread(acquire)
+    # approach would leak (its worker keeps acquiring after cancel, so the gate is never released).
     async def main():
         await inference_route._acquire_swap_gate()  # this loop holds the gate
         try:
@@ -3040,9 +3272,9 @@ def test_acquire_swap_gate_is_cancellation_safe():
 
 
 def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
-    # The "no model loaded" errors point at the opt-in auto-switch toggle so a
-    # request naming a listed-but-unloaded model is self-explanatory -- but only
-    # when it's off. With it on the name simply didn't resolve, so no hint.
+    # The "no model loaded" errors point at the auto-switch toggle (so a listed-but-
+    # unloaded model is self-explanatory) only when it's off. With it on, the name simply
+    # didn't resolve, so no hint.
     base = "No GGUF model loaded. Load a GGUF model first."
 
     monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
@@ -3055,8 +3287,8 @@ def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
 
 
 def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
-    # Drive _responses_stream's GGUF-not-loaded guard: llama backend unloaded,
-    # inference backend maybe holding a non-GGUF model. Returns the 400 detail.
+    # Drive _responses_stream's GGUF-not-loaded guard (llama unloaded, inference backend
+    # maybe holding a non-GGUF model). Returns the 400 detail.
     from fastapi import HTTPException
     from models.inference import ResponsesRequest, ChatMessage
 
@@ -3078,12 +3310,10 @@ def _run_responses_stream_no_model(monkeypatch, *, enabled, active_model_name):
 
 
 def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    # Streaming /v1/responses shares the GGUF-only 400 with the other "no model
-    # loaded" sites, so the auto-switch hint attaches whenever the toggle is
-    # off -- including while a non-GGUF model is active, since auto-switch
-    # evicts it to load a resolved GGUF (_maybe_auto_switch_model's resolver
-    # branch has no active-model guard, unlike its reload-stash branch). Only
-    # the toggle being on suppresses it.
+    # Streaming /v1/responses shares the GGUF-only 400, so the auto-switch hint attaches
+    # whenever the toggle is off -- including while a non-GGUF model is active, since
+    # auto-switch evicts it to load a resolved GGUF (the resolver branch has no active-
+    # model guard, unlike the reload-stash branch). Only the toggle being on suppresses it.
     hinted = _run_responses_stream_no_model(monkeypatch, enabled = False, active_model_name = None)
     assert "Model auto-switch" in hinted
 
