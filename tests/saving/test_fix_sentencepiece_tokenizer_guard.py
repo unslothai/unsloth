@@ -250,7 +250,12 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    pieces = [("<s>", 0.0, CONTROL), ("aa", -1.0, NORMAL), ("bb", -1.0, NORMAL), ("X", -1.0, NORMAL)]
+    pieces = [
+        ("<s>", 0.0, CONTROL),
+        ("aa", -1.0, NORMAL),
+        ("bb", -1.0, NORMAL),
+        ("X", -1.0, NORMAL),
+    ]
     old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"aa": 1, "bb": 2})
     new = _FakeTokenizer("new")
 
