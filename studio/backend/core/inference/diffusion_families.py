@@ -347,6 +347,21 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Exported bf16-only; keep the fp16 fallback off like z-image / krea-2.
         fp16_incompatible = True,
     ),
+    # HiDream-I1: a 17B MoE DiT (16 double + 32 single layers, 4 routed experts) with FOUR text
+    # encoders. The repos ship CLIP-L/CLIP-G/T5-XXL but NOT the Llama-3.1-8B text_encoder_4 their
+    # model_index names: the loader assembles it from the open unsloth mirror
+    # (diffusion_hidream.py). Full / Dev / Fast share the arch, so one family covers all three
+    # (per-variant step/guidance defaults below). city96 publishes a GGUF but the GGUF path would
+    # need the same TE4 assembly for tiny demand, so no GGUF artifact is wired yet.
+    DiffusionFamily(
+        name = "hidream-i1",
+        pipeline_class = "HiDreamImagePipeline",
+        transformer_class = "HiDreamImageTransformer2DModel",
+        base_repo = "HiDream-ai/HiDream-I1-Full",
+        aliases = ("hidream", "hidream-i1-full", "hidream-i1-dev", "hidream-i1-fast"),
+        # Exported bf16-only; keep the fp16 fallback off like the other modern DiTs.
+        fp16_incompatible = True,
+    ),
     # Ideogram 4 (diffusers >= 0.39): a 34-layer DiT PAIR (conditional + unconditional_transformer
     # for dual-branch CFG, both ~9B, so memory planning counts two DiTs) with a Qwen3-VL encoder.
     # No bf16 checkpoint: ideogram-4-fp8 (raw float8, upcast on load) is the highest-precision
@@ -532,6 +547,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # HunyuanImage 2.1 model-card: 50 steps; the guidance value feeds the call's
     # distilled_guidance_scale (default 3.25), while real CFG runs inside the repo guiders.
     ("hunyuanimage", 50, 3.25),
+    # HiDream-I1 upstream inference.py: Full 50 steps / guidance 5; the distilled Dev (28) and
+    # Fast (16) run guidance-free. Specific keys precede the generic "hidream" (Full + fallback).
+    ("hidream-i1-dev", 28, 0.0),
+    ("hidream-i1-fast", 16, 0.0),
+    ("hidream", 50, 5.0),
     # Ideogram 4 model-card: 48 steps, guidance 7 (its schedule tapers the last 3 steps to 3.0;
     # the loader keeps that taper when the request matches these defaults exactly).
     ("ideogram", 48, 7.0),

@@ -202,6 +202,62 @@ def test_hunyuanimage21_bf16_component_table_present():
     assert vae_gb <= 1.0
 
 
+# ── hidream-i1 family ────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "HiDream-ai/HiDream-I1-Full",
+        "HiDream-ai/HiDream-I1-Dev",
+        "HiDream-ai/HiDream-I1-Fast",
+    ],
+)
+def test_detect_family_hidream_repos(repo_id):
+    # One family covers all three variants (same 17B MoE arch + 4-TE stack).
+    fam = detect_family(repo_id)
+    assert fam is not None and fam.name == "hidream-i1"
+    assert fam.pipeline_class == "HiDreamImagePipeline"
+    assert fam.transformer_class == "HiDreamImageTransformer2DModel"
+    assert fam.base_repo == "HiDream-ai/HiDream-I1-Full"
+    # Published bf16-only upstream; the fp16 fallback stays off.
+    assert fam.fp16_incompatible is True
+
+
+def test_hidream_override_and_trust():
+    assert detect_family("x", override = "hidream-i1").name == "hidream-i1"
+    assert detect_family("x", override = "hidream").name == "hidream-i1"
+    # The three official repos load via from_pretrained -> allowlisted; the Llama TE4
+    # comes from the unsloth mirror, which the org prefix already trusts.
+    for rid in (
+        "HiDream-ai/HiDream-I1-Full",
+        "HiDream-ai/HiDream-I1-Dev",
+        "HiDream-ai/HiDream-I1-Fast",
+    ):
+        assert _is_trusted_diffusion_repo(rid)
+    assert not _is_trusted_diffusion_repo("HiDream-ai/some-future-repo")
+    assert _is_trusted_diffusion_repo("unsloth/Meta-Llama-3.1-8B-Instruct")
+
+
+def test_hidream_generation_defaults():
+    # Upstream inference.py: Full 50 steps / guidance 5; Dev and Fast are distilled and
+    # run guidance-free at 28 / 16 steps. The specific keys must beat the generic
+    # "hidream" (which also appears in the owner segment of every variant id).
+    assert default_generation_params("HiDream-ai/HiDream-I1-Full") == (50, 5.0)
+    assert default_generation_params("HiDream-ai/HiDream-I1-Dev") == (28, 0.0)
+    assert default_generation_params("HiDream-ai/HiDream-I1-Fast") == (16, 0.0)
+
+
+def test_hidream_bf16_component_table_present():
+    fam = detect_family("HiDream-ai/HiDream-I1-Full")
+    sizes = family_bf16_components_gb(fam)
+    assert sizes is not None
+    transformer_gb, encoders_gb, vae_gb = sizes
+    # 17B MoE DiT 34.2 GB; TEs = CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5 from the repo plus
+    # the ~16 GB Llama TE4 assembled from the mirror -> ~28.8 GB.
+    assert 32.0 <= transformer_gb <= 37.0
+    assert 26.0 <= encoders_gb <= 32.0
+    assert vae_gb <= 0.5
+
+
 def test_ideogram4_generation_defaults():
     # Model-card settings: 48 steps, guidance 7 (the backend keeps the pipeline's
     # recommended tapered schedule when the request matches exactly).
