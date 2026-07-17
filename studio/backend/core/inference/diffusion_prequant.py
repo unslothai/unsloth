@@ -90,16 +90,30 @@ def local_prequant_path_ready(path: str) -> bool:
 @dataclass(frozen = True)
 class PrequantSource:
     """Where a pre-quantized checkpoint lives. ``kind`` is "path" (a local file) or "repo"
-    (Hub repo id in ``location`` + ``filename``)."""
+    (Hub repo id in ``location`` + ``filename``; ``fallback_filename`` is tried when the
+    primary name is absent, covering repos still on the legacy transformer_<scheme>.pt)."""
 
     kind: str
     location: str
     filename: Optional[str] = None
+    fallback_filename: Optional[str] = None
 
 
 def prequant_filename(scheme: str) -> str:
-    """The conventional checkpoint filename for ``scheme`` inside a Hub repo."""
+    """The legacy checkpoint filename for ``scheme`` inside a Hub repo."""
     return f"transformer_{scheme}.pt"
+
+
+def prequant_repo_filename(repo_id: str, scheme: str) -> str:
+    """The model-name checkpoint filename for ``scheme`` in ``repo_id``: the hosted repos are
+    named <Model>-FP8 (or -INT8 / -quantized) and carry <Model>-<SCHEME>.pt files, e.g.
+    unsloth/Z-Image-Turbo-FP8 -> Z-Image-Turbo-INT8.pt / Z-Image-Turbo-FP8.pt."""
+    model = repo_id.rsplit("/", 1)[-1]
+    for suffix in ("-fp8", "-int8", "-quantized"):
+        if model.lower().endswith(suffix):
+            model = model[: -len(suffix)]
+            break
+    return f"{model}-{scheme.upper()}.pt"
 
 
 def resolve_prequant_source(
@@ -122,7 +136,12 @@ def resolve_prequant_source(
     except Exception:  # noqa: BLE001 — a bad family object must not break the load
         repo_id = None
     if repo_id:
-        return PrequantSource(kind = "repo", location = repo_id, filename = prequant_filename(scheme))
+        return PrequantSource(
+            kind = "repo",
+            location = repo_id,
+            filename = prequant_repo_filename(repo_id, scheme),
+            fallback_filename = prequant_filename(scheme),
+        )
     return None
 
 
@@ -243,7 +262,19 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
+        try:
+            from huggingface_hub.errors import EntryNotFoundError
+        except Exception:  # noqa: BLE001 — older hub layouts; fall back to a private marker
+            class EntryNotFoundError(Exception):  # type: ignore[no-redef]
+                pass
+        try:
+            return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
+        except EntryNotFoundError:
+            if not source.fallback_filename or source.fallback_filename == source.filename:
+                raise
+            return hf_hub_download(
+                repo_id = source.location, filename = source.fallback_filename, token = hf_token
+            )
     return None
 
 

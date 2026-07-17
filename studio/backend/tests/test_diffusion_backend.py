@@ -2656,10 +2656,11 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     assert _FakeTransformer.last["path"]  # GGUF path used
 
 
-def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypatch):
-    # With a prequant checkpoint, the fast path loads the small quantized file, not the dense
-    # bf16 -- so the dense-transformer re-check must NOT run and must NOT decline the fast path,
-    # even when the base's dense shards are cached and large.
+def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(fake_runtime, tmp_path, monkeypatch):
+    # With a prequant checkpoint, the fast path loads the small quantized file, so a dense
+    # misfit must NOT decline the fast path -- but the dense re-check still runs to gate the
+    # in-loader fallback: if the prequant later fails, the loader must raise to GGUF instead of
+    # materialising the dense bf16 the plan never budgeted (allow_dense_fallback=False).
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -2688,13 +2689,15 @@ def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypa
     ):
         if transformer_resident_override_mib is not None:
             dense_refit_ran.append(True)
+            # GGUF budget fits (real plan -> none); the dense-transformer preflight does not.
+            return types.SimpleNamespace(offload_policy = "model")
         return orig_plan(self, *a, **k)
 
     monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
     attempted = []
 
     def fake_dense_load(self, *a, **k):
-        attempted.append(True)
+        attempted.append(k.get("allow_dense_fallback"))
         return None, None  # fall through to GGUF; we only assert the path was reached
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
@@ -2705,8 +2708,8 @@ def test_dense_quant_prequant_skips_dense_refit(fake_runtime, tmp_path, monkeypa
         family_override = "z-image",
         transformer_quant = "fp8",
     )
-    assert dense_refit_ran == []  # prequant -> dense re-check skipped
-    assert attempted == [True]  # fast path still attempted (with the prequant)
+    assert dense_refit_ran == [True]  # the re-check runs (it gates the fallback)...
+    assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):
