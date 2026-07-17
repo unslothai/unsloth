@@ -3096,9 +3096,6 @@ def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeyp
     assert "Model auto-switch" in non_gguf_loaded
 
 
-# ── idle TTL floor ──────────────────────────────────────────────────
-
-
 def test_setter_rejects_idle_below_floor(monkeypatch):
     import storage.studio_db as db
 
