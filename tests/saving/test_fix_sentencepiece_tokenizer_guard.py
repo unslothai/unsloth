@@ -78,7 +78,7 @@ def _tokenizers():
 def _stub_auto_tokenizer(monkeypatch):
     """fix_sentencepiece_tokenizer reloads the patched directory through
     AutoTokenizer at the end; that needs a full tokenizer on disk, which is
-    out of scope here. Record the call and hand back a sentinel.
+    out of scope here. Record the reload location and hand back a sentinel.
     """
     loaded = []
 
@@ -95,7 +95,7 @@ def _stub_auto_tokenizer(monkeypatch):
 def test_old_tokenizer_is_saved_so_its_model_can_be_read(tmp_path, monkeypatch):
     """The guard must not skip the body on a fresh temporary directory.
 
-    fix_sentencepiece_tokenizer creates the temporary directory itself and then
+    fix_sentencepiece_tokenizer creates its scratch directory itself and then
     checks for a tokenizer.model inside it, but that file only appears once
     old_tokenizer.save_pretrained() has run.
     """
@@ -109,13 +109,14 @@ def test_old_tokenizer_is_saved_so_its_model_can_be_read(tmp_path, monkeypatch):
 
 
 def test_token_mapping_is_applied_to_the_sentencepiece_model(tmp_path, monkeypatch):
-    _stub_auto_tokenizer(monkeypatch)
+    loaded = _stub_auto_tokenizer(monkeypatch)
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
     fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
 
-    assert "<|im_end|>" in _read_pieces(f"{location}/tokenizer.model")
+    # The patched model lives in the per-call directory that was reloaded.
+    assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")
 
 
 def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path, monkeypatch):
@@ -134,54 +135,38 @@ def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path,
     assert result is new
 
 
-def test_stale_model_from_a_previous_call_does_not_poison_a_fast_only_call(tmp_path, monkeypatch):
-    """The temporary directory defaults to a fixed, reusable location. A prior
-    sentencepiece call leaves a tokenizer.model there; a fast-only tokenizer
-    saved afterwards writes none, so without clearing the stale file the guard
-    would pass on the previous model and patch the wrong tokenizer.
+def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
+    """Each call must work in its own unique subdirectory, so concurrent or
+    repeated calls never share scratch files, stale artifacts never leak into
+    the reload, and nothing the caller left in the scratch location is deleted.
     """
-    _stub_auto_tokenizer(monkeypatch)
-    location = str(tmp_path / "_unsloth_sentencepiece_temp")
-
-    # Call 1: a real sentencepiece tokenizer, writes a tokenizer.model.
-    old_sp, new_sp = _tokenizers()
-    fix_sentencepiece_tokenizer(old_sp, new_sp, {"</s>": "<|im_end|>"}, temporary_location = location)
-    assert os.path.isfile(f"{location}/tokenizer.model")
-
-    # Call 2: a fast-only tokenizer reusing the SAME directory must be returned
-    # untouched, not reloaded from call 1's stale model.
-    old_fast = _FakeTokenizer("fast", spm_bytes = None, vocab = {"</s>": 2})
-    new_fast = _FakeTokenizer("fast_new")
-    result = fix_sentencepiece_tokenizer(
-        old_fast, new_fast, {"</s>": "<|special|>"}, temporary_location = location
-    )
-
-    assert result is new_fast
-
-
-def test_reused_directory_is_emptied_so_stale_artifacts_do_not_leak(tmp_path, monkeypatch):
-    """The reload reads the whole reusable directory, so a leftover file from a
-    previous tokenizer that the next save does not overwrite must not survive.
-    """
-    _stub_auto_tokenizer(monkeypatch)
+    loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
     os.makedirs(location, exist_ok = True)
 
-    # An artifact from a previous tokenizer that the next save does not regenerate.
-    stale = os.path.join(location, "added_tokens.json")
-    with open(stale, "w") as f:
-        f.write('{"<stale>": 999}')
+    # A pre-existing artifact in the shared scratch location.
+    marker = os.path.join(location, "leftover.json")
+    with open(marker, "w") as f:
+        f.write("{}")
 
-    old, new = _tokenizers()
-    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+    old1, new1 = _tokenizers()
+    old2, new2 = _tokenizers()
+    fix_sentencepiece_tokenizer(old1, new1, {"</s>": "<|im_end|>"}, temporary_location = location)
+    fix_sentencepiece_tokenizer(old2, new2, {"</s>": "<|im_end|>"}, temporary_location = location)
 
-    assert not os.path.isfile(stale), "stale artifact from a previous call was not cleared"
+    work1, work2 = loaded[0], loaded[1]
+    assert work1 != work2, "two calls reused the same directory"
+    assert os.path.dirname(work1) == location and os.path.dirname(work2) == location
+    # Nothing the caller left behind is deleted, and it never leaks into a work dir.
+    assert os.path.isfile(marker), "a pre-existing scratch file was deleted"
+    assert not os.path.isfile(os.path.join(work1, "leftover.json"))
+    assert not os.path.isfile(os.path.join(work2, "leftover.json"))
 
 
 class _CopyFromSubdirTokenizer:
-    """A slow tokenizer whose sentencepiece source lives in a subdirectory, like
-    the tokenizers convert_to_fast_tokenizer produces under {location}/{name}.
-    save_pretrained copies that source up to the destination, as HF slow
+    """A slow tokenizer whose sentencepiece source lives elsewhere (like the
+    tokenizers convert_to_fast_tokenizer produces under {location}/{name}).
+    save_pretrained copies that source into the destination, as HF slow
     tokenizers copy their vocab_file.
     """
 
@@ -198,11 +183,7 @@ class _CopyFromSubdirTokenizer:
             with open(os.path.join(location, "tokenizer.model"), "wb") as dst:
                 dst.write(data)
 
-    def __call__(
-        self,
-        texts,
-        add_special_tokens = False,
-    ):
+    def __call__(self, texts, add_special_tokens = False):
         class _Encoded:
             pass
 
@@ -211,13 +192,12 @@ class _CopyFromSubdirTokenizer:
         return encoded
 
 
-def test_clearing_keeps_the_converted_tokenizer_source_subdirectory(tmp_path, monkeypatch):
-    """convert_to_fast_tokenizer stores a converted tokenizer's source vocab under a
-    {location}/{name} subdirectory. Clearing the reusable directory must not delete
-    that subtree, or old_tokenizer.save_pretrained cannot copy tokenizer.model and the
-    sentencepiece rename is silently lost.
+def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monkeypatch):
+    """A tokenizer whose sentencepiece source lives elsewhere (e.g. the subtree
+    convert_to_fast_tokenizer created) is copied into the fresh work directory
+    and patched there; the original source is left untouched.
     """
-    _stub_auto_tokenizer(monkeypatch)
+    loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
     subdir = os.path.join(location, "some_model")
     os.makedirs(subdir, exist_ok = True)
@@ -231,61 +211,5 @@ def test_clearing_keeps_the_converted_tokenizer_source_subdirectory(tmp_path, mo
     new = _FakeTokenizer("new")
     fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
 
-    assert os.path.isfile(source_model), "converted tokenizer source subdirectory was deleted"
-    assert "<|im_end|>" in _read_pieces(f"{location}/tokenizer.model")
-
-
-class _TopLevelSourceTokenizer:
-    """A tokenizer whose sentencepiece source IS the top-level tokenizer.model, like
-    the tokenizer returned from AutoTokenizer.from_pretrained(temporary_location) on a
-    previous call. save_pretrained is a no-op copy onto itself (source == dest).
-    """
-
-    def __init__(self, model_path):
-        self.eos_token = "</s>"
-        self.pad_token = "<pad>"
-        self.vocab_file = model_path
-
-    def save_pretrained(self, location):
-        os.makedirs(location, exist_ok = True)
-        # Source already lives at location/tokenizer.model, so there is nothing to copy.
-
-    def __call__(
-        self,
-        texts,
-        add_special_tokens = False,
-    ):
-        class _Encoded:
-            pass
-
-        encoded = _Encoded()
-        encoded.input_ids = [[2] for _ in texts]
-        return encoded
-
-
-def test_clearing_keeps_the_current_tokenizers_own_source_vocab(tmp_path, monkeypatch):
-    """On a repeated call the returned tokenizer's vocab_file points back at the
-    top-level tokenizer.model. Clearing must not delete that source before saving,
-    or the guard returns the tokenizer unpatched, while a stale sibling file from a
-    different tokenizer is still removed.
-    """
-    _stub_auto_tokenizer(monkeypatch)
-    location = str(tmp_path / "_unsloth_sentencepiece_temp")
-    os.makedirs(location, exist_ok = True)
-
-    pieces = [("<s>", 0.0, CONTROL), ("a", -1.0, NORMAL), ("</s>", 0.0, CONTROL)]
-    source_model = os.path.join(location, "tokenizer.model")
-    with open(source_model, "wb") as f:
-        f.write(_spm_bytes(pieces))
-
-    # A stale artifact from a different tokenizer that must still be cleared.
-    stale = os.path.join(location, "added_tokens.json")
-    with open(stale, "w") as f:
-        f.write('{"<stale>": 999}')
-
-    old = _TopLevelSourceTokenizer(source_model)
-    new = _FakeTokenizer("new")
-    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
-
-    assert "<|im_end|>" in _read_pieces(source_model), "own source vocab was deleted before saving"
-    assert not os.path.isfile(stale), "stale sibling artifact was not cleared"
+    assert _read_pieces(source_model) == ["<s>", "a", "</s>"], "the original source vocab was modified"
+    assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")

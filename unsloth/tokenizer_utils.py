@@ -17,6 +17,7 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import tempfile
 from transformers.models.llama.modeling_llama import logger
 from peft import PeftModelForCausalLM
 import torch
@@ -370,28 +371,12 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Remove stale top-level files from an earlier call so the final
-    # AutoTokenizer.from_pretrained(temporary_location), which reads this whole
-    # directory, only sees the current tokenizer. A fast-only tokenizer writes no
-    # tokenizer.model, so without this a stale file could pass the guard below or leak
-    # into the reload (e.g. mixing models in one process, like a long-running server).
-    # Subdirectories are kept: convert_to_fast_tokenizer stores a converted tokenizer's
-    # source vocab under {temporary_location}/{name}, and old_tokenizer.save_pretrained
-    # copies tokenizer.model from there. The old tokenizer's own source vocab is kept
-    # too: on a repeated call its vocab_file points back at this top-level
-    # tokenizer.model, and save_pretrained needs it to re-emit the model.
-    source_vocab_file = getattr(old_tokenizer, "vocab_file", None)
-    keep = (
-        os.path.realpath(source_vocab_file)
-        if isinstance(source_vocab_file, str) and os.path.isfile(source_vocab_file)
-        else None
-    )
-    for entry in os.listdir(temporary_location):
-        entry_path = os.path.join(temporary_location, entry)
-        if os.path.realpath(entry_path) == keep:
-            continue
-        if os.path.isfile(entry_path) or os.path.islink(entry_path):
-            os.remove(entry_path)
+    # Work in a fresh per-call subdirectory. A shared directory let concurrent or
+    # repeated calls interfere: one call could delete or overwrite tokenizer.model after
+    # another had saved it (tripping the piece assertion or reloading the wrong model),
+    # and stale files from an earlier tokenizer could leak into the reload below. A
+    # unique directory isolates each call without deleting anything the caller owns.
+    temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)
 
     # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
