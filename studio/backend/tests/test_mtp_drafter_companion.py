@@ -429,6 +429,32 @@ def test_download_mtp_reuse_follows_snapshot_order_offline(tmp_path, monkeypatch
     assert got is not None and Path(got).parent.parent.name == "newest"
 
 
+def test_download_mtp_prefers_main_snapshot_offline(tmp_path, monkeypatch):
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    snapshots = tmp_path / "models--unsloth--gemma" / "snapshots"
+    old = snapshots / "old"
+    new = snapshots / "new"
+    old.mkdir(parents = True)
+    new.mkdir(parents = True)
+    main = old / "gemma-UD-Q4_K_XL.gguf"
+    old_drafter = old / "mtp-gemma.gguf"
+    new_drafter = new / "mtp-gemma.gguf"
+    main.write_bytes(b"main")
+    old_drafter.write_bytes(b"old")
+    new_drafter.write_bytes(b"new")
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda _repo: [new, old])
+
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/gemma-GGUF",
+        near_path = str(main),
+    )
+
+    assert got == str(old_drafter)
+
+
 def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     # Online, do not reuse a cached copy: go to the download path so a changed
     # drafter is refetched (hf_hub_download checks the current revision).

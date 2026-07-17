@@ -292,6 +292,39 @@ class TestLoadReusesCachedCopy:
 
         assert out == str(snap / "mmproj-F16.gguf")
 
+    def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {})
+        blobs = snap.parent.parent / "blobs"
+        main_blob = blobs / "main"
+        mmproj_blob = blobs / "mmproj"
+        main_blob.write_bytes(b"main")
+        mmproj_blob.write_bytes(b"mmproj")
+        try:
+            (snap / MAIN).symlink_to(main_blob)
+            (snap / "mmproj-F16.gguf").symlink_to(mmproj_blob)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable: {exc}")
+
+        with patch("huggingface_hub.list_repo_files", _fail_download):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(snap / "mmproj-F16.gguf")
+
+    def test_companion_does_not_download_during_hub_job(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        registry = _types.SimpleNamespace(active_jobs = lambda _repo: {REPO: "running"})
+
+        with (
+            patch("huggingface_hub.list_repo_files", _fail_download),
+            patch("hub.utils.download_registry.get_models_registry", lambda: registry),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out is None
+
 
 class TestCachedGgufForLoadProbe:
     def test_complete_copy_found(self, hf_cache):
@@ -305,6 +338,38 @@ class TestCachedGgufForLoadProbe:
         shard1 = f"gemma-test-{VARIANT}-00001-of-00002.gguf"
         _build_cache(hf_cache, REPO, {shard1: 4})
         assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_partial_new_snapshot_does_not_hide_complete_split(self, hf_cache):
+        import os
+
+        shard1 = f"gemma-test-{VARIANT}-00001-of-00002.gguf"
+        shard2 = f"gemma-test-{VARIANT}-00002-of-00002.gguf"
+        old = _build_cache(
+            hf_cache,
+            REPO,
+            {shard1: 4, shard2: 4},
+            snapshot_sha = "a" * 40,
+        )
+        new = _build_cache(hf_cache, REPO, {shard1: 4}, snapshot_sha = "b" * 40)
+        os.utime(old, (1_000_000, 1_000_000))
+        os.utime(new, (2_000_000, 2_000_000))
+
+        assert cached_gguf_for_load(REPO, VARIANT) == str(old / shard1)
+
+    def test_split_requires_every_declared_shard(self, hf_cache):
+        shard1 = f"gemma-test-{VARIANT}-00001-of-00003.gguf"
+        shard2 = f"gemma-test-{VARIANT}-00002-of-00003.gguf"
+        _build_cache(hf_cache, REPO, {shard1: 4, shard2: 4})
+
+        assert cached_gguf_for_load(REPO, VARIANT) is None
+
+    def test_required_mmproj_must_share_main_snapshot(self, hf_cache):
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        assert cached_gguf_for_load(REPO, VARIANT) == str(snap / MAIN)
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) is None
+
+        (snap / "mmproj-F16.gguf").write_bytes(b"mmproj")
+        assert cached_gguf_for_load(REPO, VARIANT, require_mmproj = True) == str(snap / MAIN)
 
 
 class TestLoadHubDownloadExclusion:
@@ -343,3 +408,46 @@ class TestLoadHubDownloadExclusion:
 
         assert exc_info.value.status_code == 409
         assert "load" in exc_info.value.detail.lower()
+
+    def test_hub_download_rechecks_marker_before_claim(self):
+        from fastapi import HTTPException
+
+        from hub.schemas.downloads import DownloadModelRequest
+        from hub.services.models import downloads as dl
+
+        scope = None
+
+        def mark_load(*_args, **_kwargs):
+            nonlocal scope
+            if scope is None:
+                scope = gguf_load_in_flight(REPO)
+                scope.__enter__()
+            return frozenset()
+
+        registry = _types.SimpleNamespace(
+            claim = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not claim"))
+        )
+        body = DownloadModelRequest(repo_id = REPO, gguf_variant = VARIANT)
+        try:
+            with (
+                patch.object(dl, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id),
+                patch.object(dl.gguf_variants, "gguf_variant_blob_hashes", mark_load),
+                patch.object(dl, "_registry", registry),
+            ):
+                with pytest.raises(HTTPException) as exc_info:
+                    asyncio.run(dl.download_model_response(body))
+        finally:
+            if scope is not None:
+                scope.__exit__(None, None, None)
+
+        assert exc_info.value.status_code == 409
+
+    def test_load_marker_precedes_hub_guard_and_unload(self):
+        source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+        gguf_branch = source[source.index("if config.is_gguf:") :]
+
+        assert (
+            gguf_branch.index("enter_context(gguf_load_in_flight")
+            < gguf_branch.index("active_jobs(config.gguf_hf_repo)")
+            < gguf_branch.index("unsloth_backend.unload_model")
+        )

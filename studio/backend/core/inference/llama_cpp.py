@@ -1008,7 +1008,18 @@ def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[
             matches = _gguf_files_for_variant(cached_files, hf_variant)
             if not matches:
                 continue
-            return matches[0], _gguf_extra_shards(matches, matches[0])
+            main = matches[0]
+            shards = _gguf_extra_shards(matches, main)
+            split = _SHARD_FULL_RE.match(main)
+            if split:
+                numbers = {
+                    int(match.group(2))
+                    for path in [main, *shards]
+                    if (match := _SHARD_FULL_RE.match(path))
+                }
+                if numbers != set(range(1, int(split.group(3)) + 1)):
+                    continue
+            return main, shards
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
     return None, []
@@ -1023,25 +1034,33 @@ def _cached_complete_gguf(
     if shards:
         return _cached_colocated_split_main(repo_id, gguf_filename, shards, {})
     m = _SHARD_FULL_RE.match(gguf_filename)
-    if m and m.group(3) != "00001":
+    if m and int(m.group(3)) > 1:
         # Do not reuse a split shard without its siblings.
         return None
     return _cached_hf_snapshot_file(repo_id, gguf_filename)
 
 
-def cached_gguf_for_load(hf_repo: str, hf_variant: Optional[str]) -> Optional[str]:
+def cached_gguf_for_load(
+    hf_repo: str,
+    hf_variant: Optional[str],
+    *,
+    require_mmproj: bool = False,
+) -> Optional[str]:
     """Return a cached GGUF that can be loaded without downloading."""
     if not hf_variant:
         return None
     hf_repo = _resolve_repo_id_casing(hf_repo)
     name, shards = _cached_variant_resolution(hf_repo, hf_variant)
-    return _cached_complete_gguf(hf_repo, name, shards)
+    main = _cached_complete_gguf(hf_repo, name, shards)
+    if main and require_mmproj and not _companion_snapshot_sibling(main, _pick_mmproj):
+        return None
+    return main
 
 
 def _snapshot_dir_of(path: str) -> Optional[Path]:
     """Return the HF cache snapshot containing path, if any."""
     try:
-        p = Path(path).resolve()
+        p = Path(os.path.abspath(path))
     except OSError:
         return None
     for ancestor in p.parents:
@@ -1065,6 +1084,23 @@ def _companion_snapshot_sibling(
         return None
     candidate = snap / sibling
     return str(candidate) if candidate.is_file() else None
+
+
+def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+    mmproj_files = sorted(
+        f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
+    )
+    if not mmproj_files:
+        return None
+    return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
+
+
+def _hub_download_in_flight(hf_repo: str) -> bool:
+    try:
+        from hub.utils.download_registry import get_models_registry
+        return bool(get_models_registry().active_jobs(hf_repo))
+    except Exception:
+        return False
 
 
 # Active GGUF loads by normalized repo ID.
@@ -4753,6 +4789,10 @@ class LlamaCppBackend:
                 logger.info("Reusing cached %s: %s", label, cached)
                 return cached
 
+        if _hub_download_in_flight(hf_repo):
+            logger.info("Skipping %s download while a hub download is active", label)
+            return None
+
         target: Optional[str] = None
         from huggingface_hub import list_repo_files
 
@@ -4835,19 +4875,6 @@ class LlamaCppBackend:
         copy co-located with the main GGUF's cache snapshot.
         """
 
-        def _pick_mmproj(candidates: list[str]) -> Optional[str]:
-            mmproj_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
-            )
-            if not mmproj_files:
-                return None
-            for f in mmproj_files:
-                if f.lower().endswith("-f16.gguf"):
-                    return f
-            return mmproj_files[0]
-
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
@@ -4897,16 +4924,6 @@ class LlamaCppBackend:
         are intentionally skipped. Returns the local path, or None.
         """
 
-        # Offline, reuse any drafter already on disk (a fresh copy can't be
-        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
-        # current cached file and refetch a changed one, so skip the probe here
-        # rather than pair new weights with a stale draft.
-        if _hf_env_offline():
-            cached = self._cached_repo_mtp_drafter(hf_repo)
-            if cached:
-                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
-                return cached
-
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
             # Root-level only: MTP/ subdir copies now share the mtp- prefix but
             # are explicit-selection, not auto-fetch (they'd sort ahead of root).
@@ -4918,6 +4935,22 @@ class LlamaCppBackend:
                 and Path(f).name.lower().startswith("mtp-")
             )
             return mtp_files[0] if mtp_files else None
+
+        if near_path:
+            cached = _companion_snapshot_sibling(near_path, _pick_mtp)
+            if cached:
+                logger.info("Reusing cached MTP drafter: %s", cached)
+                return cached
+
+        # Offline, reuse any drafter already on disk (a fresh copy can't be
+        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
+        # current cached file and refetch a changed one, so skip the probe here
+        # rather than pair new weights with a stale draft.
+        if _hf_env_offline():
+            cached = self._cached_repo_mtp_drafter(hf_repo)
+            if cached:
+                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
+                return cached
 
         return self._download_companion_gguf(
             hf_repo = hf_repo,

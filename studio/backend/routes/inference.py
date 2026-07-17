@@ -20,6 +20,7 @@ from loggers import get_logger
 import asyncio
 import threading
 import weakref
+from contextlib import ExitStack
 
 
 import re as _re
@@ -998,6 +999,7 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1035,6 +1037,7 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
+        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -3968,6 +3971,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
 
     native_grant_backed = False
     model_log_label = request.model_path
+    gguf_load_stack = ExitStack()
     try:
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
@@ -4187,6 +4191,10 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
+            if config.gguf_hf_repo:
+                from core.inference.llama_cpp import gguf_load_in_flight
+                gguf_load_stack.enter_context(gguf_load_in_flight(config.gguf_hf_repo))
+
             # Block cache writes that would race the download manager.
             # Check before unloading the current model.
             if config.gguf_hf_repo:
@@ -4199,7 +4207,12 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                     from core.inference.llama_cpp import cached_gguf_for_load
                     if (
                         await asyncio.to_thread(
-                            cached_gguf_for_load, config.gguf_hf_repo, config.gguf_variant
+                            cached_gguf_for_load,
+                            config.gguf_hf_repo,
+                            config.gguf_variant,
+                            require_mmproj = bool(
+                                config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                            ),
                         )
                         is None
                     ):
@@ -4419,17 +4432,13 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             # falls back to layer split so the checkbox never blocks a model from
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
-            # Prevent the download manager from writing this repo during the load.
-            from core.inference.llama_cpp import gguf_load_in_flight
-
-            with gguf_load_in_flight(config.gguf_hf_repo):
-                success = await load_with_tensor_fallback(
-                    _attempt_gguf_load,
-                    requested_tensor = request.tensor_parallel,
-                    extra_args = extra_llama_args,
-                    label = config.identifier,
-                    cancelled = llama_backend.load_cancelled,
-                )
+            success = await load_with_tensor_fallback(
+                _attempt_gguf_load,
+                requested_tensor = request.tensor_parallel,
+                extra_args = extra_llama_args,
+                label = config.identifier,
+                cancelled = llama_backend.load_cancelled,
+            )
 
             if not success:
                 raise HTTPException(
@@ -4668,6 +4677,8 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
         logger.error(f"Error loading model: {e}", exc_info = True)
         msg = _maybe_unsupported_message(redacted_msg)
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+    finally:
+        gguf_load_stack.close()
 
 
 def _requires_trust_remote_code_for_model(

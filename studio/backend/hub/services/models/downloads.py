@@ -60,6 +60,23 @@ def _job_status(
     return DownloadJobStatus(state = state, error = error, generation = generation)
 
 
+def _reject_if_load_in_flight(repo_id: str) -> None:
+    try:
+        from core.inference.llama_cpp import hf_gguf_load_in_flight
+        load_in_flight = hf_gguf_load_in_flight(repo_id)
+    except Exception:
+        load_in_flight = False
+    if load_in_flight:
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"A model load for '{repo_id}' is in progress and may be "
+                "downloading it. Wait for the load to finish (or cancel it), "
+                "then start the download."
+            ),
+        )
+
+
 def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
@@ -90,20 +107,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
     # Avoid concurrent writers to the same HF cache files.
-    try:
-        from core.inference.llama_cpp import hf_gguf_load_in_flight
-        _load_in_flight = hf_gguf_load_in_flight(repo_id)
-    except Exception:
-        _load_in_flight = False
-    if _load_in_flight:
-        raise HTTPException(
-            status_code = 409,
-            detail = (
-                f"A model load for '{repo_id}' is in progress and may be "
-                "downloading it. Wait for the load to finish (or cancel it), "
-                "then start the download."
-            ),
-        )
+    _reject_if_load_in_flight(repo_id)
 
     variant = (body.gguf_variant or "").strip() or None
     if variant is not None and not _is_valid_gguf_variant(variant):
@@ -154,6 +158,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
                 variant_progress_blob_hashes,
             )
 
+    _reject_if_load_in_flight(repo_id)
     claimed, claim_state = _registry.claim(
         key,
         transport,
