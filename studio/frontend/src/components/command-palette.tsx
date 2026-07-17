@@ -21,6 +21,7 @@ import {
 } from "@/features/chat";
 import { useSettingsDialogStore, type SettingsTab } from "@/features/settings";
 import { useT, type TranslationKey } from "@/i18n";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { useCommandPaletteStore } from "@/stores/command-palette";
 import {
   ChefHatIcon,
@@ -111,7 +112,7 @@ function PaletteContent() {
     // Detach the staging UI but keep any in-flight download running, like Hub.
     if (chatRuntime.pendingSelection)
       chatRuntime.abandonStagedModel({ keepDownload: true });
-    void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+    void navigate({ to: "/chat", search: { new: createNavigationNonce() } });
   });
 
   return (
