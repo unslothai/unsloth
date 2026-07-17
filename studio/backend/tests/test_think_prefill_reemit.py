@@ -139,6 +139,20 @@ def test_gemma_channel_detection_uses_active_template_not_token_metadata():
     assert detect_reasoning_channel_markers(TokenMetadataOnly()) is None
 
 
+def test_gemma_channel_detection_tries_no_argument_getter_fallback():
+    class FallbackTokenizer:
+        chat_template = "plain fallback template"
+
+        def get_chat_template(self, **kwargs):
+            if kwargs:
+                raise ValueError("tools are not supported")
+            return "...<|channel>thought\n<channel|>"
+
+    assert detect_reasoning_channel_markers(
+        FallbackTokenizer(), tools = [{"function": {"name": "web_search"}}]
+    ) == ("<|channel>thought", "<channel|>")
+
+
 def test_native_template_fallback_returns_selected_reasoning_metadata():
     from types import SimpleNamespace
 

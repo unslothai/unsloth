@@ -669,7 +669,10 @@ class MLXInferenceBackend:
             if reasoning_channel_markers is not None
             else None
         )
-        normalized_output = ""
+        # MLX consumers diff cumulative snapshots. Keep a prompt-prefilled
+        # <think> prefix on every native-protocol snapshot just as the normal
+        # decoding path does below.
+        normalized_output = think_prefix
         logger.info(
             "Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
             len(prompt),

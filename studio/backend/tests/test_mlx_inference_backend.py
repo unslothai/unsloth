@@ -585,6 +585,63 @@ def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatc
     assert not backend._generation_lock.locked()
 
 
+def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatch):
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt<think>\n",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = ("<|channel>thought", "<channel|>"),
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: None
+
+    class _Resp:
+        def __init__(self, text, tok):
+            self.text = text
+            self.token = tok
+
+    def _stream_generate(_model, _tokenizer, **_kw):
+        yield _Resp("reason", 10)
+        yield _Resp("</think>", 11)
+        yield _Resp("answer", 12)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = SimpleNamespace(all_special_tokens = [])
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "ping"}],
+            max_new_tokens = 3,
+        )
+    )
+    assert snapshots == [
+        "<think>\n",
+        "<think>\nreason",
+        "<think>\nreason</think>",
+        "<think>\nreason</think>answer",
+    ]
+    assert all(current.startswith(previous) for previous, current in zip(snapshots, snapshots[1:]))
+
+
 def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend

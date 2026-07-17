@@ -61,13 +61,10 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
         for kwargs in ({"chat_template": None, "tools": tools}, {"tools": tools}, {}):
             try:
                 selected = getter(**kwargs)
-            except TypeError:
-                continue
             except Exception:
-                break
+                continue
             if isinstance(selected, str):
                 return (selected,)
-            break
     # ProcessorMixin.apply_chat_template does not switch to "tool_use" implicitly;
     # it uses "default" unless chat_template= names another template.
     is_processor = getattr(tokenizer, "tokenizer", None) is not None and callable(
