@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file DFlash drafter contracts.
-
-DFlash is a standalone block-diffusion draft GGUF paired to a target,
-mechanically the Gemma-style separate-drafter case. Its name carries ``dflash``
-as a delimited token anywhere (``dflash-<model>.gguf`` and the
-``<model>-DFlash[-<quant>].gguf`` form llama.cpp's converter documents). Pins:
-the companion predicate + its two layering mirrors, sibling detection /
-foreign-drafter rejection, the ``draft-dflash`` flag emission (including the
-no-binary fallback and that it does not fire in a forced ``mtp`` mode), and the
-reload-dedup bounce when the drafter appears / changes / disappears or its
-draft depth changes.
-"""
+"""DFlash companion, launch, and reload contracts."""
 
 from __future__ import annotations
 
@@ -40,20 +29,13 @@ from core.inference.llama_cpp import (
 )
 
 
-# ── Companion predicate + layering mirrors ───────────────────────────
-
 DFLASH_DRAFTER_CASES = [
-    # unsloth's dflash- prefix form.
     ("dflash-Qwen3-4B.gguf", True),
     ("models/dflash-qwen3.6-27b.gguf", True),
-    # llama.cpp's documented converter output + community/HF naming: dflash as a
-    # delimited token in the middle or at the end of the name.
     ("Qwen3-4B-DFlash.gguf", True),
     ("Qwen3-4B-DFlash-q8_0.gguf", True),
     ("qwen3-4b-dflash-Q4_K_M.gguf", True),
-    # "dflash" embedded in a word (no delimiter) is not a drafter.
     ("mydflashmodel.gguf", False),
-    # Not a gguf, and a real quant with no dflash token.
     ("dflash-readme.txt", False),
     ("Qwen3-4B-Q4_K_M.gguf", False),
 ]
@@ -61,14 +43,9 @@ DFLASH_DRAFTER_CASES = [
 
 @pytest.mark.parametrize("path,expected", DFLASH_DRAFTER_CASES)
 def test_dflash_predicate_and_mirrors_agree(path, expected):
-    # The three mirrors must change in lockstep; a DFlash drafter is a companion
-    # everywhere mmproj / mtp- are.
     assert is_mtp_drafter_path(path) is expected
     assert _is_mtp_drafter(path) is expected
     assert _is_companion_gguf_path(path) is expected
-
-
-# ── Sibling detection ────────────────────────────────────────────────
 
 
 def test_detect_dflash_file_finds_root_sibling(tmp_path):
@@ -85,15 +62,12 @@ def test_detect_dflash_file_none_without_sibling(tmp_path):
 
 
 def test_detect_dflash_file_skips_foreign_drafter(tmp_path):
-    # A drafter whose stem does not prefix the weight must not attach
-    # (fail-safe: no DFlash, never a mismatched draft).
     (tmp_path / "qwen3-8b-Q4_K_M.gguf").touch()
     (tmp_path / "dflash-gemma-4-12b-it.gguf").touch()
     assert detect_dflash_file(str(tmp_path / "qwen3-8b-Q4_K_M.gguf")) is None
 
 
 def test_detect_dflash_file_pairs_by_weight_name(tmp_path):
-    # The base-model drafter pairs with a quant of that base.
     (tmp_path / "gemma-4-31B-it-Q4_K_M.gguf").touch()
     drafter = tmp_path / "dflash-gemma-4-31B-it.gguf"
     drafter.touch()
@@ -102,7 +76,6 @@ def test_detect_dflash_file_pairs_by_weight_name(tmp_path):
 
 
 def test_detect_dflash_file_search_root(tmp_path):
-    # Weight in a quant subdir, drafter at the snapshot root.
     sub = tmp_path / "Q4_K_M"
     sub.mkdir()
     (sub / "Qwen3-4B-Q4_K_M.gguf").touch()
@@ -113,14 +86,12 @@ def test_detect_dflash_file_search_root(tmp_path):
 
 
 def test_detect_gguf_model_rejects_dflash_drafter(tmp_path):
-    # A dflash-*.gguf is a companion, never the selectable main model.
     drafter = tmp_path / "dflash-Qwen3-4B.gguf"
     drafter.touch()
     assert detect_gguf_model(str(drafter)) is None
 
 
 def test_detect_dflash_and_mtp_are_disjoint(tmp_path):
-    # The two prefixes never cross-detect.
     (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
     (tmp_path / "dflash-Qwen3-4B.gguf").touch()
     (tmp_path / "mtp-Qwen3-4B.gguf").touch()
@@ -132,15 +103,11 @@ def test_detect_dflash_and_mtp_are_disjoint(tmp_path):
 @pytest.mark.parametrize(
     "drafter_name",
     [
-        # llama.cpp's documented converter output (docs/speculative.md).
         "Qwen3-4B-DFlash.gguf",
-        # community / HF releases append a quant tag.
         "Qwen3-4B-DFlash-q8_0.gguf",
     ],
 )
 def test_detect_dflash_file_finds_infix_dflash(tmp_path, drafter_name):
-    # The `<model>-DFlash[-<quant>].gguf` form pairs with a quant of that model,
-    # so a drafter following llama.cpp's own naming is actually engaged.
     (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
     drafter = tmp_path / drafter_name
     drafter.touch()
@@ -149,43 +116,30 @@ def test_detect_dflash_file_finds_infix_dflash(tmp_path, drafter_name):
 
 
 def test_detect_gguf_model_rejects_infix_dflash_drafter(tmp_path):
-    # A `<model>-DFlash.gguf` must not be offered as the selectable main model.
     drafter = tmp_path / "Qwen3-4B-DFlash.gguf"
     drafter.touch()
     assert detect_gguf_model(str(drafter)) is None
 
 
 def test_dflash_pairs_weight_by_model_name():
-    # The shared pairing predicate: a drafter pairs only with a weight its model
-    # side prefixes, so a multi-model repo can't attach a foreign drafter (used
-    # by both detect_dflash_file and the -hf drafter pick).
     from utils.models.model_config import _dflash_pairs_weight
 
     assert _dflash_pairs_weight("Qwen3-8B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
     assert _dflash_pairs_weight("dflash-Qwen3-8B.gguf", "Qwen3-8B-Q4_K_M.gguf") is True
-    # A 4B drafter must not attach to an 8B weight (multi-model repo).
     assert _dflash_pairs_weight("Qwen3-4B-DFlash-q8_0.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
-    # A partial model token must end at a delimiter, not inside another token.
     assert _dflash_pairs_weight("dflash-Qwen.gguf", "Qwen3-8B-Q4_K_M.gguf") is False
-    # The quant suffix side never pairs a quant-only weight name.
     assert _dflash_pairs_weight("OtherModel-DFlash-q8_0.gguf", "Q8_0.gguf") is False
-    # Unknown weight (None) pairs with any dflash drafter; a non-dflash file never.
     assert _dflash_pairs_weight("Qwen3-8B-DFlash.gguf", None) is True
     assert _dflash_pairs_weight("Qwen3-8B-Q4_K_M.gguf", None) is False
 
 
 def test_detect_dflash_file_ignores_quant_only_weight_name(tmp_path):
-    # A native weight named after its quant (Q8_0.gguf) must not attach a foreign
-    # drafter via the drafter's quant suffix (OtherModel-DFlash-q8_0 -> q8_0).
     (tmp_path / "Q8_0.gguf").touch()
     (tmp_path / "OtherModel-DFlash-q8_0.gguf").touch()
     assert detect_dflash_file(str(tmp_path / "Q8_0.gguf")) is None
 
 
 def test_detect_dflash_file_prefers_quantized_over_bf16(tmp_path):
-    # The documented flow produces `<model>-DFlash-bf16.gguf` then quantizes to
-    # `-q8_0.gguf`, leaving both beside the model. Pick the smaller (quantized)
-    # so Studio doesn't launch the oversized full-precision drafter.
     (tmp_path / "Qwen3-4B-Q4_K_M.gguf").touch()
     bf16 = tmp_path / "Qwen3-4B-DFlash-bf16.gguf"
     bf16.write_bytes(b"\0" * 4096)
@@ -194,8 +148,6 @@ def test_detect_dflash_file_prefers_quantized_over_bf16(tmp_path):
     found = detect_dflash_file(str(tmp_path / "Qwen3-4B-Q4_K_M.gguf"))
     assert found == str(q8.resolve())
 
-
-# ── Flag emission ────────────────────────────────────────────────────
 
 _CAPS_WITH_DFLASH = {
     "dflash_token": "draft-dflash",
@@ -255,7 +207,6 @@ def test_emit_dflash_falls_back_when_binary_lacks_token(monkeypatch):
 
 
 def test_dflash_does_not_engage_in_forced_mtp_mode(monkeypatch):
-    # A drafter present but the user forced "mtp": DFlash must not hijack it.
     _, flags = _emit(
         monkeypatch,
         _CAPS_WITH_DFLASH,
@@ -266,9 +217,6 @@ def test_dflash_does_not_engage_in_forced_mtp_mode(monkeypatch):
 
 
 def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
-    # A model with an embedded MTP head AND a dflash sibling, on a binary that
-    # lacks draft-dflash, must fall back to its MTP head instead of regressing
-    # to no speculative decoding just because the dflash file is present.
     caps = {
         "mtp_token": "mtp",
         "supports_mtp": True,
@@ -296,8 +244,6 @@ def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
 
 
 def test_dflash_does_not_engage_for_vision_loads(monkeypatch):
-    # DFlash multimodal drafting is unsupported upstream: a dflash sibling beside
-    # a VLM must not emit --model-draft (it would abort alongside --mmproj).
     _, flags = _emit(
         monkeypatch,
         _CAPS_WITH_DFLASH,
@@ -306,9 +252,6 @@ def test_dflash_does_not_engage_for_vision_loads(monkeypatch):
     )
     assert "draft-dflash" not in flags
     assert "--model-draft" not in flags
-
-
-# ── Reload-dedup bounce ──────────────────────────────────────────────
 
 
 class _FakeProcess:
@@ -373,8 +316,6 @@ def test_already_in_target_state_dedups_same_dflash_drafter(tmp_path):
     ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
 )
 def test_already_in_target_state_bypasses_after_dflash_fallback(tmp_path, reason):
-    # Backend parity with the route guard: a prior DFlash fallback must not
-    # dedupe, so a direct/CLI reload retries after an update or a fixed drafter.
     weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
     weight.touch()
     drafter = tmp_path / "dflash-Qwen3-4B.gguf"
@@ -385,7 +326,6 @@ def test_already_in_target_state_bypasses_after_dflash_fallback(tmp_path, reason
 
 
 def test_already_in_target_state_reloads_when_dflash_drafter_appears(tmp_path):
-    # Loaded without a drafter; a dflash sibling now resolves -> must reload.
     weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
     weight.touch()
     drafter = tmp_path / "dflash-Qwen3-4B.gguf"
@@ -401,20 +341,12 @@ def test_already_in_target_state_reloads_when_dflash_drafter_removed(tmp_path):
     assert _in_target(backend, str(weight), None) is False
 
 
-# ── User-supplied --spec-type draft-dflash in extras ─────────────────
-
-
 def test_extra_args_requests_dflash():
-    # Auto-detect emits draft-dflash in spec_flags; a manually supplied drafter
-    # only shows up here, so the crash-recovery retry must key off it too (like
-    # MTP's _extra_args_requests_mtp), else a user drafter that aborts the
-    # server fails the whole load instead of retrying without speculation.
     assert _extra_args_requests_dflash(["--spec-type", "draft-dflash"]) is True
     assert _extra_args_requests_dflash(["--spec-type=draft-dflash"]) is True
     assert _extra_args_requests_dflash(["--spec-type", "draft-mtp"]) is False
     assert _extra_args_requests_dflash(["--model-draft", "/d/dflash.gguf"]) is False
     assert _extra_args_requests_dflash(None) is False
-    # A CLI flag wins over the env, matching llama.cpp / _effective_spec_type.
     assert _extra_args_requests_dflash([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-dflash"}) is True
     assert (
         _extra_args_requests_dflash(
@@ -424,12 +356,8 @@ def test_extra_args_requests_dflash():
     )
 
 
-# ── Route reload-dedup: HF must not thrash on a snapshot dflash sibling ───
-
-
 def _load_inference_routes_module():
-    """Load routes/inference.py directly, bypassing routes/__init__.py (which
-    imports every router, dragging in unrelated deps)."""
+    """Load inference routes without importing every router."""
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
     spec = importlib.util.spec_from_file_location("dflash_drafter_inference_routes", route_path)
     assert spec is not None and spec.loader is not None
@@ -461,9 +389,6 @@ def _route_dedup_backend(gguf_path, *, hf_repo):
 
 
 def test_hf_load_dedups_when_dflash_drafter_matches(tmp_path):
-    # HF loads now resolve the DFlash drafter (_download_dflash), so the dedup
-    # runs for HF too: when the stored drafter matches the snapshot sibling, a
-    # duplicate /load dedups (no thrash).
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -479,9 +404,6 @@ def test_hf_load_dedups_when_dflash_drafter_matches(tmp_path):
 
 
 def test_hf_load_reloads_when_dflash_appears_unresolved(tmp_path):
-    # A DFlash file present in the HF snapshot but not yet the stored drafter
-    # must force a reload so the newly available drafter engages, rather than
-    # sticking on already_loaded.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -495,8 +417,6 @@ def test_hf_load_reloads_when_dflash_appears_unresolved(tmp_path):
 
 
 def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
-    # A VLM suppresses DFlash, so its stored path stays None; a detected sibling
-    # must not be compared against it (that would reload every /load).
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -511,8 +431,6 @@ def test_vision_load_with_dflash_sibling_does_not_thrash(tmp_path):
 
 
 def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
-    # The HF guard must not weaken the local path: a dflash sibling that
-    # resolves next to a local weight with no stored drafter still reloads.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -526,8 +444,6 @@ def test_local_load_still_reloads_when_dflash_sibling_appears(tmp_path):
 
 
 def test_remote_companion_bytes_counts_preferred_dflash(monkeypatch):
-    # The training VRAM guard must count the DFlash drafter the -hf load will
-    # fetch (the quantized one), not the oversized bf16 and not every build.
     from types import SimpleNamespace
 
     import huggingface_hub
@@ -546,9 +462,6 @@ def test_remote_companion_bytes_counts_preferred_dflash(monkeypatch):
 
 
 def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
-    # Weight in a quant subdir, drafter at the snapshot root: the reload dedup
-    # scans the companion root (like initial detection), so a duplicate /load
-    # dedups instead of reloading every time.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -570,9 +483,6 @@ def test_dflash_reload_dedup_finds_root_sibling(tmp_path):
     ["binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"],
 )
 def test_dflash_failure_forces_reload_to_retry(tmp_path, reason):
-    # After any DFlash fallback (old binary, fork-format drafter, runtime crash),
-    # a same-settings reload must retry so a newer binary or a replaced drafter
-    # engages, instead of deduping to the fallback server.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -589,8 +499,6 @@ def test_dflash_failure_forces_reload_to_retry(tmp_path, reason):
 
 
 def test_extra_args_dflash_counts_as_separate_draft():
-    # A user-supplied --spec-type draft-dflash must be treated as a separate
-    # draft model so the VRAM budget reserves for it (like draft-simple/eagle3).
     from core.inference.llama_cpp import _extra_args_requests_separate_draft
 
     assert _extra_args_requests_separate_draft(["--spec-type", "draft-dflash"]) is True
@@ -600,9 +508,6 @@ def test_extra_args_dflash_counts_as_separate_draft():
 
 
 def test_dflash_nmax_change_forces_reload(tmp_path):
-    # DFlash engages only in Auto (backend_mode stays "auto"), so the route must
-    # key the n-max compare off the resolved draft-dflash spec, else a changed
-    # --spec-draft-n-max is deduped and the backend n-max guard never runs.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 
@@ -623,9 +528,6 @@ def test_dflash_nmax_change_forces_reload(tmp_path):
 
 
 def test_auto_mtp_nmax_change_also_reloads(tmp_path):
-    # Parity: the route n-max compare mirrors the backend guard, which covers
-    # draft-mtp too. An Auto MTP load stays backend_mode "auto", so a changed
-    # n-max must not dedup just because it isn't a forced mtp / mtp+ngram mode.
     routes = _load_inference_routes_module()
     from models.inference import LoadRequest
 

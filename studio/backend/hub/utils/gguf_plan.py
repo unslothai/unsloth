@@ -16,10 +16,7 @@ from hub.utils.gguf import (
     is_mtp_drafter_path,
 )
 
-# Full-precision converter output (never the preferred drafter when a quant
-# exists). Matched on the filename token so it catches ``fp16`` too, which
-# extract_quant_label does not recognize; kept in lockstep with the direct
-# loader's _download_dflash picker in core/inference/llama_cpp.py.
+# Prefer quantized DFlash builds over these converter outputs.
 _FULL_PRECISION_GGUF_TOKENS = ("bf16", "f16", "f32", "fp16")
 
 
@@ -132,12 +129,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
 
 
 def preferred_dflash_sibling(siblings: Sequence) -> Optional[object]:
-    """The separate DFlash drafter to fetch with every variant, matching the
-    loader's detect_dflash_file resolution: a ``dflash`` delimited-token GGUF
-    (``dflash-<model>`` or ``<model>-DFlash[-<quant>]``), preferring a quantized
-    build over the full-precision converter output (bf16/f16/f32) so a repo
-    shipping both doesn't download and launch the oversized drafter. None for
-    repos with the head baked into the main GGUF (Qwen)."""
+    """Pick a DFlash sibling, preferring quantized over full-precision builds."""
     candidates = [
         s
         for s in siblings
@@ -164,9 +156,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
     mtp_sibling = preferred_mtp_sibling(siblings)
     mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
-    # Vision repos suppress DFlash at load (unsupported multimodal drafting), so
-    # don't fetch the drafter with every variant -- it would only waste disk /
-    # bandwidth and can fail an otherwise valid download on tight machines.
+    # DFlash does not support multimodal drafting.
     dflash_sibling = None if all_mmproj else preferred_dflash_sibling(siblings)
     dflash_expected = (
         expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None

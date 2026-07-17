@@ -3171,26 +3171,14 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
-    # A DFlash load that fell back (binary lacked draft-dflash, a fork-format
-    # drafter, or a runtime crash) left a fallback server. A same-settings reload
-    # must retry so a newer llama.cpp (after `unsloth studio update`) or a
-    # replaced/fixed drafter at the same path engages -- otherwise the path
-    # compare below dedupes on the unchanged name and the fallback sticks. These
-    # reasons are DFlash-specific, so fire regardless of mode or whether the spec
-    # came from Auto or validated extra args (both can hit the failure).
+    # Retry DFlash fallbacks after a binary update or drafter replacement.
     if llama_backend.spec_fallback_reason in (
         "binary_no_dflash",
         "dflash_drafter_incompatible",
         "dflash_runtime_error",
     ):
         return False
-    # spec_draft_n_max only matters with a model-draft variant; None means
-    # "platform default" and matches whatever the backend chose. An Auto load
-    # that resolved to a drafter (Gemma MTP or DFlash) stays backend_mode
-    # "auto", so key off the resolved spec too -- mirroring the backend's own
-    # guard (_already_in_target_state, which compares n_max for draft-mtp /
-    # draft-dflash). Otherwise this route dedup short-circuits before that guard
-    # and the new value is silently dropped.
+    # Auto keeps its requested mode, so use the resolved mode for draft depth.
     _draft_n_max_engaged = backend_mode in ("mtp", "mtp+ngram") or (
         llama_backend.speculative_type in ("draft-mtp", "draft-dflash")
     )
@@ -3242,8 +3230,7 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            # Scan the companion root too (weight in a quant subdir, drafter at
-            # the snapshot root), matching the initial ModelConfig detection.
+            # Match the initial search across the quant directory and snapshot root.
             _mtp_root = _local_gguf_companion_search_root(
                 llama_backend.gguf_path, llama_backend.gguf_path
             )
@@ -3256,13 +3243,7 @@ def _request_matches_loaded_settings(
                 return False
             if detected_resolved != stored_resolved:
                 return False
-    # Same for the DFlash drafter (auto mode only, no forced "dflash" UI mode):
-    # a dflash-*.gguf added/removed next to the weights changes --model-draft.
-    # Runs for HF too now that -hf loads resolve the drafter (_download_dflash),
-    # so a dflash appearing in the snapshot forces a reload to engage it rather
-    # than sticking on already_loaded. Skip only vision loads: they suppress
-    # DFlash (unsupported multimodal drafting), so their stored path stays None
-    # and a detected sibling would thrash.
+    # Reload when Auto's DFlash companion changes. Vision loads never use it.
     if req_mode == "auto" and llama_backend.gguf_path and not llama_backend.is_vision:
         effective_extras = (
             request.llama_extra_args
@@ -3772,10 +3753,7 @@ def _remote_gguf_companion_bytes(
     include_mmproj: bool,
     include_dflash: bool = True,
 ) -> int:
-    """Bytes of MTP/DFlash/mmproj companion GGUFs Studio auto-downloads. 0 on
-    error, so it can only add headroom, never refuse a load by itself.
-    ``include_dflash`` is False for vision loads, which suppress DFlash and so
-    never fetch the drafter."""
+    """Return auto-downloaded companion bytes, or 0 if they cannot be sized."""
     try:
         from huggingface_hub import model_info
 
@@ -3794,8 +3772,7 @@ def _remote_gguf_companion_bytes(
             is_root_mtp = "/" not in name and base.startswith("mtp-")
             if is_root_mtp or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
-        # DFlash: only the preferred (quantized) drafter is fetched, so count that
-        # one, not every -DFlash- build a repo may ship alongside it.
+        # Count only the DFlash build the loader selects.
         if include_dflash:
             dflash = preferred_dflash_sibling(siblings)
             if dflash is not None:
@@ -3851,8 +3828,7 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        # DFlash is suppressed only when the mmproj is active. A local VLM
-        # loaded text-only with --no-mmproj can still engage its DFlash sibling.
+        # A VLM loaded with --no-mmproj may still engage DFlash.
         _cfg_is_vision = bool(getattr(config, "gguf_mmproj_file", None)) and not (
             extra_args_disable_mmproj(llama_extra_args)
         )
@@ -4400,8 +4376,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
                     if config.gguf_dflash_file:
-                        # Same lease check as the MTP drafter: a dflash-*.gguf
-                        # must sit under the granted path and not be a symlink.
+                        # Apply the same lease boundary as MTP.
                         try:
                             _validate_native_gguf_companion(
                                 config.gguf_dflash_file, config.gguf_file, "DFlash drafter"

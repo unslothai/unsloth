@@ -1140,19 +1140,11 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-# A DFlash drafter carries ``dflash`` as a delimited token anywhere in the
-# basename, case-insensitive: the ``dflash-<model>.gguf`` form unsloth ships and
-# the ``<model>-DFlash[-<quant>].gguf`` form llama.cpp's own converter documents
-# (docs/speculative.md) and community/HF releases use. Bare ``dflash`` embedded
-# in a word (``mydflash.gguf``) is not a drafter, so both sides need a delimiter.
-# CANONICAL COPY mirrored in llama_cpp._is_companion_gguf_path and
-# hub.utils.gguf.is_mtp_drafter_path (layering forbids a shared import).
+# Match either documented DFlash naming form without matching embedded words.
+# Mirrored in llama_cpp.py and hub/utils/gguf.py.
 _DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
 
-# A basename token that is purely a quant/precision tag (Q4_K_M, IQ2_XXS, Q8_0,
-# BF16, fp16, ...). Used to drop the quant side when pairing a DFlash drafter by
-# model name, so ``<model>-DFlash-q8_0.gguf`` doesn't attach to a weight whose
-# own name starts with that quant (e.g. a native ``Q8_0.gguf``).
+# Exclude quant and precision suffixes when deriving the target model name.
 _GGUF_QUANT_TAG_RE = re.compile(
     r"^(?:ud-)?(?:mxfp\d+(?:_[a-z0-9]+)*|iq\d+_[a-z]+(?:_[a-z0-9]+)?|tq\d+_\d+"
     r"|q\d+_k(?:_[a-z]+)?|q\d+_\d+|q\d+_k|bf16|f16|f32|fp16)$",
@@ -1161,11 +1153,7 @@ _GGUF_QUANT_TAG_RE = re.compile(
 
 
 def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) -> bool:
-    """True if a ``dflash`` drafter basename pairs with the weight by model name:
-    the non-quant side of the dflash token (``dflash-<model>`` -> after;
-    ``<model>-DFlash[-<quant>]`` -> before) must prefix the weight filename. A
-    None weight (unknown) pairs with any dflash drafter. Shared by the local
-    detect_dflash_file and the -hf drafter pick so both resolve the same file."""
+    """Return whether a DFlash filename identifies the selected target model."""
     name = drafter_basename.lower()
     if not name.endswith(".gguf"):
         return False
@@ -1188,17 +1176,7 @@ def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) 
 
 
 def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file speculative drafter (MTP or DFlash), a companion
-    to the main model rather than a selectable quant: the MTP repo-root
-    ``mtp-*.gguf`` / ``MTP/`` subdir copies (Gemma 4), or a DFlash
-    ``dflash-*.gguf``.
-
-    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub).
-    Must be excluded everywhere mmproj is, or the drafter leaks into variant
-    menus (a phantom quant) and quant-matched file lookups -- e.g. a ``Q8_0``
-    request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead
-    of the real weight.
-    """
+    """Return whether a GGUF is an MTP or DFlash companion, not a main model."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
@@ -1418,15 +1396,7 @@ def _detect_drafter_sibling(
     prefix: str,
     search_root: Optional[str] = None,
 ) -> Optional[str]:
-    """Find a separate drafter (``<prefix>*.gguf``) sibling for a local GGUF.
-
-    The drafter that pairs with the main weights sits at the repo/snapshot
-    root; the weight itself may be at the root or in a quant subdir, so scan the
-    weight's directory and ``search_root``. Pairs by name so a multi-model
-    folder can't attach a foreign drafter: the drafter is ``<prefix><model>.gguf``
-    where ``<model>`` prefixes the weight filename. An unmatched drafter is
-    skipped (fail-safe: no drafter).
-    """
+    """Find a matching ``<prefix>*.gguf`` beside the weight or at ``search_root``."""
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
@@ -1465,23 +1435,7 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
 
 
 def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """Find the separate DFlash drafter for a local GGUF.
-
-    DFlash is always a standalone block-diffusion draft GGUF paired to a target
-    (never an embedded head). Unlike the ``mtp-`` prefix, real DFlash GGUFs carry
-    ``dflash`` as a delimited token anywhere in the name: ``dflash-<model>.gguf``
-    (unsloth), and the ``<model>-DFlash[-<quant>].gguf`` form llama.cpp's own
-    converter documents and community/HF releases ship (e.g.
-    ``Qwen3-4B-DFlash.gguf`` next to ``Qwen3-4B-Q4_K_M.gguf``). Pairs by name so a
-    multi-model folder can't attach a foreign drafter: the model portion of the
-    drafter (the side of the ``dflash`` token that isn't a quant tag) must prefix
-    the weight filename. An unmatched drafter is skipped (fail-safe: no DFlash).
-    The drafter may sit at the root while the weight is in a quant subdir, so scan
-    the weight's directory and ``search_root``. The documented conversion flow
-    leaves both the ``-bf16`` converter output and its quantized copy beside the
-    model, so among matches in a directory pick the smallest (a quantized drafter
-    over the full-precision one) rather than whichever sorts first.
-    """
+    """Find the smallest matching DFlash drafter beside a local GGUF or at its root."""
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
@@ -2795,7 +2749,7 @@ class ModelConfig:
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
 
-                # Separate DFlash drafter sibling (dflash-*.gguf), same shape.
+                # Separate DFlash drafter sibling.
                 dflash_file = detect_dflash_file(gguf_file, search_root = companion_root)
                 if dflash_file:
                     logger.info(f"Detected DFlash drafter: {dflash_file}")
