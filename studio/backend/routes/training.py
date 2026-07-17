@@ -169,7 +169,11 @@ async def start_training(
         from utils.transformers_version import SidecarSwapInProgress
 
         try:
-            success = launch_training(
+            # Off the event loop: kwargs build can hit the Hub for sidecar tier
+            # detection, and the spawn itself blocks; launch.py's start lock
+            # serializes this with the queue runner.
+            success = await asyncio.to_thread(
+                launch_training,
                 job_id = job_id,
                 request = request,
                 resume_output_dir = resume_output_dir,

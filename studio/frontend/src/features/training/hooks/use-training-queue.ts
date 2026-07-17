@@ -121,8 +121,33 @@ export function useTrainingQueue() {
 // faster status poll usually adopts the new job first, which would swallow
 // the sidebar nudge here.
 function applyQueueState(state: TrainingQueueState): void {
-  const previousActiveJobId = useTrainingQueueStore.getState().activeJobId;
+  const previous = useTrainingQueueStore.getState();
+  const previousActiveJobId = previous.activeJobId;
   useTrainingQueueStore.getState().applyState(state);
+
+  if (!state.active_job_id) {
+    // A queued run can start and finish entirely between polls (or while the
+    // tab was hidden, when polling stops): the next snapshot then only shows a
+    // terminal item and no active_job_id. Refresh history and runtime off that
+    // terminal edge too, not just the active-id edge below. The first snapshot
+    // after mount is exempt: pre-existing terminal items are not news.
+    const previousStatusById = new Map(
+      previous.items.map((item) => [item.id, item.status]),
+    );
+    const newlyFinished =
+      previous.hasHydrated &&
+      state.items.some(
+        (item) =>
+          item.job_id !== null &&
+          (item.status === "done" || item.status === "skipped") &&
+          previousStatusById.get(item.id) !== item.status,
+      );
+    if (previousActiveJobId !== null || newlyFinished) {
+      emitTrainingRunsChanged();
+      void syncTrainingRuntimeFromBackend().catch(() => undefined);
+    }
+    return;
+  }
 
   if (state.active_job_id) {
     const activeJobChanged = state.active_job_id !== previousActiveJobId;
