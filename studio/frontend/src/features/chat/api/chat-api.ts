@@ -131,6 +131,8 @@ export async function validateModel(
       // follow-up /load and doesn't unload for a load /load would then reject.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      speculative_type: payload.speculative_type ?? null,
+      llama_extra_args: payload.llama_extra_args ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

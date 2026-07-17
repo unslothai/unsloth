@@ -7686,7 +7686,6 @@ class LlamaCppBackend:
             dflash_token = caps.get("dflash_token") if caps else None
             if not dflash_token:
                 # Leave state untouched so Auto can fall through to MTP or ngram.
-                self._dflash_retry_needed = True
                 logger.warning(
                     "Requested DFlash speculative decoding but llama-server "
                     "lacks --spec-type draft-dflash; run `unsloth studio update`."

@@ -4925,6 +4925,8 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
+            llama_extra_args = request.llama_extra_args,
+            speculative_type = request.speculative_type,
         )
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a

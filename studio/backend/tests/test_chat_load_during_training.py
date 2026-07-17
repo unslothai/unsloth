@@ -420,11 +420,18 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         decision,
         captured = None,
         load_in_4bit = True,
+        speculative_type = None,
+        llama_extra_args = None,
+        guard_call = None,
     ):
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
-            model_path = "unsloth/Qwen3-1.7B", load_in_4bit = load_in_4bit, max_seq_length = 4096
+            model_path = "unsloth/Qwen3-1.7B",
+            load_in_4bit = load_in_4bit,
+            max_seq_length = 4096,
+            speculative_type = speculative_type,
+            llama_extra_args = llama_extra_args,
         )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
@@ -435,6 +442,15 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             path = None,
             base_model = None,
         )
+        guard_context = _stub_guard_deps(
+            training_active = training_active, decision = decision, captured = captured
+        )
+        if guard_call is not None:
+            guard_context = patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                side_effect = lambda _config, **kwargs: guard_call.append(kwargs),
+            )
         with (
             patch.object(
                 self.route,
@@ -443,7 +459,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
-            _stub_guard_deps(training_active = training_active, decision = decision, captured = captured),
+            guard_context,
         ):
             return asyncio.run(self.route.validate_model(request, current_subject = "test-user"))
 
@@ -462,10 +478,18 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         # validate must size with the request's settings, not hardcoded defaults.
         captured = []
         self._validate(
-            training_active = True, decision = (True, {}), captured = captured, load_in_4bit = False
+            training_active = True,
+            decision = (True, {}),
+            captured = captured,
+            load_in_4bit = False,
+            speculative_type = "off",
+            llama_extra_args = ["--no-mmproj"],
+            guard_call = captured,
         )
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
+        self.assertEqual(captured[0]["speculative_type"], "off")
+        self.assertEqual(captured[0]["llama_extra_args"], ["--no-mmproj"])
 
     def test_rejects_gguf_with_gpu_ids_before_guard(self):
         # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.

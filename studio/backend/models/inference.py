@@ -132,6 +132,12 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    speculative_type: Optional[str] = Field(
+        None, description = "Intended GGUF speculative mode for VRAM sizing"
+    )
+    llama_extra_args: Optional[List[str]] = Field(
+        None, description = "Intended llama-server arguments for VRAM sizing"
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "

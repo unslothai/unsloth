@@ -221,7 +221,7 @@ def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
     assert "draft-dflash" not in flags
     assert backend._speculative_type != "default"
     assert backend._spec_fallback_reason != "binary_no_dflash"
-    assert backend.dflash_retry_needed is True
+    assert backend.dflash_retry_needed is False
 
 
 def test_dflash_does_not_engage_for_vision_loads(monkeypatch):

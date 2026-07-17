@@ -605,6 +605,12 @@ export function useChatModelRuntime() {
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           let loadSpeculativeType = stateBeforeUnload.speculativeType;
           let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
+          const resetSpeculative =
+            !!currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative;
+          if (resetSpeculative) {
+            loadSpeculativeType = readPersistedSpeculativeType();
+            loadSpecDraftNMax = null;
+          }
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -633,6 +639,7 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              speculative_type: loadSpeculativeType,
             });
             // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
             if (validation.requires_transformers_upgrade) {
@@ -697,16 +704,13 @@ export function useChatModelRuntime() {
             // keepSpeculative skips this for a staged Load: the user picked the
             // mode for this model on the sidebar, so honor it (the backend still
             // falls back at runtime if the model has no MTP head).
-            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
-              const persistedSpeculativeType = readPersistedSpeculativeType();
+            if (resetSpeculative) {
               useChatRuntimeStore.setState({
-                speculativeType: persistedSpeculativeType,
-                loadedSpeculativeType: persistedSpeculativeType,
+                speculativeType: loadSpeculativeType,
+                loadedSpeculativeType: loadSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
-              loadSpeculativeType = persistedSpeculativeType;
-              loadSpecDraftNMax = null;
             }
 
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
