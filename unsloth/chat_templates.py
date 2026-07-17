@@ -2647,7 +2647,9 @@ extra_eos_tokens = None,
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:
-            partial_system += "{% endif %}"
+            partial_system += "{% else %}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
 
         jinja_template = partial_system + jinja_template
 
