@@ -1489,7 +1489,6 @@ async function autoLoadSmallestModel(): Promise<{
     max_seq_length: number;
     is_lora: boolean;
     gguf_variant?: string | null;
-    speculative_type?: string | null;
   }): Promise<boolean> {
     const validation = await validateModel({
       ...payload,
@@ -1548,7 +1547,6 @@ async function autoLoadSmallestModel(): Promise<{
         max_seq_length: effectiveMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
-        speculative_type: effectiveSpeculativeType,
       }))
     ) {
       skippedAutoLoadCandidates.add(
@@ -1828,7 +1826,6 @@ async function autoLoadSmallestModel(): Promise<{
           max_seq_length: 0,
           is_lora: false,
           gguf_variant: "UD-Q4_K_XL",
-          speculative_type: specSettings.speculativeType,
         }))
       ) {
         toast.dismiss(toastId);

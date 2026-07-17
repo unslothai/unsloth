@@ -64,7 +64,6 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
-  llama_extra_args?: string[] | null;
 }
 
 export interface ValidateModelResponse {

@@ -420,8 +420,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         decision,
         captured = None,
         load_in_4bit = True,
-        speculative_type = None,
-        llama_extra_args = None,
         guard_call = None,
     ):
         from models.inference import ValidateModelRequest
@@ -430,8 +428,6 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             model_path = "unsloth/Qwen3-1.7B",
             load_in_4bit = load_in_4bit,
             max_seq_length = 4096,
-            speculative_type = speculative_type,
-            llama_extra_args = llama_extra_args,
         )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
@@ -482,14 +478,10 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             decision = (True, {}),
             captured = captured,
             load_in_4bit = False,
-            speculative_type = "off",
-            llama_extra_args = ["--no-mmproj"],
             guard_call = captured,
         )
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
-        self.assertEqual(captured[0]["speculative_type"], "off")
-        self.assertEqual(captured[0]["llama_extra_args"], ["--no-mmproj"])
 
     def test_rejects_gguf_with_gpu_ids_before_guard(self):
         # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.
@@ -580,33 +572,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
         self.assertEqual(comp.call_args.kwargs["weight_name"], variant.filename)
 
-    def test_remote_text_only_vision_load_counts_dflash(self):
-        import utils.models.model_config as mc
-
-        cfg = SimpleNamespace(
-            gguf_file = None,
-            gguf_mmproj_file = None,
-            gguf_mtp_file = None,
-            gguf_hf_repo = "org/repo",
-            gguf_variant = "Q4_K_M",
-        )
-        variant = SimpleNamespace(
-            filename = "Qwen3-VL-4B-Q4_K_M.gguf",
-            quant = "Q4_K_M",
-            size_bytes = 10 * 1024**3,
-        )
-        with (
-            patch.object(mc, "list_gguf_variants", return_value = ([variant], True)),
-            patch.object(
-                self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
-            ) as comp,
-        ):
-            gb = self.route._estimate_gguf_required_gb(cfg, llama_extra_args = ["--no-mmproj"])
-        self.assertAlmostEqual(gb, 12.0, places = 6)
-        self.assertFalse(comp.call_args.kwargs["include_mmproj"])
-        self.assertTrue(comp.call_args.kwargs["include_dflash"])
-        self.assertEqual(comp.call_args.kwargs["weight_name"], variant.filename)
-
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(
@@ -623,47 +588,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         ):
             self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
 
-    def test_local_text_only_vision_load_counts_dflash(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            main = root / "model.gguf"
-            mmproj = root / "mmproj-F16.gguf"
-            dflash = root / "model-DFlash-q8_0.gguf"
-            main.write_bytes(b"m" * 100)
-            mmproj.write_bytes(b"v" * 20)
-            dflash.write_bytes(b"d" * 30)
-            cfg = SimpleNamespace(
-                gguf_file = str(main),
-                gguf_mmproj_file = str(mmproj),
-                gguf_mtp_file = None,
-                gguf_dflash_file = str(dflash),
-                gguf_hf_repo = None,
-                gguf_variant = None,
-            )
-            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
-                vision_gb = self.route._estimate_gguf_required_gb(cfg)
-                text_only_gb = self.route._estimate_gguf_required_gb(
-                    cfg, llama_extra_args = ["--no-mmproj"]
-                )
-                text_only_off_gb = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = ["--no-mmproj"],
-                    speculative_type = "off",
-                )
-                text_only_unsupported_gb = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = ["--no-mmproj"],
-                    dflash_supported = False,
-                )
-
-        self.assertAlmostEqual(vision_gb, 120 / (1024**3), places = 12)
-        self.assertAlmostEqual(text_only_gb, 130 / (1024**3), places = 12)
-        self.assertAlmostEqual(text_only_off_gb, 100 / (1024**3), places = 12)
-        self.assertAlmostEqual(text_only_unsupported_gb, 100 / (1024**3), places = 12)
-
-    def test_local_auto_dflash_skips_unused_mtp(self):
+    def test_local_counts_dflash_like_mtp(self):
         import tempfile
 
         with tempfile.TemporaryDirectory() as d:
@@ -671,11 +596,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             main = root / "model.gguf"
             mtp = root / "mtp-model.gguf"
             dflash = root / "model-DFlash-q8_0.gguf"
-            manual_dflash = root / "manual-DFlash-q8_0.gguf"
             main.write_bytes(b"m" * 100)
             mtp.write_bytes(b"t" * 20)
             dflash.write_bytes(b"d" * 30)
-            manual_dflash.write_bytes(b"u" * 40)
             cfg = SimpleNamespace(
                 gguf_file = str(main),
                 gguf_mmproj_file = None,
@@ -685,22 +608,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_variant = None,
             )
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
-                auto_gb = self.route._estimate_gguf_required_gb(cfg)
-                unsupported_gb = self.route._estimate_gguf_required_gb(cfg, dflash_supported = False)
-                manual_gb = self.route._estimate_gguf_required_gb(
-                    cfg,
-                    llama_extra_args = [
-                        "--spec-type",
-                        "draft-dflash",
-                        "--model-draft",
-                        str(manual_dflash),
-                    ],
-                    dflash_supported = False,
-                )
+                gb = self.route._estimate_gguf_required_gb(cfg)
 
-        self.assertAlmostEqual(auto_gb, 130 / (1024**3), places = 12)
-        self.assertAlmostEqual(unsupported_gb, 120 / (1024**3), places = 12)
-        self.assertAlmostEqual(manual_gb, 140 / (1024**3), places = 12)
+        self.assertAlmostEqual(gb, 150 / (1024**3), places = 12)
 
     def test_local_adds_kv_cache(self):
         import tempfile

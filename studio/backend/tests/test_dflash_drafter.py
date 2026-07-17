@@ -299,36 +299,6 @@ def test_already_in_target_state_dedups_same_dflash_drafter(dflash_pair):
     assert _in_target(backend, str(weight), str(drafter)) is True
 
 
-def test_already_in_target_state_retries_fallback_after_binary_change(
-    monkeypatch, dflash_pair, tmp_path
-):
-    weight, drafter = dflash_pair
-    binary = tmp_path / "llama-server"
-    binary.write_bytes(b"old")
-    backend = _dflash_backend(str(weight), str(drafter))
-    backend._spec_fallback_reason = "binary_no_dflash"
-    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda: str(binary))
-    backend._remember_dflash_fallback_inputs(str(binary), str(drafter))
-
-    assert _in_target(backend, str(weight), str(drafter)) is True
-    binary.write_bytes(b"new-binary")
-    assert _in_target(backend, str(weight), str(drafter)) is False
-
-
-def test_already_in_target_state_retries_manual_dflash_after_drafter_change(dflash_pair):
-    weight, drafter = dflash_pair
-    extra_args = ["--spec-type", "draft-dflash", "--model-draft", str(drafter)]
-    backend = _dflash_backend(str(weight), None)
-    backend._requested_spec_mode = None
-    backend._extra_args = list(extra_args)
-    backend._spec_fallback_reason = "dflash_runtime_error"
-    backend._remember_dflash_fallback_inputs(None, str(drafter))
-
-    assert _in_target(backend, str(weight), None, extra_args = extra_args) is True
-    drafter.write_bytes(b"replacement")
-    assert _in_target(backend, str(weight), None, extra_args = extra_args) is False
-
-
 def test_already_in_target_state_reloads_when_dflash_drafter_appears(dflash_pair):
     weight, drafter = dflash_pair
     backend = _dflash_backend(str(weight), None)
@@ -340,21 +310,6 @@ def test_already_in_target_state_reloads_when_dflash_drafter_removed(tmp_path):
     weight.touch()
     backend = _dflash_backend(str(weight), "/old/dflash-Qwen3-4B.gguf")
     assert _in_target(backend, str(weight), None) is False
-
-
-def test_hf_backend_reloads_when_cached_dflash_appears(dflash_pair):
-    weight, _ = dflash_pair
-    backend = _dflash_backend(str(weight), None)
-    backend._hf_repo = "unsloth/Qwen3-4B-GGUF"
-    assert _in_target(backend, None, None) is False
-
-
-def test_hf_vision_backend_ignores_cached_dflash(dflash_pair):
-    weight, _ = dflash_pair
-    backend = _dflash_backend(str(weight), None)
-    backend._hf_repo = "unsloth/Qwen3-VL-4B-GGUF"
-    backend._is_vision = True
-    assert _in_target(backend, None, None) is True
 
 
 def test_extra_args_requests_dflash():
@@ -378,10 +333,12 @@ def test_dflash_budget_reserves_after_transient_capability_probe_error():
     assert "_dflash_binary_okor_dflash_probe_raised" in compact
 
 
-def test_dflash_fallback_tracks_the_launched_drafter_path():
+def test_hf_auto_resolves_dflash_before_mtp():
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-    assert "_extra_args_mtp_draft_path(cmd,env=env)" in compact
-    assert "_remember_dflash_fallback_inputs(binary,_launched_dflash_draft_path)" in compact
+    dflash_fetch = "dflash_draft_path=self._download_dflash("
+    mtp_fetch = "mtp_draft_path=self._download_mtp("
+    assert compact.index(dflash_fetch) < compact.index(mtp_fetch)
+    assert 'not(_spec_canon=="auto"anddflash_draft_path)' in compact
 
 
 def test_text_only_vlm_downloads_dflash():
@@ -507,14 +464,6 @@ def test_remote_companion_bytes_counts_preferred_dflash(routes, monkeypatch):
         weight_name = "Qwen3-4B-Q4_K_M.gguf",
     )
     assert total == 675
-    auto_total = routes._remote_gguf_companion_bytes(
-        "org/repo",
-        hf_token = None,
-        include_mmproj = True,
-        dflash_precedes_mtp = True,
-        weight_name = "Qwen3-4B-Q4_K_M.gguf",
-    )
-    assert auto_total == 575
 
 
 def test_remote_companion_bytes_pairs_subdirectory_weight(routes, monkeypatch):
@@ -577,33 +526,6 @@ def test_hf_dflash_reload_dedup_finds_snapshot_root_from_nonquant_subdir(routes,
     backend._dflash_draft_path = str(drafter.resolve())
     req = LoadRequest(model_path = "org/repo", gguf_variant = "Q4_K_M")
     assert routes._request_matches_loaded_settings(req, backend) is True
-
-
-def test_dflash_failure_retries_after_drafter_change(routes, dflash_pair):
-    weight, drafter = dflash_pair
-    backend = _route_dedup_backend(str(weight), hf_repo = None)
-    backend._dflash_draft_path = str(drafter.resolve())
-    backend._spec_fallback_reason = "dflash_drafter_incompatible"
-    backend._remember_dflash_fallback_inputs(None, str(drafter))
-    req = LoadRequest(model_path = str(weight))
-    assert routes._request_matches_loaded_settings(req, backend) is True
-
-    drafter.write_bytes(b"replacement")
-    assert routes._request_matches_loaded_settings(req, backend) is False
-
-
-def test_manual_dflash_failure_retries_after_drafter_change(routes, dflash_pair):
-    weight, drafter = dflash_pair
-    extra_args = ["--spec-type", "draft-dflash", "--model-draft", str(drafter)]
-    backend = _route_dedup_backend(str(weight), hf_repo = None)
-    backend._extra_args = list(extra_args)
-    backend._spec_fallback_reason = "dflash_runtime_error"
-    backend._remember_dflash_fallback_inputs(None, str(drafter))
-    req = LoadRequest(model_path = str(weight), llama_extra_args = extra_args)
-
-    assert routes._request_matches_loaded_settings(req, backend) is True
-    drafter.write_bytes(b"replacement")
-    assert routes._request_matches_loaded_settings(req, backend) is False
 
 
 def test_extra_args_dflash_counts_as_separate_draft():

@@ -1588,11 +1588,6 @@ _INKLING_REASONING_EFFORT = {
     "max": 0.99,
 }
 
-_DFLASH_FALLBACK_REASONS = frozenset(
-    {"binary_no_dflash", "dflash_drafter_incompatible", "dflash_runtime_error"}
-)
-
-
 def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
     if architecture == "inkling":
         effort = kwargs.get("reasoning_effort")
@@ -1623,7 +1618,6 @@ class LlamaCppBackend:
         self._mtp_draft_path: Optional[str] = None
         self._dflash_draft_path: Optional[str] = None
         self._dflash_retry_needed = False
-        self._dflash_fallback_inputs = None
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -1807,46 +1801,6 @@ class LlamaCppBackend:
     @property
     def dflash_retry_needed(self) -> bool:
         return self._dflash_retry_needed
-
-    @staticmethod
-    def _file_revision(path: Optional[str]):
-        if not path:
-            return None
-        candidate = Path(path)
-        try:
-            resolved = str(candidate.resolve())
-        except OSError:
-            resolved = os.path.abspath(path)
-        try:
-            stat = candidate.stat()
-        except OSError:
-            return (resolved, None, None)
-        return (resolved, stat.st_mtime_ns, stat.st_size)
-
-    def _remember_dflash_fallback_inputs(
-        self, binary: Optional[str], dflash_draft_path: Optional[str]
-    ) -> None:
-        self._dflash_fallback_inputs = (
-            self._file_revision(binary),
-            self._file_revision(dflash_draft_path),
-        )
-
-    def dflash_fallback_inputs_changed(self, dflash_draft_path: Optional[str]) -> bool:
-        """Whether the binary or drafter differs from the failed DFlash attempt."""
-        if (
-            self._spec_fallback_reason not in _DFLASH_FALLBACK_REASONS
-            or self._dflash_fallback_inputs is None
-        ):
-            return False
-        binary_revision, drafter_revision = self._dflash_fallback_inputs
-        current_binary = self._find_llama_server_binary()
-        if (
-            current_binary
-            and binary_revision is not None
-            and self._file_revision(current_binary) != binary_revision
-        ):
-            return True
-        return self._file_revision(dflash_draft_path) != drafter_revision
 
     @property
     def spec_fallback_reason(self) -> Optional[str]:
@@ -5746,16 +5700,8 @@ class LlamaCppBackend:
                     # below decides the final emission. Skipped only when the
                     # user disabled MTP or drives --spec-type manually.
                     _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-                    if (
-                        not mtp_draft_path
-                        and _spec_canon in ("auto", "mtp", "mtp+ngram")
-                        and not _extra_args_set_spec_type(extra_args)
-                    ):
-                        mtp_draft_path = self._download_mtp(
-                            hf_repo = hf_repo,
-                            hf_token = hf_token,
-                        )
-                    # Auto-fetch DFlash only for supported text-only Auto loads.
+                    # Auto prefers DFlash, so resolve it before MTP and avoid
+                    # downloading a second drafter that will not be launched.
                     if not dflash_draft_path and _should_download_dflash(
                         speculative_type,
                         extra_args,
@@ -5766,6 +5712,16 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                             weight_name = Path(model_path).name if model_path else None,
+                        )
+                    if (
+                        not mtp_draft_path
+                        and _spec_canon in ("auto", "mtp", "mtp+ngram")
+                        and not _extra_args_set_spec_type(extra_args)
+                        and not (_spec_canon == "auto" and dflash_draft_path)
+                    ):
+                        mtp_draft_path = self._download_mtp(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
@@ -7335,12 +7291,6 @@ class LlamaCppBackend:
                 _spec_requested_dflash = any(
                     "dflash" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
-                # Track the path that the failed command actually selected.
-                # User extras are appended after Studio flags, and inherited
-                # environment values apply only when no CLI draft path wins.
-                _launched_dflash_draft_path = (
-                    _extra_args_mtp_draft_path(cmd, env = env) if _spec_requested_dflash else None
-                )
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
@@ -7509,10 +7459,6 @@ class LlamaCppBackend:
 
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
-                if self._spec_fallback_reason in _DFLASH_FALLBACK_REASONS:
-                    self._remember_dflash_fallback_inputs(binary, _launched_dflash_draft_path)
-                else:
-                    self._dflash_fallback_inputs = None
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -8013,41 +7959,6 @@ class LlamaCppBackend:
         if self._dflash_retry_needed and req_mode == "auto":
             return False
 
-        current_dflash_draft_path = dflash_draft_path
-        manual_dflash_requested = _extra_args_requests_dflash(extra_args, env = {})
-        if manual_dflash_requested:
-            current_dflash_draft_path = _extra_args_mtp_draft_path(extra_args, env = os.environ)
-        if (
-            gguf_path is None
-            and self._hf_repo
-            and self._gguf_path
-            and req_mode == "auto"
-            and not self._is_vision
-            and not _extra_args_set_spec_type(extra_args)
-        ):
-            from utils.models.model_config import (
-                _local_gguf_companion_search_root,
-                detect_dflash_file,
-            )
-
-            search_root = _local_gguf_companion_search_root(self._gguf_path, self._gguf_path)
-            detected = detect_dflash_file(self._gguf_path, search_root = search_root)
-            current_dflash_draft_path = detected
-            try:
-                detected_resolved = Path(detected).resolve() if detected else None
-                stored_resolved = (
-                    Path(self._dflash_draft_path).resolve() if self._dflash_draft_path else None
-                )
-            except OSError:
-                return False
-            if detected_resolved != stored_resolved:
-                return False
-
-        if (
-            manual_dflash_requested or (req_mode == "auto" and not self._is_vision)
-        ) and self.dflash_fallback_inputs_changed(current_dflash_draft_path):
-            return False
-
         # Auto keeps its requested mode, so compare depth on the resolved mode.
         if (
             self._speculative_type in ("draft-mtp", "draft-dflash")
@@ -8121,7 +8032,6 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._dflash_draft_path = None
             self._dflash_retry_needed = False
-            self._dflash_fallback_inputs = None
             self._spec_fallback_reason = None
             self._last_load_kwargs = None
             self._mtp_runtime_fallback_active = False

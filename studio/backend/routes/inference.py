@@ -991,9 +991,6 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
-        _extra_args_draft_offloaded_to_cpu,
-        _extra_args_mtp_draft_path,
-        _extra_args_requests_dflash,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -1001,7 +998,6 @@ try:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
-        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -1034,9 +1030,6 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
-        _extra_args_draft_offloaded_to_cpu,
-        _extra_args_mtp_draft_path,
-        _extra_args_requests_dflash,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -1044,7 +1037,6 @@ except ImportError:
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
         _tensor_parallel_matches_loaded,
-        extra_args_disable_mmproj,
         parse_split_mode_override,
         resolve_tensor_parallel,
         strip_shadowing_flags,
@@ -3217,13 +3209,6 @@ def _request_matches_loaded_settings(
     else:
         if list(request.llama_extra_args) != backend_extra:
             return False
-    # A failed manual DFlash request is keyed by the actual --model-draft
-    # file, not the auto-detected companion. Replacing that file in place must
-    # bypass both route and backend deduplication.
-    if _extra_args_requests_dflash(effective_extra, env = {}):
-        manual_dflash_path = _extra_args_mtp_draft_path(effective_extra, env = os.environ)
-        if llama_backend.dflash_fallback_inputs_changed(manual_dflash_path):
-            return False
     # A separate drafter (Gemma's root mtp-*.gguf) appearing or disappearing
     # next to the loaded weights changes the launch command (--model-draft),
     # so a duplicate /load must reload rather than dedupe. Always compare the
@@ -3274,8 +3259,6 @@ def _request_matches_loaded_settings(
             except OSError:
                 return False
             if detected_resolved != stored_resolved:
-                return False
-            if llama_backend.dflash_fallback_inputs_changed(detected):
                 return False
     return True
 
@@ -3765,12 +3748,9 @@ def _remote_gguf_companion_bytes(
     *,
     hf_token: Optional[str],
     include_mmproj: bool,
-    include_mtp: bool = True,
-    include_dflash: bool = True,
-    dflash_precedes_mtp: bool = False,
     weight_name: Optional[str] = None,
 ) -> int:
-    """Return auto-downloaded companion bytes, or 0 if they cannot be sized."""
+    """Return companion bytes using the existing conservative MTP policy."""
     try:
         from huggingface_hub import model_info
 
@@ -3778,7 +3758,7 @@ def _remote_gguf_companion_bytes(
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         siblings = info.siblings or []
-        dflash = preferred_dflash_sibling(siblings, weight_name) if include_dflash else None
+        dflash = preferred_dflash_sibling(siblings, weight_name)
         total = 0
         for sibling in siblings:
             name = sibling.rfilename or ""
@@ -3788,9 +3768,7 @@ def _remote_gguf_companion_bytes(
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if (
-                include_mtp and is_root_mtp and not (dflash_precedes_mtp and dflash is not None)
-            ) or (include_mmproj and "mmproj" in base):
+            if is_root_mtp or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
         # Count only the DFlash build the loader selects.
         if dflash is not None:
@@ -3837,58 +3815,21 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-    speculative_type: Optional[str] = None,
-    dflash_supported: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
         total_bytes = 0
-        user_owns_spec_type = _extra_args_set_spec_type(llama_extra_args)
-        manual_dflash_engages = bool(
-            user_owns_spec_type and _extra_args_requests_dflash(llama_extra_args, env = {})
-        )
-        auto_dflash_engages = bool(
-            not user_owns_spec_type
-            and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
-            and dflash_supported
-        )
-        manual_dflash_bytes = 0
-        if manual_dflash_engages and not _extra_args_draft_offloaded_to_cpu(
-            llama_extra_args, env = os.environ
-        ):
-            manual_dflash_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
-            if manual_dflash_path and Path(manual_dflash_path).is_file():
-                manual_dflash_bytes = LlamaCppBackend._get_gguf_size_bytes(str(manual_dflash_path))
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        # A VLM loaded with --no-mmproj may still engage DFlash.
-        _cfg_is_vision = bool(getattr(config, "gguf_mmproj_file", None)) and not (
-            extra_args_disable_mmproj(llama_extra_args)
-        )
-        dflash_file = getattr(config, "gguf_dflash_file", None)
-        local_dflash_wins = bool(
-            auto_dflash_engages
-            and not _cfg_is_vision
-            and dflash_file
-            and Path(dflash_file).is_file()
-        )
         for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
-            if attr == "gguf_mmproj_file" and not _cfg_is_vision:
-                continue
-            if attr == "gguf_mtp_file" and (local_dflash_wins or manual_dflash_engages):
-                continue
-            if attr == "gguf_dflash_file" and (
-                manual_dflash_engages or _cfg_is_vision or not auto_dflash_engages
-            ):
-                continue
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
         if total_bytes > 0:
-            return (total_bytes + manual_dflash_bytes) / (1024**3) + _estimate_gguf_kv_gb(
+            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main, max_seq_length, llama_extra_args, n_parallel
             )
 
@@ -3903,17 +3844,13 @@ def _estimate_gguf_required_gb(
             )
             if selected_variant is None:
                 return None
-            remote_is_vision = bool(has_vision) and not extra_args_disable_mmproj(llama_extra_args)
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                include_mmproj = remote_is_vision,
-                include_mtp = not manual_dflash_engages,
-                include_dflash = auto_dflash_engages and not remote_is_vision,
-                dflash_precedes_mtp = auto_dflash_engages and not remote_is_vision,
+                include_mmproj = bool(has_vision),
                 weight_name = Path(selected_variant.filename).name,
             )
-            return (selected_variant.size_bytes + companions + manual_dflash_bytes) / (1024**3)
+            return (selected_variant.size_bytes + companions) / (1024**3)
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
@@ -3930,7 +3867,6 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
-    speculative_type: Optional[str] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -3947,14 +3883,6 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
-    dflash_supported = True
-    if is_gguf:
-        try:
-            dflash_supported = bool(
-                (get_llama_cpp_backend().probe_server_capabilities() or {}).get("dflash_token")
-            )
-        except Exception:
-            dflash_supported = False
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
@@ -3962,8 +3890,6 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
-            speculative_type = speculative_type,
-            dflash_supported = dflash_supported,
         )
         if is_gguf
         else None
@@ -4303,7 +4229,6 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
-            speculative_type = request.speculative_type,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────
@@ -4958,8 +4883,6 @@ async def validate_model(
             load_in_4bit = effective_load_in_4bit,
             max_seq_length = request.max_seq_length,
             requested_gpu_ids = effective_gpu_ids,
-            llama_extra_args = request.llama_extra_args,
-            speculative_type = request.speculative_type,
         )
 
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
