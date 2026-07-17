@@ -2742,7 +2742,12 @@ export function ChatPage({
               <NativeModelChip
                 intent={pendingNativeModelIntent}
                 nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={(selection) => stageOrLoad(selection)}
+                onLoad={() =>
+                  loadNativeModelIntent(
+                    pendingNativeModelIntent,
+                    "Loading selected local GGUF model.",
+                  )
+                }
               />
             ) : null}
             {loadingModel && loadToastDismissed ? (
