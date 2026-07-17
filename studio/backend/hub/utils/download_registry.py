@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 import weakref
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterator, Literal, Optional
 
@@ -126,6 +126,9 @@ def write_worker_breadcrumb(key: str, pid: int, metadata: Optional["DownloadMeta
         "repo_id": metadata.repo_id if metadata is not None else None,
         "variant": metadata.variant if metadata is not None else None,
         "transport": metadata.transport if metadata is not None else None,
+        "cancel_marker_transport": metadata.cancel_marker_transport
+        if metadata is not None
+        else None,
     }
     tmp = path.with_name(f".{path.name}.tmp-{pid}")
     try:
@@ -305,7 +308,7 @@ def reap_orphan_workers() -> None:
                 data.get("repo_type"),
                 repo_id,
                 data.get("variant"),
-                data.get("transport"),
+                data.get("cancel_marker_transport") or data.get("transport"),
             )
         except Exception as exc:
             logger.debug("Reaper failed for breadcrumb %s: %s", entry, exc)
@@ -699,6 +702,7 @@ class DownloadMetadata:
     repo_id: str
     variant: Optional[str]
     transport: Optional[str]
+    cancel_marker_transport: Optional[str] = None
     # GGUF variant main/writable hashes, identifying the variant-specific shards
     # for concurrency decisions.
     blob_hashes: frozenset[str] = field(default_factory = frozenset)
@@ -801,6 +805,7 @@ class DownloadRegistry:
         self._processes: dict[str, subprocess.Popen] = {}
         self._repo_active: dict[str, set[str]] = {}
         self._metadata: dict[str, DownloadMetadata] = {}
+        self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a
@@ -839,6 +844,7 @@ class DownloadRegistry:
             if state in TERMINAL_STATES:
                 self._put_terminal_job_locked(key, state, error)
                 self._pending_cancel.pop(key, None)
+                self._cancel_marker_transports.pop(key, None)
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
@@ -847,6 +853,57 @@ class DownloadRegistry:
                         self._repo_active.pop(repo, None)
             else:
                 self._jobs[key] = DownloadState(state, error)
+
+    def set_error_unless_cancelled(
+        self, key: str, error: str
+    ) -> tuple[JobState, Optional[DownloadMetadata]]:
+        key = normalize_job_key(key)
+        with self._lock:
+            current = self._jobs.get(key, DownloadState("idle")).state
+            has_pending_cancel = key in self._pending_cancel
+            pending_generation = self._pending_cancel.get(key)
+            metadata = self._metadata.get(key)
+            should_cancel = current == "cancelling" or (
+                has_pending_cancel and self._generation_matches_locked(key, pending_generation)
+            )
+            terminal_state: JobState = "cancelled" if should_cancel else "error"
+            marker_transport = self._cancel_marker_transports.pop(key, None)
+            if marker_transport is None and metadata is not None:
+                marker_transport = metadata.cancel_marker_transport
+            self._put_terminal_job_locked(
+                key,
+                terminal_state,
+                None if should_cancel else error,
+            )
+            self._pending_cancel.pop(key, None)
+            repo = _repo_of_key(key)
+            active = self._repo_active.get(repo)
+            if active is not None:
+                active.discard(key)
+                if not active:
+                    self._repo_active.pop(repo, None)
+            if should_cancel and metadata is not None and marker_transport is not None:
+                metadata = replace(metadata, transport = marker_transport)
+            return terminal_state, metadata
+
+    def update_job_transport(self, key: str, transport: str) -> None:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.transport == transport:
+                return
+            self._metadata[key] = replace(metadata, transport = transport)
+
+    def release_active_slot(self, key: str) -> None:
+        key = normalize_job_key(key)
+        repo = _repo_of_key(key)
+        with self._lock:
+            active = self._repo_active.get(repo)
+            if active is None:
+                return
+            active.discard(key)
+            if not active:
+                self._repo_active.pop(repo, None)
 
     def get_job(self, key: str) -> DownloadState:
         key = normalize_job_key(key)
@@ -884,6 +941,14 @@ class DownloadRegistry:
             ):
                 self._put_terminal_job_locked(key, "cancelled")
                 metadata_to_persist = self._metadata.pop(key, None)
+                marker_transport = self._cancel_marker_transports.pop(key, None)
+                if marker_transport is None and metadata_to_persist is not None:
+                    marker_transport = metadata_to_persist.cancel_marker_transport
+                if metadata_to_persist is not None and marker_transport is not None:
+                    metadata_to_persist = replace(
+                        metadata_to_persist,
+                        transport = marker_transport,
+                    )
                 repo = _repo_of_key(key)
                 active = self._repo_active.get(repo)
                 if active is not None:
@@ -964,6 +1029,10 @@ class DownloadRegistry:
         progress_blob_hashes: Optional[frozenset[str]] = None,
         completed_baseline_bytes: int = 0,
         admission_check: Optional[Callable[[], bool]] = None,
+        generation: Optional[int] = None,
+        replace_active: bool = False,
+        metadata_transport: Optional[str] = None,
+        cancel_marker_transport: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1015,10 +1084,13 @@ class DownloadRegistry:
             if conflict_state is not None:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
-            if current in _ACTIVE_STATES:
+            if current in _ACTIVE_STATES and not replace_active:
                 return False, current
-            self._generation_seq += 1
-            self._generations[key] = self._generation_seq
+            if generation is None:
+                self._generation_seq += 1
+                self._generations[key] = self._generation_seq
+            else:
+                self._generations[key] = generation
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
@@ -1026,7 +1098,8 @@ class DownloadRegistry:
                     repo_type = repo_type,
                     repo_id = repo_id,
                     variant = variant,
-                    transport = transport,
+                    transport = metadata_transport if metadata_transport is not None else transport,
+                    cancel_marker_transport = cancel_marker_transport,
                     blob_hashes = requested_hashes,
                     progress_blob_hashes = requested_progress_hashes,
                     completed_baseline_bytes = max(
@@ -1034,8 +1107,13 @@ class DownloadRegistry:
                         int(completed_baseline_bytes or 0),
                     ),
                 )
+                if cancel_marker_transport is not None:
+                    self._cancel_marker_transports[key] = cancel_marker_transport
+                else:
+                    self._cancel_marker_transports.pop(key, None)
             else:
                 self._metadata.pop(key, None)
+                self._cancel_marker_transports.pop(key, None)
             return True, "running"
 
     def adoptable(self, key: str) -> bool:
@@ -1061,9 +1139,20 @@ class DownloadRegistry:
         download. A variant delete conflicts only with that same variant or a
         whole-repo download writing the shared snapshot; other quantizations
         download concurrently and never block it."""
-        for key in self._repo_active.get(repo_id, set()):
+        active_keys = self._repo_active.get(repo_id, set())
+        for key in active_keys:
             job = self._jobs.get(key)
             if job is None or job.state not in _ACTIVE_STATES:
+                continue
+            if variant is None:
+                return True
+            other_variant = self._active_job_variant_locked(key)
+            if other_variant is None or other_variant == variant:
+                return True
+        for key, job in self._jobs.items():
+            if key in active_keys or _repo_of_key(key) != repo_id:
+                continue
+            if job.state not in _ACTIVE_STATES:
                 continue
             if variant is None:
                 return True
@@ -1116,6 +1205,16 @@ class DownloadRegistry:
                 candidate_keys = list(self._repo_active.get(repo_key, set()))
             else:
                 candidate_keys = [key for active in self._repo_active.values() for key in active]
+            # An XET->HTTP retry handoff briefly drops its key from _repo_active
+            # while its job stays active; include those released-but-active jobs
+            # so the waiting retry still lists and can be adopted or cancelled.
+            seen = set(candidate_keys)
+            for key, job in self._jobs.items():
+                if key in seen or job.state not in _ACTIVE_STATES:
+                    continue
+                if repo_key is not None and _repo_of_key(key) != repo_key:
+                    continue
+                candidate_keys.append(key)
             refs: list[ActiveDownloadRef] = []
             for key in candidate_keys:
                 job = self._jobs.get(key)
@@ -1177,9 +1276,22 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         target = (variant or "").strip().lower() or None
         with self._lock:
-            for key in self._repo_active.get(repo_id, set()):
+            active_keys = self._repo_active.get(repo_id, set())
+            for key in active_keys:
                 job = self._jobs.get(key)
                 if job is None or job.state not in _ACTIVE_STATES:
+                    continue
+                if self._active_job_variant_locked(key) != target:
+                    return True
+            # An XET->HTTP retry peer between release_active_slot() and its reclaim
+            # is briefly absent from _repo_active while its job stays active and
+            # still owns the shared companion; mirror the released-but-active scan
+            # used by _delete_blocked_by_active_locked so it still blocks companion
+            # deletion of a different variant.
+            for key, job in self._jobs.items():
+                if key in active_keys or _repo_of_key(key) != repo_id:
+                    continue
+                if job.state not in _ACTIVE_STATES:
                     continue
                 if self._active_job_variant_locked(key) != target:
                     return True
@@ -1206,17 +1318,58 @@ class DownloadRegistry:
             return True
 
     def terminate_all(self, kind: str = "download") -> None:
+        settled_no_proc: list[Optional[DownloadMetadata]] = []
         with self._lock:
             live = [
                 (key, proc, self._metadata.get(key))
                 for key, proc in self._processes.items()
                 if proc.poll() is None
             ]
+            live_keys = {key for key, _proc, _metadata in live}
             # Flag as an intentional stop so the watcher's exit classification
             # reports them cancelled rather than an OOM/crash once SIGKILL lands.
             for key, _proc, _metadata in live:
                 if self._jobs.get(key, DownloadState("idle")).state == "running":
                     self._jobs[key] = DownloadState("cancelling")
+            # Settle active jobs without a live worker too. Two cases: an
+            # XET->HTTP retry parked in the reclaim wait loop has dropped its
+            # worker and slot guard, so it is absent from `live`; and a
+            # registered worker that already exited with an error but whose
+            # watcher has not yet run would otherwise stay `running` and spawn an
+            # HTTP retry after this shutdown snapshot. Skip a registered worker
+            # that exited cleanly (rc == 0): it completed and the watcher will
+            # mark it done, so marking it cancelling would strand a stale marker.
+            for key, job in list(self._jobs.items()):
+                if job.state not in _ACTIVE_STATES or key in live_keys:
+                    continue
+                proc = self._processes.get(key)
+                if proc is not None:
+                    if proc.poll() == 0:
+                        continue
+                    # A registered worker that exited nonzero on its own over HTTP
+                    # is a genuine terminal download failure, not a shutdown cancel
+                    # and not retry-capable: leave its error status intact rather
+                    # than persisting a cancel marker that would read as
+                    # cancelled/resumable after restart. Only an exited XET worker
+                    # could still spawn a post-shutdown HTTP retry, so only that
+                    # needs settling here.
+                    metadata = self._metadata.get(key)
+                    if metadata is not None and metadata.transport == TRANSPORT_HTTP:
+                        continue
+                self._pending_cancel[key] = self._generations.get(key)
+                self._jobs[key] = DownloadState("cancelling")
+                settled_no_proc.append(self._metadata.get(key))
+        # Persist a cancel marker for each settled no-live-worker job outside the
+        # lock (mirroring the reaped path) so shutdown records resumable/cancelled
+        # state even if it returns before the daemon watcher wakes to do so.
+        for metadata in settled_no_proc:
+            if metadata is not None:
+                persist_cancel_marker(
+                    metadata.repo_type,
+                    metadata.repo_id,
+                    metadata.variant,
+                    metadata.cancel_marker_transport or metadata.transport,
+                )
         reaped: list[tuple[str, subprocess.Popen, Optional[DownloadMetadata]]] = []
         for key, proc, metadata in live:
             try:
@@ -1230,7 +1383,7 @@ class DownloadRegistry:
                         metadata.repo_type,
                         metadata.repo_id,
                         metadata.variant,
-                        metadata.transport,
+                        metadata.cancel_marker_transport or metadata.transport,
                     )
                 continue
             reaped.append((key, proc, metadata))
@@ -1250,7 +1403,7 @@ class DownloadRegistry:
                     metadata.repo_type,
                     metadata.repo_id,
                     metadata.variant,
-                    metadata.transport,
+                    metadata.cancel_marker_transport or metadata.transport,
                 )
 
 
