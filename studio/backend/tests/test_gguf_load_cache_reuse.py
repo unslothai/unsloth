@@ -158,6 +158,20 @@ class TestLoadReusesCachedCopy:
         assert out == str(snap / MAIN)
         assert revisions == [snap.name]
 
+    def test_reuse_when_cached_revision_vanished_from_hub(self, hf_cache):
+        """The Hub answers an unknown revision with an empty result, not an error."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("huggingface_hub.get_paths_info", lambda *_a, **_k: []),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
+        ):
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
+
+        assert out == str(snap / MAIN)
+
     def test_truncated_cached_file_is_not_reused(self, hf_cache):
         backend = LlamaCppBackend()
         _build_cache(hf_cache, REPO, {MAIN: 4})

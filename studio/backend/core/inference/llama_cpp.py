@@ -1077,6 +1077,10 @@ def _cached_candidate_matches_revision_size(
         )
         return True
 
+    if not infos:
+        # The Hub answers an unknown (e.g. force-pushed away) revision with an
+        # empty result, not an error; treat it like unreachable metadata.
+        return True
     expected_sizes = {info.path: info.size for info in infos if info.size is not None}
     if any(path not in expected_sizes for path in paths):
         return False
