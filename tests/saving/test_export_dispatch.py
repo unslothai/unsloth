@@ -8,6 +8,8 @@ regressions that pure AST checks cannot (e.g. wrong scheme/suffix/outtype passed
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 import unsloth.save as save_mod
@@ -164,6 +166,40 @@ def test_push_to_hub_gguf_lora_skips_non_main_process(monkeypatch):
     )
     assert result is None
     assert calls == []
+
+
+def test_push_to_hub_gguf_skips_non_main_process_before_merged_conversion(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        save_mod,
+        "unsloth_save_pretrained_gguf",
+        lambda **kw: calls.append(kw),
+    )
+    result = save_mod.unsloth_push_to_hub_gguf(
+        _FakeModel(),
+        "repo/id",
+        tokenizer = object(),
+        is_main_process = False,
+    )
+    assert result is None
+    assert calls == []
+
+
+def test_push_to_hub_gguf_preserves_positional_max_shard_size():
+    bound = inspect.signature(save_mod.unsloth_push_to_hub_gguf).bind(
+        _FakeModel(),
+        "repo/id",
+        object(),
+        "q4_k_m",
+        None,
+        None,
+        None,
+        None,
+        "token",
+        "50GB",
+    )
+    assert bound.arguments["max_shard_size"] == "50GB"
+    assert "is_main_process" not in bound.arguments
 
 
 # -- torchao PTQ / QAT dispatch ------------------------------------------------------------
