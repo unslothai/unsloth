@@ -126,6 +126,82 @@ def test_baked_in_repo_plans_unchanged():
     assert plans["q4_k_m"].target_filenames == ("Qwen3.6-27B-MTP-Q4_K_M.gguf",)
 
 
+DFLASH_SIBLINGS = [
+    _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
+    _sib("Qwen3-4B-DFlash-bf16.gguf", 1_200, "dflash-bf16"),
+    _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+]
+
+
+def test_variant_plans_carry_dflash_drafter_preferring_quant():
+    plans = build_gguf_variant_plans(DFLASH_SIBLINGS)
+
+    # The -DFlash- files are companions, never selectable quants (no phantom q8_0).
+    assert set(plans) == {"q4_k_m"}
+    plan = plans["q4_k_m"]
+    # The quantized drafter is fetched with the variant; the oversized bf16 is not.
+    assert "Qwen3-4B-DFlash-q8_0.gguf" in plan.target_filenames
+    assert "Qwen3-4B-DFlash-bf16.gguf" not in plan.target_filenames
+    assert "dflash-q8" in plan.companion_hashes
+    assert "dflash-q8" not in plan.main_hashes
+    # Download size = main + quantized drafter (not the bf16).
+    assert plan.download_size_bytes == 4_575
+
+
+def test_variant_plans_pair_dflash_with_subdirectory_weight():
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Q4_K_M/Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
+            _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+        ]
+    )
+
+    assert plans["q4_k_m"].target_filenames == (
+        "Q4_K_M/Qwen3-4B-Q4_K_M.gguf",
+        "Qwen3-4B-DFlash-q8_0.gguf",
+    )
+
+
+def test_variant_plans_skip_dflash_for_vision_repos():
+    # A vision repo suppresses DFlash at load, so the download plan must not
+    # fetch the drafter with every variant.
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3-VL-4B-Q4_K_M.gguf", 4_000, "main"),
+            _sib("mmproj-F16.gguf", 500, "mmproj"),
+            _sib("Qwen3-VL-4B-DFlash-q8_0.gguf", 575, "dflash"),
+        ]
+    )
+    plan = plans["q4_k_m"]
+    assert not any("dflash" in name.lower() for name in plan.target_filenames)
+    assert plan.mmproj_filenames == frozenset({"mmproj-F16.gguf"})
+
+
+def test_variant_plans_prefer_quant_over_fp16_dflash():
+    # fp16 is full precision even though extract_quant_label doesn't tag it, so
+    # the quantized drafter must still win the download pick.
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
+            _sib("Qwen3-4B-DFlash-fp16.gguf", 1_200, "dflash-fp16"),
+            _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+        ]
+    )
+    plan = plans["q4_k_m"]
+    assert "Qwen3-4B-DFlash-q8_0.gguf" in plan.target_filenames
+    assert "Qwen3-4B-DFlash-fp16.gguf" not in plan.target_filenames
+
+
+def test_variant_plans_skip_foreign_dflash():
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main"),
+            _sib("Gemma-4B-DFlash-q8_0.gguf", 575, "foreign-dflash"),
+        ]
+    )
+    assert plans["q4_k_m"].target_filenames == ("Qwen3-4B-Q4_K_M.gguf",)
+
+
 def test_old_manifest_resume_reclassifies_drafter():
     # Pre-fix manifests could leak the drafter into a quant's expected
     # files; resume must classify it as a companion, not a main shard.
@@ -396,6 +472,17 @@ def test_download_mtp_reuses_cached_subdir_copy_when_no_root_offline(tmp_path, m
 
     got = LlamaCppBackend()._download_mtp(hf_repo = "unsloth/gemma-4-E4B-it-qat-mobile-GGUF")
     assert got is not None and Path(got).name == "mtp-gemma-4-E4B-it-BF16.gguf"
+
+
+def test_cached_mtp_drafter_ignores_dflash(tmp_path, monkeypatch):
+    import utils.models.model_config as mc
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = _seed_snapshot(tmp_path, ["Qwen3-4B-DFlash-q8_0.gguf"])
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: [snap])
+
+    got = LlamaCppBackend()._cached_repo_mtp_drafter("unsloth/Qwen3-4B-GGUF")
+    assert got is None
 
 
 def test_download_mtp_prefers_root_across_snapshots_offline(tmp_path, monkeypatch):

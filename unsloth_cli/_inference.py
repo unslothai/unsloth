@@ -400,6 +400,7 @@ def _load_gguf_backend(
             gguf_path = model_config.gguf_file,
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
+            dflash_draft_path = model_config.gguf_dflash_file,
             **attempt_common,
         )
 

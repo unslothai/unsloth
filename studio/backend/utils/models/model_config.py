@@ -1140,22 +1140,49 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion
-    to the main model rather than a selectable quant: the repo-root
-    ``mtp-*.gguf`` or the ``MTP/`` subdir copies (Gemma 4).
+# Match either documented DFlash naming form without matching embedded words.
+# Mirrored in llama_cpp.py and hub/utils/gguf.py.
+_DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
 
-    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub).
-    Must be excluded everywhere mmproj is, or the drafter leaks into variant
-    menus (a phantom quant) and quant-matched file lookups -- e.g. a ``Q8_0``
-    request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead
-    of the real weight.
-    """
+# Exclude quant and precision suffixes when deriving the target model name.
+_GGUF_QUANT_TAG_PATTERN = (
+    r"(?:ud-)?(?:mxfp\d+(?:_[a-z0-9]+)*|iq\d+_[a-z]+(?:_[a-z0-9]+)?|tq\d+_\d+"
+    r"|q\d+_k(?:_[a-z]+)?|q\d+_\d+|q\d+_k|bf16|f16|f32|fp16)"
+)
+_GGUF_QUANT_TAG_RE = re.compile(rf"^{_GGUF_QUANT_TAG_PATTERN}$", re.IGNORECASE)
+_GGUF_QUANT_SUFFIX_RE = re.compile(rf"[-_.]{_GGUF_QUANT_TAG_PATTERN}$", re.IGNORECASE)
+
+
+def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) -> bool:
+    """Return whether a DFlash filename identifies the selected target model."""
+    name = drafter_basename.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not name.endswith(".gguf"):
+        return False
+    stem = name[: -len(".gguf")]
+    m = _DFLASH_DRAFTER_RE.search(stem)
+    if not m:
+        return False
+    candidates = []
+    for candidate in (stem[: m.start()].strip("-_."), stem[m.end() :].strip("-_.")):
+        candidate = _GGUF_QUANT_SUFFIX_RE.sub("", candidate)
+        if candidate and not _GGUF_QUANT_TAG_RE.match(candidate):
+            candidates.append(candidate)
+    if weight_basename is None:
+        return True
+    weight = weight_basename.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(
+        weight.startswith(c) and (len(weight) == len(c) or not weight[len(c)].isalnum())
+        for c in candidates
+    )
+
+
+def _is_mtp_drafter(path: str) -> bool:
+    """Return whether a GGUF is an MTP or DFlash companion, not a main model."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
@@ -1365,22 +1392,12 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
-    """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
-
-    The drafter that pairs with the main weights sits at the repo/snapshot
-    root (Gemma 4); the weight itself may be at the root or in a quant subdir,
-    so scan the weight's directory and ``search_root``. Matches by the
-    ``mtp-`` filename prefix unsloth uses for ``-hf`` auto-discovery -- the
-    same signal as the HF download path. Repos that bake the head into the
-    main GGUF (Qwen) have no such sibling, so this returns None.
-
-    Pairs by name so a multi-model folder can't attach a foreign drafter:
-    unsloth names the drafter ``mtp-<model>.gguf`` where ``<model>`` prefixes
-    the weight filename across all Gemma 4 repos (e.g.
-    ``mtp-gemma-4-12B-it.gguf`` next to ``gemma-4-12B-it-qat-Q4_0.gguf``).
-    An unmatched drafter is skipped (fail-safe: no MTP).
-    """
+def _detect_drafter_sibling(
+    path: str,
+    prefix: str,
+    search_root: Optional[str] = None,
+) -> Optional[str]:
+    """Find a matching ``<prefix>*.gguf`` beside the weight or at ``search_root``."""
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
     start_dir = p.parent if p.is_file() else p
@@ -1394,9 +1411,9 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
             continue
         for f in entries:
             name = f.name.lower()
-            if not (name.startswith("mtp-") and name.endswith(".gguf")):
+            if not (name.startswith(prefix) and name.endswith(".gguf")):
                 continue
-            stem = name[len("mtp-") : -len(".gguf")]
+            stem = name[len(prefix) : -len(".gguf")]
             if not stem or (weight_name is not None and not weight_name.startswith(stem)):
                 continue
             try:
@@ -1404,6 +1421,44 @@ def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[st
                     return str(f.resolve())
             except OSError:
                 continue
+    return None
+
+
+def detect_mtp_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+    """Find the separate MTP drafter (``mtp-*.gguf``) for a local GGUF model.
+
+    Matches by the ``mtp-`` filename prefix unsloth uses for ``-hf``
+    auto-discovery -- the same signal as the HF download path. Repos that bake
+    the head into the main GGUF (Qwen) have no such sibling (returns None);
+    Gemma 4 ships ``mtp-<model>.gguf`` next to ``<model>-...gguf``.
+    """
+    return _detect_drafter_sibling(path, "mtp-", search_root)
+
+
+def detect_dflash_file(path: str, search_root: Optional[str] = None) -> Optional[str]:
+    """Find the smallest matching DFlash drafter beside a local GGUF or at its root."""
+    p = Path(path)
+    weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
+    start_dir = p.parent if p.is_file() else p
+    dirs = [start_dir]
+    if search_root is not None:
+        dirs.append(Path(search_root))
+    for d in dirs:
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        matches: list[tuple[int, str]] = []
+        for f in entries:
+            if not _dflash_pairs_weight(f.name, weight_name):
+                continue
+            try:
+                if f.is_file():
+                    matches.append((f.stat().st_size, str(f.resolve())))
+            except OSError:
+                continue
+        if matches:
+            return min(matches)[1]
     return None
 
 
@@ -1626,6 +1681,13 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     gguf_dir = gguf_path.parent
     if not gguf_dir.name:
         return str(gguf_dir)
+
+    # Hugging Face cache files can live in any subdirectory below
+    # ``snapshots/<revision>``. Companions remain repo-wide, so always scan the
+    # snapshot root instead of recognizing only quant-named subdirectories.
+    for candidate in (gguf_dir, *gguf_dir.parents):
+        if candidate.parent.name == "snapshots":
+            return str(candidate)
 
     quant_dir_re = (
         r"(UD-)?("
@@ -2550,6 +2612,7 @@ class ModelConfig:
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
+    gguf_dflash_file: Optional[str] = None  # Full path to the separate DFlash drafter (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -2694,6 +2757,11 @@ class ModelConfig:
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
 
+                # Separate DFlash drafter sibling.
+                dflash_file = detect_dflash_file(gguf_file, search_root = companion_root)
+                if dflash_file:
+                    logger.info(f"Detected DFlash drafter: {dflash_file}")
+
                 return cls(
                     identifier = identifier,
                     display_name = display_name,
@@ -2706,6 +2774,7 @@ class ModelConfig:
                     gguf_file = gguf_file,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
+                    gguf_dflash_file = dflash_file,
                 )
         else:
             # Does the HF repo contain GGUF files?

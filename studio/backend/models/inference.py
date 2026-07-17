@@ -70,8 +70,9 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "Speculative decoding mode for GGUF models. Canonical values: "
-            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
-            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'auto' (platform-aware: DFlash when a matching drafter is present, "
+            "otherwise MTP on MTP GGUFs or ngram-mod for sub-3B), "
+            "'mtp' (force draft-mtp only on both GPU and CPU), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
@@ -84,11 +85,9 @@ class LoadRequest(BaseModel):
         ge = 1,
         le = 16,
         description = (
-            "Max draft tokens per step for MTP speculative decoding "
-            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
-            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
-            "quants). Only applied when speculative_type resolves to "
-            "'mtp' or 'mtp+ngram'."
+            "Max draft tokens per step for model-draft speculative decoding "
+            "(--spec-draft-n-max). Defaults to 4 for auto-detected DFlash, "
+            "or 2 on GPU and 3 on CPU/Mac for MTP."
         ),
     )
     tensor_parallel: bool = Field(
@@ -325,7 +324,7 @@ class LoadResponse(BaseModel):
     spec_draft_n_max: Optional[int] = Field(
         None,
         description = (
-            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "Active --spec-draft-n-max for model-draft speculative decoding, or "
             "None when the platform default is in effect."
         ),
     )
@@ -453,7 +452,7 @@ class InferenceStatusResponse(BaseModel):
     spec_draft_n_max: Optional[int] = Field(
         None,
         description = (
-            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "Active --spec-draft-n-max for model-draft speculative decoding, or "
             "None when the platform default is in effect."
         ),
     )
@@ -471,17 +470,20 @@ class InferenceStatusResponse(BaseModel):
     spec_fallback_reason: Optional[str] = Field(
         None,
         description = (
-            "Why MTP was disabled on the loaded model despite being requested "
-            "(auto on an MTP model, or forced mtp / mtp+ngram). "
-            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
-            "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it; 'drafter_not_found' -> the model's "
-            "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
+            "Why model-draft speculative decoding was disabled on the loaded model. "
+            "'binary_no_mtp' / 'binary_no_dflash' / 'binary_outdated' -> a newer "
+            "prebuilt would re-enable it (show the update affordance); "
+            "'runtime_error' -> the "
+            "current build could not run it; 'dflash_drafter_incompatible' -> the "
+            "DFlash drafter is a fork build the upstream binary cannot load "
+            "(replace the drafter, not the binary); 'dflash_runtime_error' -> "
+            "DFlash could not start on this build; 'drafter_not_found' -> the "
+            "model's separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
-            "None when MTP engaged or was not requested."
+            "None when speculative decoding engaged or no fallback occurred."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(

@@ -420,11 +420,14 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         decision,
         captured = None,
         load_in_4bit = True,
+        guard_call = None,
     ):
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(
-            model_path = "unsloth/Qwen3-1.7B", load_in_4bit = load_in_4bit, max_seq_length = 4096
+            model_path = "unsloth/Qwen3-1.7B",
+            load_in_4bit = load_in_4bit,
+            max_seq_length = 4096,
         )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
@@ -435,6 +438,15 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             path = None,
             base_model = None,
         )
+        guard_context = _stub_guard_deps(
+            training_active = training_active, decision = decision, captured = captured
+        )
+        if guard_call is not None:
+            guard_context = patch.object(
+                self.route,
+                "_guard_chat_load_against_training",
+                side_effect = lambda _config, **kwargs: guard_call.append(kwargs),
+            )
         with (
             patch.object(
                 self.route,
@@ -443,7 +455,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
-            _stub_guard_deps(training_active = training_active, decision = decision, captured = captured),
+            guard_context,
         ):
             return asyncio.run(self.route.validate_model(request, current_subject = "test-user"))
 
@@ -462,7 +474,11 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         # validate must size with the request's settings, not hardcoded defaults.
         captured = []
         self._validate(
-            training_active = True, decision = (True, {}), captured = captured, load_in_4bit = False
+            training_active = True,
+            decision = (True, {}),
+            captured = captured,
+            load_in_4bit = False,
+            guard_call = captured,
         )
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
@@ -533,7 +549,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gguf_hf_repo = "org/repo",
             gguf_variant = "Q4_K_M",
         )
-        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        variant = SimpleNamespace(
+            filename = "Qwen3-4B-Q4_K_M.gguf",
+            quant = "Q4_K_M",
+            size_bytes = 10 * 1024**3,
+        )
         captured = {}
 
         def fake_list(repo, hf_token = None):
@@ -550,6 +570,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+        self.assertEqual(comp.call_args.kwargs["weight_name"], variant.filename)
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
@@ -566,6 +587,29 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             return_value = ([SimpleNamespace(quant = "Q4_K_M", size_bytes = 1)], False),
         ):
             self.assertIsNone(self.route._estimate_gguf_required_gb(cfg))
+
+    def test_local_counts_dflash_like_mtp(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            main = root / "model.gguf"
+            mtp = root / "mtp-model.gguf"
+            dflash = root / "model-DFlash-q8_0.gguf"
+            main.write_bytes(b"m" * 100)
+            mtp.write_bytes(b"t" * 20)
+            dflash.write_bytes(b"d" * 30)
+            cfg = SimpleNamespace(
+                gguf_file = str(main),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_dflash_file = str(dflash),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                gb = self.route._estimate_gguf_required_gb(cfg)
+
+        self.assertAlmostEqual(gb, 150 / (1024**3), places = 12)
 
     def test_local_adds_kv_cache(self):
         import tempfile

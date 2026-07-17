@@ -83,26 +83,26 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Match either documented DFlash naming form without matching embedded words.
+_DFLASH_DRAFTER_RE = re.compile(r"(?:^|[-_.])dflash(?:[-_.]|$)", re.IGNORECASE)
+
+
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion to
-    the main model rather than a selectable quant.
-
-    Covers the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
-    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4).
-    Repos that bake the head into the main GGUF (Qwen) have no such file, so
-    this is False for them. Must be excluded from main-model selection
-    everywhere mmproj is.
-
-    CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
-    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
-    hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core
-    avoids hub imports; bundles the mmproj check).
-    """
+    """Return whether a GGUF is an MTP or DFlash companion, not a main model."""
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return name.startswith("mtp-") or "/mtp/" in f"/{p}" or bool(_DFLASH_DRAFTER_RE.search(name))
+
+
+def is_dflash_drafter_path(path: str) -> bool:
+    """True for a DFlash drafter specifically (``dflash`` as a delimited token),
+    excluding the MTP drafters is_mtp_drafter_path also covers."""
+    p = path.lower()
+    if not p.endswith(".gguf"):
+        return False
+    return bool(_DFLASH_DRAFTER_RE.search(p.rsplit("/", 1)[-1]))
 
 
 def is_gguf_filename(filename: str) -> bool:

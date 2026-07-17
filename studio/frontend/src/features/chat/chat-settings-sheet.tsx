@@ -383,22 +383,26 @@ export function ChatSettingsPanel({
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  const mtpUpdatable =
+  // Only binary fallback states are solved by a newer prebuilt.
+  const specBinaryUpdatable =
     specFallbackReason === "binary_no_mtp" ||
+    specFallbackReason === "binary_no_dflash" ||
     specFallbackReason === "binary_outdated";
   const {
     status: llamaUpdateStatus,
     applying: llamaUpdating,
     apply: applyLlamaUpdate,
   } = useLlamaUpdateCheck({
-    enabled: mtpUpdatable,
+    enabled: specBinaryUpdatable,
     onReloadRequired: resyncInferenceStatusAfterServerModelChange,
   });
-  const handleMtpUpdate = useCallback(async () => {
+  const handleSpecBinaryUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
+      const feature =
+        specFallbackReason === "binary_no_dflash" ? "DFlash" : "MTP";
       const reloadHint = result.reloadRequired
-        ? " Reload your model to enable MTP."
+        ? ` Reload your model to enable ${feature}.`
         : "";
       toast.success(
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
@@ -408,7 +412,7 @@ export function ChatSettingsPanel({
         `llama.cpp update failed: ${result.error ?? "unknown error"}`,
       );
     }
-  }, [applyLlamaUpdate]);
+  }, [applyLlamaUpdate, specFallbackReason]);
   const loadedEffectiveContext = customContextLength ?? ggufContextLength;
   const showSpecFallback =
     !isExternalModel &&
@@ -744,17 +748,28 @@ export function ChatSettingsPanel({
                         ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                         : specFallbackReason === "drafter_not_found"
                           ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
-                          : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
-                              llamaUpdateStatus?.update_available
-                                ? " Update llama.cpp to enable it."
-                                : ""
-                            }`}
+                          : specFallbackReason === "binary_no_dflash"
+                            ? `DFlash speculative decoding is not available in the installed llama.cpp build, so this model is running without it.${
+                                llamaUpdateStatus?.update_available
+                                  ? " Update llama.cpp to enable it."
+                                  : ""
+                              }`
+                            : specFallbackReason === "dflash_drafter_incompatible"
+                              ? "This DFlash drafter is not compatible with the installed llama.cpp (it is likely a fork build). Convert or replace it with an upstream-format drafter; updating llama.cpp will not help."
+                              : specFallbackReason === "dflash_runtime_error"
+                                ? "DFlash could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
+                                : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
+                                    llamaUpdateStatus?.update_available
+                                      ? " Update llama.cpp to enable it."
+                                      : ""
+                                  }`}
                   </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                  {specBinaryUpdatable &&
+                    llamaUpdateStatus?.update_available && (
                     <Button
                       size="sm"
                       className="corner-squircle mt-2 h-7 text-[12px]"
-                      onClick={handleMtpUpdate}
+                      onClick={handleSpecBinaryUpdate}
                       disabled={llamaUpdating}
                       data-test-id="mtp-update-button"
                     >

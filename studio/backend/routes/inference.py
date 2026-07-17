@@ -1007,6 +1007,8 @@ try:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        detect_dflash_file,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1044,6 +1046,8 @@ except ImportError:
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import (
+        _local_gguf_companion_search_root,
+        detect_dflash_file,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -3165,9 +3169,23 @@ def _request_matches_loaded_settings(
         and not _extra_args_set_spec_type(effective_extra)
     ):
         return False
-    # spec_draft_n_max only matters with an MTP variant; None means "platform
-    # default" and matches whatever the backend chose.
-    if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
+    if (
+        req_mode in ("auto", "mtp", "mtp+ngram")
+        and not _extra_args_set_spec_type(effective_extra)
+        and llama_backend.spec_binary_fallback_can_retry()
+    ):
+        return False
+    if (
+        llama_backend.dflash_retry_needed
+        and req_mode == "auto"
+        and not _extra_args_set_spec_type(effective_extra)
+    ):
+        return False
+    # Auto keeps its requested mode, so use the resolved mode for draft depth.
+    _draft_n_max_engaged = backend_mode in ("mtp", "mtp+ngram") or (
+        llama_backend.speculative_type in ("draft-mtp", "draft-dflash")
+    )
+    if _draft_n_max_engaged and request.spec_draft_n_max is not None:
         if int(request.spec_draft_n_max) != (llama_backend.spec_draft_n_max or 0):
             return False
     _effective_cto = (
@@ -3215,8 +3233,32 @@ def _request_matches_loaded_settings(
             else llama_backend.extra_args
         )
         if not _extra_args_set_spec_type(effective_extras):
-            detected = detect_mtp_file(llama_backend.gguf_path)
+            # Match the initial search across the quant directory and snapshot root.
+            _mtp_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_mtp_file(llama_backend.gguf_path, search_root = _mtp_root)
             stored = llama_backend.mtp_draft_path
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = Path(stored).resolve() if stored else None
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
+    # Reload when Auto's DFlash companion changes. Vision loads never use it.
+    if req_mode == "auto" and llama_backend.gguf_path and not llama_backend.is_vision:
+        effective_extras = (
+            request.llama_extra_args
+            if request.llama_extra_args is not None
+            else llama_backend.extra_args
+        )
+        if not _extra_args_set_spec_type(effective_extras):
+            _dflash_root = _local_gguf_companion_search_root(
+                llama_backend.gguf_path, llama_backend.gguf_path
+            )
+            detected = detect_dflash_file(llama_backend.gguf_path, search_root = _dflash_root)
+            stored = llama_backend.dflash_draft_path
             try:
                 detected_resolved = Path(detected).resolve() if detected else None
                 stored_resolved = Path(stored).resolve() if stored else None
@@ -3708,16 +3750,23 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _remote_gguf_companion_bytes(
-    repo: str, *, hf_token: Optional[str], include_mmproj: bool
+    repo: str,
+    *,
+    hf_token: Optional[str],
+    include_mmproj: bool,
+    weight_name: Optional[str] = None,
 ) -> int:
-    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
-    so it can only add headroom, never refuse a load by itself."""
+    """Return companion bytes using the existing conservative MTP policy."""
     try:
         from huggingface_hub import model_info
 
+        from hub.utils.gguf_plan import preferred_dflash_sibling
+
         info = model_info(repo, token = hf_token, files_metadata = True)
+        siblings = info.siblings or []
+        dflash = preferred_dflash_sibling(siblings, weight_name)
         total = 0
-        for sibling in info.siblings or []:
+        for sibling in siblings:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
@@ -3727,6 +3776,9 @@ def _remote_gguf_companion_bytes(
             is_root_mtp = "/" not in name and base.startswith("mtp-")
             if is_root_mtp or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
+        # Count only the DFlash build the loader selects.
+        if dflash is not None:
+            total += getattr(dflash, "size", 0) or 0
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -3778,7 +3830,7 @@ def _estimate_gguf_required_gb(
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+        for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -3793,15 +3845,18 @@ def _estimate_gguf_required_gb(
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            main_bytes = next(
-                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
+            selected_variant = next(
+                (v for v in variants if v.quant.lower() == variant.lower()), None
             )
-            if main_bytes is None:
+            if selected_variant is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = bool(has_vision),
+                weight_name = Path(selected_variant.filename).name,
             )
-            return (main_bytes + companions) / (1024**3)
+            return (selected_variant.size_bytes + companions) / (1024**3)
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
@@ -4316,10 +4371,22 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                         except HTTPException as exc:
                             logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
                             config.gguf_mtp_file = None
+                    if config.gguf_dflash_file:
+                        # Apply the same lease boundary as MTP.
+                        try:
+                            _validate_native_gguf_companion(
+                                config.gguf_dflash_file, config.gguf_file, "DFlash drafter"
+                            )
+                        except HTTPException as exc:
+                            logger.warning(
+                                "Dropping DFlash drafter for native load: %s", exc.detail
+                            )
+                            config.gguf_dflash_file = None
                 _source_load_kwargs = dict(
                     gguf_path = config.gguf_file,
                     mmproj_path = config.gguf_mmproj_file,
                     mtp_draft_path = config.gguf_mtp_file,
+                    dflash_draft_path = config.gguf_dflash_file,
                     # Pass the resolved variant so _extra_args_source keys off
                     # the same string the inheritance check at the top of /load
                     # uses (#5401 followup).
