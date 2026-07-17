@@ -3862,9 +3862,7 @@ def _estimate_gguf_required_gb(
             )
             if selected_variant is None:
                 return None
-            remote_is_vision = bool(has_vision) and not extra_args_disable_mmproj(
-                llama_extra_args
-            )
+            remote_is_vision = bool(has_vision) and not extra_args_disable_mmproj(llama_extra_args)
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,

@@ -577,9 +577,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
         ):
-            gb = self.route._estimate_gguf_required_gb(
-                cfg, llama_extra_args = ["--no-mmproj"]
-            )
+            gb = self.route._estimate_gguf_required_gb(cfg, llama_extra_args = ["--no-mmproj"])
         self.assertAlmostEqual(gb, 12.0, places = 6)
         self.assertFalse(comp.call_args.kwargs["include_mmproj"])
         self.assertTrue(comp.call_args.kwargs["include_dflash"])

@@ -358,9 +358,7 @@ def test_extra_args_requests_dflash():
 
 
 def test_text_only_vlm_downloads_dflash():
-    assert _should_download_dflash(
-        "auto", ["--no-mmproj"], is_vision = True, mmproj_path = None
-    )
+    assert _should_download_dflash("auto", ["--no-mmproj"], is_vision = True, mmproj_path = None)
     assert not _should_download_dflash(
         "auto", None, is_vision = True, mmproj_path = "/models/mmproj.gguf"
     )
@@ -381,12 +379,7 @@ def test_transient_dflash_download_failure_is_retryable(monkeypatch):
         raise ConnectionError("temporary")
 
     monkeypatch.setattr(llama_cpp, "hf_hub_download_with_xet_fallback", fail_download)
-    assert (
-        backend._download_dflash(
-            hf_repo = "org/repo", weight_name = "Qwen3-4B-Q4_K_M.gguf"
-        )
-        is None
-    )
+    assert backend._download_dflash(hf_repo = "org/repo", weight_name = "Qwen3-4B-Q4_K_M.gguf") is None
     assert backend.dflash_download_failed is True
 
 

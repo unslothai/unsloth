@@ -5708,14 +5708,11 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                         )
                     # Auto-fetch DFlash only for supported text-only Auto loads.
-                    if (
-                        not dflash_draft_path
-                        and _should_download_dflash(
-                            speculative_type,
-                            extra_args,
-                            is_vision = is_vision,
-                            mmproj_path = mmproj_path,
-                        )
+                    if not dflash_draft_path and _should_download_dflash(
+                        speculative_type,
+                        extra_args,
+                        is_vision = is_vision,
+                        mmproj_path = mmproj_path,
                     ):
                         dflash_draft_path = self._download_dflash(
                             hf_repo = hf_repo,

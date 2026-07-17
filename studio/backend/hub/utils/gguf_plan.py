@@ -182,9 +182,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     plans: dict[str, GgufVariantPlan] = {}
     for quant, target_main_siblings in main.items():
         target_weight = _gguf_rfilename(target_main_siblings[0])
-        dflash_sibling = (
-            None if all_mmproj else preferred_dflash_sibling(siblings, target_weight)
-        )
+        dflash_sibling = None if all_mmproj else preferred_dflash_sibling(siblings, target_weight)
         dflash_expected = (
             expected_file_from_sibling(dflash_sibling) if dflash_sibling is not None else None
         )
