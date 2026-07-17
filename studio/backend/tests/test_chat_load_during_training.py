@@ -623,9 +623,21 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 text_only_gb = self.route._estimate_gguf_required_gb(
                     cfg, llama_extra_args = ["--no-mmproj"]
                 )
+                text_only_off_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    llama_extra_args = ["--no-mmproj"],
+                    speculative_type = "off",
+                )
+                text_only_unsupported_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    llama_extra_args = ["--no-mmproj"],
+                    dflash_supported = False,
+                )
 
         self.assertAlmostEqual(vision_gb, 120 / (1024**3), places = 12)
-        self.assertAlmostEqual(text_only_gb, 150 / (1024**3), places = 12)
+        self.assertAlmostEqual(text_only_gb, 130 / (1024**3), places = 12)
+        self.assertAlmostEqual(text_only_off_gb, 100 / (1024**3), places = 12)
+        self.assertAlmostEqual(text_only_unsupported_gb, 100 / (1024**3), places = 12)
 
     def test_local_adds_kv_cache(self):
         import tempfile

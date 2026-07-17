@@ -1618,7 +1618,7 @@ class LlamaCppBackend:
         # key so a drafter that appears next to the weights forces a reload.
         self._mtp_draft_path: Optional[str] = None
         self._dflash_draft_path: Optional[str] = None
-        self._dflash_download_failed = False
+        self._dflash_retry_needed = False
         # Why MTP was disabled on the last load that asked for it (auto on an
         # MTP model, or forced mtp / mtp+ngram), else None. Drives the "update
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
@@ -1800,8 +1800,8 @@ class LlamaCppBackend:
         return self._dflash_draft_path
 
     @property
-    def dflash_download_failed(self) -> bool:
-        return self._dflash_download_failed
+    def dflash_retry_needed(self) -> bool:
+        return self._dflash_retry_needed
 
     @property
     def spec_fallback_reason(self) -> Optional[str]:
@@ -4931,7 +4931,7 @@ class LlamaCppBackend:
         """Download the preferred DFlash drafter paired with ``weight_name``."""
         from utils.models.model_config import _dflash_pairs_weight
 
-        self._dflash_download_failed = False
+        self._dflash_retry_needed = False
 
         def _pick_dflash(candidates: list[str]) -> Optional[str]:
             dflash_files = [
@@ -4955,7 +4955,7 @@ class LlamaCppBackend:
             hf_token = hf_token,
             pick = _pick_dflash,
             label = "DFlash drafter",
-            on_transient_failure = lambda: setattr(self, "_dflash_download_failed", True),
+            on_transient_failure = lambda: setattr(self, "_dflash_retry_needed", True),
         )
 
     def _resolve_launch_mmproj_path(
@@ -5646,7 +5646,7 @@ class LlamaCppBackend:
                 return True
 
             self._cancel_event.clear()
-            self._dflash_download_failed = False
+            self._dflash_retry_needed = False
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
             with self._lock:
@@ -7686,6 +7686,7 @@ class LlamaCppBackend:
             dflash_token = caps.get("dflash_token") if caps else None
             if not dflash_token:
                 # Leave state untouched so Auto can fall through to MTP or ngram.
+                self._dflash_retry_needed = True
                 logger.warning(
                     "Requested DFlash speculative decoding but llama-server "
                     "lacks --spec-type draft-dflash; run `unsloth studio update`."
@@ -7948,8 +7949,36 @@ class LlamaCppBackend:
         ):
             return False
 
-        if self._dflash_download_failed and gguf_path is None and req_mode == "auto":
+        if self._dflash_retry_needed and req_mode == "auto":
             return False
+
+        if (
+            gguf_path is None
+            and self._hf_repo
+            and self._gguf_path
+            and req_mode == "auto"
+            and not _extra_args_set_spec_type(extra_args)
+        ):
+            from utils.models.model_config import (
+                _local_gguf_companion_search_root,
+                detect_dflash_file,
+            )
+
+            search_root = _local_gguf_companion_search_root(
+                self._gguf_path, self._gguf_path
+            )
+            detected = detect_dflash_file(self._gguf_path, search_root = search_root)
+            try:
+                detected_resolved = Path(detected).resolve() if detected else None
+                stored_resolved = (
+                    Path(self._dflash_draft_path).resolve()
+                    if self._dflash_draft_path
+                    else None
+                )
+            except OSError:
+                return False
+            if detected_resolved != stored_resolved:
+                return False
 
         # Retry DFlash fallbacks after a binary update or drafter replacement.
         if self._spec_fallback_reason in (
@@ -8030,7 +8059,7 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._dflash_draft_path = None
-            self._dflash_download_failed = False
+            self._dflash_retry_needed = False
             self._spec_fallback_reason = None
             self._last_load_kwargs = None
             self._mtp_runtime_fallback_active = False

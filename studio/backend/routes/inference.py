@@ -991,6 +991,7 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_requests_dflash,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -1031,6 +1032,7 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _extra_args_requests_dflash,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -3172,8 +3174,7 @@ def _request_matches_loaded_settings(
     ):
         return False
     if (
-        llama_backend.hf_repo
-        and llama_backend.dflash_download_failed
+        llama_backend.dflash_retry_needed
         and req_mode == "auto"
         and not _extra_args_set_spec_type(effective_extra)
     ):
@@ -3827,12 +3828,21 @@ def _estimate_gguf_required_gb(
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    speculative_type: Optional[str] = None,
+    dflash_supported: bool = True,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
         total_bytes = 0
+        if _extra_args_set_spec_type(llama_extra_args):
+            dflash_engages = _extra_args_requests_dflash(llama_extra_args, env = {})
+        else:
+            dflash_engages = (
+                _canonicalize_spec_mode(speculative_type) or "auto"
+            ) == "auto"
+        dflash_engages = dflash_engages and dflash_supported
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
@@ -3841,7 +3851,9 @@ def _estimate_gguf_required_gb(
             extra_args_disable_mmproj(llama_extra_args)
         )
         for attr in ("gguf_mmproj_file", "gguf_mtp_file", "gguf_dflash_file"):
-            if attr == "gguf_dflash_file" and _cfg_is_vision:
+            if attr == "gguf_mmproj_file" and not _cfg_is_vision:
+                continue
+            if attr == "gguf_dflash_file" and (_cfg_is_vision or not dflash_engages):
                 continue
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
@@ -3867,7 +3879,7 @@ def _estimate_gguf_required_gb(
                 repo,
                 hf_token = hf_token,
                 include_mmproj = remote_is_vision,
-                include_dflash = not remote_is_vision,
+                include_dflash = dflash_engages and not remote_is_vision,
                 weight_name = selected_variant.filename,
             )
             return (selected_variant.size_bytes + companions) / (1024**3)
@@ -3887,6 +3899,7 @@ def _guard_chat_load_against_training(
     requested_gpu_ids: Optional[List[int]],
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
+    speculative_type: Optional[str] = None,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
     No-op when training is inactive or unknown. `load_in_4bit` must be the
@@ -3903,6 +3916,16 @@ def _guard_chat_load_against_training(
         return
 
     is_gguf = bool(getattr(config, "is_gguf", False))
+    dflash_supported = True
+    if is_gguf:
+        try:
+            dflash_supported = bool(
+                (get_llama_cpp_backend().probe_server_capabilities() or {}).get(
+                    "dflash_token"
+                )
+            )
+        except Exception:
+            dflash_supported = False
     required_override_gb = (
         _estimate_gguf_required_gb(
             config,
@@ -3910,6 +3933,8 @@ def _guard_chat_load_against_training(
             max_seq_length = max_seq_length,
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
+            speculative_type = speculative_type,
+            dflash_supported = dflash_supported,
         )
         if is_gguf
         else None
@@ -4249,6 +4274,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
             requested_gpu_ids = effective_gpu_ids,
             llama_extra_args = extra_llama_args,
             n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            speculative_type = request.speculative_type,
         )
 
         # ── GGUF path: load via llama-server ──────────────────────

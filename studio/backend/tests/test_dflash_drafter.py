@@ -242,6 +242,7 @@ def test_dflash_binary_missing_falls_through_to_mtp(monkeypatch):
     assert "draft-dflash" not in flags
     assert backend._speculative_type != "default"
     assert backend._spec_fallback_reason != "binary_no_dflash"
+    assert backend.dflash_retry_needed is True
 
 
 def test_dflash_does_not_engage_for_vision_loads(monkeypatch):
@@ -342,6 +343,15 @@ def test_already_in_target_state_reloads_when_dflash_drafter_removed(tmp_path):
     assert _in_target(backend, str(weight), None) is False
 
 
+def test_hf_backend_reloads_when_cached_dflash_appears(tmp_path):
+    weight = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    weight.touch()
+    (tmp_path / "dflash-Qwen3-4B.gguf").touch()
+    backend = _dflash_backend(str(weight), None)
+    backend._hf_repo = "unsloth/Qwen3-4B-GGUF"
+    assert _in_target(backend, None, None) is False
+
+
 def test_extra_args_requests_dflash():
     assert _extra_args_requests_dflash(["--spec-type", "draft-dflash"]) is True
     assert _extra_args_requests_dflash(["--spec-type=draft-dflash"]) is True
@@ -380,7 +390,7 @@ def test_transient_dflash_download_failure_is_retryable(monkeypatch):
 
     monkeypatch.setattr(llama_cpp, "hf_hub_download_with_xet_fallback", fail_download)
     assert backend._download_dflash(hf_repo = "org/repo", weight_name = "Qwen3-4B-Q4_K_M.gguf") is None
-    assert backend.dflash_download_failed is True
+    assert backend.dflash_retry_needed is True
 
 
 def _load_inference_routes_module():
@@ -451,7 +461,7 @@ def test_hf_load_retries_transient_dflash_download(tmp_path):
     weight.touch()
     req = LoadRequest(model_path = "unsloth/Qwen3-4B-GGUF", gguf_variant = "Q4_K_M")
     backend = _route_dedup_backend(str(weight), hf_repo = "unsloth/Qwen3-4B-GGUF")
-    backend._dflash_download_failed = True
+    backend._dflash_retry_needed = True
     assert routes._request_matches_loaded_settings(req, backend) is False
 
 
