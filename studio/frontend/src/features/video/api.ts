@@ -49,6 +49,9 @@ export interface VideoStatus {
   transformer_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
+  // Whether the loaded family is image-to-video: the source-image control is shown and
+  // generate requires an image.
+  image_input?: boolean;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
   // Per-Advanced-control provenance, keyed by control name (memory_mode, speed_mode,
@@ -144,6 +147,8 @@ export interface VideoGenerateRequest {
   steps?: number;
   guidance?: number;
   seed?: number;
+  // Source image (data URL) for image-to-video families; required by them, rejected elsewhere.
+  init_image?: string;
 }
 
 // A persisted clip's full generation recipe (the JSON sidecar of the MP4).

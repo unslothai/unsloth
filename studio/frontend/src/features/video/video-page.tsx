@@ -89,7 +89,9 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
-  // Wan2.2 pipelines default to 50 steps at CFG 5.0 (WanPipeline defaults, verified in
+  // Wan2.2 I2V runs its card recipe (40 steps, CFG 3.5); before the generic "wan" key.
+  { match: "wan2.2-i2v", steps: 40, guidance: 3.5 },
+  // Wan2.2 T2V pipelines default to 50 steps at CFG 5.0 (WanPipeline defaults, verified in
   // diffusers 0.39). The backend supplies the fps per family (24 for TI2V-5B, 16 for A14B).
   { match: "wan", steps: 50, guidance: 5 },
   // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships
@@ -332,6 +334,88 @@ function Field({
   );
 }
 
+// Source-image picker for image-to-video families: click or drag-drop an image, read it
+// to a data URL the generate request sends as init_image. Mirrors the images tab's
+// Transform dropzone (thumbnail preview + Clear once set).
+function SourceImageDropzone({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (dataUrl: string | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const readFile = useCallback(
+    (file: File | undefined | null) => {
+      if (!file || !file.type.startsWith("image/")) {
+        if (file) toast.error("Please choose an image file");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => onChange(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => toast.error("Could not read the image");
+      reader.readAsDataURL(file);
+    },
+    [onChange],
+  );
+
+  if (value) {
+    return (
+      <div className="relative overflow-hidden rounded-xl border border-border">
+        <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          aria-label="Remove source image"
+          title="Remove"
+          className="absolute right-1.5 top-1.5 size-7"
+          onClick={() => {
+            onChange(null);
+            if (inputRef.current) inputRef.current.value = "";
+          }}
+        >
+          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        readFile(e.dataTransfer.files?.[0]);
+      }}
+      className={cn(
+        "flex h-24 w-full items-center justify-center rounded-xl border border-dashed text-xs",
+        dragging
+          ? "border-primary/60 bg-primary/5 text-foreground"
+          : "border-border text-muted-foreground hover:bg-muted/40",
+      )}
+    >
+      Click or drop an image to animate
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => readFile(e.target.files?.[0])}
+      />
+    </button>
+  );
+}
+
 // The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge.
 // Short scheme/mode tokens go uppercase (FBCACHE); the attention backend the backend reports
 // as `_native_cudnn` shows as cuDNN.
@@ -506,6 +590,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [seed, setSeed] = useState("");
+  // Source image (data URL) for image-to-video families; the control renders only when the
+  // loaded family requires one (status.image_input).
+  const [initImage, setInitImage] = useState<string | null>(null);
   // The chosen resolution preset index into the current preset list.
   const [resolutionIdx, setResolutionIdx] = useState(0);
   // The chosen frame count (must lie on the family's temporal lattice: k*frame_step+1).
@@ -1211,6 +1298,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       toast.error("Prompt is empty");
       return;
     }
+    const needsImage = Boolean(status?.image_input);
+    if (needsImage && !initImage) {
+      toast.error("Attach a source image to animate");
+      return;
+    }
     // Resolve a base seed up front. With an explicit seed the run is reproducible; with a
     // random one we still pick a concrete seed now so the recipe records it.
     let resolvedSeed: number | undefined;
@@ -1247,6 +1339,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         steps,
         guidance,
         seed: resolvedSeed,
+        // Only for image-to-video families; text-only families reject an image with a 400.
+        init_image: needsImage ? initImage ?? undefined : undefined,
       });
     } catch (err) {
       if (!isMounted.current) return;
@@ -1268,6 +1362,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     numFrames,
     fps,
     steps,
+    status?.image_input,
+    initImage,
     startGenPoll,
   ]);
 
@@ -1459,6 +1555,17 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
+
+          {/* Image-to-video families (Wan2.2-I2V) require a source image to animate; the
+              backend reports the capability via status.image_input. */}
+          {status?.image_input && (
+            <Field
+              label="Source image"
+              hint="The image to animate. The clip starts from this frame; it is resized to the selected resolution."
+            >
+              <SourceImageDropzone value={initImage} onChange={setInitImage} />
+            </Field>
+          )}
 
           {/* A negative prompt only does anything with guidance on, so hide it at guidance 0
               (the distilled model's default) instead of showing a dead field. */}

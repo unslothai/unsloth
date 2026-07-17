@@ -342,6 +342,15 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114)],
   },
   {
+    // Same dual-expert DiT pair as T2V-A14B, but the pipeline is image-to-video
+    // (WanImageToVideoPipeline): it animates a source image the video tab collects.
+    canonicalId: "Wan-AI/Wan2.2-I2V-A14B",
+    displayName: "Wan 2.2 I2V A14B (MoE)",
+    description: "Image-to-video, dual-expert",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.2-I2V-A14B-Diffusers", 114)],
+  },
+  {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",
     displayName: "HunyuanVideo 1.5",
     description: "Text-to-video",

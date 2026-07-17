@@ -196,6 +196,16 @@ for (const id of OLD_PIPELINE_MODELS) {
   assert.ok(got, `missing video load spec for ${id}`);
   assert.equal(got.kind, "pipeline", id);
 }
+// Wan 2.2 I2V: pipeline load spec, and the canonical id groups with the -Diffusers artifact.
+assert.equal(
+  loadSpecFor("Wan-AI/Wan2.2-I2V-A14B-Diffusers", VIDEO_CATALOG)?.kind,
+  "pipeline",
+);
+assert.equal(
+  groupForRepoId("Wan-AI/Wan2.2-I2V-A14B", VIDEO_CATALOG),
+  groupForRepoId("Wan-AI/Wan2.2-I2V-A14B-Diffusers", VIDEO_CATALOG),
+);
+assert.ok(groupForRepoId("Wan-AI/Wan2.2-I2V-A14B", VIDEO_CATALOG));
 // GGUF artifacts report the gguf kind; unknown ids report null.
 assert.equal(loadSpecFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
 assert.equal(loadSpecFor("someone/unknown", IMAGE_CATALOG), null);
