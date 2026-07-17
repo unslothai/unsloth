@@ -10,7 +10,13 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { startDictationLevelMeter } from "./dictation-level";
+
+/** Chat open while dictating, so the saved dictation can link back to it. */
+export function activeDictationChatId(): string | undefined {
+  return useChatRuntimeStore.getState().activeThreadId ?? undefined;
+}
 
 // Reused id so repeated network failures replace, not stack, the same toast.
 const NETWORK_TOAST_ID = "dictation-network-offline";
@@ -256,7 +262,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         for (const callback of speechCallbacks) {
           callback({ transcript, isFinal: true });
         }
-        recordRecentDictation(transcript);
+        recordRecentDictation(transcript, activeDictationChatId());
       }
       // assistant-ui uses this standard lifecycle callback to leave dictation
       // mode. It is required even for silence and cancelled recordings.

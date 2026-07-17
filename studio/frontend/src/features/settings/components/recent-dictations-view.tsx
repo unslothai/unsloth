@@ -24,6 +24,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  deleteChatItem,
+  useChatRuntimeStore,
+  type SidebarItem,
+} from "@/features/chat";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -31,14 +36,21 @@ import {
   ArrowLeft01Icon,
   Copy01Icon,
   Delete02Icon,
+  Message01Icon,
   Search01Icon,
+  ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import {
   type RecentDictation,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+/** Dictations shown per page; "Show more" reveals the next page. */
+const PAGE_SIZE = 20;
 
 type PendingDelete =
   | { kind: "one"; dictation: RecentDictation }
@@ -77,8 +89,20 @@ export function RecentDictationsView({
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
+  // Pagination is keyed to the search/sort inputs so changing either restarts
+  // from the first page without an effect.
+  const pageKey = `${sortOrder}::${search}`;
+  const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
+  const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
+  const navigate = useNavigate();
+  const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const selected =
     recentDictations.find((dictation) => dictation.id === selectedId) ?? null;
+
+  function openChat(chatId: string) {
+    closeSettings();
+    void navigate({ to: "/chat", search: { thread: chatId } });
+  }
 
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -105,16 +129,59 @@ export function RecentDictationsView({
   }
 
   function confirmDelete() {
-    if (pendingDelete?.kind === "one") {
-      removeRecentDictation(pendingDelete.dictation.id);
-      if (pendingDelete.dictation.id === selectedId) {
+    try {
+      if (pendingDelete?.kind === "one") {
+        removeRecentDictation(pendingDelete.dictation.id);
+        if (pendingDelete.dictation.id === selectedId) {
+          onSelect(null);
+        }
+      } else if (pendingDelete?.kind === "all") {
+        clearRecentDictations();
         onSelect(null);
       }
-    } else if (pendingDelete?.kind === "all") {
-      clearRecentDictations();
+    } finally {
+      setPendingDelete(null);
+    }
+  }
+
+  // Delete a linked dictation together with the chat it was used in.
+  async function confirmDeleteWithChat() {
+    if (pendingDelete?.kind !== "one") {
+      return;
+    }
+    const dictation = pendingDelete.dictation;
+    setPendingDelete(null);
+    if (dictation.chatId) {
+      const item: SidebarItem = {
+        type: "single",
+        id: dictation.chatId,
+        title: "",
+        createdAt: 0,
+        updatedAt: 0,
+      };
+      try {
+        await deleteChatItem(
+          item,
+          useChatRuntimeStore.getState().activeThreadId ?? undefined,
+          () => {
+            // The deleted chat was open; leave the user on a fresh chat.
+            void navigate({
+              to: "/chat",
+              search: { new: crypto.randomUUID() },
+            });
+          },
+        );
+      } catch (error) {
+        toast.error(t("settings.voice.recents.deleteWithChatFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+        return;
+      }
+    }
+    removeRecentDictation(dictation.id);
+    if (dictation.id === selectedId) {
       onSelect(null);
     }
-    setPendingDelete(null);
   }
 
   return (
@@ -158,6 +225,19 @@ export function RecentDictationsView({
             </p>
           </article>
           <div className="flex justify-end gap-2">
+            {selected.chatId ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openChat(selected.chatId as string)}
+              >
+                <HugeiconsIcon
+                  icon={Message01Icon}
+                  className="mr-1.5 size-3.5"
+                />
+                {t("settings.voice.recents.openChat")}
+              </Button>
+            ) : null}
             <Button
               variant="outline"
               size="sm"
@@ -227,6 +307,15 @@ export function RecentDictationsView({
                 </SelectItem>
               </SelectContent>
             </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPendingDelete({ kind: "all" })}
+              className="shrink-0 text-destructive hover:border-destructive/60 hover:text-destructive"
+            >
+              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
+              {t("settings.voice.recents.clear")}
+            </Button>
           </div>
 
           {visible.length === 0 ? (
@@ -239,35 +328,80 @@ export function RecentDictationsView({
                 <span className="min-w-0 flex-1">
                   {t("settings.voice.recents.dictationColumn")}
                 </span>
-                <span className="hidden w-40 shrink-0 sm:block">
+                <span className="hidden w-40 shrink-0 items-center gap-1.5 sm:flex">
+                  {/* Spacer matching the row's chat-link icon slot so the
+                      header starts exactly where the dates start. */}
+                  <span className="size-3.5 shrink-0" />
                   {t("settings.voice.recents.dateColumn")}
                 </span>
-                <span className="w-16 shrink-0" />
+                <span className="w-24 shrink-0" />
               </div>
-              {visible.map((dictation) => (
+              {visible.slice(0, visibleCount).map((dictation) => (
                 <div
                   key={dictation.id}
                   className="group flex items-stretch gap-2 border-b border-border/40 last:border-0"
                 >
                   <button
                     type="button"
-                    onClick={() => onSelect(dictation.id)}
-                    aria-label={t("settings.voice.recents.view")}
+                    onClick={() =>
+                      dictation.chatId
+                        ? openChat(dictation.chatId)
+                        : onSelect(dictation.id)
+                    }
+                    aria-label={
+                      dictation.chatId
+                        ? t("settings.voice.recents.openChat")
+                        : t("settings.voice.recents.view")
+                    }
                     className="flex min-w-0 flex-1 items-start gap-4 rounded-md px-1 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
                       <span className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-foreground">
                         {dictation.text}
                       </span>
-                      <span className="mt-1 block text-xs text-muted-foreground sm:hidden">
+                      <span className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground sm:hidden">
+                        {dictation.chatId ? (
+                          <HugeiconsIcon
+                            icon={Message01Icon}
+                            className="size-3"
+                          />
+                        ) : null}
                         {formatDictationDate(dictation.at)}
                       </span>
                     </span>
-                    <span className="hidden w-40 shrink-0 text-sm text-muted-foreground tabular-nums sm:block">
-                      {formatDictationDate(dictation.at)}
+                    <span className="hidden w-40 shrink-0 items-center gap-1.5 text-left text-xs text-muted-foreground tabular-nums sm:flex">
+                      {/* Fixed icon slot keeps every date starting at the
+                          same column whether or not a chat is linked. */}
+                      <span className="flex size-3.5 shrink-0 items-center justify-center">
+                        {dictation.chatId ? (
+                          <HugeiconsIcon
+                            icon={Message01Icon}
+                            className="size-3.5"
+                            aria-label={t("settings.voice.recents.openChat")}
+                          />
+                        ) : null}
+                      </span>
+                      <span className="whitespace-nowrap">
+                        {formatDictationDate(dictation.at)}
+                      </span>
                     </span>
                   </button>
-                  <span className="flex w-16 shrink-0 items-center justify-end gap-1">
+                  <span className="flex w-24 shrink-0 items-center justify-end gap-1">
+                    {dictation.chatId ? (
+                      <button
+                        type="button"
+                        onClick={() => onSelect(dictation.id)}
+                        aria-label={t("settings.voice.recents.view")}
+                        title={t("settings.voice.recents.view")}
+                        className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <HugeiconsIcon
+                          icon={ViewIcon}
+                          strokeWidth={1.75}
+                          className="size-4"
+                        />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       onClick={async () => {
@@ -304,17 +438,21 @@ export function RecentDictationsView({
             </div>
           )}
 
-          <div className="flex justify-end border-t border-border/60 pt-3">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPendingDelete({ kind: "all" })}
-              className="text-destructive hover:border-destructive/60 hover:text-destructive"
-            >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-3.5" />
-              {t("settings.voice.recents.clear")}
-            </Button>
-          </div>
+          {visible.length > visibleCount ? (
+            <div className="flex justify-center pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setPage({ key: pageKey, count: visibleCount + PAGE_SIZE })
+                }
+              >
+                {t("settings.voice.recents.showMore", {
+                  count: visible.length - visibleCount,
+                })}
+              </Button>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -336,12 +474,35 @@ export function RecentDictationsView({
             <AlertDialogDescription>
               {pendingDelete?.kind === "all"
                 ? t("settings.voice.recents.clearDescription")
-                : t("settings.voice.recents.deleteDescription")}
+                : pendingDelete?.kind === "one" &&
+                    pendingDelete.dictation.chatId
+                  ? t("settings.voice.recents.deleteLinkedDescription")
+                  : t("settings.voice.recents.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={confirmDelete}>
+            {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
+              <AlertDialogAction
+                variant="outline"
+                className="text-destructive hover:border-destructive/60 hover:text-destructive"
+                onClick={(event) => {
+                  // Close only through state so the dismissal can't race a
+                  // click on whatever ends up under the pointer.
+                  event.preventDefault();
+                  void confirmDeleteWithChat();
+                }}
+              >
+                {t("settings.voice.recents.deleteWithChat")}
+              </AlertDialogAction>
+            ) : null}
+            <AlertDialogAction
+              variant="destructive"
+              onClick={(event) => {
+                event.preventDefault();
+                confirmDelete();
+              }}
+            >
               {pendingDelete?.kind === "all"
                 ? t("settings.voice.recents.clearConfirm")
                 : t("common.delete")}

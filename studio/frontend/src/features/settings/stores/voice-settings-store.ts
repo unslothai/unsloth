@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 // Voice preferences in localStorage. Adapters read them at call time so
 // changes apply without reloading the chat runtime.
@@ -11,9 +11,14 @@ export interface RecentDictation {
   id: string;
   text: string;
   at: number;
+  /** Chat the dictation was spoken into, when one was open at the time. */
+  chatId?: string;
 }
 
-const MAX_RECENT_DICTATIONS = 20;
+// Dictation history is kept in full; the list view paginates instead of the
+// store discarding entries. QUOTA_TRIM_KEEP is the emergency floor if
+// localStorage itself runs out of room (see the persist storage wrapper).
+const QUOTA_TRIM_KEEP = 200;
 // Cap stored transcript length so a few long dictations cannot bloat the
 // persisted blob and trip a synchronous localStorage quota error on save.
 const MAX_RECENT_DICTATION_LENGTH = 2000;
@@ -82,18 +87,41 @@ export function isSttModelLanguageCompatible(
   return normalized !== "auto" && normalized.split("-", 1)[0] === "en";
 }
 
-export type DictationEngine = "browser" | "model";
+export type DictationEngine = "browser" | "model" | "gguf";
+
+/** Whether a model id is one of the five curated Whisper choices. */
+export function isCuratedSttModel(model: SttModel): boolean {
+  return (STT_MODELS as readonly string[]).includes(model.trim());
+}
+
+/**
+ * Both local engines offer only the curated checkpoints in the UI; a custom
+ * Hugging Face repo saved by an older build falls back to the default model.
+ */
+export function normalizeSttModelForEngine(
+  engine: DictationEngine,
+  model: SttModel,
+): SttModel {
+  const normalized = normalizeSttModel(model);
+  if (engine !== "browser" && !isCuratedSttModel(normalized)) {
+    return DEFAULT_STT_MODEL;
+  }
+  return normalized;
+}
 
 export interface VoiceSettingsState {
   /** Input device for dictation. "default" = system default microphone. */
   micDeviceId: string;
   setMicDeviceId: (value: string) => void;
 
-  /** "browser": Web Speech API. "model": on-demand local transcription. */
+  /**
+   * "browser": Web Speech API. "gguf": local whisper.cpp transcription.
+   * "model": local Transformers (safetensors) transcription.
+   */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
-  /** STT model to use when dictationEngine is "model". */
+  /** STT model to use for the local dictation engines. */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
@@ -111,7 +139,7 @@ export interface VoiceSettingsState {
 
   /** Final transcripts, newest first, so text can be recovered. */
   recentDictations: RecentDictation[];
-  addRecentDictation: (text: string) => void;
+  addRecentDictation: (text: string, chatId?: string) => void;
   removeRecentDictation: (id: string) => void;
   clearRecentDictations: () => void;
 
@@ -142,7 +170,11 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setMicDeviceId: (micDeviceId) => set({ micDeviceId }),
 
       dictationEngine: "browser",
-      setDictationEngine: (dictationEngine) => set({ dictationEngine }),
+      setDictationEngine: (dictationEngine) =>
+        set((state) => ({
+          dictationEngine,
+          sttModel: normalizeSttModelForEngine(dictationEngine, state.sttModel),
+        })),
 
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
@@ -211,7 +243,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         })),
 
       recentDictations: [],
-      addRecentDictation: (text) =>
+      addRecentDictation: (text, chatId) =>
         set((state) => {
           const trimmed = text.trim().slice(0, MAX_RECENT_DICTATION_LENGTH);
           if (!trimmed) {
@@ -224,9 +256,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
                 id: `${at}-${Math.random().toString(36).slice(2, 10)}`,
                 text: trimmed,
                 at,
+                ...(chatId ? { chatId } : {}),
               },
               ...state.recentDictations,
-            ].slice(0, MAX_RECENT_DICTATIONS),
+            ],
           };
         }),
       removeRecentDictation: (id) =>
@@ -255,10 +288,18 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     }),
     {
       name: "unsloth_voice_settings",
+      storage: createJSONStorage(() => quotaSafeLocalStorage),
       merge: (persisted, current) => {
         const saved = persisted as Partial<VoiceSettingsState> | undefined;
         const dictationLanguage = asString(saved?.dictationLanguage, "auto");
-        const savedSttModel = normalizeSttModel(saved?.sttModel);
+        const dictationEngine: DictationEngine =
+          saved?.dictationEngine === "model" || saved?.dictationEngine === "gguf"
+            ? saved.dictationEngine
+            : "browser";
+        const savedSttModel = normalizeSttModelForEngine(
+          dictationEngine,
+          typeof saved?.sttModel === "string" ? saved.sttModel : DEFAULT_STT_MODEL,
+        );
         const sttModel = isSttModelLanguageCompatible(
           savedSttModel,
           dictationLanguage,
@@ -268,8 +309,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         return {
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
-          dictationEngine:
-            saved?.dictationEngine === "model" ? "model" : "browser",
+          dictationEngine,
           sttModel,
           dictationLanguage,
           dictionary: Array.isArray(saved?.dictionary)
@@ -291,6 +331,41 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     },
   ),
 );
+
+/**
+ * localStorage wrapper that keeps the full dictation history until the
+ * browser's quota is actually hit, then drops the oldest entries instead of
+ * throwing away the whole save.
+ */
+const quotaSafeLocalStorage = {
+  getItem: (key: string) => localStorage.getItem(key),
+  removeItem: (key: string) => localStorage.removeItem(key),
+  setItem: (key: string, value: string) => {
+    try {
+      localStorage.setItem(key, value);
+      return;
+    } catch {
+      // Quota exceeded: trim dictation history, oldest first, and retry.
+    }
+    for (const keep of [QUOTA_TRIM_KEEP, 20]) {
+      try {
+        const parsed = JSON.parse(value) as {
+          state?: { recentDictations?: RecentDictation[] };
+        };
+        const state = parsed.state;
+        const recents = state?.recentDictations;
+        if (!state || !Array.isArray(recents) || recents.length <= keep) {
+          continue;
+        }
+        state.recentDictations = recents.slice(0, keep);
+        localStorage.setItem(key, JSON.stringify(parsed));
+        return;
+      } catch {
+        // Fall through to the next, more aggressive trim.
+      }
+    }
+  },
+};
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;
@@ -322,10 +397,10 @@ function normalizeRecentDictations(value: unknown): RecentDictation[] {
           : `legacy-${candidate.at}-${index}`,
       text: candidate.text.trim().slice(0, MAX_RECENT_DICTATION_LENGTH),
       at: candidate.at,
+      ...(typeof candidate.chatId === "string" && candidate.chatId
+        ? { chatId: candidate.chatId }
+        : {}),
     });
-    if (normalized.length === MAX_RECENT_DICTATIONS) {
-      break;
-    }
   }
   return normalized;
 }
@@ -387,6 +462,6 @@ export function applyDictationDictionary(
 }
 
 /** Record a finished dictation so it can be recovered from settings. */
-export function recordRecentDictation(text: string): void {
-  useVoiceSettingsStore.getState().addRecentDictation(text);
+export function recordRecentDictation(text: string, chatId?: string): void {
+  useVoiceSettingsStore.getState().addRecentDictation(text, chatId);
 }

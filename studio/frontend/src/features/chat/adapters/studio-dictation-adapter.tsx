@@ -31,12 +31,17 @@ export function cancelActiveStudioDictation(): void {
  * Routes dictation to the engine chosen in Voice settings, resolved at listen()
  * time so switching engines applies without reloading the chat runtime.
  */
+/** Both local engines (Transformers and GGUF) record via MediaRecorder. */
+function usesModelRecording(dictationEngine: DictationEngine): boolean {
+  return dictationEngine === "model" || dictationEngine === "gguf";
+}
+
 export class StudioDictationAdapter implements DictationAdapter {
   static isSupported(
     dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
       .dictationEngine,
   ): boolean {
-    return dictationEngine === "model"
+    return usesModelRecording(dictationEngine)
       ? StudioModelDictationAdapter.isSupported()
       : StudioWebSpeechDictationAdapter.isSupported();
   }
@@ -57,7 +62,7 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   private createSession(): StudioDictationSession {
     const { dictationEngine } = useVoiceSettingsStore.getState();
-    if (dictationEngine === "model") {
+    if (usesModelRecording(dictationEngine)) {
       if (StudioModelDictationAdapter.isSupported()) {
         return new StudioModelDictationAdapter().listen();
       }
@@ -93,7 +98,7 @@ export function notifyStudioDictationUnavailable(
     });
     return;
   }
-  if (dictationEngine === "model") {
+  if (usesModelRecording(dictationEngine)) {
     // Defensive: MediaRecorder is effectively always present here.
     toast.error("Voice recording isn't available in this browser.");
     return;

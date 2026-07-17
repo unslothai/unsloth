@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
 import {
   type StudioDictationSession,
+  activeDictationChatId,
   isMissingDeviceError,
 } from "./studio-web-speech-dictation-adapter";
 
@@ -51,19 +52,28 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
+/** Backend STT engine for a dictation engine choice. */
+export type SttEngine = "transformers" | "gguf";
+
+function sttEngineFor(dictationEngine: string): SttEngine {
+  return dictationEngine === "gguf" ? "gguf" : "transformers";
+}
+
 /** POST audio to the STT sidecar and return the transcript. */
 export async function transcribeAudioBlob(
   blob: Blob,
   options: {
     model?: string;
     language?: string;
+    engine?: SttEngine;
     signal?: AbortSignal;
   } = {},
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
   const model = options.model ?? settings.sttModel;
   const language = options.language ?? settings.dictationLanguage;
-  const params = new URLSearchParams({ model, fast: "true" });
+  const engine = options.engine ?? sttEngineFor(settings.dictationEngine);
+  const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
@@ -90,6 +100,26 @@ export async function transcribeAudioBlob(
   return (data.text ?? "").trim();
 }
 
+export interface SttDownloadStatus {
+  downloading: boolean;
+  model: string | null;
+  error: string | null;
+  bytes_total: number | null;
+  bytes_done: number | null;
+}
+
+export interface SttEngineStatus {
+  available: boolean;
+  loaded_model: string | null;
+  loading: boolean;
+  device: string | null;
+  keep_alive_seconds: number;
+  default_model: string;
+  models: string[];
+  downloaded_models: string[];
+  download: SttDownloadStatus;
+}
+
 export interface SttStatus {
   available: boolean;
   loaded_model: string | null;
@@ -98,6 +128,9 @@ export interface SttStatus {
   keep_alive_seconds: number;
   default_model: string;
   models: string[];
+  /** Per-engine state; absent on servers predating the engine split. */
+  transformers?: SttEngineStatus;
+  gguf?: SttEngineStatus;
 }
 
 // Keep load and unload requests ordered. In particular, a new recording must
@@ -140,12 +173,14 @@ export async function validateSttModel(
 }
 
 /** Load a selected model already downloaded through Studio's Model Hub. */
-export function loadSttModel(model: string): Promise<void> {
+export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
+  const resolvedEngine =
+    engine ?? sttEngineFor(useVoiceSettingsStore.getState().dictationEngine);
   return queueSttLifecycle(async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model }),
+      body: JSON.stringify({ model, engine: resolvedEngine }),
     });
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
@@ -154,6 +189,28 @@ export function loadSttModel(model: string): Promise<void> {
       throw new Error(body?.detail ?? `HTTP ${response.status}`);
     }
   });
+}
+
+/** Start a background download of a curated dictation model. */
+export async function startSttDownload(
+  model: string,
+  engine: SttEngine,
+  hfToken?: string,
+): Promise<void> {
+  const response = await authFetch("/api/inference/audio/stt/download", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...hubTokenHeader(hfToken),
+    },
+    body: JSON.stringify({ model, engine }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
 }
 
 /** Release the local STT model and its RAM/VRAM allocations. */
@@ -191,10 +248,14 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       throw new Error("Recording is not supported in this browser.");
     }
 
-    // Pin the model and language chosen when recording began so later segments
-    // are not transcribed with settings the user changed mid-session.
-    const { sttModel: sessionModel, dictationLanguage: sessionLanguage } =
-      useVoiceSettingsStore.getState();
+    // Pin the model, language, and engine chosen when recording began so later
+    // segments are not transcribed with settings the user changed mid-session.
+    const {
+      sttModel: sessionModel,
+      dictationLanguage: sessionLanguage,
+      dictationEngine,
+    } = useVoiceSettingsStore.getState();
+    const sessionEngine = sttEngineFor(dictationEngine);
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -284,7 +345,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         for (const callback of speechCallbacks) {
           callback({ transcript: corrected, isFinal: true });
         }
-        recordRecentDictation(corrected);
+        recordRecentDictation(corrected, activeDictationChatId());
       }
       for (const callback of speechEndCallbacks) {
         callback({ transcript: corrected });
@@ -315,6 +376,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           const text = await transcribeAudioBlob(item.blob, {
             model: sessionModel,
             language: sessionLanguage,
+            engine: sessionEngine,
             signal: abortController.signal,
           });
           if (!cancelled) results[item.index] = text;
@@ -532,7 +594,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         // Wait for microphone access before warming the selected on-device
         // model. The backend uses cache-only loading and never downloads here.
-        void loadSttModel(sessionModel).catch(reportTranscriptionError);
+        void loadSttModel(sessionModel, sessionEngine).catch(
+          reportTranscriptionError,
+        );
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);
         });

@@ -76,16 +76,27 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
 
 def summarize_resident_stt() -> Dict[str, Any]:
-    """Report the resident dictation model. Never raises."""
+    """Report the resident dictation model (either engine). Never raises."""
     try:
         from core.inference.stt_sidecar import get_stt_sidecar
 
         sidecar = get_stt_sidecar()
         model = sidecar.loaded_model
+        device = sidecar.device
         loading = sidecar.is_loading()
+        if not model and not loading:
+            # The whisper.cpp engine holds GPU memory through its own
+            # subprocess; report it so admission accounts for dictation
+            # regardless of the engine selected in Voice settings.
+            from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+
+            ggml = get_ggml_stt_sidecar()
+            model = ggml.loaded_model
+            device = ggml.device
+            loading = ggml.is_loading()
         return {
             "model": model,
-            "device": sidecar.device,
+            "device": device,
             "loading": loading,
             "any": bool(model or loading),
         }
@@ -376,13 +387,23 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             if sidecar.loaded_model:
                 sidecar.unload()
             return ["stt:loading"]
+        freed: List[str] = []
         model = sidecar.loaded_model
-        if not model:
-            return []
-        label = model
-        logger.info("Unloading STT model '%s' for training (%s)", label, reason)
-        sidecar.unload()
-        return [f"stt:{label}"]
+        if model:
+            logger.info("Unloading STT model '%s' for training (%s)", model, reason)
+            sidecar.unload()
+            freed.append(f"stt:{model}")
+        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+
+        ggml = get_ggml_stt_sidecar()
+        ggml_model = ggml.loaded_model
+        if ggml_model:
+            logger.info(
+                "Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason
+            )
+            ggml.unload()
+            freed.append(f"stt:{ggml_model}")
+        return freed
     except Exception as e:
         logger.warning("Could not unload STT model: %s", e)
         return []

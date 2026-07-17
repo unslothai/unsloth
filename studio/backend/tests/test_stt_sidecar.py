@@ -894,3 +894,60 @@ def test_unload_releases_model_and_device():
 
     assert sidecar.loaded_model is None
     assert sidecar.device is None
+
+
+# ---------------------------------------------------------------------------
+# Snapshot download tracking
+# ---------------------------------------------------------------------------
+
+
+def test_download_status_is_idle_before_any_download():
+    state = stt_sidecar_module._SnapshotDownloadState()
+
+    status = state.status()
+
+    assert status == {
+        "downloading": False,
+        "model": None,
+        "error": None,
+        "bytes_total": None,
+        "bytes_done": None,
+    }
+
+
+def test_download_rejects_a_second_model_while_one_is_in_flight(monkeypatch):
+    state = stt_sidecar_module._SnapshotDownloadState()
+    release = threading.Event()
+    monkeypatch.setattr(
+        state, "_run", lambda repo, token: release.wait(timeout = 5)
+    )
+
+    state.start("small")
+    try:
+        # Re-requesting the in-flight model is a no-op, not an error.
+        state.start("small")
+        with pytest.raises(SttModelIdError, match = "still"):
+            state.start("tiny")
+        assert state.status()["downloading"] is True
+        assert state.status()["model"] == "small"
+    finally:
+        release.set()
+
+
+def test_download_failure_is_reported_in_status(monkeypatch):
+    state = stt_sidecar_module._SnapshotDownloadState()
+    # Mask huggingface_hub so the import inside _run fails fast.
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+
+    state.start("small")
+    state._thread.join(timeout = 5)
+
+    status = state.status()
+    assert status["downloading"] is False
+    assert "Download failed" in (status["error"] or "")
+
+
+def test_is_model_downloaded_is_false_for_a_cache_miss(monkeypatch):
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+
+    assert stt_sidecar_module.is_model_downloaded("small") is False

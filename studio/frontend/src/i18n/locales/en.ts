@@ -109,19 +109,16 @@ export const en = {
         sectionTitle: "Dictation",
         engineLabel: "Dictation engine",
         engineBrowser: "Browser",
-        engineModel: "Local transcription",
         engineBrowserDescription:
-          "Transcribes audio using your browser speech service. Select 'Local' to use a STT model.",
+          "Transcribes audio using your browser speech service. Select 'Local transcription' to use a STT model.",
+        engineGguf: "Local transcription",
+        engineGgufDescription:
+          "Runs Whisper locally through whisper.cpp and works offline. Download once, then it loads on demand and unloads after inactivity.",
+        engineModel: "Local transcription (Transformers)",
         engineModelDescription:
-          "Runs locally and works offline. Download once, then load on demand. Model is unloaded after inactivity.",
+          "Runs Whisper safetensors checkpoints locally through Hugging Face Transformers. Works offline; slower than whisper.cpp on most machines.",
         sttModelLabel: "Speech recognition model",
-        sttModelDescription:
-          "Choose a default STT Whisper model for transcription, or search for another model.",
-        sttModelSearchPlaceholder: "Search model",
-        sttModelSearching: "Searching Hugging Face…",
-        sttModelValidating: "Checking Whisper compatibility…",
-        sttModelNoResults: "No Whisper models found",
-        sttModelInvalid: "This repository cannot be used for dictation",
+        sttModelDescription: "Choose a Whisper model for transcription.",
         sttModelFailed: "Could not load the STT model",
         sttModelUnsupported: "Recording is not supported in this browser",
         sttChecking: "Checking…",
@@ -177,12 +174,13 @@ export const en = {
         addEntry: "Add entry",
       },
       recents: {
-        sectionTitle: "Recent dictations",
+        sectionTitle: "Dictation history",
         sectionDescription:
-          "Your recent dictations will appear here so you can recover text",
+          "Every dictation is saved here so you can recover text",
         manageLabel: "Dictation history",
         manage: "Manage",
-        pageDescription: "View, copy, or delete your saved dictations.",
+        pageDescription:
+          "Every dictation is saved. View, copy, or delete them, or open the chat a dictation was used in.",
         searchPlaceholder: "Search dictations",
         sortLabel: "Sort dictations",
         sortNewest: "Newest",
@@ -203,10 +201,16 @@ export const en = {
         deleteTitle: "Delete dictation",
         deleteDescription:
           "Delete this saved dictation? This cannot be undone.",
-        clear: "Clear recent dictations",
-        clearTitle: "Clear recent dictations",
+        deleteLinkedDescription:
+          "Delete this saved dictation? You can also delete the chat it was used in. This cannot be undone.",
+        deleteWithChat: "Delete chat and dictation",
+        deleteWithChatFailed: "Could not delete the chat",
+        clear: "Clear history",
+        clearTitle: "Clear dictation history",
         clearDescription: "Delete all saved dictations? This cannot be undone.",
         clearConfirm: "Clear all",
+        showMore: "Show more ({count})",
+        openChat: "Open chat",
       },
       readAloud: {
         sectionTitle: "Read aloud",

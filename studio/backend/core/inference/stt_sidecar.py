@@ -227,6 +227,118 @@ def _is_missing_local_model_error(exc: BaseException) -> bool:
     return False
 
 
+def is_model_downloaded(model: Optional[str]) -> bool:
+    """True when the model's snapshot is complete in the local HF cache."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_download(
+            repo_id = resolve_model_repo(resolve_model_id(model)),
+            local_files_only = True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+class _SnapshotDownloadState:
+    """Tracks one background snapshot_download of a dictation repository.
+
+    Mirrors stt_ggml_sidecar's per-file tracker, but a Transformers checkpoint
+    is a whole repository, so progress is the byte count of its cache blobs.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._model_id: Optional[str] = None
+        self._repo: Optional[str] = None
+        self._error: Optional[str] = None
+        self._total_bytes: Optional[int] = None
+
+    def status(self) -> dict:
+        with self._lock:
+            downloading = self._thread is not None and self._thread.is_alive()
+            return {
+                "downloading": downloading,
+                "model": self._model_id if downloading else None,
+                "error": self._error,
+                "bytes_total": self._total_bytes if downloading else None,
+                "bytes_done": self._blob_bytes() if downloading else None,
+            }
+
+    def _blob_bytes(self) -> Optional[int]:
+        """Best-effort progress: bytes in the repository's HF cache blobs.
+
+        Counts finished and ``.incomplete`` blobs alike; the repositories are
+        dedicated Whisper checkpoints, so every blob belongs to this download.
+        """
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            # Callers may already hold self._lock (non-reentrant); a bare
+            # attribute read is safe without it.
+            repo = self._repo
+            if not repo:
+                return None
+            blobs = Path(HF_HUB_CACHE) / f"models--{repo.replace('/', '--')}" / "blobs"
+            if not blobs.is_dir():
+                return None
+            return sum(p.stat().st_size for p in blobs.iterdir() if p.is_file())
+        except Exception:
+            return None
+
+    def start(self, model_id: str, hf_token: Optional[str] = None) -> None:
+        model_id = resolve_model_id(model_id)
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._model_id == model_id:
+                    return
+                raise SttModelIdError(
+                    f"Another dictation model ('{self._model_id}') is still "
+                    "downloading; wait for it to finish."
+                )
+            self._model_id = model_id
+            self._repo = resolve_model_repo(model_id)
+            self._error = None
+            self._total_bytes = None
+            thread = threading.Thread(
+                target = self._run, args = (self._repo, hf_token), daemon = True
+            )
+            self._thread = thread
+            thread.start()
+
+    def _run(self, repo: str, hf_token: Optional[str]) -> None:
+        try:
+            from huggingface_hub import HfApi, snapshot_download
+
+            try:
+                info = HfApi(token = hf_token or None).model_info(
+                    repo, files_metadata = True, timeout = 30
+                )
+                total = sum(s.size or 0 for s in info.siblings or [])
+                with self._lock:
+                    self._total_bytes = total or None
+            except Exception:
+                pass
+            snapshot_download(repo_id = repo, token = hf_token or None)
+        except Exception as exc:
+            logger.warning("STT snapshot download failed for %s: %s", repo, exc)
+            with self._lock:
+                self._error = f"Download failed for '{repo}'."
+
+
+_download_state = _SnapshotDownloadState()
+
+
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
+    _download_state.start(resolve_model_id(model), hf_token)
+
+
+def download_status() -> dict:
+    return _download_state.status()
+
+
 def _training_active() -> bool:
     try:
         from core.training import get_training_backend

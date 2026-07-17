@@ -3,14 +3,6 @@
 
 import { Button } from "@/components/ui/button";
 import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from "@/components/ui/combobox";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -23,10 +15,12 @@ import { Switch } from "@/components/ui/switch";
 import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
 import {
   StudioModelDictationAdapter,
+  type SttDownloadStatus,
+  type SttEngine,
   fetchSttStatus,
   loadSttModel,
+  startSttDownload,
   unloadSttModel,
-  validateSttModel,
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import {
   StudioSpeechSynthesisAdapter,
@@ -35,22 +29,15 @@ import {
   generateStudioTtsAudio,
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
-import {
-  DownloadProgressBar,
-  TransportConflictDialog,
-  getDownloadProgress,
-  useRepoDownload,
-} from "@/features/hub";
-import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
+import { DownloadProgressBar } from "@/features/hub";
 import {
   hfApiToken,
   useHfTokenStore,
 } from "@/features/hub/stores/hf-token-store";
-import { useDebouncedValue } from "@/hooks";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import { Search01Icon, VolumeHighIcon } from "@hugeicons/core-free-icons";
+import { VolumeHighIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -63,7 +50,6 @@ import {
   STT_MODELS,
   type SttModel,
   getSttModelRepo,
-  isSttModelId,
   isSttModelLanguageCompatible,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
@@ -103,204 +89,76 @@ const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
   "large-v3-turbo": "1.6 GB",
   "large-v3": "3.1 GB",
 };
+// whisper.cpp GGML files are f16 single files, roughly half the safetensors.
+const STT_GGUF_MODEL_SIZES: Record<DefaultSttModel, string> = {
+  tiny: "78 MB",
+  base: "148 MB",
+  small: "488 MB",
+  "large-v3-turbo": "1.6 GB",
+  "large-v3": "3.1 GB",
+};
 
 function sttModelName(model: SttModel): string {
   return STT_MODEL_NAMES[model as DefaultSttModel] ?? model;
 }
 
-function sttModelSize(model: SttModel): string {
-  return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
+function sttModelSize(model: SttModel, gguf = false): string {
+  const sizes = gguf ? STT_GGUF_MODEL_SIZES : STT_MODEL_SIZES;
+  return sizes[model as DefaultSttModel] ?? "";
 }
 
-function SttModelCombobox({
+/**
+ * Fixed picker for the local engines: both serve only the five curated
+ * checkpoints, so a plain select fits better than a searchable combobox.
+ */
+function SttCuratedModelSelect({
   value,
   language,
+  gguf,
   onChange,
 }: {
   value: SttModel;
   language: string;
+  gguf: boolean;
   onChange: (model: SttModel) => void;
 }) {
-  const t = useT();
-  const hfToken = useHfTokenStore((state) => state.token);
-  const anchorRef = useRef<HTMLDivElement>(null);
-  // Set while a pick is in flight so the input keeps the model's display text
-  // instead of the combobox writing the raw value back as a search query.
-  const selectingRef = useRef(false);
-  const [inputValue, setInputValue] = useState(() => sttModelName(value));
-  const [validating, setValidating] = useState(false);
-  // A pick fills the input with the model's display text. Treat that text as a
-  // selection, not a search, so choosing a model never triggers a lookup.
-  const trimmedInput = inputValue.trim();
-  const isSelectedText =
-    trimmedInput === sttModelName(value) ||
-    STT_MODELS.some((model) => sttModelName(model) === trimmedInput);
-  const query = isSelectedText ? "" : trimmedInput;
-  const debouncedQuery = useDebouncedValue(query);
-
-  useEffect(() => {
-    setInputValue(sttModelName(value));
-  }, [value]);
-
-  const { results, isLoading } = useHubModelSearch(debouncedQuery, {
-    task: "automatic-speech-recognition",
-    accessToken: hfApiToken(hfToken),
-    excludeGguf: true,
-    enabled: debouncedQuery.length >= 2,
-    keepUnsupportedTags: true,
-    ownerScope: "all",
-  });
-
-  const items = useMemo(() => {
-    if (!query) {
-      const defaults: string[] = STT_MODELS.filter((model) =>
-        isSttModelLanguageCompatible(model, language),
-      );
-      if (!defaults.includes(value)) {
-        defaults.push(value);
-      }
-      return defaults;
-    }
-
-    const ids: string[] = [];
-    for (const result of results) {
-      const tags = result.tags?.map((tag) => tag.toLowerCase()) ?? [];
-      const isWhisper =
-        result.id.toLowerCase().includes("whisper") || tags.includes("whisper");
-      const isExactMatch =
-        result.id.toLowerCase() === query.trim().toLowerCase();
-      if (
-        (isExactMatch ||
-          (isWhisper &&
-            result.pipelineTag === "automatic-speech-recognition")) &&
-        isSttModelLanguageCompatible(result.id, language) &&
-        !ids.includes(result.id)
-      ) {
-        ids.push(result.id);
-      }
-    }
-    return ids;
-  }, [language, query, results, value]);
-
-  const selectModel = async (model: string | null) => {
-    if (!(model && isSttModelId(model)) || validating) {
-      return;
-    }
-    selectingRef.current = true;
-    if (!(STT_MODELS as readonly string[]).includes(model)) {
-      setValidating(true);
-      try {
-        await validateSttModel(model, hfApiToken(hfToken));
-      } catch (error) {
-        selectingRef.current = false;
-        toast.error(t("settings.voice.dictation.sttModelInvalid"), {
-          description: error instanceof Error ? error.message : undefined,
-        });
-        return;
-      } finally {
-        setValidating(false);
-      }
-    }
-    onChange(model);
-    setInputValue(sttModelName(model));
-  };
-
+  const items: string[] = STT_MODELS.filter((model) =>
+    isSttModelLanguageCompatible(model, language),
+  );
+  if (!items.includes(value)) {
+    items.push(value);
+  }
   return (
-    <div
-      ref={anchorRef}
-      onKeyDown={(event) => {
-        if (event.key !== "Enter") {
-          return;
-        }
-        if (!(event.target instanceof HTMLInputElement)) {
-          return;
-        }
-        if (!query || items.length === 0) {
-          return;
-        }
-        event.preventDefault();
-        void selectModel(items[0]);
-      }}
-    >
-      <Combobox
-        items={items}
-        filteredItems={items}
-        filter={null}
-        value={value}
-        inputValue={inputValue}
-        onValueChange={(model) => {
-          void selectModel(model);
-        }}
-        onInputValueChange={(next) => {
-          // Ignore the value the combobox echoes back on a pick; keep our display.
-          if (selectingRef.current) {
-            selectingRef.current = false;
-            return;
-          }
-          setInputValue(next);
-        }}
-        itemToStringLabel={sttModelName}
-        itemToStringValue={sttModelName}
-        autoHighlight={true}
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger
+        aria-label="Speech recognition model"
+        className="h-8 w-full"
+        size="sm"
       >
-        <ComboboxInput
-          aria-label="Speech recognition model"
-          placeholder={t("settings.voice.dictation.sttModelSearchPlaceholder")}
-          className="h-8 w-full [&_input]:text-sm"
-          startAddon={
-            <HugeiconsIcon
-              icon={Search01Icon}
-              strokeWidth={2}
-              className="size-3.5 text-muted-foreground"
-            />
-          }
-        />
-        <ComboboxContent anchor={anchorRef}>
-          {(isLoading && query) || validating ? (
-            <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
-              <Spinner className="size-3.5" />
-              {validating
-                ? t("settings.voice.dictation.sttModelValidating")
-                : t("settings.voice.dictation.sttModelSearching")}
-            </div>
-          ) : (
-            <ComboboxEmpty>
-              {t("settings.voice.dictation.sttModelNoResults")}
-            </ComboboxEmpty>
-          )}
-          <ComboboxList>
-            {(model: string) => {
-              const curated = (STT_MODELS as readonly string[]).includes(model);
-              return (
-                <ComboboxItem
-                  key={model}
-                  value={model}
-                  onPointerDown={() => {
-                    selectingRef.current = true;
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className="block truncate text-xs">
-                      {sttModelName(model)}
-                    </span>
-                    {curated ? (
-                      <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
-                        {getSttModelRepo(model)}
-                      </span>
-                    ) : null}
-                  </span>
-                  {sttModelSize(model) ? (
-                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                      {sttModelSize(model)}
-                    </span>
-                  ) : null}
-                </ComboboxItem>
-              );
-            }}
-          </ComboboxList>
-        </ComboboxContent>
-      </Combobox>
-    </div>
+        <SelectValue>{sttModelName(value)}</SelectValue>
+      </SelectTrigger>
+      <SelectContent>
+        {items.map((model) => (
+          <SelectItem key={model} value={model}>
+            <span className="flex w-full min-w-0 items-center justify-between gap-3">
+              <span className="min-w-0 flex-1 truncate">
+                <span className="block truncate text-xs">
+                  {sttModelName(model)}
+                </span>
+                <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
+                  {gguf ? "ggerganov/whisper.cpp" : getSttModelRepo(model)}
+                </span>
+              </span>
+              {sttModelSize(model, gguf) ? (
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                  {sttModelSize(model, gguf)}
+                </span>
+              ) : null}
+            </span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -551,6 +409,34 @@ export function VoiceTab() {
   const [statusNonce, setStatusNonce] = useState(0);
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
+  const isGgufEngine = dictationEngine === "gguf";
+  const isLocalEngine = isGgufEngine || dictationEngine === "model";
+  const sttEngine: SttEngine = isGgufEngine ? "gguf" : "transformers";
+  // Progress of the selected engine's model download, from /stt/status.
+  const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
+    null,
+  );
+  const [downloadBytesPerSec, setDownloadBytesPerSec] = useState(0);
+  // Last observed (bytes, time) so successive polls yield a transfer rate.
+  const downloadRateSampleRef = useRef<{ bytes: number; at: number } | null>(
+    null,
+  );
+  // Model whose download this tab watched; completion auto-loads it.
+  const watchedDownloadRef = useRef<string | null>(null);
+
+  // Selecting a model (or finishing its download) loads it without a Load
+  // click. A model that is not downloaded fails quietly and stays on demand.
+  const autoLoadSttModel = useCallback(async (model: string) => {
+    setSttPhase("loading");
+    try {
+      await loadSttModel(model);
+    } catch {
+      // Not downloaded (or the engine is busy): the status poll resets the
+      // phase; the user still sees the Download button.
+    } finally {
+      setStatusNonce((nonce) => nonce + 1);
+    }
+  }, []);
   const sttRepoId = getSttModelRepo(sttModel);
   const hfToken = useHfTokenStore((state) => state.token);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
@@ -561,92 +447,84 @@ export function VoiceTab() {
     sttDownloadAvailability.repoId === sttRepoId
       ? sttDownloadAvailability.state
       : "checking";
-  const sttDownload = useRepoDownload({
-    kind: "model",
-    repoId: sttRepoId,
-    activeVariant: null,
-    autoAdopt: dictationEngine === "model" && modelSttSupported,
-    onComplete: () => {
-      setSttDownloadAvailability({
-        repoId: sttRepoId,
-        state: "downloaded",
-      });
-      toast.success(t("settings.voice.dictation.sttDownloadComplete"));
-    },
-    onCancelled: () => {
-      setSttDownloadAvailability({ repoId: sttRepoId, state: "missing" });
-    },
-    onError: () => {
-      setSttDownloadAvailability({ repoId: sttRepoId, state: "error" });
-      toast.error(t("settings.voice.dictation.sttDownloadFailed"));
-    },
-  });
-
-  const checkSttDownloadAvailability = useCallback(
-    async (signal?: AbortSignal) => {
-      try {
-        const progress = await getDownloadProgress(sttRepoId, {
-          hfToken: hfApiToken(hfToken),
-          signal,
-        });
-        if (signal?.aborted) {
-          return;
-        }
-        setSttDownloadAvailability({
-          repoId: sttRepoId,
-          state: progress.complete_on_disk ? "downloaded" : "missing",
-        });
-      } catch {
-        if (!signal?.aborted) {
-          setSttDownloadAvailability({ repoId: sttRepoId, state: "error" });
-        }
-      }
-    },
-    [sttRepoId, hfToken],
-  );
-
   useEffect(() => {
-    if (dictationEngine !== "model" || !modelSttSupported) {
-      return;
-    }
-    const controller = new AbortController();
-    checkSttDownloadAvailability(controller.signal).catch(() => {
-      // The checker records a user-visible error state itself.
-    });
-    return () => controller.abort();
-  }, [checkSttDownloadAvailability, dictationEngine, modelSttSupported]);
-
-  useEffect(() => {
-    if (dictationEngine !== "model" || !modelSttSupported) {
+    if (!isLocalEngine || !modelSttSupported) {
       setSttPhase("idle");
       setSttDevice(null);
+      setSttDownload(null);
       return;
     }
     let cancelled = false;
     void (async () => {
-      setSttPhase("checking");
+      // Only surface "checking" on the first poll; background refreshes keep
+      // the last phase so the status line doesn't flicker while polling.
+      setSttPhase((phase) => (phase === "idle" ? "checking" : phase));
       try {
         const status = await fetchSttStatus(statusNonce);
         if (cancelled) return;
-        if (!status.available) {
+        const engineStatus = isGgufEngine ? status.gguf : status.transformers;
+        if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;
         }
-        if (status.loading) {
+        const download = engineStatus.download;
+        setSttDownload(download);
+        setSttDownloadAvailability({
+          repoId: sttRepoId,
+          state: engineStatus.downloaded_models.includes(sttModel)
+            ? "downloaded"
+            : download.error
+              ? "error"
+              : "missing",
+        });
+        if (download.downloading) {
+          watchedDownloadRef.current = download.model;
+          const bytes = download.bytes_done ?? 0;
+          const sample = downloadRateSampleRef.current;
+          const now = Date.now();
+          if (sample && bytes > sample.bytes && now > sample.at) {
+            setDownloadBytesPerSec(
+              ((bytes - sample.bytes) * 1000) / (now - sample.at),
+            );
+          }
+          downloadRateSampleRef.current = { bytes, at: now };
+          // Keep the download progress fresh.
+          window.setTimeout(() => {
+            if (!cancelled) setStatusNonce((n) => n + 1);
+          }, 800);
+        } else {
+          const finished = watchedDownloadRef.current;
+          watchedDownloadRef.current = null;
+          downloadRateSampleRef.current = null;
+          setDownloadBytesPerSec(0);
+          if (
+            finished === sttModel &&
+            engineStatus.downloaded_models.includes(sttModel) &&
+            engineStatus.loaded_model !== sttModel
+          ) {
+            // The download this tab watched just finished; load the model.
+            void autoLoadSttModel(sttModel);
+            return;
+          }
+        }
+        if (engineStatus.loading) {
           setSttPhase("loading");
           window.setTimeout(() => {
             if (!cancelled) setStatusNonce((n) => n + 1);
           }, 600);
           return;
         }
-        if (status.loaded_model === sttModel && !status.loading) {
-          setSttDevice(status.device);
+        if (engineStatus.loaded_model === sttModel && !engineStatus.loading) {
+          setSttDevice(engineStatus.device);
           setSttPhase("ready");
           window.setTimeout(
             () => {
               if (!cancelled) setStatusNonce((n) => n + 1);
             },
-            Math.max(1000, Math.min(status.keep_alive_seconds * 1000, 15_000)),
+            Math.max(
+              1000,
+              Math.min(engineStatus.keep_alive_seconds * 1000, 15_000),
+            ),
           );
           return;
         }
@@ -661,7 +539,15 @@ export function VoiceTab() {
     return () => {
       cancelled = true;
     };
-  }, [dictationEngine, sttModel, modelSttSupported, statusNonce]);
+  }, [
+    isLocalEngine,
+    isGgufEngine,
+    sttModel,
+    sttRepoId,
+    modelSttSupported,
+    statusNonce,
+    autoLoadSttModel,
+  ]);
 
   const sttStatusText = (() => {
     switch (sttPhase) {
@@ -684,10 +570,17 @@ export function VoiceTab() {
     }
   })();
 
+  const downloadingThisModel =
+    isLocalEngine &&
+    sttDownload?.downloading === true &&
+    sttDownload.model === sttModel;
+
   const sttModelStatusText = (() => {
-    if (sttDownload.progress) {
+    if (downloadingThisModel) {
+      const total = sttDownload?.bytes_total ?? 0;
+      const done = sttDownload?.bytes_done ?? 0;
       return t("settings.voice.dictation.sttDownloading", {
-        progress: Math.round(sttDownload.progress.fraction * 100),
+        progress: total > 0 ? Math.min(99, Math.round((done / total) * 100)) : 0,
       });
     }
     if (sttPhase === "unavailable") {
@@ -707,20 +600,16 @@ export function VoiceTab() {
     }
   })();
 
-  const startSttDownload = async () => {
+  const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
-      if (!(STT_MODELS as readonly string[]).includes(sttModel)) {
-        try {
-          await validateSttModel(sttModel, hfApiToken(hfToken));
-        } catch (error) {
-          toast.error(t("settings.voice.dictation.sttModelInvalid"), {
-            description: error instanceof Error ? error.message : undefined,
-          });
-          return;
-        }
-      }
-      await sttDownload.requestStartDownload(null, 0);
+      // Engine-managed download; progress arrives via /stt/status.
+      await startSttDownload(sttModel, sttEngine, hfApiToken(hfToken));
+      setStatusNonce((nonce) => nonce + 1);
+    } catch (error) {
+      toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setSttDownloadStarting(false);
     }
@@ -738,6 +627,7 @@ export function VoiceTab() {
       });
     }
   };
+
 
   const releaseSttModel = async () => {
     setSttUnloading(true);
@@ -892,16 +782,20 @@ export function VoiceTab() {
         <SettingsRow
           label={t("settings.voice.dictation.engineLabel")}
           description={
-            dictationEngine === "model"
-              ? t("settings.voice.dictation.engineModelDescription")
-              : t("settings.voice.dictation.engineBrowserDescription")
+            dictationEngine === "gguf"
+              ? t("settings.voice.dictation.engineGgufDescription")
+              : dictationEngine === "model"
+                ? t("settings.voice.dictation.engineModelDescription")
+                : t("settings.voice.dictation.engineBrowserDescription")
           }
         >
           <Select
             value={dictationEngine}
             onValueChange={(value) => {
-              const next = value === "model" ? "model" : "browser";
-              if (next === "browser") {
+              const next =
+                value === "gguf" || value === "model" ? value : "browser";
+              if (next !== dictationEngine) {
+                // Unload whichever backend was resident for the old engine.
                 void unloadSttModel().catch(() => {});
               }
               setDictationEngine(next);
@@ -918,6 +812,9 @@ export function VoiceTab() {
               <SelectItem value="browser">
                 {t("settings.voice.dictation.engineBrowser")}
               </SelectItem>
+              <SelectItem value="gguf">
+                {t("settings.voice.dictation.engineGguf")}
+              </SelectItem>
               <SelectItem value="model">
                 {t("settings.voice.dictation.engineModel")}
               </SelectItem>
@@ -925,44 +822,43 @@ export function VoiceTab() {
           </Select>
         </SettingsRow>
 
-        {dictationEngine === "model" ? (
+        {isLocalEngine ? (
           modelSttSupported ? (
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
             >
               <div className="flex w-56 flex-col items-stretch gap-2">
-                <SttModelCombobox
+                <SttCuratedModelSelect
                   value={sttModel}
                   language={dictationLanguage}
+                  gguf={isGgufEngine}
                   onChange={(next) => {
                     if (next !== sttModel) {
                       void unloadSttModel().catch(() => {});
+                      void autoLoadSttModel(next);
                     }
                     setSttModel(next);
                   }}
                 />
-                {sttDownload.progress ? (
+                {downloadingThisModel ? (
                   <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 pt-2">
                     <div className="mb-1.5 flex items-center justify-between gap-3">
                       <span className="text-xs text-muted-foreground">
                         {sttModelStatusText}
                       </span>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-6 px-2 text-xs"
-                        disabled={sttDownload.cancelling}
-                        onClick={() => sttDownload.cancelDownload(null)}
-                      >
-                        {sttDownload.cancelling
-                          ? t("settings.voice.dictation.sttCancellingDownload")
-                          : t("settings.voice.dictation.sttCancelDownload")}
-                      </Button>
                     </div>
                     <DownloadProgressBar
-                      progress={sttDownload.progress}
-                      bytesPerSec={sttDownload.bytesPerSec}
+                      progress={{
+                        expectedBytes: sttDownload?.bytes_total ?? 0,
+                        downloadedBytes: sttDownload?.bytes_done ?? 0,
+                        fraction:
+                          sttDownload?.bytes_total && sttDownload.bytes_total > 0
+                            ? (sttDownload.bytes_done ?? 0) /
+                              sttDownload.bytes_total
+                            : 0,
+                      }}
+                      bytesPerSec={downloadBytesPerSec}
                     />
                   </div>
                 ) : (
@@ -996,12 +892,13 @@ export function VoiceTab() {
                         variant="ghost"
                         size="sm"
                         className="h-7 px-2 text-xs"
-                        onClick={async () => {
+                        onClick={() => {
                           setSttDownloadAvailability({
                             repoId: sttRepoId,
                             state: "checking",
                           });
-                          await checkSttDownloadAvailability();
+                          // The status poll re-reads availability.
+                          setStatusNonce((nonce) => nonce + 1);
                         }}
                       >
                         {t("settings.voice.dictation.sttRetry")}
@@ -1011,10 +908,10 @@ export function VoiceTab() {
                         variant="outline"
                         size="sm"
                         className="h-7 px-2.5 text-xs"
-                        disabled={sttDownloadStarting}
-                        onClick={startSttDownload}
+                        disabled={sttDownloadStarting || downloadingThisModel}
+                        onClick={beginSttDownload}
                       >
-                        {sttDownloadStarting ? (
+                        {sttDownloadStarting || downloadingThisModel ? (
                           <Spinner className="mr-1.5" />
                         ) : null}
                         {t("settings.voice.dictation.sttDownload")}
@@ -1034,14 +931,18 @@ export function VoiceTab() {
                             : t("settings.voice.dictation.sttUnload")}
                         </Button>
                       ) : sttPhase === "loading" || sttPhase === "checking" ? (
+                        // The status line already says "Loading model…";
+                        // the button only needs the spinner.
                         <Button
                           variant="outline"
                           size="sm"
                           className="h-7 px-2.5 text-xs"
                           disabled={true}
+                          aria-label={t(
+                            "settings.voice.dictation.sttLoadingModel",
+                          )}
                         >
-                          <Spinner className="mr-1.5" />
-                          {t("settings.voice.dictation.sttLoadingModel")}
+                          <Spinner />
                         </Button>
                       ) : (
                         <Button
@@ -1058,12 +959,6 @@ export function VoiceTab() {
                     ) : null}
                   </div>
                 )}
-                <TransportConflictDialog
-                  conflict={sttDownload.transportConflict}
-                  onCancel={sttDownload.cancelConflict}
-                  onKeepTransport={sttDownload.resumeConflict}
-                  onSwitchTransport={sttDownload.restartConflict}
-                />
               </div>
             </SettingsRow>
           ) : (
