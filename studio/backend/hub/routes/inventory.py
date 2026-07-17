@@ -216,9 +216,7 @@ async def list_cached_models(
 
 
 @router.get("/hidden-models", response_model = HiddenModelsResponse)
-async def list_hidden_models(
-    current_subject: str = Depends(get_current_subject),
-):
+async def list_hidden_models(current_subject: str = Depends(get_current_subject)):
     import asyncio
 
     from routes.models import hidden_model_matchers
