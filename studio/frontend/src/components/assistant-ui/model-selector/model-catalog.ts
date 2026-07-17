@@ -199,6 +199,19 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // Krea's guidance-distilled FLUX.1-dev finetune ("opinionated aesthetics"): same
+    // arch/layout as FLUX.1-dev, so it runs under the existing flux.1 family. The base
+    // repo is gated like dev; QuantStack publishes the open GGUF quants.
+    canonicalId: "black-forest-labs/FLUX.1-Krea-dev",
+    displayName: "FLUX.1 Krea dev",
+    description: "Text-to-image",
+    scope: "image",
+    artifacts: [
+      bf16Pipeline("black-forest-labs/FLUX.1-Krea-dev", 32, { gated: true }),
+      gguf("QuantStack/FLUX.1-Krea-dev-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/FLUX.2-klein-4B",
     displayName: "FLUX.2 klein 4B",
     description: "Text-to-image",

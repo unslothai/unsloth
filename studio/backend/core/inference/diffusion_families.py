@@ -454,6 +454,10 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 # first -- same values as the UI's MODEL_DEFAULTS table (images-page.tsx); keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
+    # FLUX.1 Krea dev is a FLUX.1-dev finetune (flux.1 family), NOT a Krea-2: its card runs
+    # 28 steps at guidance 4.5. Must precede the generic "krea" key below, which would
+    # otherwise hand it Krea-2-Turbo's 8-step no-CFG recipe.
+    ("flux.1-krea", 28, 4.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
