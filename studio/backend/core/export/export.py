@@ -54,8 +54,15 @@ def _multi_gpu_device_map_kwargs() -> dict:
         visible = get_parent_visible_gpu_ids()
         if len(visible) > 1:
             device_map = get_device_map(visible)
-            if device_map == "balanced":
-                return {"device_map": device_map}
+        elif not visible:
+            # UUID/MIG CUDA_VISIBLE_DEVICES masks resolve to no numeric ids;
+            # get_device_map(None) handles exactly that by falling back to the
+            # visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            device_map = get_device_map(None)
+        else:
+            return {}
+        if device_map == "balanced":
+            return {"device_map": device_map}
     except Exception as exc:
         logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
     return {}

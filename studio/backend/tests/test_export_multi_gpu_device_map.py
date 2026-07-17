@@ -66,6 +66,33 @@ def test_non_balanced_resolution_keeps_loader_default(monkeypatch):
     assert mod._multi_gpu_device_map_kwargs() == {}
 
 
+def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
+    # UUID/MIG CUDA_VISIBLE_DEVICES masks resolve to NO numeric ids ([]), but
+    # get_device_map(None) still detects >1 visible GPU; the empty list must
+    # route there instead of silently keeping the sequential loader default.
+    mod = _export_mod(monkeypatch)
+    monkeypatch.setattr(mod, "_IS_MLX", False)
+    hw = sys.modules["utils.hardware"]
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising = False)
+    monkeypatch.setattr(
+        hw,
+        "get_device_map",
+        lambda ids: "balanced" if ids is None else "sequential",
+        raising = False,
+    )
+    assert mod._multi_gpu_device_map_kwargs() == {"device_map": "balanced"}
+
+
+def test_no_visible_gpus_keeps_loader_default(monkeypatch):
+    # Empty mask / CPU host: get_device_map(None) resolves "sequential" -> {}.
+    mod = _export_mod(monkeypatch)
+    monkeypatch.setattr(mod, "_IS_MLX", False)
+    hw = sys.modules["utils.hardware"]
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [], raising = False)
+    monkeypatch.setattr(hw, "get_device_map", lambda ids: "sequential", raising = False)
+    assert mod._multi_gpu_device_map_kwargs() == {}
+
+
 def test_mlx_host_keeps_loader_default(monkeypatch):
     mod = _export_mod(monkeypatch)
     # _install_export_backend_stubs sets _IS_MLX = True already; even a stubbed

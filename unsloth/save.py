@@ -4078,6 +4078,73 @@ def _print_compressed_hw_note(scheme, out_dir):
     )
 
 
+def _offload_model_for_quantize_subprocess(model):
+    """Best-effort: move the merged model's weights off the GPU before the
+    llm-compressor subprocess loads its own copy from disk, so the GPUs need not
+    hold both at once. Returns an opaque restore token for
+    ``_restore_model_after_quantize_subprocess`` (None when nothing was moved).
+
+    Two shapes are handled:
+      * single-device CUDA model -> plain ``.to("cpu")``, restored with
+        ``.to(device)``;
+      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the
+        Studio multi-GPU export load) -> accelerate's hooks are removed and the
+        model moved to CPU, restored by re-dispatching over the recorded
+        ``hf_device_map``. A plain ``.to("cpu")`` is invalid on a dispatched
+        model, which is why the old single-device-only move skipped these and
+        left every GPU holding a full copy while the subprocess loaded another.
+        A map with non-GPU targets (cpu/disk offload) is left alone: accelerate
+        is already offloading those weights.
+
+    Quantized (bnb) models are never moved.
+    """
+    try:
+        if not (torch.cuda.is_available() and hasattr(model, "parameters")):
+            return None
+        if (
+            getattr(model, "is_loaded_in_4bit", False)
+            or getattr(model, "is_loaded_in_8bit", False)
+            or getattr(model, "is_quantized", False)
+        ):
+            return None
+        device_map = getattr(model, "hf_device_map", None)
+        if device_map:
+            targets = {str(v) for v in device_map.values()}
+            if not all(t.isdigit() or t.startswith("cuda") for t in targets):
+                return None
+            from accelerate.hooks import remove_hook_from_submodules
+
+            remove_hook_from_submodules(model)
+            model.to("cpu")
+            return ("dispatch", dict(device_map))
+        devices = {str(p.device) for p in model.parameters()}
+        if len(devices) == 1 and next(iter(devices)).startswith("cuda"):
+            device = next(model.parameters()).device
+            model.to("cpu")
+            return ("device", device)
+    except Exception:
+        return None
+    return None
+
+
+def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
+    """Undo ``_offload_model_for_quantize_subprocess``; warns instead of raising."""
+    if restore_token is None:
+        return
+    kind, value = restore_token
+    try:
+        if kind == "dispatch":
+            from accelerate import dispatch_model
+            dispatch_model(model, device_map = value)
+        else:
+            model.to(value)  # restore the model to its original device
+    except Exception:
+        logger.warning_once(
+            "Unsloth: could not restore the model to its original device(s) after compressed "
+            "export; it may remain on CPU."
+        )
+
+
 def _unsloth_save_compressed_tensors(
     model,
     save_directory: Union[str, os.PathLike],
@@ -4133,7 +4200,7 @@ def _unsloth_save_compressed_tensors(
 
     # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
     #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
-    repo_id, work_tmp, calib_tmp, model_dev = None, None, None, None
+    repo_id, work_tmp, calib_tmp, model_restore = None, None, None, None
     if push_to_hub:
         repo_id = os.fspath(save_directory)
         work_tmp = tempfile.mkdtemp(prefix = "unsloth-compressed-")
@@ -4279,23 +4346,9 @@ def _unsloth_save_compressed_tensors(
             cmd += ["--variant", variant]
 
         # Free the in-memory model's CUDA memory before the subprocess loads its own copy from
-        # disk, so a single GPU need not hold both at once. Best-effort and restored in finally;
-        # skipped for quantized or multi-device models where moving is unsafe.
-        try:
-            if (
-                torch.cuda.is_available()
-                and hasattr(model, "parameters")
-                and not getattr(model, "is_loaded_in_4bit", False)
-                and not getattr(model, "is_loaded_in_8bit", False)
-                and not getattr(model, "is_quantized", False)
-            ):
-                _devs = {str(p.device) for p in model.parameters()}
-                if len(_devs) == 1 and next(iter(_devs)).startswith("cuda"):
-                    _dev = next(model.parameters()).device
-                    model.to("cpu")
-                    model_dev = _dev  # set only after a successful move, so finally can restore
-        except Exception:
-            model_dev = None
+        # disk, so the GPUs need not hold both at once. Best-effort and restored in finally;
+        # covers single-device CUDA models and accelerate-dispatched multi-GPU shards.
+        model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
             if torch.cuda.is_available():
@@ -4359,14 +4412,7 @@ def _unsloth_save_compressed_tensors(
         _print_compressed_hw_note(scheme, result)
         return result
     finally:
-        if model_dev is not None:
-            try:
-                model.to(model_dev)  # restore the model to its original device
-            except Exception:
-                logger.warning_once(
-                    "Unsloth: could not restore the model to its original device after compressed "
-                    "export; it may remain on CPU."
-                )
+        _restore_model_after_quantize_subprocess(model, model_restore)
         if calib_tmp is not None and os.path.isdir(calib_tmp):
             shutil.rmtree(calib_tmp, ignore_errors = True)
         if work_tmp is not None:
