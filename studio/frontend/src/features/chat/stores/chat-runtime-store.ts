@@ -1582,6 +1582,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set(() => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
+      const permissionMode = loadPermissionMode();
       if (deepResearchEnabled) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
@@ -1600,6 +1601,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             mcpEnabledForChat: false,
             webFetchToolsEnabled: false,
             bypassPermissions: false,
+            permissionMode,
+            confirmToolCalls:
+              permissionMode === "ask" || permissionMode === "auto",
           }
         : { deepResearchEnabled };
     }),
@@ -1674,7 +1678,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (permissionMode === "full") {
         // Full access sends confirm_tool_calls=false; keep the store flag in
         // sync so response metadata does not report confirmations as enabled.
-        return { permissionMode, bypassPermissions: true, confirmToolCalls: false };
+        saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
+        return {
+          permissionMode,
+          bypassPermissions: true,
+          confirmToolCalls: false,
+          deepResearchEnabled: false,
+        };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";

@@ -133,6 +133,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "effectiveDeepResearchEnabled ||" in thread
     assert "replayFrom: session?.lastAppliedSeq ?? 0" in coordinator
     assert "loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in store
+    assert "const permissionMode = loadPermissionMode();" in store
+    assert "permissionMode," in store
 
 
 def test_research_plan_and_status_contract() -> None:

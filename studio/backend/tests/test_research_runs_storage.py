@@ -34,13 +34,14 @@ def research_home(tmp_path, monkeypatch):
 def _create(
     run_id = "run-1", assistant_message_id = "assistant-1",
     *, thread_id = "thread-1", user_message_id = "user-1",
+    rag_scope = None,
 ):
     return research_db.create_run(
         run_id = run_id, owner_subject = "alice", thread_id = thread_id,
         user_message_id = user_message_id, assistant_message_id = assistant_message_id,
         config = {
             "model": "local-model", "inferenceRequest": {"model": "local-model"},
-            "ragScope": None,
+            "ragScope": rag_scope,
             "budgets": {"maxSteps": 5, "maxSources": 15,
                         "modelTimeoutSeconds": 30, "toolTimeoutSeconds": 10},
         },
@@ -611,7 +612,8 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
 ):
     from core import research_runs as worker
 
-    _create(assistant_message_id = None)
+    rag_scope = {"kb_id": "kb-1", "default_top_k": 4}
+    _create(assistant_message_id = None, rag_scope = rag_scope)
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     report_response = "# Final report\n\nGrounded result [source](https://example.com)."
     decisions = iter((
@@ -636,7 +638,12 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
         research_db.set_report_progress(run["id"], report)
         return report, "Checked the available evidence.", "stop"
 
-    def fake_tool(name, arguments, *args):
+    tool_calls = []
+
+    def fake_tool(name, arguments, *args, **kwargs):
+        tool_calls.append((name, kwargs))
+        if name == "search_knowledge_base":
+            return "Private evidence"
         if arguments.get("url"):
             return "Full page evidence."
         return "Title: Example\nURL: https://example.com\nSnippet: Evidence snippet."
@@ -664,6 +671,10 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(
     assert completed["steps"][0]["query"] == "example evidence"
     assert completed["steps"][0]["input"] == "example evidence"
     assert completed["steps"][0]["result"]["input"] == "example evidence"
+    rag_call = next(call for call in tool_calls if call[0] == "search_knowledge_base")
+    assert rag_call[1]["rag_scope"] == rag_scope
+    assert rag_call[1]["timeout"] == 10
+    assert rag_call[1]["cancel_event"] is not None
     assert completed["assistantMessageId"] == "research-run-1"
     assistant = studio_db.get_chat_message("thread-1", "research-run-1")
     assert assistant["metadata"]["researchStatus"] == "completed"

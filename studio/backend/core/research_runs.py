@@ -900,23 +900,26 @@ class ResearchSupervisor:
                 fetched_urls.add(argument)
                 result = await asyncio.to_thread(
                     execute_tool, "web_search", {"url": argument},
-                    self._cancel_event(run["id"]), tool_timeout,
-                    None, None, False, website_policy,
+                    cancel_event = self._cancel_event(run["id"]),
+                    timeout = tool_timeout,
+                    website_policy = website_policy,
                 )
                 rag_result = ""
             else:
                 used_queries.add(argument)
                 result = await asyncio.to_thread(
                     execute_tool, "web_search", {"query": argument},
-                    self._cancel_event(run["id"]), tool_timeout,
-                    None, None, False, website_policy,
+                    cancel_event = self._cancel_event(run["id"]),
+                    timeout = tool_timeout,
+                    website_policy = website_policy,
                 )
                 rag_result = ""
                 if run["config"].get("ragScope"):
                     rag_result = await asyncio.to_thread(
                         execute_tool, "search_knowledge_base", {"query": argument},
-                        self._cancel_event(run["id"]), tool_timeout, None,
-                        run["config"]["ragScope"],
+                        cancel_event = self._cancel_event(run["id"]),
+                        timeout = tool_timeout,
+                        rag_scope = run["config"]["ragScope"],
                     )
             rag_result, rag_sources = _split_rag_result(rag_result)
             await self._check_active(run["id"])

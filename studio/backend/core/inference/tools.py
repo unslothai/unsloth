@@ -3209,17 +3209,6 @@ def execute_tool(
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
-    # Deep Research originally called this positionally before thread_id and
-    # output_callback were added upstream. Recognize that exact argument shape.
-    if (
-        website_policy is None
-        and isinstance(disable_sandbox, dict)
-        and rag_scope is False
-        and thread_id is None
-    ):
-        website_policy = disable_sandbox
-        disable_sandbox = False
-        rag_scope = None
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
         return _search_knowledge_base(arguments, rag_scope)
