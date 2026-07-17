@@ -79,6 +79,10 @@ class VideoFamily:
     vae_force_fp32: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
+    # True when the pipeline REQUIRES a conditioning image (WanImageToVideoPipeline): the
+    # generate path decodes/resizes the request's init_image and refuses a run without one;
+    # the UI shows the source-image control only for these families.
+    image_conditioned: bool = False
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
@@ -166,6 +170,38 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
         # No gguf_repo: community GGUFs split the experts, and a single-file load covers only one.
+    ),
+    # Wan2.2-I2V-A14B (diffusers >= 0.35, verified on 0.39): the image-to-video dual-expert MoE.
+    # Same DiT pair as T2V-A14B (boundary_ratio 0.9 vs T2V's 0.875, read from the pipeline
+    # config -- no plumbing), but the pipeline is WanImageToVideoPipeline and REQUIRES a
+    # conditioning image: this Wan2.2 variant conditions through the VAE latent (the repo's
+    # image_encoder/image_processor slots are null; no CLIP-vision like Wan2.1), so generate()
+    # threads the decoded init_image straight into ``image``. Card recipe: 40 steps, CFG 3.5,
+    # 81 frames at 16 fps.
+    VideoFamily(
+        name = "wan2.2-i2v-a14b",
+        pipeline_class = "WanImageToVideoPipeline",
+        transformer_class = "WanTransformer3DModel",
+        base_repo = "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        aliases = ("wan2.2-i2v", "wan-i2v", "wan-i2v-a14b"),
+        has_audio = False,
+        transformer2_class = "WanTransformer3DModel",
+        is_moe = True,
+        cfg2_kwarg = "guidance_scale_2",
+        image_conditioned = True,
+        # The I2V card runs 40 steps at CFG 3.5 (vs the T2V/pipeline default 50/5.0).
+        default_steps = 40,
+        default_guidance = 3.5,
+        default_num_frames = 81,
+        default_fps = 16,
+        frame_step = 4,
+        resolution_multiple = 16,
+        resolution_presets = ((1280, 720), (832, 480), (480, 832), (720, 1280)),
+        # Same shipped layout as T2V-A14B: each expert fp32 on disk (57.15 GB) -> ~28.6 bf16
+        # each -> ~57.2 for both; UMT5 TE bf16 (11.4); VAE fp32 (0.5).
+        bf16_components_gb = (57.2, 11.4, 0.5),
+        vae_force_fp32 = True,
+        # No gguf_repo: community I2V GGUFs split the experts, and a single-file load covers only one.
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL text encoder + ByT5 glyph
     # encoder. Three quirks: (1) __call__ has NO guidance kwarg; CFG on the ``guider``
@@ -279,7 +315,9 @@ def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
     ("ltx", 40, 4.0),
-    # Wan2.2 pipelines default to 50 steps / CFG 5.0; both TI2V-5B and A14B share these.
+    # Wan2.2 I2V runs its card recipe (40 steps, CFG 3.5); must precede the generic "wan" key.
+    ("wan2.2-i2v", 40, 3.5),
+    # Wan2.2 T2V pipelines default to 50 steps / CFG 5.0; both TI2V-5B and T2V-A14B share these.
     ("wan", 50, 5.0),
     # HunyuanVideo-1.5: 50 steps with the guider's shipped CFG 6.0.
     ("hunyuanvideo", 50, 6.0),

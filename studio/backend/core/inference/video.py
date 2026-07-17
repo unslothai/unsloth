@@ -128,6 +128,7 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # Wan2.2 official diffusers base repos: safetensors-only, no remote code.
         "wan-ai/wan2.2-ti2v-5b-diffusers",
         "wan-ai/wan2.2-t2v-a14b-diffusers",
+        "wan-ai/wan2.2-i2v-a14b-diffusers",
         # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo is the
         # non-diffusers layout with no model_index.json, unloadable here).
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
@@ -1916,6 +1917,7 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        init_image: Optional[str] = None,
     ) -> None:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
@@ -1934,6 +1936,21 @@ class VideoBackend:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
             if self._generate_job_active:
                 raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            # Image gate up front (cheap, no decode) so the POST 400s synchronously instead
+            # of reporting a failed job: an image-to-video family needs a source image, a
+            # text-only family has no ``image`` kwarg to take one. generate() re-checks for
+            # direct callers. getattr-guarded: tests fake _state without a family.
+            fam = getattr(self._state, "family", None)
+            if fam is not None:
+                if getattr(fam, "image_conditioned", False) and not (init_image or "").strip():
+                    raise ValueError(
+                        f"{fam.name} is an image-to-video model: attach a source image "
+                        "to animate."
+                    )
+                if init_image and not getattr(fam, "image_conditioned", False):
+                    raise ValueError(
+                        f"{fam.name} is a text-to-video model and does not take a source image."
+                    )
             # A background compile prewarm may hold _generate_lock. Signal its dedicated
             # cancel handle BEFORE registering ours so the real job preempts the warmup at
             # its next step boundary instead of queueing behind it (and so unload/cancel
@@ -1963,6 +1980,7 @@ class VideoBackend:
                 guidance = guidance,
                 guidance_2 = guidance_2,
                 seed = seed,
+                init_image = init_image,
                 cancel_event = cancel,
             ),
             daemon = True,
@@ -2074,6 +2092,7 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        init_image: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, Any]:
         import torch
@@ -2125,6 +2144,29 @@ class VideoBackend:
                     "num_frames": frames,
                     "generator": generator,
                 }
+                # Image-conditioned families (WanImageToVideoPipeline) REQUIRE a source image;
+                # text-only families have no ``image`` kwarg to feed one to. Both mismatches are
+                # client input -> ValueError (the route/worker map it to a 400-style message).
+                if fam.image_conditioned:
+                    if not (init_image or "").strip():
+                        raise ValueError(
+                            f"{fam.name} is an image-to-video model: attach a source image "
+                            "to animate."
+                        )
+                    from .diffusion import _decode_b64_image
+                    from PIL import Image
+
+                    init_pil = _decode_b64_image(init_image, mode = "RGB")
+                    # The pipeline derives the latent grid from height/width and encodes the
+                    # image at that size; resize here so the conditioning frame matches the
+                    # snapped output size exactly (no center-crop surprises).
+                    if init_pil.size != (width, height):
+                        init_pil = init_pil.resize((width, height), Image.LANCZOS)
+                    kwargs["image"] = init_pil
+                elif init_image:
+                    raise ValueError(
+                        f"{fam.name} is a text-to-video model and does not take a source image."
+                    )
                 if fam.guidance_via_guider:
                     # HunyuanVideo-1.5: __call__ has no guidance kwarg; CFG scale is a guider
                     # attribute set per request (near-1 scales auto-disable CFG in the guider).
@@ -2467,6 +2509,7 @@ class VideoBackend:
                 "vae_quant": None,
                 "cfg_parallel": None,
                 "has_audio": False,
+                "image_input": False,
                 "defaults": None,
                 "resolved": None,
             }
@@ -2497,6 +2540,9 @@ class VideoBackend:
             "vae_quant": state.vae_quant,
             "cfg_parallel": state.cfg_parallel,
             "has_audio": fam.has_audio,
+            # True for image-to-video families: the UI shows the source-image control and
+            # requires an image before submitting.
+            "image_input": fam.image_conditioned,
             "defaults": {
                 "steps": default_steps,
                 "guidance": default_guidance,

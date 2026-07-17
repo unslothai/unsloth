@@ -276,6 +276,56 @@ class _FakeWanPipeMoE(_FakeWanPipeBase):
         return self._finish(num_inference_steps, num_frames, callback_on_step_end)
 
 
+class _FakeWanI2VPipe(_FakeWanPipeBase):
+    """Dual-DiT image-to-video Wan pipeline (I2V-A14B): ``image`` IS in the signature
+    (WanImageToVideoPipeline.__call__ in diffusers 0.39) alongside guidance_scale_2."""
+
+    moe = True
+
+    def __call__(
+        self,
+        *,
+        image = None,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        guidance_scale_2 = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "image": image,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "guidance_scale_2": guidance_scale_2,
+            "width": width,
+            "height": height,
+            "num_frames": num_frames,
+            **kwargs,
+        }
+        with self.transformer.cache_context("cond"):  # real Wan pipeline wraps the denoise loop
+            pass
+        return self._finish(num_inference_steps, num_frames, callback_on_step_end)
+
+
+class _FakeWanImageToVideoPipeline:
+    """WanImageToVideoPipeline fake (from_pretrained) for the I2V-A14B family."""
+
+    last: dict = {}
+
+    @classmethod
+    def from_pretrained(cls, repo, **kwargs):
+        _FakeWanImageToVideoPipeline.last = {"repo": repo, **kwargs}
+        return _FakeWanI2VPipe()
+
+
 class _FakeWanPipelineSingle:
     """WanPipeline fake (from_pretrained). One class serves both families and picks the
     single-DiT / dual-DiT pipe by the repo id, exactly as diffusers dispatches on the
@@ -387,6 +437,7 @@ def fake_runtime(monkeypatch):
     diffusers.LTX2VideoTransformer3DModel = _FakeTransformer
     # Wan2.2: one pipeline class serves both families (it dispatches on the repo id).
     diffusers.WanPipeline = _FakeWanPipelineSingle
+    diffusers.WanImageToVideoPipeline = _FakeWanImageToVideoPipeline
     diffusers.WanTransformer3DModel = _FakeTransformer
     diffusers.HunyuanVideo15Pipeline = _FakeHV15Pipeline
     diffusers.HunyuanVideo15Transformer3DModel = _FakeTransformer
@@ -1383,6 +1434,66 @@ def test_wan_a14b_cfg2_threaded_when_signature_has_it(fake_runtime):
     backend.generate(prompt = "a sloth", guidance = 5.0)
     call2 = backend._state.pipe.last_kwargs
     assert call2["guidance_scale_2"] is None
+
+
+def _tiny_png_data_url(width = 8, height = 8):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (128, 64, 32)).save(buf, format = "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_wan_i2v_repo_is_trusted_and_detected():
+    # The official -Diffusers repo loads as a full pipeline: it must be on the video
+    # trust allowlist and resolve to the image-conditioned dual-expert family.
+    backend = VideoBackend()
+    fam = backend.validate_load_request(
+        "Wan-AI/Wan2.2-I2V-A14B-Diffusers", model_kind = "pipeline"
+    )
+    assert fam.name == "wan2.2-i2v-a14b"
+    assert fam.image_conditioned is True
+
+
+def test_wan_i2v_requires_image_and_threads_it(fake_runtime):
+    # Loading the I2V family builds the dual-DiT image pipeline; generate() without a
+    # source image is client input error, with one the decoded PIL image (resized to the
+    # snapped output size) is threaded as the pipeline's ``image`` kwarg.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-I2V-A14B-Diffusers", model_kind = "pipeline")
+    assert status["loaded"] is True and status["family"] == "wan2.2-i2v-a14b"
+    assert status["image_input"] is True
+    pipe = backend._state.pipe
+    assert pipe.transformer is not None and pipe.transformer_2 is not None
+
+    with pytest.raises(ValueError, match = "image-to-video"):
+        backend.generate(prompt = "a sloth")
+    # begin_generate 400s synchronously too (no failed background job for a missing image),
+    # and a raise must not leave the busy flag set.
+    with pytest.raises(ValueError, match = "image-to-video"):
+        backend.begin_generate(prompt = "a sloth")
+    assert backend._generate_job_active is False
+
+    backend.generate(
+        prompt = "a sloth", width = 832, height = 480, init_image = _tiny_png_data_url()
+    )
+    sent = pipe.last_kwargs["image"]
+    assert sent is not None and sent.size == (832, 480)
+    # The I2V defaults (40 steps / CFG 3.5, the card recipe) beat the generic wan 50/5.0.
+    assert pipe.last_kwargs["num_inference_steps"] == 40
+    assert pipe.last_kwargs["guidance_scale"] == 3.5
+
+
+def test_wan_t2v_rejects_source_image(fake_runtime):
+    # A text-only family given an init_image must 400-fail loudly, not silently ignore it.
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline")
+    assert status["image_input"] is False
+    with pytest.raises(ValueError, match = "does not take a source image"):
+        backend.generate(prompt = "a sloth", init_image = _tiny_png_data_url())
 
 
 def test_wan_a14b_step_cache_applies_to_both_dits(fake_runtime):

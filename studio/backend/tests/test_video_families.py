@@ -86,12 +86,59 @@ def test_detect_wan_t2v_a14b(repo_id):
     assert fam.frame_step == 4
 
 
+@pytest.mark.parametrize(
+    "repo_id",
+    [
+        "Wan-AI/Wan2.2-I2V-A14B-Diffusers",
+        "wan-ai/wan2.2-i2v-a14b-diffusers",
+        "Wan-AI/Wan2.2-I2V-A14B",
+        "some/dir/wan2.2-i2v-a14b-Q4_K_M.gguf",
+    ],
+)
+def test_detect_wan_i2v_a14b(repo_id):
+    # The I2V repo ids route to the image-conditioned dual-expert family: the pipeline is
+    # WanImageToVideoPipeline and generate() requires a source image. Same DiT pair /
+    # second guidance kwarg as T2V-A14B; boundary_ratio (0.9) lives in the pipeline config.
+    fam = detect_video_family(repo_id)
+    assert fam is not None and fam.name == "wan2.2-i2v-a14b"
+    assert fam.pipeline_class == "WanImageToVideoPipeline"
+    assert fam.transformer2_class == "WanTransformer3DModel"
+    assert fam.is_moe is True
+    assert fam.cfg2_kwarg == "guidance_scale_2"
+    assert fam.image_conditioned is True
+    assert fam.has_audio is False
+    assert fam.frame_step == 4
+    assert fam.vae_force_fp32 is True
+    # Same shipped expert layout as T2V: the table holds the halved bf16-resident sizes.
+    assert fam.bf16_components_gb == (57.2, 11.4, 0.5)
+
+
+def test_i2v_does_not_claim_t2v_ids_and_vice_versa():
+    # "wan2.2-i2v" must not swallow the T2V/TI2V ids, and the generic wan families stay
+    # text-only (image_conditioned False), so the image gate can't misfire on them.
+    assert detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers").name == "wan2.2-t2v-a14b"
+    assert detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").name == "wan2.2-ti2v-5b"
+    assert detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers").image_conditioned is False
+    assert detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").image_conditioned is False
+
+
+def test_wan_i2v_generation_defaults():
+    # The I2V card recipe (40 steps, CFG 3.5) must beat the generic "wan" 50/5.0 key, and
+    # the T2V ids must keep 50/5.0.
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-I2V-A14B-Diffusers") == (40, 3.5)
+    assert default_video_generation_params("wan2.2-i2v-a14b-Q4_K_M.gguf") == (40, 3.5)
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers") == (50, 5.0)
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers") == (50, 5.0)
+
+
 def test_detect_wan_overrides():
     # Short aliases the picker / GGUF filenames use resolve to the right family.
     assert detect_video_family("x", override = "wan2.2-5b").name == "wan2.2-ti2v-5b"
     assert detect_video_family("x", override = "wan-ti2v").name == "wan2.2-ti2v-5b"
     assert detect_video_family("x", override = "wan2.2-14b").name == "wan2.2-t2v-a14b"
     assert detect_video_family("x", override = "wan-t2v").name == "wan2.2-t2v-a14b"
+    assert detect_video_family("x", override = "wan-i2v").name == "wan2.2-i2v-a14b"
+    assert detect_video_family("x", override = "wan2.2-i2v").name == "wan2.2-i2v-a14b"
 
 
 def test_wan_and_ltx_do_not_cross_route():
@@ -150,6 +197,7 @@ def test_supported_names():
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
+        "wan2.2-i2v-a14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )

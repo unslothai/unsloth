@@ -453,6 +453,8 @@ def test_exclude_tokens_for_scheme_family():
 
     assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-ti2v-5b") == ("condition_embedder",)
     assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-t2v-a14b") == ("condition_embedder",)
+    # I2V-A14B shares the T2V DiT pair, so the fp8 recipe transfers unchanged.
+    assert exclude_tokens_for_scheme(TQ_FP8, "wan2.2-i2v-a14b") == ("condition_embedder",)
     assert exclude_tokens_for_scheme(TQ_MXFP8, "wan2.2-ti2v-5b") == ("condition_embedder",)
     # Hunyuan is not localisable (fp8 stays denied), and an unknown family gets nothing.
     assert exclude_tokens_for_scheme(TQ_FP8, "hunyuanvideo-1.5") == ()
@@ -600,6 +602,7 @@ def test_family_allows_fp8_for_wan(monkeypatch):
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_FP8
     assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-t2v-a14b") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-i2v-a14b") == TQ_FP8
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})  # fp8 unavailable -> denied mx/nvfp4 skipped
     assert select_transformer_quant_scheme(_target(), "auto", family = "wan2.2-ti2v-5b") == TQ_INT8
 

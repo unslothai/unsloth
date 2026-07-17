@@ -127,6 +127,7 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
 _FP8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "wan2.2-ti2v-5b": ("condition_embedder",),
     "wan2.2-t2v-a14b": ("condition_embedder",),  # same DiT class + padded-text conditioning
+    "wan2.2-i2v-a14b": ("condition_embedder",),  # same DiT class + padded-text conditioning
 }
 
 
@@ -195,6 +196,7 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     # (same scaled_mm family, not separately validated). 5B TI2V and A14B share the DiT + profile.
     "wan2.2-ti2v-5b": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "wan2.2-t2v-a14b": frozenset({TQ_MXFP8, TQ_NVFP4}),
+    "wan2.2-i2v-a14b": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT pair + quant profile as T2V
     # HunyuanVideo-1.5 DiT: fp8 renders black frames (LPIPS 0.82) and -- unlike Wan -- the failure
     # is NOT confinable to an input embedder: its MMDiT masks padding text tokens to zero inside
     # every block, so the context stream regenerates zero rows layer after layer (fp8 on only the

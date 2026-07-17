@@ -2552,6 +2552,13 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
+    # Image-to-video conditioning (base64 or data-URL). Required by image-conditioned
+    # families (Wan2.2-I2V); rejected with a 400 by text-only families.
+    init_image: Optional[str] = Field(
+        None,
+        description = "Source image to animate (base64/data-URL). Required for image-to-video "
+        "families; not accepted by text-to-video families.",
+    )
 
 
 class GalleryVideo(BaseModel):
@@ -2705,6 +2712,11 @@ class VideoStatusResponse(BaseModel):
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
+    )
+    image_input: bool = Field(
+        False,
+        description = "Whether the loaded family requires a source image (image-to-video): the "
+        "UI shows the source-image control and generate refuses to run without one",
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"

@@ -89,6 +89,8 @@ _FBCACHE_QUALITY_THRESHOLDS: dict[str, tuple[float, float]] = {
 # 0.08 is the least-drift cache-on point, not a compliant one.
 _FAMILY_FBCACHE_THRESHOLDS: dict[tuple[str, str], tuple[float, float]] = {
     ("wan2.2-t2v-a14b", CQ_BALANCED): (DEFAULT_FBCACHE_THRESHOLD, DEFAULT_FBCACHE_THRESHOLD),
+    # I2V-A14B shares the T2V DiT pair; inherit the balanced pin (same drift profile).
+    ("wan2.2-i2v-a14b", CQ_BALANCED): (DEFAULT_FBCACHE_THRESHOLD, DEFAULT_FBCACHE_THRESHOLD),
 }
 
 

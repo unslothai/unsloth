@@ -188,6 +188,7 @@ async def generate_video(
             guidance = request.guidance,
             guidance_2 = request.guidance_2,
             seed = request.seed,
+            init_image = request.init_image,
         )
     except ValueError as exc:
         # Bad client input -- a 400 with the reason, not a generic 500.

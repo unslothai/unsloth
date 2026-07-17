@@ -166,6 +166,8 @@ class _FakeBackend(video_module.VideoBackend):
     ):
         if not self.loaded:
             raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+        # Recorded so route tests can assert request fields (init_image) reach the backend.
+        self.last_generate_kwargs = dict(kwargs)
         return {
             "mp4_bytes": b"MP4-FAKE-BYTES",
             "seed": seed if seed is not None else 4242,
@@ -446,6 +448,19 @@ def test_generate_happy_path_persists_and_reports_record(client):
     assert fetched.headers["content-type"] == "video/mp4"
     assert "immutable" in fetched.headers["cache-control"]
     assert fetched.content == b"MP4-FAKE-BYTES"
+
+
+def test_generate_threads_init_image_to_backend(client):
+    # The image-to-video source image (init_image) must ride the request through
+    # begin_generate into the backend generate call untouched.
+    client.post(
+        "/api/inference/video/load",
+        json = {"model_path": "unsloth/LTX-2.3-GGUF", "gguf_filename": "q.gguf"},
+    )
+    data_url = "data:image/png;base64,aGk="
+    _generate_and_wait(client, {"prompt": "a sloth", "seed": 3, "init_image": data_url})
+    backend = video_module.get_video_backend()
+    assert backend.last_generate_kwargs.get("init_image") == data_url
 
 
 def test_generate_without_load_returns_409(client):

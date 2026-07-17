@@ -131,7 +131,8 @@ _TE_FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 #   amplifies the perturbation ~3x harder than on wan2.2-ti2v-5b (0.0396, kept quantized there for
 #   a real 1.09x on its faster DiT).
 _TE_AUTO_DENSE_FAMILIES: frozenset[str] = frozenset(
-    {"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-t2v-a14b"}
+    # wan2.2-i2v-a14b inherits the T2V entry: same UMT5 encoder and MoE trajectory.
+    {"hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-t2v-a14b", "wan2.2-i2v-a14b"}
 )
 
 # Map a TE torchao scheme to the transformer smoke-probe scheme (same GEMM), so ``auto`` degrades
