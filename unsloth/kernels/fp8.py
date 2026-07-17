@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from contextlib import nullcontext
 import torch
 import torch.nn as nn
 import triton
@@ -24,6 +25,15 @@ from unsloth_zoo.temporary_patches.common import torch_compile
 
 torch_matmul = torch.matmul
 
+
+def _fp8_triton_device_context(tensor: torch.Tensor):
+    if tensor.device.type == "cuda" and torch.cuda.device_count() > 1:
+        return torch.cuda.device(tensor.device)
+    if tensor.device.type == "xpu" and hasattr(torch, "xpu") and torch.xpu.device_count() > 1:
+        return torch.xpu.device(tensor.device)
+    return nullcontext()
+
+
 try:
     from transformers.integrations.finegrained_fp8 import FP8Linear
 except:
@@ -31,6 +41,11 @@ except:
     logger.info(
         "Unsloth: FP8 models need importing FP8Linear from `transformers.integrations.finegrained_fp8` but we don't see it."
     )
+
+try:
+    from transformers.integrations.finegrained_fp8 import FP8GroupedLinear
+except:
+    FP8GroupedLinear = None
 
 try:
     from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
@@ -95,7 +110,8 @@ def weight_dequant_block(
         triton.cdiv(M, meta["BLOCK_SIZE"]),
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
-    weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+    with _fp8_triton_device_context(x):
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
     return y
 
 
@@ -149,7 +165,8 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
     def grid(meta):
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
-    act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
+    with _fp8_triton_device_context(x):
+        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
     return y, s
 
 
@@ -274,32 +291,33 @@ def w8a8_block_fp8_matmul_triton(
     def grid(META):
         return (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),)
 
-    _w8a8_block_fp8_matmul[grid](
-        A,
-        B,
-        C,
-        As,
-        Bs,
-        M,
-        N,
-        K,
-        block_n,
-        block_k,
-        A.stride(-2),
-        A.stride(-1),
-        B.stride(1),
-        B.stride(0),
-        C.stride(-2),
-        C.stride(-1),
-        As.stride(-2),
-        As.stride(-1),
-        Bs.stride(1),
-        Bs.stride(0),
-        BLOCK_SIZE_M = BLOCK_SIZE_M,
-        BLOCK_SIZE_N = BLOCK_SIZE_N,
-        BLOCK_SIZE_K = BLOCK_SIZE_K,
-        GROUP_SIZE_M = 8,
-    )
+    with _fp8_triton_device_context(A):
+        _w8a8_block_fp8_matmul[grid](
+            A,
+            B,
+            C,
+            As,
+            Bs,
+            M,
+            N,
+            K,
+            block_n,
+            block_k,
+            A.stride(-2),
+            A.stride(-1),
+            B.stride(1),
+            B.stride(0),
+            C.stride(-2),
+            C.stride(-1),
+            As.stride(-2),
+            As.stride(-1),
+            Bs.stride(1),
+            Bs.stride(0),
+            BLOCK_SIZE_M = BLOCK_SIZE_M,
+            BLOCK_SIZE_N = BLOCK_SIZE_N,
+            BLOCK_SIZE_K = BLOCK_SIZE_K,
+            GROUP_SIZE_M = 8,
+        )
     return C
 
 
@@ -311,13 +329,14 @@ def torchao_block_matmul(
     block_size: tuple[int, int],
     output_dtype: torch.dtype = torch.bfloat16,
 ):
-    out = torchao_blockwise_gemm(
-        act_q.contiguous(),
-        act_scale.contiguous(),
-        weight_q.contiguous(),
-        weight_scale.contiguous(),
-        block_size = block_size[1],
-    )
+    with _fp8_triton_device_context(act_q):
+        out = torchao_blockwise_gemm(
+            act_q.contiguous(),
+            act_scale.contiguous(),
+            weight_q.contiguous(),
+            weight_scale.contiguous(),
+            block_size = block_size[1],
+        )
     return out.to(output_dtype)
 
 
@@ -540,7 +559,8 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
                     f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
                 )
 
-        xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
+        with _fp8_triton_device_context(X):
+            xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
         # TODO: WARNING - diverges from baseline for high X values, producing
         # gibberish / high starting loss. Do not use until resolved; kept for a
         # future headstart.
@@ -673,3 +693,66 @@ if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+
+# FP8GroupedLinear's fused grouped matmul has no autograd formula, so training
+# backward fails. In training, use a custom autograd Function: dequant the frozen
+# fp8 weight for a differentiable bmm, saving only the fp8 weight + scale and
+# unwrapping TP shards; eval keeps the fused kernel. Gate on self.training (not
+# is_grad_enabled) so the grad-checkpoint no-grad forward and its recompute match.
+if FP8GroupedLinear is not None:
+    _fp8_grouped_forward_orig = FP8GroupedLinear.forward
+
+    def _fp8_to_local(t):
+        dt = getattr(getattr(torch, "distributed", None), "tensor", None)
+        DTensor = getattr(dt, "DTensor", None) if dt is not None else None
+        return t.to_local() if DTensor is not None and isinstance(t, DTensor) else t
+
+    def _fp8_grouped_dequant(weight, scale_inv, block_size, dtype):
+        # Honor the layer's block size; weight_dequant would assume 128 and mis-scale.
+        if block_size is not None and len(block_size) == 2:
+            return _blockwise_weight_dequant_any_shape(weight, scale_inv.float(), block_size, dtype)
+        return weight_dequant(weight, scale_inv.float()).to(dtype)
+
+    class _FP8GroupedMM(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x, weight, scale_inv, n_groups, block_size, bias):
+            weight, scale_inv = _fp8_to_local(weight), _fp8_to_local(scale_inv)
+            hidden = x.shape[-1]
+            W = _fp8_grouped_dequant(weight, scale_inv, block_size, x.dtype)
+            out_per = W.shape[0] // n_groups
+            xg = x.reshape(-1, n_groups, hidden).transpose(0, 1)
+            y = torch.bmm(xg, W.view(n_groups, out_per, hidden).transpose(1, 2))
+            y = y.transpose(0, 1).reshape(*x.shape[:-2], n_groups, out_per)
+            if bias is not None:
+                y = y + bias.view(n_groups, out_per)
+            ctx.save_for_backward(weight, scale_inv)
+            ctx.n_groups, ctx.out_per, ctx.x_shape = n_groups, out_per, x.shape
+            ctx.dtype, ctx.has_bias, ctx.block_size = x.dtype, bias is not None, block_size
+            return y
+
+        @staticmethod
+        def backward(ctx, grad_y):
+            weight, scale_inv = ctx.saved_tensors
+            ng, out_per, hidden = ctx.n_groups, ctx.out_per, ctx.x_shape[-1]
+            W = _fp8_grouped_dequant(weight, scale_inv, ctx.block_size, ctx.dtype).view(
+                ng, out_per, hidden
+            )
+            gy = grad_y.reshape(-1, ng, out_per).transpose(0, 1)
+            grad_x = torch.bmm(gy, W).transpose(0, 1).reshape(ctx.x_shape)
+            grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
+            return grad_x, None, None, None, None, grad_bias
+
+    def _fp8_grouped_forward(self, x):
+        if self.weight.element_size() > 1 or not self.training:
+            return _fp8_grouped_forward_orig(self, x)
+        bias = self.bias if self.has_bias else None
+        return _FP8GroupedMM.apply(
+            x,
+            self.weight,
+            self.weight_scale_inv,
+            self.n_groups,
+            getattr(self, "block_size", None),
+            bias,
+        )
+
+    FP8GroupedLinear.forward = _fp8_grouped_forward

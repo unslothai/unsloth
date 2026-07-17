@@ -197,17 +197,26 @@ export function parseSeedConfig(
     seed_drop_columns?: string[];
     seed_preview_rows?: Record<string, unknown>[];
     local_file_name?: string;
+    unstructuredUploadUid?: string;
     unstructuredFileIds?: string[];
     unstructuredFileNames?: string[];
     unstructuredFileSizes?: number[];
     unstructured_chunk_size?: string;
     unstructured_chunk_overlap?: string;
+    preserveUnstructuredUploads?: boolean;
   },
 ): SeedConfig | null {
   if (!seedConfigRaw) {
     return null;
   }
-  const parsed = parseSeedSettings(seedConfigRaw);
+  const parsed = { ...parseSeedSettings(seedConfigRaw) };
+  if (
+    parsed.seed_source_type === "unstructured" &&
+    options?.preserveUnstructuredUploads !== true
+  ) {
+    parsed.hf_path = "";
+    parsed.resolved_paths = [];
+  }
   let sourceType: SeedSourceType = "hf";
   if (parsed.seed_source_type === "hf") {
     sourceType = "hf";
@@ -229,6 +238,9 @@ export function parseSeedConfig(
       : {}),
     ...(options?.local_file_name !== undefined
       ? { local_file_name: options.local_file_name }
+      : {}),
+    ...(options?.unstructuredUploadUid
+      ? { unstructured_upload_uid: options.unstructuredUploadUid }
       : {}),
     ...(options?.unstructuredFileIds !== undefined
       ? { unstructured_file_ids: options.unstructuredFileIds }

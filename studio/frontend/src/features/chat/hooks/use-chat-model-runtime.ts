@@ -4,6 +4,10 @@
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import {
+  confirmTransformersUpgradeIfNeeded,
+  useTransformersUpgradeDialogStore,
+} from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -44,6 +48,7 @@ import {
   mergeBackendRecommendedInference,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
+import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import {
   isMultimodalResponse,
 } from "../types/api";
@@ -244,18 +249,102 @@ function getTrustRemoteCodeRequiredMessage(modelName: string): string {
   return `${modelName} was not loaded because its custom code was not approved. Load it again to review the code and approve it.`;
 }
 
+function getTransformersUpgradeRequiredMessage(modelName: string): string {
+  return `${modelName} was not loaded because it needs a newer transformers release that was not installed. Load it again to install it.`;
+}
+
+/**
+ * Reconcile the chat runtime store against `/api/inference/status`: refresh the
+ * models/loras catalogs and either re-pin the active checkpoint or clear the
+ * loaded-model flags when nothing is loaded. Module-level so it can run outside
+ * a React render (e.g. the imperative resync below); `useChatModelRuntime.refresh`
+ * is a thin wrapper over it. External selections are left untouched since they
+ * have no backend mirror.
+ */
+async function syncInferenceStatusToStore(options?: {
+  signal?: AbortSignal;
+  includeLoras?: boolean;
+}): Promise<void> {
+  const signal = options?.signal;
+  const includeLoras = options?.includeLoras ?? true;
+  const { setModels, setLoras, setCheckpoint, setModelsError } =
+    useChatRuntimeStore.getState();
+  setModelsError(null);
+  try {
+    const [listRes, statusRes, lorasRes] = await Promise.all([
+      listModels(),
+      getInferenceStatus(),
+      includeLoras ? listLoras() : Promise.resolve(null),
+    ]);
+
+    // Cancellation can land while the requests above are in flight. Bail
+    // before writing backend state back -- cancelLoading already cleared it.
+    if (signal?.aborted) return;
+
+    setModels(listRes.models.map(toChatModelSummary));
+    if (lorasRes) {
+      setLoras(lorasRes.loras.map(toLoraSummary));
+    }
+
+    const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
+    const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
+    if (statusRes.active_model && !isExternalSelectionActive) {
+      const checkpointId = resolveInferenceCheckpointId(statusRes);
+      if (checkpointId) {
+        setCheckpoint(checkpointId, statusRes.gguf_variant);
+        applyActiveModelStatusToStore(statusRes, {
+          previousCheckpoint: selectedCheckpoint,
+        });
+        // setModels(listRes...) above used catalog data, which omits audio
+        // capability. Re-apply live status so attach gates survive a refresh.
+        syncModelCapabilities(checkpointId, statusRes);
+      }
+    } else if (!statusRes.active_model && !isExternalSelectionActive) {
+      useChatRuntimeStore.setState({
+        modelRequiresTrustRemoteCode: false,
+        loadedIsMultimodal: false,
+        loadedIsDiffusion: false,
+      });
+    }
+  } catch (error) {
+    if (signal?.aborted) return;
+    const message =
+      error instanceof Error ? error.message : "Failed to load models";
+    setModelsError(message);
+    toast.error("Failed to refresh models", {
+      description: message,
+    });
+  }
+}
+
+/**
+ * Reconcile the UI after the SERVER unloaded the active model out from under it
+ * (e.g. a llama.cpp update unloads the running model to swap the binary): the
+ * model selector drops to "select model" instead of pointing at a model that now
+ * 400s on send. Imperative so the global llama-update banner (which has no
+ * chat-runtime handle) can call it.
+ *
+ * Only a LOCAL selection points at the unloaded model. An external-provider
+ * selection has no llama.cpp mirror and still works, so clearing it (which also
+ * wipes its persisted id) would drop a valid, unrelated model; skip the clear so
+ * the refresh below leaves it intact.
+ */
+export async function resyncInferenceStatusAfterServerModelChange(): Promise<void> {
+  if (!isExternalModelId(useChatRuntimeStore.getState().params.checkpoint)) {
+    useChatRuntimeStore.getState().clearCheckpoint();
+  }
+  await syncInferenceStatusToStore();
+}
+
 export function useChatModelRuntime() {
   const params = useChatRuntimeStore((state) => state.params);
   const models = useChatRuntimeStore((state) => state.models);
   const loras = useChatRuntimeStore((state) => state.loras);
-  const setModels = useChatRuntimeStore((state) => state.setModels);
-  const setLoras = useChatRuntimeStore((state) => state.setLoras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
   const setModelsError = useChatRuntimeStore((state) => state.setModelsError);
   const setLastModelLoadError = useChatRuntimeStore(
     (state) => state.setLastModelLoadError,
   );
-  const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
   const [loadingModel, setLoadingModel] = useState<{
@@ -312,59 +401,11 @@ export function useChatModelRuntime() {
     [],
   );
 
-  const refresh = useCallback(async (options?: {
-    signal?: AbortSignal;
-    includeLoras?: boolean;
-  }) => {
-    const signal = options?.signal;
-    const includeLoras = options?.includeLoras ?? true;
-    setModelsError(null);
-    try {
-      const [listRes, statusRes, lorasRes] = await Promise.all([
-        listModels(),
-        getInferenceStatus(),
-        includeLoras ? listLoras() : Promise.resolve(null),
-      ]);
-
-      // Cancellation can land while the requests above are in flight. Bail
-      // before writing backend state back -- cancelLoading already cleared it.
-      if (signal?.aborted) return;
-
-      setModels(listRes.models.map(toChatModelSummary));
-      if (lorasRes) {
-        setLoras(lorasRes.loras.map(toLoraSummary));
-      }
-
-      const selectedCheckpoint = useChatRuntimeStore.getState().params.checkpoint;
-      const isExternalSelectionActive = isExternalModelId(selectedCheckpoint);
-      if (statusRes.active_model && !isExternalSelectionActive) {
-        const checkpointId = resolveInferenceCheckpointId(statusRes);
-        if (checkpointId) {
-          setCheckpoint(checkpointId, statusRes.gguf_variant);
-          applyActiveModelStatusToStore(statusRes, {
-            previousCheckpoint: selectedCheckpoint,
-          });
-          // setModels(listRes...) above used catalog data, which omits audio
-          // capability. Re-apply live status so attach gates survive a refresh.
-          syncModelCapabilities(checkpointId, statusRes);
-        }
-      } else if (!statusRes.active_model && !isExternalSelectionActive) {
-        useChatRuntimeStore.setState({
-          modelRequiresTrustRemoteCode: false,
-          loadedIsMultimodal: false,
-          loadedIsDiffusion: false,
-        });
-      }
-    } catch (error) {
-      if (signal?.aborted) return;
-      const message =
-        error instanceof Error ? error.message : "Failed to load models";
-      setModelsError(message);
-      toast.error("Failed to refresh models", {
-        description: message,
-      });
-    }
-  }, [setCheckpoint, setLoras, setModels, setModelsError, setParams]);
+  const refresh = useCallback(
+    (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
+      syncInferenceStatusToStore(options),
+    [],
+  );
 
   const cancelLoading = useCallback(() => {
     const model = loadingModelRef.current;
@@ -593,6 +634,30 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
+            // Upgrade consent runs before the security dialogs; Accept installs and the load continues.
+            if (validation.requires_transformers_upgrade) {
+              const upgraded = await confirmTransformersUpgradeIfNeeded({
+                modelName: modelId,
+                upgrade: validation.transformers_upgrade,
+                // No installable release: custom-code models may fall back to the trust_remote_code gate below.
+                trustRemoteCodeFallback: validation.requires_trust_remote_code,
+              });
+              // The install unloads the previous model before the swap (even when
+              // the swap then fails), so any exit after this point must roll back.
+              // False for the custom-code fallback, which resolves without installing.
+              if (
+                useTransformersUpgradeDialogStore
+                  .getState()
+                  .consumeServerUnloadedChat()
+                && currentCheckpoint
+              ) {
+                previousWasUnloaded = true;
+              }
+              if (!upgraded) {
+                throw new Error(getTransformersUpgradeRequiredMessage(displayName));
+              }
+            }
+            if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
             // worker requires a matching fingerprint that only the dialog produces.
@@ -733,7 +798,8 @@ export function useChatModelRuntime() {
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
             const clampedReasoningEffort =
-              reasoningStyle === "enable_thinking_effort"
+              reasoningStyle === "enable_thinking_effort" ||
+              reasoningStyle === "reasoning_effort"
                 ? clampReasoningEffortToLevels(
                     existingReasoningEffort,
                     reasoningEffortLevels,
@@ -818,6 +884,23 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            if (
+              !isLora &&
+              !(loadResponse.is_lora ?? false) &&
+              !nativePathToken &&
+              !isLocalModelPath(modelId) &&
+              !isExternalModelId(modelId)
+            ) {
+              if (loadResponse.is_gguf || isGguf || ggufVariant) {
+                recordLastLocalModelLoad({
+                  id: modelId,
+                  kind: "gguf",
+                  ggufVariant: ggufVariant ?? null,
+                });
+              } else {
+                recordLastLocalModelLoad({ id: modelId, kind: "model" });
+              }
+            }
             // A successful load owns the shared (pick-unscoped) settings fields,
             // so any surviving stage is stale: the just-loaded pick itself, or a
             // pick queued for a different model mid-load whose knobs this load
