@@ -310,9 +310,7 @@ class TrainingQueueManager:
                 return False
         except Exception:
             return False
-        logger.debug(
-            "Queue item %s waiting: transformers install in progress", item["id"]
-        )
+        logger.debug("Queue item %s waiting: transformers install in progress", item["id"])
         return True
 
     def _reconcile_running_items(self, backend) -> None:
