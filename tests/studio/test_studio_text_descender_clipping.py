@@ -34,18 +34,20 @@ def test_model_selector_trigger_label_uses_leading_tight():
 
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
-    # Match the account-block parent div regardless of the layout utilities
-    # between flex and flex-col (min-w-0, flex-1, ...) or its gap utility; this
-    # guard is about the leading-* class, not the spacing.
+    # Match every account-block parent div by structure (flex + flex-col + gap +
+    # the collapsible-hidden marker), tolerant of any layout utilities between
+    # them, and capture the full className so we can require leading-tight on
+    # each matched block instead of letting one good block mask a broken one.
     pattern = re.compile(
-        r'<div\s+className="flex\s+[^"]*\bflex-col\b\s+gap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
+        r'<div\s+className="(flex\s+[^"]*\bflex-col\b[^"]*\bgap-\S+[^"]*group-data-\[collapsible=icon\]:hidden)">',
     )
     matches = pattern.findall(src)
     assert matches, "could not find sidebar account-block parent div"
-    leading_classes = [m for m in matches if m.startswith("leading-")]
-    assert leading_classes, f"no leading-* class on sidebar account-block parent: {matches}"
-    for cls in leading_classes:
-        assert cls == "leading-tight", f"sidebar account-block must use leading-tight, got: {cls}"
+    for cls in matches:
+        assert "leading-tight" in cls, f"sidebar account-block must use leading-tight, got: {cls}"
+        assert "leading-none" not in cls, (
+            f"leading-none must not coexist with leading-tight here: {cls}"
+        )
 
 
 def test_no_truncate_plus_leading_none_in_changed_files():
