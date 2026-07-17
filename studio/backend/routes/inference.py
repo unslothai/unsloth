@@ -4396,8 +4396,7 @@ async def _load_model_impl(request: LoadRequest, fastapi_request: Request, curre
                             config.gguf_mtp_file = None
                     if config.gguf_dflash_file:
                         # Same lease check as the MTP drafter: a dflash-*.gguf
-                        # must sit under the granted path and not be a symlink,
-                        # else drop it rather than fail the load.
+                        # must sit under the granted path and not be a symlink.
                         try:
                             _validate_native_gguf_companion(
                                 config.gguf_dflash_file, config.gguf_file, "DFlash drafter"
