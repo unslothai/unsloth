@@ -8421,7 +8421,12 @@ class LlamaCppBackend:
         except OSError:
             return None
 
-    _SIDECAR_WEIGHT_FLAGS = ("--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled")
+    _SIDECAR_WEIGHT_FLAGS = (
+        "--lora",
+        "--lora-scaled",
+        "--control-vector",
+        "--control-vector-scaled",
+    )
 
     def _sidecar_weight_files(self) -> list[str]:
         # First operand of each weight-modifying sidecar flag; their contents key
