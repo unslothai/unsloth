@@ -1866,7 +1866,9 @@ export function ChatPage({
           toast.info("This model is already loading", {
             description: "It's downloading as part of the load in progress.",
           });
-        } else if (wantBackgroundDownload) {
+          return;
+        }
+        if (wantBackgroundDownload) {
           // Only claim the download started once a job is actually created. A
           // transport conflict records state that is only resolvable from the
           // Hub download card, so point the user there instead of showing a
@@ -1889,17 +1891,22 @@ export function ChatPage({
                 "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
             });
           }
-        } else {
-          const stopped = await cancelLoading();
-          if (stopped) {
-            await selectModel(selection);
-          } else {
-            toast.info("Another model is already loading", {
-              description: "Wait for it to finish or cancel it first.",
-            });
-          }
+          return;
         }
-        return;
+        const stopped = await cancelLoading();
+        if (!stopped) {
+          toast.info("Another model is already loading", {
+            description: "Wait for it to finish or cancel it first.",
+          });
+          return;
+        }
+        // Cancelling freed the load slot. With load-on-selection on, take it
+        // now; with it off, fall through to stage the pick for a manual load --
+        // the same outcome as picking it while nothing is loading.
+        if (store.loadOnSelection) {
+          await selectModel(selection);
+          return;
+        }
       }
       // Detach the prior staged pick (keeping its download) before rebinding, so
       // a second pick downloads alongside the first instead of cancelling it.
