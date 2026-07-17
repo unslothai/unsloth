@@ -226,7 +226,6 @@ def update_openai_auto_switch(
         # Turning keep-KV off must also drop chat context already saved to disk
         # by a previous idle unload, not just stop future saves.
         from core.inference.llama_keepwarm import purge_kv_resume
-
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
