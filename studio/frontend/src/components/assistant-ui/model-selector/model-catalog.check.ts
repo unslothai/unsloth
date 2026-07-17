@@ -390,6 +390,22 @@ assert.equal(
   "bf16",
 );
 assert.equal(groupForRepoId("QuantStack/HunyuanImage-2.1-GGUF", IMAGE_CATALOG), hyimage);
+// HiDream I1: all three variants group together; a datacenter GPU auto-routes to the
+// Full bf16 (catalog order wins among equal sizes), and the group is hidden by the fit
+// filter on a 24 GB card (no GGUF artifact, 63 GB everywhere).
+const hidream = groupForRepoId("HiDream-ai/HiDream-I1-Full", IMAGE_CATALOG);
+assert.ok(hidream);
+assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG), hidream);
+assert.equal(groupForRepoId("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG), hidream);
+assert.equal(
+  pickDefaultArtifact(hidream, { gpuGb: 141, systemRamGb: 128, isDownloaded: notDownloaded })
+    .repoId,
+  "HiDream-ai/HiDream-I1-Full",
+);
+assert.equal(
+  catalogGroupFitsDevice(hidream, { gpuGb: 24, systemRamGb: 32 }, notDownloaded),
+  false,
+);
 // FLUX.1-schnell is Apache-2.0 (not gated): its BF16 IS auto-routed on a GPU that fits it.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);

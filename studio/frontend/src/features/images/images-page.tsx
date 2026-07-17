@@ -175,6 +175,11 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // HunyuanImage 2.1: 50 steps; the guidance value feeds distilled_guidance_scale
   // (default 3.25), real CFG runs inside the repo's guider components.
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
+  // HiDream-I1: Full runs 50 steps at guidance 5; the Dev/Fast distillations are
+  // guidance-free. Specific keys before the generic "hidream" (Full + fallback).
+  { match: "hidream-i1-dev", steps: 28, guidance: 0 },
+  { match: "hidream-i1-fast", steps: 16, guidance: 0 },
+  { match: "hidream", steps: 50, guidance: 5 },
   // SDXL: Turbo is distilled (few steps, no CFG); base/full SDXL wants ~30 steps and
   // real CFG (~7). "sdxl-turbo" must precede the generic "sdxl" substring match.
   { match: "sdxl-turbo", steps: 3, guidance: 0 },
