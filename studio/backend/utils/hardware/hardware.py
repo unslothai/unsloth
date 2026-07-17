@@ -701,7 +701,11 @@ def _rocm_linux_sysfs_vram_per_card_gb() -> list[tuple[float, float]]:
             if total_bytes <= 0:
                 continue
             cards.append(
-                (int(m.group(1)), round(used_bytes / (1024**3), 2), round(total_bytes / (1024**3), 2))
+                (
+                    int(m.group(1)),
+                    round(used_bytes / (1024**3), 2),
+                    round(total_bytes / (1024**3), 2),
+                )
             )
     except Exception:
         return []
@@ -722,7 +726,7 @@ def _rocm_windows_perf_counter_vram_per_adapter_gb() -> dict[int, float]:
         ps = (
             "$s=(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage'"
             " -ErrorAction SilentlyContinue).CounterSamples;"
-            "if($s){$s|ForEach-Object{\"$($_.InstanceName)|$($_.CookedValue)\"}}"
+            'if($s){$s|ForEach-Object{"$($_.InstanceName)|$($_.CookedValue)"}}'
         )
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],

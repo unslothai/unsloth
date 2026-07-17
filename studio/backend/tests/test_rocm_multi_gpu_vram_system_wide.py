@@ -104,9 +104,7 @@ def test_linux_per_card_reads_sorted_cards(monkeypatch, tmp_path):
         (d / "mem_info_vram_used").write_text(str(used * 1024**3))
         (d / "mem_info_vram_total").write_text(str(total * 1024**3))
         files[card] = str(d / "mem_info_vram_used")
-    monkeypatch.setattr(
-        hw.glob, "glob", lambda pattern: [files[10], files[2]]
-    )
+    monkeypatch.setattr(hw.glob, "glob", lambda pattern: [files[10], files[2]])
     assert hw._rocm_linux_sysfs_vram_per_card_gb() == [(40.0, 48.0), (1.0, 8.0)]
 
 
@@ -137,9 +135,7 @@ def test_linux_per_card_skips_zero_total_and_bad_files(monkeypatch, tmp_path):
 
 def test_overlay_windows_replaces_matched_indices(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5}
-    )
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 21.5})
     devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 21.5  # llama-server's usage now visible
@@ -149,9 +145,7 @@ def test_overlay_windows_replaces_matched_indices(monkeypatch):
 
 def test_overlay_windows_clamps_to_total(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(
-        hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0}
-    )
+    monkeypatch.setattr(hw, "_rocm_windows_perf_counter_vram_per_adapter_gb", lambda: {0: 99.0})
     devices = [_device(0, used = 0.0, total = 8.0)]
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 8.0
