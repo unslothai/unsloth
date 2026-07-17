@@ -17,6 +17,7 @@ import {
   type ChatSearch,
 } from "@/features/chat";
 import { RemoteCodeConsentDialog } from "@/features/security";
+import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { hasAuthToken } from "@/features/auth";
@@ -45,6 +46,7 @@ declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
     title?: string;
     titleKey?: TranslationKey;
+    isAuthFlow?: boolean;
   }
 }
 
@@ -104,6 +106,9 @@ function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
+  const isAuthFlowRoute = useMatches({
+    select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
+  });
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();
@@ -162,7 +167,8 @@ function RootLayout() {
   });
 
   const settingsDialogOpen = useSettingsDialogStore((s) => s.open);
-  const documentTitle = settingsDialogOpen ? t("settings.title") : matchedTitle;
+  const documentTitle =
+    settingsDialogOpen && !isAuthFlowRoute ? t("settings.title") : matchedTitle;
 
   useLayoutEffect(() => {
     document.title = documentTitle
@@ -171,9 +177,13 @@ function RootLayout() {
   }, [documentTitle]);
 
   useEffect(() => {
+    if (isAuthFlowRoute) {
+      useSettingsDialogStore.getState().closeDialog();
+    }
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        if (isAuthFlowRoute) return;
         e.preventDefault();
         useSettingsDialogStore.getState().openDialog();
         return;
@@ -197,7 +207,7 @@ function RootLayout() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [navigate]);
+  }, [isAuthFlowRoute, navigate]);
 
   useEffect(() => {
     if (isChatRoute) return;
@@ -220,8 +230,9 @@ function RootLayout() {
   return (
     <AppProvider>
       <PersonalizationSyncMount />
-      <SettingsDialog />
+      {!isAuthFlowRoute && <SettingsDialog />}
       <RemoteCodeConsentDialog />
+      <TransformersUpgradeDialog />
       {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">

@@ -102,6 +102,7 @@ if _IS_MLX:
         ) from _e
 
     import dataclasses as _dataclasses
+    import inspect as _inspect
     import importlib.machinery as _machinery
     import sys as _sys
     import types as _types
@@ -109,6 +110,30 @@ if _IS_MLX:
 
     __version__ = unsloth_zoo.__version__
     DEVICE_TYPE = "mlx"
+    _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
+    _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()
+    try:
+        _MLX_TRAINER_INIT_PARAMETERS = _inspect.signature(MLXTrainer.__init__).parameters
+        _MLX_TRAINER_ACCEPTS_VAR_KWARGS = any(
+            param.kind is _inspect.Parameter.VAR_KEYWORD
+            for param in _MLX_TRAINER_INIT_PARAMETERS.values()
+        )
+        _MLX_TRAINER_SUPPORTED_KWARGS = frozenset(
+            name
+            for name, param in _MLX_TRAINER_INIT_PARAMETERS.items()
+            if name != "self"
+            and param.kind
+            in (
+                _inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                _inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
+    except (TypeError, ValueError):
+        pass
+
+    def _mlx_trainer_supports_kwarg(name):
+        """Return whether the installed zoo MLXTrainer accepts a kwarg."""
+        return _MLX_TRAINER_ACCEPTS_VAR_KWARGS or name in _MLX_TRAINER_SUPPORTED_KWARGS
 
     def _is_mlx_cuda_device_target(device):
         """Return True when a torch .to/.cuda target asks for CUDA on MLX."""
@@ -966,6 +991,7 @@ if _IS_MLX:
         "args",
         "formatting_func",
         "processor",
+        "callbacks",
     )
     _TRL_SFT_TRAINER_POSITIONAL_KWARGS = (
         "model",
@@ -984,6 +1010,29 @@ if _IS_MLX:
         "formatting_func",
     )
     _MLX_TRAINER_KWARGS = frozenset(_MLX_TRAINER_POSITIONAL_KWARGS)
+
+    def _filter_supported_mlx_trainer_kwargs(trainer_kwargs):
+        """Drop inert/empty kwargs unsupported by this zoo MLXTrainer."""
+        unsupported = {
+            key: value
+            for key, value in trainer_kwargs.items()
+            if not _mlx_trainer_supports_kwarg(key)
+        }
+        names = sorted(
+            key for key, value in unsupported.items() if _is_meaningful_mlx_extra_value(value)
+        )
+        if names:
+            subject = ", ".join(names)
+            verb = "requires" if len(names) == 1 else "require"
+            raise NotImplementedError(
+                "Unsloth MLX: "
+                f"{subject} {verb} an unsloth-zoo build with "
+                "matching MLXTrainer support. Upgrade unsloth-zoo together "
+                "with unsloth."
+            )
+        for key in unsupported:
+            trainer_kwargs.pop(key, None)
+        return trainer_kwargs
 
     def _is_mlx_native_text_collator(collator):
         """HF pad/copy collators are redundant on MLX; match by class name."""
@@ -1162,6 +1211,7 @@ if _IS_MLX:
 
             trainer_kwargs, config_kwargs, ignored_kwargs = _split_mlx_trainer_kwargs(kwargs)
             _raise_unsupported_mlx_trainer_kwargs(ignored_kwargs)
+            trainer_kwargs = _filter_supported_mlx_trainer_kwargs(trainer_kwargs)
             trainer_kwargs["args"] = _coerce_mlx_training_args(
                 trainer_kwargs.get("args"),
                 config_kwargs,

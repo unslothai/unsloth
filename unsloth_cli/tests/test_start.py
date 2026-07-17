@@ -92,6 +92,7 @@ def test_claude_flags_detected_when_version_not_first_token(monkeypatch):
 
 def test_install_agent_prompts_then_installs(monkeypatch):
     # TTY + yes: run the documented install command, then re-resolve the now-present binary.
+    monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
     monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
     ran = []
@@ -106,6 +107,127 @@ def test_install_agent_prompts_then_installs(monkeypatch):
     executable = start._install_agent("codex", "npm install -g @openai/codex")
     assert executable == "/usr/local/bin/codex"
     assert ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+
+
+def test_install_agent_uses_powershell_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: True)
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, *a, **k: ran.append(command) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda _: r"C:\Users\samle\bin\hermes.exe")
+
+    install_hint = "& ([scriptblock]::Create((irm https://x/install.ps1))) -SkipSetup"
+    executable = start._install_agent("hermes", install_hint)
+
+    assert executable == r"C:\Users\samle\bin\hermes.exe"
+    assert ran == [["powershell", "-NoProfile", "-Command", install_hint]]
+
+
+def test_install_agent_warns_and_names_remote_source(monkeypatch, capsys):
+    # Before the confirm, a remote installer must name the URL it fetches so the
+    # user consents to a specific source rather than blindly accepting.
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)  # decline: nothing runs
+    hint = "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+    assert start._install_agent("hermes", hint) is None
+    err = capsys.readouterr().err
+    assert "https://hermes-agent.nousresearch.com/install.ps1" in err
+    assert "download and RUN" in err
+    assert "signature or hash" in err
+
+
+def test_install_agent_warns_for_package_installer(monkeypatch, capsys):
+    # An npm-style installer has no URL to fetch, but still runs with the user's
+    # privileges, so the warning names the command instead.
+    monkeypatch.setattr(start.os, "name", "posix")
+    monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))
+    monkeypatch.setattr(start.typer, "confirm", lambda *a, **k: False)
+    assert start._install_agent("codex", "npm install -g @openai/codex") is None
+    err = capsys.readouterr().err
+    assert "npm install -g @openai/codex" in err
+    assert "with your privileges" in err
+
+
+def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+
+    # Scriptblock form so `-SkipSetup` reaches the installer and the interactive
+    # setup wizard is skipped during the unattended `unsloth start hermes` run.
+    assert start._hermes_install_hint() == (
+        "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1)))"
+        " -SkipSetup"
+    )
+
+
+def test_hermes_install_hint_is_bash_on_posix(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+
+    # `bash -s -- --skip-setup` forwards the skip flag to the piped installer.
+    assert start._hermes_install_hint() == (
+        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/scripts/install.sh | bash -s -- --skip-setup"
+    )
+
+
+def test_refresh_windows_path_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "posix")
+    before = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", before)
+    start._refresh_windows_path()
+    assert os.environ.get("PATH", "") == before
+
+
+def test_refresh_windows_path_merges_registry_hives(monkeypatch):
+    # Fake Windows registry PATH values written after this process started.
+    hkcu, hklm = object(), object()
+    reg = {
+        (hkcu, "Environment"): r"C:\existing;C:\Users\me\hermes\bin",
+        (
+            hklm,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ): r"C:\Windows\System32",
+    }
+
+    class _Key:
+        def __init__(self, value):
+            self._value = value
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def open_key(root, sub):
+        if (root, sub) in reg:
+            return _Key(reg[(root, sub)])
+        raise OSError("missing hive")
+
+    fake_winreg = SimpleNamespace(
+        HKEY_CURRENT_USER = hkcu,
+        HKEY_LOCAL_MACHINE = hklm,
+        OpenKey = open_key,
+        QueryValueEx = lambda key, name: (key._value, 1),
+    )
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start.os, "pathsep", ";")
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+    monkeypatch.setenv("PATH", r"C:\custom;C:\existing")
+
+    start._refresh_windows_path()
+
+    assert os.environ["PATH"].split(";") == [
+        r"C:\custom",
+        r"C:\existing",
+        r"C:\Users\me\hermes\bin",
+        r"C:\Windows\System32",
+    ]
 
 
 def test_install_agent_declined_returns_none(monkeypatch):
@@ -172,15 +294,56 @@ def test_merge_codex_config_keeps_user_oss_provider():
     assert _parse_toml(merged)["oss_provider"] == "ollama"
 
 
-def test_write_codex_config_profile(tmp_path):
+def test_write_codex_config_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
     start.write_codex_config(BASE, MODEL, tmp_path)
     profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
     assert profile["oss_provider"] == "unsloth_api"
     assert profile["model_provider"] == "unsloth_api"
     assert profile["model"] == MODEL["id"]
     assert profile["model_context_window"] == 131072
+
+    catalog_path = Path(profile["model_catalog_json"])
+    assert catalog_path == Path("model-catalog.json")
+    catalog = json.loads((tmp_path / catalog_path).read_text())
+    assert catalog["models"][0]["slug"] == MODEL["id"]
+    assert catalog["models"][0]["context_window"] == 131072
+    assert catalog["models"][0]["max_context_window"] == 131072
+    assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
+    assert catalog["models"][0]["supports_parallel_tool_calls"] is False
+
+    assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text()
     config = _parse_toml((tmp_path / "config.toml").read_text())
     assert config["model_providers"]["unsloth_api"]["env_key"] == "UNSLOTH_STUDIO_AUTH_TOKEN"
+
+
+def test_write_codex_config_catalog_without_context_length(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: True)
+    start.write_codex_config(BASE, {"id": "unsloth/no-window"}, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    catalog = json.loads((tmp_path / profile["model_catalog_json"]).read_text())
+    entry = catalog["models"][0]
+    assert entry["slug"] == "unsloth/no-window"
+    assert "context_window" not in entry
+    assert "max_context_window" not in entry
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [("codex-cli 0.109.0", False), ("codex-cli 0.110.0", True), ("codex-cli 0.144.4", True)],
+)
+def test_codex_model_catalog_version_gate(monkeypatch, version, expected):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: version)
+    assert start._codex_supports_model_catalog() is expected
+
+
+def test_write_codex_config_omits_catalog_for_old_codex(tmp_path, monkeypatch):
+    monkeypatch.setattr(start, "_codex_supports_model_catalog", lambda: False)
+    start.write_codex_config(BASE, MODEL, tmp_path)
+    profile = _parse_toml((tmp_path / "unsloth_api.config.toml").read_text())
+    assert "model_catalog_json" not in profile
+    assert not (tmp_path / "model-catalog.json").exists()
 
 
 @pytest.fixture()
@@ -361,6 +524,189 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (home / "unsloth_api.config.toml").exists()
 
 
+def test_connect_codex_matches_requested_model_case_insensitively(fake_studio, tmp_path):
+    result = CliRunner().invoke(
+        start.start_app,
+        [
+            "codex",
+            "--no-launch",
+            "--model",
+            "unsloth/gemma-4-26b-a4b-it-gguf",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    home = tmp_path / "agents" / "codex"
+    profile = _parse_toml((home / "unsloth_api.config.toml").read_text())
+    assert profile["model"] == MODEL["id"]
+
+
+def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch):
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url, payload))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/gemma-4-E2B-it-GGUF" if state["loaded"] else "other/model",
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/gemma-4-E2B-it-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(
+        BASE,
+        "sk-test",
+        "unsloth/gemma-4-e2b-it-gguf",
+        start.LoadOptions(gguf_variant = "UD-Q4_K_XL"),
+    )
+
+    assert entry["id"] == "unsloth/gemma-4-E2B-it-GGUF"
+    assert any(c[1].endswith("/api/inference/load") for c in calls)
+
+
+def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
+    # A cached-but-unloaded catalog entry (loaded == False) that only case-differs must
+    # not be treated as ready; the load endpoint must still be called so the requested
+    # model becomes resident instead of the agent preflighting a different backend.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [
+                    {
+                        "id": "unsloth/Gemma-4-GGUF",
+                        "loaded": state["loaded"],
+                        "context_length": 131072,
+                    }
+                ]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch):
+    # The mirror case: a loaded entry (loaded == True) that case-matches attaches with
+    # no /api/inference/load call.
+    calls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+            }
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model(BASE, "sk-test", "unsloth/gemma-4-gguf")
+
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert not any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
+    # Against a remote Studio the local existence probe cannot see server-side paths,
+    # so a case-variant loaded id must NOT attach without a load: it could be a distinct
+    # server-side path on a case-sensitive host. The load endpoint resolves the request.
+    calls = []
+    state = {"loaded": False}
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        calls.append((method, url))
+        if url.endswith("/v1/models"):
+            return {
+                "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
+            }
+        if url.endswith("/api/inference/load"):
+            state["loaded"] = True
+            return {"model": "unsloth/Gemma-4-GGUF"}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+
+    entry = start._resolve_model("http://10.0.0.5:8888", "sk-test", "unsloth/gemma-4-gguf")
+
+    # The load endpoint was consulted (no casefold shortcut), and we still attach to the
+    # server's canonical id it reports back.
+    assert entry["id"] == "unsloth/Gemma-4-GGUF"
+    assert any(u.endswith("/api/inference/load") for _, u in calls)
+
+
+def test_model_id_matching_does_not_casefold_local_paths(tmp_path):
+    existing_local = tmp_path / "Org" / "Foo"
+    existing_local.mkdir(parents = True)
+
+    assert start._model_id_matches("Org/Foo", "org/foo")
+    assert not start._model_id_matches(str(existing_local), str(existing_local).lower())
+    assert not start._model_id_matches("./Models/Foo", "./models/foo")
+    assert not start._model_id_matches(r".\Models\Foo", r".\models\foo")
+    # A server-side relative path (extra path segments) is not a hub id even when it
+    # does not exist on the CLI host, so it must not casefold-match a differently
+    # cased path on a case-sensitive server filesystem.
+    assert not start._is_hub_model_id("models/Llama/Foo.gguf")
+    assert not start._model_id_matches("models/Llama/Foo.gguf", "models/llama/foo.gguf")
+    # A genuine two-segment hub id still matches case-insensitively.
+    assert start._is_hub_model_id("unsloth/Gemma-3-4b-it-GGUF")
+    assert start._model_id_matches("unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf")
+    # Casefolding is gated to loopback studios (allow_casefold). With it disabled (a
+    # remote studio, where a two-segment string could be a server-side path), even a
+    # genuine hub-id case variant must not match, so the load endpoint resolves it.
+    assert not start._model_id_matches(
+        "unsloth/Gemma-3-4b-it-GGUF", "unsloth/gemma-3-4b-it-gguf", allow_casefold = False
+    )
+    assert start._model_id_matches("unsloth/Foo", "unsloth/Foo", allow_casefold = False)
+
+
 def test_connect_codex_launch_uses_ephemeral_home(fake_studio, monkeypatch):
     # Launch mode writes config to a throwaway temp CODEX_HOME and removes it after
     # the agent exits; the user's real ~/.codex is never the target.
@@ -435,27 +781,26 @@ def test_opencode_inline_config_beats_project_config(fake_studio):
     # permissions) ride in OPENCODE_CONFIG_CONTENT, which outranks project config.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
-    assert inline["model"] == f"unsloth/{MODEL['id']}"
-    assert inline["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
-    assert "sk-unsloth" not in content_line  # key stays in the private file
+    inline = _opencode_inline_config(result.output)
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    assert inline["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+    assert "sk-unsloth" not in result.output  # key stays in the private file, not the env
 
 
-def test_opencode_inline_config_omits_permissions_without_yolo(fake_studio):
+def test_opencode_inline_config_omits_permission_without_yolo(fake_studio):
+    # A non-yolo session carries no permission inline. OPENCODE_CONFIG_CONTENT outranks the
+    # project opencode.json we cannot read, so forcing any value there would override the
+    # user's project rules; clearing our own config is the fix, and the inline pins the model.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
-    content_line = next(
-        ln for ln in result.output.splitlines() if ln.startswith("export OPENCODE_CONFIG_CONTENT=")
-    )
-    inline = json.loads(
-        shlex.split(content_line.removeprefix("export OPENCODE_CONFIG_CONTENT="))[0]
-    )
-    assert inline == {"model": f"unsloth/{MODEL['id']}"}
+    inline = _opencode_inline_config(result.output)
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    assert "permission" not in inline
 
 
 def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
@@ -1312,10 +1657,48 @@ def test_write_openclaw_config_fresh(tmp_path):
     ]
     # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["agents"]["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert (tmp_path / "workspace").is_dir()
     assert config["gateway"]["mode"] == "local"
     assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
     if os.name != "nt":  # the file holds an API key
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/old/default"},
+                    "list": [
+                        {
+                            "id": "main",
+                            "default": True,
+                            "workspace": "/old/main-workspace",
+                            "agentDir": "/old/main-agent",
+                            "model": "keep/me",
+                        },
+                        {
+                            "id": "reviewer",
+                            "workspace": "/old/reviewer-workspace",
+                            "agentDir": "/old/reviewer-agent",
+                        },
+                    ],
+                }
+            }
+        )
+    )
+
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path)
+
+    agents = json.loads(path.read_text())["agents"]
+    assert agents["defaults"]["workspace"] == str(tmp_path / "workspace")
+    assert agents["list"] == [
+        {"id": "main", "default": True, "model": "keep/me"},
+        {"id": "reviewer"},
+    ]
 
 
 def test_write_openclaw_config_preserves_and_idempotent(tmp_path):
@@ -1361,8 +1744,53 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path):
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["agents"]["defaults"]["workspace"] == str(
+        tmp_path / "agents" / "openclaw" / "workspace"
+    )
+    assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "WSL scenario")
+def test_connect_openclaw_wsl_windows_shim_translates_workspace(fake_studio, tmp_path, monkeypatch):
+    windows_workspace = r"\\wsl.localhost\Ubuntu\tmp\openclaw\workspace"
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(
+        start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/openclaw"
+    )
+    monkeypatch.setattr(start.subprocess, "check_output", lambda *args, **kwargs: windows_workspace)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config = json.loads(config_path.read_text())
+    assert config["agents"]["defaults"]["workspace"] == windows_workspace
+    assert (config_path.parent / "workspace").is_dir()
+
+
+def test_connect_openclaw_no_launch_keeps_explicit_subcommand(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "crestodian"])
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["openclaw", "crestodian"]
+
+
+def test_connect_openclaw_no_launch_passes_global_flags_through(fake_studio):
+    # OpenClaw globals (openclaw [--dev] [--profile <name>] <command>) precede the
+    # command, and tui does not accept them, so any passthrough args must be forwarded
+    # verbatim rather than rewritten into `openclaw tui --local <globals>`.
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch", "--profile", "test"])
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["openclaw", "--profile", "test"]
+
+
+def test_connect_openclaw_no_launch_keeps_explicit_tui(fake_studio):
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "tui", "--message", "hi"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _launch_command(result.output) == ["openclaw", "tui", "--message", "hi"]
 
 
 # ── OpenCode (OpenAI /v1/chat/completions) ───────────────────────────
@@ -1372,14 +1800,17 @@ def test_write_opencode_config_fresh(tmp_path):
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
-    provider = config["provider"]["unsloth"]
+    provider = config["provider"][start._OPENCODE_PROVIDER]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
     assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
     # Context limit must be declared, or OpenCode treats it as 0 and disables compaction.
     assert provider["models"] == {
         MODEL["id"]: {"name": MODEL["id"], "limit": {"context": 131072, "output": 8192}}
     }
-    assert config["model"] == f"unsloth/{MODEL['id']}"
+    assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # The overlay never writes disabled_providers; the dedicated provider id is one a
+    # user's disable list would not target, so nothing needs re-enabling.
+    assert "disabled_providers" not in config
     # Compaction buffer scaled to ~10% of the window (compact near 90%).
     assert config["compaction"] == {"auto": True, "reserved": 131072 // 10}
 
@@ -1387,16 +1818,96 @@ def test_write_opencode_config_fresh(tmp_path):
 def test_write_opencode_config_preserves_and_idempotent(tmp_path):
     path = tmp_path / "opencode.json"
     path.write_text(
-        json.dumps({"theme": "tokyonight", "provider": {"anthropic": {"name": "Anthropic"}}})
+        json.dumps(
+            {
+                "theme": "tokyonight",
+                "disabled_providers": ["ollama", "unsloth"],
+                "provider": {"anthropic": {"name": "Anthropic"}},
+            }
+        )
     )
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     config = json.loads(path.read_text())
     assert config["theme"] == "tokyonight"
+    # The overlay no longer edits disabled_providers; re-enabling unsloth is done in
+    # the inline layer, so an existing list here is preserved untouched.
+    assert config["disabled_providers"] == ["ollama", "unsloth"]
     assert config["provider"]["anthropic"]["name"] == "Anthropic"
-    assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
+    assert config["provider"][start._OPENCODE_PROVIDER]["options"]["baseURL"] == f"{BASE}/v1"
     before = path.read_text()
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
     assert path.read_text() == before
+
+
+def test_write_opencode_config_keeps_foreign_disabled_providers(tmp_path):
+    # A user who disabled other providers (but not unsloth) must keep them disabled:
+    # the overlay must not rewrite disabled_providers, or those providers get silently
+    # re-enabled for the session.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"disabled_providers": ["openai", "gemini"]}))
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path)
+    config = json.loads(path.read_text())
+    assert config["disabled_providers"] == ["openai", "gemini"]
+
+
+def _opencode_inline_config(output: str) -> dict:
+    # --no-launch prints OPENCODE_CONFIG_CONTENT as a POSIX `export NAME=<shell-quoted>`
+    # line on Unix/WSL and a PowerShell `$env:NAME = "<escaped>"` line on native Windows;
+    # parse whichever the host emitted so the opencode tests are shell-agnostic.
+    name = "OPENCODE_CONFIG_CONTENT"
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith(f"export {name}="):
+            return json.loads(shlex.split(line.removeprefix(f"export {name}="))[0])
+        prefix = f'$env:{name} = "'
+        if line.startswith(prefix) and line.endswith('"'):
+            escaped = line[len(prefix) : -1]
+            # Reverse _print_env's PowerShell escaping (backtick is the escape char).
+            value = escaped.replace("`$", "$").replace('`"', '"').replace("``", "`")
+            return json.loads(value)
+    raise AssertionError(f"{name} not found in:\n{output}")
+
+
+def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
+    # opencode filters even config-defined providers through enabled/disabled_providers,
+    # and a model pin does not bypass that gate. The inline overlay (session-only, highest
+    # layer, arrays replace) allowlists our provider and clears the denylist so the Studio
+    # model always loads regardless of the user's config, without reading or editing it.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    inline = _opencode_inline_config(result.output)
+    assert inline["enabled_providers"] == [start._OPENCODE_PROVIDER]
+    assert inline["disabled_providers"] == []
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # small_model stays on the enabled provider too, so lightweight tasks do not resolve a
+    # filtered provider mid-session.
+    assert inline["small_model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+
+
+def test_opencode_passthrough_flags_omit_model_flag(fake_studio):
+    # Any passthrough (top-level flags that may precede a subcommand, or a subcommand)
+    # is left untouched; --model is not injected. The model is pinned by the inline
+    # OPENCODE_CONFIG_CONTENT (highest layer) instead, so it is still forced.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "--dir", "repo"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command == ["opencode", "--dir", "repo"]
+    assert "--model" not in command
+    assert (
+        _opencode_inline_config(result.output)["model"]
+        == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    )
+
+
+def test_opencode_passthrough_subcommand_omits_model_flag(fake_studio):
+    # A passthrough subcommand (e.g. `serve`) takes the model from the pinned config;
+    # inserting --model before it would break opencode's arg parsing.
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", "serve"])
+    assert result.exit_code == 0, result.output
+    command = _launch_command(result.output)
+    assert command[0] == "opencode"
+    assert command[1] == "serve"
+    assert "--model" not in command
 
 
 def test_connect_opencode_no_launch(fake_studio, tmp_path):
@@ -1406,9 +1917,24 @@ def test_connect_opencode_no_launch(fake_studio, tmp_path):
     config_path = tmp_path / "agents" / "opencode" / "opencode.json"
     # OPENCODE_CONFIG overlay points at the session file, not the user's global config.
     _assert_env_set(result.output, "OPENCODE_CONFIG", str(config_path))
+    inline_config = _opencode_inline_config(result.output)
     config = json.loads(config_path.read_text())
-    assert config["provider"]["unsloth"]["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
-    assert config["model"] == f"unsloth/{MODEL['id']}"
+    provider = config["provider"][start._OPENCODE_PROVIDER]
+    assert provider["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
+    assert config["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+    # The session config file (a throwaway overlay, not the user's real config) does not
+    # carry provider filters; the session scoping rides in the inline env layer only.
+    assert "disabled_providers" not in config
+    assert "enabled_providers" not in config
+    assert inline_config == {
+        "model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "small_model": f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
+        "enabled_providers": [start._OPENCODE_PROVIDER],
+        "disabled_providers": [],
+    }
+    # --no-launch prints an append-safe base command (no --model before a subcommand a
+    # driver may append); the model is forced by the inline pin above.
+    assert _launch_command(result.output) == ["opencode"]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
 
 
@@ -1669,14 +2195,43 @@ def test_yolo_opencode_writes_permission_block(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
-    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
 
 
 def test_no_yolo_opencode_has_no_permission_block(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
     config = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    # A non-yolo run on a fresh config writes no permission block; it only flips a prior
+    # --yolo run's explicit allow back to ask (see the yolo-then-plain test below).
     assert "permission" not in config
+
+
+def test_no_yolo_opencode_flips_prior_yolo_allow_to_ask(fake_studio, tmp_path):
+    # The core reset: a --yolo run wrote explicit per-tool allow; a later non-yolo run
+    # must flip exactly those back to ask so nothing stays auto-approved.
+    yolo = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
+    assert yolo.exit_code == 0, yolo.output
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    assert json.loads(config_path.read_text())["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
+    plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert plain.exit_code == 0, plain.output
+    assert json.loads(config_path.read_text())["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
 
 
 def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
@@ -1691,12 +2246,17 @@ def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     assert approvals["defaults"] == {"security": "full", "ask": "off", "askFallback": "full"}
 
 
-def test_no_yolo_openclaw_has_no_exec_policy(fake_studio, tmp_path):
+def test_no_yolo_openclaw_leaves_fresh_config_untouched(fake_studio, tmp_path):
+    # A fresh non-yolo run only undoes state a prior --yolo wrote; with no yolo
+    # fingerprint present it must not synthesize an exec policy. An omitted policy can
+    # resolve to a sandbox default of security=deny, so writing allowlist here would
+    # BROADEN it. The reset is scoped to the exact yolo write, verified by the
+    # yolo-then-plain round trip below.
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     state = tmp_path / "agents" / "openclaw"
     config = json.loads((state / "openclaw.json").read_text())
-    assert "exec" not in config.get("tools", {})  # no auto-approve policy without --yolo
+    assert "exec" not in config.get("tools", {})
     assert not (state / "exec-approvals.json").exists()
 
 
@@ -1704,7 +2264,12 @@ def test_write_opencode_config_yolo_unit(tmp_path):
     path = tmp_path / "opencode.json"
     start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
     config = json.loads(path.read_text())
-    assert config["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+    assert config["permission"] == {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {"*": "allow"},
+    }
 
 
 def test_write_openclaw_config_yolo_unit(tmp_path):
@@ -1717,6 +2282,270 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
         "version": 1,
         "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
     }
+
+
+def test_no_launch_rerun_clears_stale_opencode_yolo_permissions(fake_studio, tmp_path):
+    # The no-launch config dir is reused across runs, so a --yolo run persists its
+    # auto-approve settings; a later run without --yolo must strip them, not leave
+    # tool execution silently pre-approved.
+    yolo = CliRunner().invoke(start.start_app, ["opencode", "--yolo", "--no-launch"])
+    assert yolo.exit_code == 0, yolo.output
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    assert "permission" in json.loads(config_path.read_text())
+    plain = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert plain.exit_code == 0, plain.output
+    config = json.loads(config_path.read_text())
+    # The yolo allow policy is replaced by a prompting one, not deleted (which would
+    # revert to OpenCode's permissive "allow" default).
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
+    # The session provider survives the cleanup.
+    assert start._OPENCODE_PROVIDER in config["provider"]
+
+
+def test_no_launch_rerun_clears_stale_openclaw_yolo_state(fake_studio, tmp_path):
+    yolo = CliRunner().invoke(start.start_app, ["openclaw", "--yolo", "--no-launch"])
+    assert yolo.exit_code == 0, yolo.output
+    state = tmp_path / "agents" / "openclaw"
+    assert (state / "exec-approvals.json").exists()
+    plain = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert plain.exit_code == 0, plain.output
+    config = json.loads((state / "openclaw.json").read_text())
+    # The yolo policy is replaced by a prompting one, not deleted (which would revert
+    # to OpenClaw's permissive default), and the yolo approvals file is gone.
+    assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
+    assert not (state / "exec-approvals.json").exists()
+    # The session provider survives the cleanup.
+    assert "unsloth" in config["models"]["providers"]
+
+
+def test_write_openclaw_config_yolo_then_plain_unit(tmp_path):
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    # A plain rerun replaces the yolo policy with a prompting one (deleting it would
+    # fall back to OpenClaw's permissive default) and removes the yolo approvals file.
+    assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
+    assert not (path.parent / "exec-approvals.json").exists()
+
+
+def test_write_opencode_config_yolo_then_plain_unit(tmp_path):
+    path = tmp_path / "opencode.json"
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    # A plain rerun replaces the yolo allow policy with a prompting one.
+    assert config["permission"] == {
+        "edit": "ask",
+        "bash": "ask",
+        "webfetch": "ask",
+        "external_directory": {"*": "ask"},
+    }
+
+
+def test_openclaw_non_yolo_keeps_runtime_approvals(tmp_path):
+    # OpenClaw records its own entries in exec-approvals.json (OPENCLAW_STATE_DIR is
+    # this dir); the non-yolo reset drops only the yolo defaults, not those.
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    approvals = path.parent / "exec-approvals.json"
+    state = json.loads(approvals.read_text())
+    state["agents"] = {"main": {"allowlist": ["git status"]}}
+    approvals.write_text(json.dumps(state))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    remaining = json.loads(approvals.read_text())
+    assert "defaults" not in remaining
+    assert remaining["agents"] == {"main": {"allowlist": ["git status"]}}
+
+
+def test_openclaw_non_yolo_keeps_mixed_approval_defaults(tmp_path):
+    # A mixed user-managed defaults block that only shares a field with the yolo payload
+    # (here askFallback=full, whose omitted default is deny) is not stale yolo state, so a
+    # non-yolo run leaves it intact rather than stripping the shared field.
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    mixed = {
+        "version": 1,
+        "defaults": {"security": "allowlist", "ask": "on-miss", "askFallback": "full"},
+    }
+    approvals.write_text(json.dumps(mixed))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert json.loads(approvals.read_text()) == mixed
+
+
+def test_openclaw_non_yolo_leaves_partial_policy_untouched(tmp_path):
+    # A policy that lacks the full yolo fingerprint (here no host and no security) is not
+    # our --yolo write, so a non-yolo run leaves it as-is rather than assuming ask=off
+    # means permissive: an omitted host/security can resolve to a sandbox deny default.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"timeout": 30, "ask": "off"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"timeout": 30, "ask": "off"}
+
+
+def test_openclaw_non_yolo_leaves_no_permissive_values(tmp_path):
+    # The whole point of the reset: after a yolo run, a plain run must leave neither the
+    # config nor the approvals file at OpenClaw's permissive (security=full, ask=off)
+    # default, or exec still auto-approves.
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = True)
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    exec_policy = json.loads(path.read_text())["tools"]["exec"]
+    assert exec_policy.get("security") != "full"
+    assert exec_policy.get("ask") != "off"
+    assert not (path.parent / "exec-approvals.json").exists()
+
+
+def test_openclaw_non_yolo_preserves_stricter_exec_policy(tmp_path):
+    # A policy that doesn't carry the yolo values (for example stricter security or
+    # prompting turned on) was not written by --yolo and must survive a plain run.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"security": "deny", "ask": "on"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"security": "deny", "ask": "on"}
+
+
+def test_openclaw_non_yolo_preserves_stricter_approval_defaults(tmp_path):
+    # exec-approvals.json defaults that don't match the yolo payload (stricter
+    # settings from the user or the OpenClaw UI) are kept, and the file stays.
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    approvals.write_text(
+        json.dumps({"version": 1, "defaults": {"security": "allowlist", "ask": "on"}})
+    )
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    state = json.loads(approvals.read_text())
+    assert state["defaults"] == {"security": "allowlist", "ask": "on"}
+
+
+def test_openclaw_non_yolo_leaves_unparseable_approvals(tmp_path):
+    # An unreadable approvals file is left in place rather than deleted, matching
+    # how an unparseable config is handled.
+    path = tmp_path / "openclaw.json"
+    approvals = path.parent / "exec-approvals.json"
+    approvals.write_text("{not json")
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert approvals.read_text() == "{not json"
+
+
+def test_opencode_non_yolo_flips_only_explicit_allow(tmp_path):
+    # Only a tool explicitly set to "allow" (what --yolo writes) is flipped to "ask". A
+    # deny/ask a user set is kept, and an absent tool is not added.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"edit": "allow", "bash": "deny", "read": "ask"}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["permission"] == {"edit": "ask", "bash": "deny", "read": "ask"}
+    assert session == {}  # a non-yolo session carries no permission inline
+
+
+def test_opencode_non_yolo_leaves_string_permission(tmp_path):
+    # A global string rule ("deny") is a user-managed catch-all; leave it untouched and
+    # carry no inline override.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": "deny"}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert json.loads(path.read_text())["permission"] == "deny"
+    assert session == {}
+
+
+def test_opencode_non_yolo_leaves_catch_all_and_flips_explicit_allow(tmp_path):
+    # A "*" catch-all is the user's own rule, never something --yolo writes (yolo sets
+    # explicit per-tool allow), so it is left intact; an explicit per-tool "allow" is still
+    # flipped to "ask", but an absent tool inheriting the catch-all is not touched.
+    path = tmp_path / "opencode.json"
+    path.write_text(json.dumps({"permission": {"*": "allow", "bash": "allow"}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert json.loads(path.read_text())["permission"] == {"*": "allow", "bash": "ask"}
+    assert session == {}
+
+
+def test_opencode_non_yolo_leaves_granular_object(tmp_path):
+    # A granular object value is a user rule (yolo only ever writes a plain "allow" string),
+    # so it is left in the file verbatim and never carried inline.
+    path = tmp_path / "opencode.json"
+    obj = {"read *": "deny", "git *": "ask"}
+    path.write_text(json.dumps({"permission": {"bash": dict(obj)}}))
+    session = start.write_opencode_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    assert json.loads(path.read_text())["permission"]["bash"] == obj
+    assert session == {}
+
+
+def test_openclaw_non_yolo_leaves_mode_policy(tmp_path):
+    # tools.exec.mode is OpenClaw's normalized knob and cannot be combined with explicit
+    # security/ask (the config is rejected), so a mode-based policy must be left as-is.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"mode": "deny"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"mode": "deny"}
+
+
+def test_openclaw_non_yolo_preserves_sandbox_host(tmp_path):
+    # host=sandbox defaults to security=deny (stricter than the gateway "full" default),
+    # so a non-yolo run must not treat the missing security as permissive nor pop host
+    # (which would broaden routing to the gateway).
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"host": "sandbox"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"host": "sandbox"}
+
+
+def test_openclaw_non_yolo_preserves_node_host(tmp_path):
+    # host=node routes to a paired node and is only ever set by the user (--yolo writes
+    # host=gateway), so a non-yolo run must not pop it and reroute to the gateway.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"host": "node"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"host": "node"}
+
+
+def test_openclaw_non_yolo_preserves_auto_host_permissive(tmp_path):
+    # host=auto (or omitted) with security=full/ask=off is NOT the --yolo write: under an
+    # active sandbox, auto resolves to security=deny. --yolo only ever writes host=gateway,
+    # so the reset must not treat auto/None as the permissive gateway default and broaden a
+    # sandboxed deny to allowlist.
+    for exec_policy in (
+        {"host": "auto", "security": "full", "ask": "off"},
+        {"security": "full", "ask": "off"},
+    ):
+        path = tmp_path / "openclaw.json"
+        path.write_text(json.dumps({"tools": {"exec": dict(exec_policy)}}))
+        start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+        config = json.loads(path.read_text())
+        assert config["tools"]["exec"] == exec_policy
+
+
+def test_openclaw_non_yolo_resets_only_gateway_yolo_fingerprint(tmp_path):
+    # The reset fires on exactly the host=gateway + security=full + ask=off write --yolo
+    # makes, and nothing else.
+    path = tmp_path / "openclaw.json"
+    path.write_text(
+        json.dumps({"tools": {"exec": {"host": "gateway", "security": "full", "ask": "off"}}})
+    )
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"security": "allowlist", "ask": "on-miss"}
+
+
+def test_openclaw_non_yolo_preserves_full_mode(tmp_path):
+    # OpenClaw never normalizes our security=full/ask=off yolo write into mode:"full"
+    # (verified against the binary: doctor --fix and config get leave security/ask as-is),
+    # so a mode:"full" is always a deliberate user policy, not stale yolo state; leave it.
+    path = tmp_path / "openclaw.json"
+    path.write_text(json.dumps({"tools": {"exec": {"mode": "full"}}}))
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = False)
+    config = json.loads(path.read_text())
+    assert config["tools"]["exec"] == {"mode": "full"}
 
 
 def test_yolo_command_flags_unmapped_agent_is_empty():
@@ -1846,3 +2675,273 @@ def test_session_config_no_launch_preserves_existing_state(fake_studio, tmp_path
     with start._session_config("codex", launch = False) as home2:
         assert home2 == home
         assert (home2 / "sessions" / "live.sqlite").read_text() == "state"
+
+
+# ── --persist: persist the agent session so it can be resumed ────────────────
+def test_session_config_persist_uses_stable_dir_and_survives(monkeypatch, tmp_path):
+    # --persist routes a launch to the stable Unsloth agents dir (the one --no-launch
+    # already uses) instead of a throwaway temp dir, and never wipes it on exit.
+    monkeypatch.setattr(start, "_agents_config_root", lambda: tmp_path / "agents")
+    with start._session_config("codex", launch = True, persist = True) as home:
+        assert home == tmp_path / "agents" / "codex"
+        (home / "marker").write_text("kept")
+    assert home.exists()
+    assert (home / "marker").read_text() == "kept"
+
+
+def test_session_config_default_launch_is_ephemeral():
+    # Default launch (no --persist) still uses a throwaway temp dir wiped on exit.
+    with start._session_config("codex", launch = True) as home:
+        assert home.exists()
+        assert "unsloth-codex-" in home.name
+    assert not home.exists()
+
+
+# The temp-dir agents: --persist points each one's home/state env at the stable dir;
+# without it, at an ephemeral temp path. opencode is handled separately (only its
+# config overlay is relocated; its session data was never in the temp dir).
+_RESUME_ENV_VAR = {
+    "codex": "CODEX_HOME",
+    "openclaw": "OPENCLAW_STATE_DIR",
+    "hermes": "HERMES_HOME",
+    "pi": "HOME",
+}
+
+
+def _capture_launch(monkeypatch, argv):
+    captured = {}
+
+    def run(
+        command,
+        env = None,
+        **kwargs,
+    ):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, argv)
+    assert result.exit_code == 0, result.output
+    return captured
+
+
+@pytest.mark.parametrize("agent", sorted(_RESUME_ENV_VAR))
+def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    captured = _capture_launch(monkeypatch, [agent, "--persist"])
+    stable = tmp_path / "agents" / agent
+    assert captured["env"][_RESUME_ENV_VAR[agent]] == str(stable)
+    # The stable dir survives the agent exit, so the session can be resumed.
+    assert stable.exists()
+
+
+@pytest.mark.parametrize("agent", sorted(_RESUME_ENV_VAR))
+def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    captured = _capture_launch(monkeypatch, [agent])
+    home = captured["env"][_RESUME_ENV_VAR[agent]]
+    assert f"unsloth-{agent}-" in home
+    assert str(tmp_path / "agents") not in home
+
+
+def test_resume_opencode_config_in_stable_dir(fake_studio, tmp_path, monkeypatch):
+    # opencode's session data lives in ~/.local/share/opencode (never relocated), so
+    # resume already survives exit; --persist also stabilizes its config overlay dir.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
+    stable = tmp_path / "agents" / "opencode"
+    assert captured["env"]["OPENCODE_CONFIG"] == str(stable / "opencode.json")
+    assert stable.exists()
+
+
+def test_persist_bare_codex_launch_has_no_resume_token(fake_studio, monkeypatch):
+    # A bare `--persist` only persists the session dir; it must NOT auto-append a native
+    # resume token, or the very first launch (no session yet) would send codex down its
+    # no-session error path. The user resumes explicitly: `unsloth start codex --persist resume`.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = _capture_launch(monkeypatch, ["codex", "--persist"])
+    assert "resume" not in captured["command"]
+    # command[0] is the resolved executable path; assert the argv after it.
+    assert captured["command"][1:] == ["--oss", "--profile", start._CODEX_PROFILE]
+
+
+def test_persist_bare_opencode_launch_has_no_resume_token(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
+    assert "--continue" not in captured["command"]
+    assert captured["command"][1:] == ["--model", f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"]
+
+
+def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    captured = _capture_launch(monkeypatch, ["claude", "--persist"])
+    assert "--continue" not in captured["command"]
+    assert captured["command"][1:] == ["--model", MODEL["id"]]
+
+
+def test_resume_with_passthrough_does_not_auto_append(fake_studio, monkeypatch):
+    # When the caller drives their own subcommand, --persist only persists the dir; it
+    # must not inject a resume token that would collide with the user's command.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = _capture_launch(monkeypatch, ["codex", "--persist", "exec", "hello"])
+    assert "resume" not in captured["command"]
+    assert captured["command"][-2:] == ["exec", "hello"]
+
+
+def test_default_launch_has_no_resume_token(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    captured = _capture_launch(monkeypatch, ["codex"])
+    assert "resume" not in captured["command"]
+
+
+def test_resume_persist_only_agents_have_no_resume_token(fake_studio, monkeypatch):
+    # Persistence alone must not select a session.
+    for agent in ("openclaw", "hermes"):
+        monkeypatch.setattr(start.shutil, "which", lambda _, a = agent: f"/usr/local/bin/{a}")
+        captured = _capture_launch(monkeypatch, [agent, "--persist"])
+        assert "resume" not in captured["command"]
+        assert "--continue" not in captured["command"]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (
+            ["--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["-rsession-id", "-zfollow up"],
+            ["chat", "-Q", "--yolo", "--accept-hooks", "-rsession-id", "-qfollow up"],
+        ),
+        (
+            ["-c=project", "-z=follow up"],
+            ["chat", "-Q", "--yolo", "--accept-hooks", "-c=project", "-q=follow up"],
+        ),
+        (
+            ["-r", "session-id", "--oneshot=follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "-r",
+                "session-id",
+                "--query=follow up",
+            ],
+        ),
+        (
+            ["--continue", "project", "--oneshot", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--continue",
+                "project",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--yolo", "--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--accept-hooks",
+                "--yolo",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--accept-hooks", "--resume", "session-id", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "session-id",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (
+            ["--resume", "chat", "-z", "follow up"],
+            [
+                "chat",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--resume",
+                "chat",
+                "-q",
+                "follow up",
+            ],
+        ),
+        (["--resume", "session-id"], ["--resume", "session-id"]),
+        (["-z", "new session"], ["-z", "new session"]),
+    ],
+)
+def test_hermes_resume_oneshot_args(args, expected):
+    assert start._hermes_resume_oneshot_args(args) == expected
+
+
+def test_hermes_resume_oneshot_uses_session_aware_chat(fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/hermes")
+    captured = _capture_launch(
+        monkeypatch,
+        ["hermes", "--persist", "--resume", "session-id", "-z", "follow up"],
+    )
+    assert captured["command"][1:] == [
+        "chat",
+        "-Q",
+        "--yolo",
+        "--accept-hooks",
+        "--resume",
+        "session-id",
+        "-q",
+        "follow up",
+    ]
+
+
+@pytest.mark.parametrize("usage_arg", ["--usage-file", "--usage-file=usage.json"])
+def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: pytest.fail("argument validation must run before connect"),
+    )
+    argv = ["hermes", "--resume", "session-id", "-z", "follow up", usage_arg]
+    if usage_arg == "--usage-file":
+        argv.append("usage.json")
+    result = CliRunner().invoke(start.start_app, argv)
+    assert result.exit_code == 2
+    assert "cannot resume a one-shot session with --usage-file" in result.output
+
+
+def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
+    # The persistence flag is --persist, NOT --resume, so an agent's own
+    # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
+    # through to the agent verbatim and is not swallowed as a Studio option.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(start, "_claude_flags", lambda: [])
+    captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
+    assert captured["command"][-2:] == ["--resume", "some-session-guid"]
+    # Studio never auto-appends its own resume token when the user drives resume.
+    assert captured["command"].count("--resume") == 1
+    assert "--continue" not in captured["command"]

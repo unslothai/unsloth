@@ -402,7 +402,7 @@ function LiveGpuPanel({
             <select
               value={selectedGpu}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-primary transition-colors font-medium appearance-none"
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -411,7 +411,7 @@ function LiveGpuPanel({
                   value={index}
                   className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
                 >
-                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GB` : "N/A"})
+                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GiB` : "N/A"})
                 </option>
               ))}
             </select>
@@ -446,7 +446,7 @@ function LiveGpuPanel({
           icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
           value={
             currentGpu.vram_used_gb != null && currentGpu.vram_total_gb != null
-              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GB`
+              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GiB`
               : "--"
           }
           pct={currentGpu.vram_utilization_pct ?? 0}
@@ -725,7 +725,7 @@ function GpuStat({
   const clamped = Math.max(0, Math.min(pct, max ?? 100));
   let barColor = "bg-red-500";
   if (clamped < 60) {
-    barColor = "bg-emerald-500";
+    barColor = "bg-control-accent";
   } else if (clamped < 95) {
     barColor = "bg-amber-500";
   }

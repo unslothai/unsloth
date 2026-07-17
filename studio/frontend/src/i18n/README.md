@@ -1,4 +1,4 @@
-# i18n Contribution Instructions
+# i18n Contribution Guide
 
 - `locales/en.ts` is the complete baseline message file.
 - Non-English locale files may be partial. Missing keys must fall back to English at runtime.

@@ -4,6 +4,7 @@
 import { TrainIcon } from "../components/train-icon";
 import {
   HUB_GGUF_RUN_ACTIONS_VISIBLE,
+  HUB_NON_GGUF_RUN_ACTIONS_VISIBLE,
   HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
 } from "../lib/hub-feature-flags";
 import {
@@ -410,7 +411,7 @@ export function LocalOnDeviceCard({
   const showOldCacheHint = source === "hf_cache" && !!unsupportedReason;
   const runActionsVisible = isGguf
     ? HUB_GGUF_RUN_ACTIONS_VISIBLE
-    : HUB_POST_DOWNLOAD_ACTIONS_VISIBLE;
+    : HUB_NON_GGUF_RUN_ACTIONS_VISIBLE;
 
   return (
     <div className="flex w-full flex-col gap-2">

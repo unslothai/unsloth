@@ -280,6 +280,56 @@ class TestStreamHealer:
         assert [c["id"] for c in calls] == ["call_0", "call_1"]
         assert _events_text(events).strip() == "then"
 
+    def test_mistral_array_multiple_calls_all_promoted_in_stream(self):
+        # A canonical Mistral [TOOL_CALLS] array carries several calls under a
+        # SINGLE signal. Draining only the first call would leave the residue
+        # starting at ",{...}]" (no signal), so later calls in the same array
+        # must be promoted in the same pass, not flushed as raw text.
+        healer = StreamToolCallHealer({"get_weather", "get_time"})
+        array = (
+            '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
+            '{"name":"get_time","arguments":{"tz":"UTC"}}]'
+        )
+        events = healer.feed(array) + healer.finalize()
+        calls = _events_calls(events)
+        assert [c["function"]["name"] for c in calls] == ["get_weather", "get_time"]
+        assert [c["id"] for c in calls] == ["call_0", "call_1"]
+        assert _events_text(events) == ""
+
+    def test_mistral_array_multiple_calls_promoted_char_by_char(self):
+        healer = StreamToolCallHealer({"get_weather", "get_time"})
+        array = (
+            '[TOOL_CALLS][{"name":"get_weather","arguments":{"city":"Paris"}},'
+            '{"name":"get_time","arguments":{"tz":"UTC"}}]'
+        )
+        events = []
+        for ch in array:
+            events += healer.feed(ch)
+        events += healer.finalize()
+        calls = _events_calls(events)
+        assert [c["function"]["name"] for c in calls] == ["get_weather", "get_time"]
+        assert _events_text(events) == ""
+
+    def test_mistral_array_undeclared_middle_kept_as_text_others_promoted(self):
+        # A mid-array element for a tool that is not declared must survive as
+        # text while the declared neighbours on either side still promote in
+        # document order.
+        healer = StreamToolCallHealer({"a", "c"})
+        array = (
+            '[TOOL_CALLS][{"name":"a","arguments":{}},'
+            '{"name":"b","arguments":{}},{"name":"c","arguments":{}}]'
+        )
+        events = healer.feed(array) + healer.finalize()
+        assert [c["function"]["name"] for c in _events_calls(events)] == ["a", "c"]
+        assert '"b"' in _events_text(events)
+
+    def test_mistral_array_then_trailing_prose(self):
+        healer = StreamToolCallHealer({"a", "b"})
+        array = '[TOOL_CALLS][{"name":"a","arguments":{}},{"name":"b","arguments":{}}]'
+        events = healer.feed(f"{array} all done") + healer.finalize()
+        assert [c["function"]["name"] for c in _events_calls(events)] == ["a", "b"]
+        assert "all done" in _events_text(events)
+
     def test_incomplete_call_healed_at_finalize(self):
         healer = StreamToolCallHealer({"Bash"})
         events = healer.feed('<tool_call>{"name":"Bash","arguments":{"cmd":"ls"}}')
@@ -465,6 +515,7 @@ class ScriptedClient:
         _url,
         json = None,
         timeout = None,
+        headers = None,
     ):
         self.posts.append(json)
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
@@ -1356,3 +1407,43 @@ class TestOpenaiStreamingRoute:
             assert chunks[0] == line + "\n\n"  # byte-for-byte relay
 
         asyncio.run(_run())
+
+
+class TestHealerSignalAlignment:
+    """The passthrough healer buffers only formats its parser can promote.
+    The loops' bare [ARGS] rehearsal signal is gated on active tool names
+    there; ungated in the healer it would stall legitimate prose until
+    finalization without ever producing a promotable call."""
+
+    def test_heal_signals_are_promotable_formats_only(self):
+        from core.inference.passthrough_healing import _HEAL_SIGNALS
+        assert set(_HEAL_SIGNALS) == {
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
+        }
+
+    def test_prose_with_bare_args_marker_streams_through(self):
+        healer = StreamToolCallHealer({"Bash"})
+        chunks = [
+            "Use the pattern foo",
+            "[ARGS] in templates when calling tools, ",
+            "and remember to close it.",
+        ]
+        streamed = ""
+        for chunk in chunks:
+            streamed += _events_text(healer.feed(chunk))
+        # Incremental relay: nothing withheld for finalize.
+        assert streamed == "".join(chunks)
+        final = healer.finalize()
+        assert not _events_calls(final)
+        assert not healer.healed
+
+    def test_bracket_tool_calls_still_promote_in_stream(self):
+        healer = StreamToolCallHealer({"web_search"})
+        events = healer.feed('[TOOL_CALLS]web_search{"query": "unsloth docs"}') + healer.finalize()
+        (call,) = _events_calls(events)
+        assert call["function"]["name"] == "web_search"
+        assert healer.healed

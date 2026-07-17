@@ -59,6 +59,7 @@ from models.inference import (
     ResponsesUsage,
 )
 from routes.inference import (
+    _ResponsesReasoningExtractor,
     _SameTaskStreamingResponse,
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
@@ -794,6 +795,7 @@ class TestResponsesNonStreamingAdapter:
         assert visible == ""
 
     def test_monitor_records_translated_visible_text(self, monkeypatch):
+        import routes.inference as inf_mod
         import routes.inference as inf_mod
 
         async def fake_chat_completions(chat_req, request):
@@ -1986,6 +1988,123 @@ class TestTranslatedMessagesValidate:
         msgs = _normalise_responses_input(payload)
         for m in msgs:
             ChatMessage(**m.model_dump(exclude_none = True))
+
+
+# reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
+# generation begins inside the block; the extractor must start in reasoning.
+class TestReasoningPrefilledExtractor:
+    def test_prefilled_single_feed_splits_lone_close(self):
+        # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
+        reasoning, visible = _extract_responses_reasoning(
+            "plan</think>answer",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "plan"
+        assert visible == "answer"
+
+    def test_prefilled_never_closed_is_all_reasoning(self):
+        # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
+        reasoning, visible = _extract_responses_reasoning(
+            "still thinking with no close",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "still thinking with no close"
+        assert visible == ""
+
+    def test_prefilled_close_split_across_feeds(self):
+        # T3: </think> straddles two feed() calls; holdback resolves it.
+        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        r1, v1 = ex.feed("plan</th")
+        r2, v2 = ex.feed("ink>ans")
+        fr, fv = ex.finish()
+        assert (r1 + r2 + fr) == "plan"
+        assert (v1 + v2 + fv) == "ans"
+
+    def test_prefilled_close_split_one_char_per_feed(self):
+        # T4: every char in its own feed still splits correctly.
+        ex = _ResponsesReasoningExtractor(parse_think_markers = True, reasoning_prefilled = True)
+        reasoning, visible = "", ""
+        for ch in "plan</think>x":
+            r, v = ex.feed(ch)
+            reasoning += r
+            visible += v
+        fr, fv = ex.finish()
+        assert (reasoning + fr) == "plan"
+        assert (visible + fv) == "x"
+
+    def test_prefilled_empty_generation(self):
+        # T5: nothing generated.
+        reasoning, visible = _extract_responses_reasoning(
+            "",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == ""
+        assert visible == ""
+
+    def test_prefilled_whitespace_after_close_is_visible(self):
+        # T6: Qwen commonly emits </think>\n\n before the answer.
+        reasoning, visible = _extract_responses_reasoning(
+            "plan</think>\n\nanswer",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "plan"
+        assert visible == "\n\nanswer"
+
+    def test_prefilled_stray_open_tag_is_suppressed(self):
+        # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
+        # not leaked into the drawer (covers enable_thinking_effort full-tag output).
+        reasoning, visible = _extract_responses_reasoning(
+            "a<think>b</think>c",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == "ab"
+        assert visible == "c"
+        assert "<think>" not in reasoning
+
+    def test_prefilled_close_at_start_empty_reasoning(self):
+        # T8: model closed immediately (empty reasoning) then answered.
+        reasoning, visible = _extract_responses_reasoning(
+            "</think>hi",
+            parse_think_markers = True,
+            reasoning_prefilled = True,
+        )
+        assert reasoning == ""
+        assert visible == "hi"
+
+    def test_not_prefilled_lone_close_preserves_current_behavior(self):
+        # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
+        reasoning, visible = _extract_responses_reasoning(
+            "reasoning</think>ans",
+            parse_think_markers = True,
+            reasoning_prefilled = False,
+        )
+        assert reasoning == ""
+        assert visible == "reasoningans"
+
+    def test_not_prefilled_full_pair_still_splits(self):
+        # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
+        reasoning, visible = _extract_responses_reasoning(
+            "<think>r</think>v",
+            parse_think_markers = True,
+            reasoning_prefilled = False,
+        )
+        assert reasoning == "r"
+        assert visible == "v"
+
+    def test_prefilled_ignored_when_markers_not_parsed(self):
+        # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
+        reasoning, visible = _extract_responses_reasoning(
+            "just an answer",
+            parse_think_markers = False,
+            reasoning_prefilled = False,
+        )
+        assert reasoning == ""
+        assert visible == "just an answer"
 
 
 # =====================================================================

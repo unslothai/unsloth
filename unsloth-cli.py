@@ -22,24 +22,179 @@ import argparse
 import os
 
 
+def _is_mlx_backend(unsloth_module):
+    return bool(getattr(unsloth_module, "_IS_MLX", False))
+
+
+def _normalize_dtype(dtype, is_mlx):
+    if is_mlx and isinstance(dtype, str) and dtype.strip().lower() in {"", "none", "auto"}:
+        return None
+    return dtype
+
+
+def _prepare_device_map(is_mlx):
+    if is_mlx:
+        return None, False
+
+    from unsloth.models.loader_utils import prepare_device_map
+    return prepare_device_map()
+
+
+class _CallableTokenizerProxy:
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+
+    def __getattr__(self, name):
+        return getattr(self._tokenizer, name)
+
+    def __call__(self, text, *args, **kwargs):
+        # MLX/torch-free: never request torch tensors; keep plain python ids.
+        kwargs.pop("return_tensors", None)
+        wrapped = getattr(self._tokenizer, "_tokenizer", None)
+        if callable(wrapped):
+            return wrapped(text, *args, **kwargs)
+
+        add_special_tokens = kwargs.get("add_special_tokens", False)
+        input_ids = self._tokenizer.encode(text, add_special_tokens = add_special_tokens)
+        return {"input_ids": input_ids}
+
+
+def _tokenizer_for_raw_text_loader(tokenizer, is_mlx):
+    if not is_mlx or callable(tokenizer):
+        return tokenizer
+    return _CallableTokenizerProxy(tokenizer)
+
+
+def _raw_text_loader_for_backend(
+    RawTextDataLoader,
+    tokenizer,
+    is_mlx,
+    chunk_size = 2048,
+    stride = 512,
+):
+    return RawTextDataLoader(
+        _tokenizer_for_raw_text_loader(tokenizer, is_mlx),
+        chunk_size,
+        stride,
+        return_tokenized = not is_mlx,
+    )
+
+
+def _train_with_legacy_save_control(trainer, is_mlx):
+    if not is_mlx:
+        return trainer.train()
+
+    original_save_model = getattr(trainer, "save_model", None)
+    if original_save_model is None:
+        return trainer.train()
+
+    def skip_internal_final_save(*args, **kwargs):
+        raise ValueError("legacy unsloth-cli.py owns final save")
+
+    trainer.save_model = skip_internal_final_save
+    try:
+        return trainer.train()
+    finally:
+        trainer.save_model = original_save_model
+
+
+def _iter_quantization_methods(quantization):
+    if isinstance(quantization, list):
+        return quantization
+    return [quantization]
+
+
+def _save_or_push_model(model, tokenizer, args, is_mlx):
+    if not args.save_model:
+        print("Warning: The model is not saved!")
+        return
+
+    # Enter the GGUF branch when saving or pushing GGUF, so --push_gguf works
+    # without --save_gguf (the local save is guarded separately below).
+    if args.save_gguf or args.push_gguf:
+        if not args.save_gguf:
+            print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
+        for quantization_method in _iter_quantization_methods(args.quantization):
+            if args.save_gguf:
+                print(f"Saving model with quantization method: {quantization_method}")
+                model.save_pretrained_gguf(
+                    args.save_path,
+                    tokenizer,
+                    quantization_method = quantization_method,
+                )
+            if args.push_model or args.push_gguf:
+                model.push_to_hub_gguf(
+                    args.hub_path,
+                    tokenizer,
+                    quantization_method = quantization_method,
+                    token = args.hub_token,
+                )
+        return
+
+    if is_mlx:
+        model.save_pretrained_merged(
+            args.save_path,
+            tokenizer,
+            save_method = args.save_method,
+            push_to_hub = args.push_model,
+            repo_id = args.hub_path if args.push_model else None,
+            token = args.hub_token,
+        )
+        return
+
+    model.save_pretrained_merged(args.save_path, tokenizer, save_method = args.save_method)
+    if args.push_model:
+        model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
+
+
+def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
+    config_kwargs = dict(
+        per_device_train_batch_size = args.per_device_train_batch_size,
+        gradient_accumulation_steps = args.gradient_accumulation_steps,
+        warmup_steps = args.warmup_steps,
+        max_steps = args.max_steps,
+        learning_rate = args.learning_rate,
+        fp16 = not bf16_supported,
+        bf16 = bf16_supported,
+        logging_steps = args.logging_steps,
+        optim = args.optim,
+        weight_decay = args.weight_decay,
+        lr_scheduler_type = args.lr_scheduler_type,
+        seed = args.seed,
+        output_dir = args.output_dir,
+        report_to = args.report_to,
+        max_length = args.max_seq_length,
+        dataset_num_proc = 2,
+        packing = args.packing,
+    )
+    if is_mlx:
+        if args.per_device_eval_batch_size != 4:
+            print("Warning: --per_device_eval_batch_size is ignored on MLX without eval data.")
+    else:
+        config_kwargs["per_device_eval_batch_size"] = args.per_device_eval_batch_size
+    return SFTConfig(**config_kwargs)
+
+
 def run(args):
+    import unsloth
     from unsloth import FastLanguageModel
     from datasets import load_dataset
     from transformers.utils import strtobool
     from trl import SFTTrainer, SFTConfig
     from unsloth import is_bfloat16_supported
-    from unsloth.models.loader_utils import prepare_device_map
     import logging
     from unsloth import RawTextDataLoader
 
     logging.getLogger("hf-to-gguf").setLevel(logging.WARNING)
 
+    is_mlx = _is_mlx_backend(unsloth)
+
     # Load model and tokenizer
-    device_map, distributed = prepare_device_map()
+    device_map, distributed = _prepare_device_map(is_mlx)
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
-        dtype = args.dtype,
+        dtype = _normalize_dtype(args.dtype, is_mlx),
         load_in_4bit = args.load_in_4bit,
         device_map = device_map,
     )
@@ -92,11 +247,13 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            loader = RawTextDataLoader(tokenizer, args.chunk_size, args.stride)
+            loader = _raw_text_loader_for_backend(
+                RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+            )
             dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
             # Auto-detect local raw text files
-            loader = RawTextDataLoader(tokenizer)
+            loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
             dataset = loader.load_from_file(args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
@@ -115,27 +272,9 @@ def run(args):
     print("Data is formatted and ready!")
 
     # Configure training arguments
-    training_args = SFTConfig(
-        per_device_train_batch_size = args.per_device_train_batch_size,
-        per_device_eval_batch_size = args.per_device_eval_batch_size,
-        gradient_accumulation_steps = args.gradient_accumulation_steps,
-        warmup_steps = args.warmup_steps,
-        max_steps = args.max_steps,
-        learning_rate = args.learning_rate,
-        fp16 = not is_bfloat16_supported(),
-        bf16 = is_bfloat16_supported(),
-        logging_steps = args.logging_steps,
-        optim = args.optim,
-        weight_decay = args.weight_decay,
-        lr_scheduler_type = args.lr_scheduler_type,
-        seed = args.seed,
-        output_dir = args.output_dir,
-        report_to = args.report_to,
-        max_length = args.max_seq_length,
-        dataset_num_proc = 2,
-        ddp_find_unused_parameters = False if distributed else None,
-        packing = args.packing,
-    )
+    training_args = _build_sft_config(SFTConfig, args, is_mlx, is_bfloat16_supported())
+    if distributed:
+        training_args.ddp_find_unused_parameters = False
 
     # Initialize trainer
     trainer = SFTTrainer(
@@ -145,57 +284,9 @@ def run(args):
         args = training_args,
     )
 
-    trainer.train()
+    _train_with_legacy_save_control(trainer, is_mlx)
 
-    # Save model
-    if args.save_model:
-        # If args.quantization is a list, save once per quantization method
-        # Enter the GGUF branch when saving *or* pushing GGUF, so --push_gguf
-        # works even when --save_gguf is omitted (the local save is guarded
-        # separately below).
-        if args.save_gguf or args.push_gguf:
-            # Push-only GGUF (no --save_gguf) skips the local save; warn so it is not silent.
-            if not args.save_gguf:
-                print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
-            if isinstance(args.quantization, list):
-                for quantization_method in args.quantization:
-                    if args.save_gguf:
-                        print(f"Saving model with quantization method: {quantization_method}")
-                        model.save_pretrained_gguf(
-                            args.save_path,
-                            tokenizer,
-                            quantization_method = quantization_method,
-                        )
-                    if args.push_model or args.push_gguf:
-                        model.push_to_hub_gguf(
-                            args.hub_path,
-                            tokenizer,
-                            quantization_method = quantization_method,
-                            token = args.hub_token,
-                        )
-            else:
-                if args.save_gguf:
-                    print(f"Saving model with quantization method: {args.quantization}")
-                    model.save_pretrained_gguf(
-                        args.save_path,
-                        tokenizer,
-                        quantization_method = args.quantization,
-                    )
-                if args.push_model or args.push_gguf:
-                    model.push_to_hub_gguf(
-                        args.hub_path,
-                        tokenizer,
-                        quantization_method = args.quantization,
-                        token = args.hub_token,
-                    )
-        else:
-            model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
-            if args.push_model:
-                model.push_to_hub_merged(
-                    args.hub_path, tokenizer, args.save_method, token = args.hub_token
-                )
-    else:
-        print("Warning: The model is not saved!")
+    _save_or_push_model(model, tokenizer, args, is_mlx)
 
 
 if __name__ == "__main__":

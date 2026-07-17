@@ -44,12 +44,31 @@ _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
 _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
+# Skip the installer's interactive setup wizard: `unsloth start hermes` runs
+# this hint unattended and then writes its own session-scoped Hermes config, so
+# the wizard's global API-key/model prompts would block the launch and point the
+# user at a different (global) provider than the one Unsloth just configured.
+# Both installers expose a skip flag: `-SkipSetup` (PowerShell) and
+# `--skip-setup` (POSIX; passed to the piped script via `bash -s --`).
+_HERMES_WINDOWS_INSTALL_HINT = (
+    "& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -SkipSetup"
+)
+_HERMES_POSIX_INSTALL_HINT = (
+    "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+    "/main/scripts/install.sh | bash -s -- --skip-setup"
+)
 # Hermes refuses to initialize when the model window is under 64,000 tokens; its
 # error message points at the model.context_length / auxiliary.compression
 # overrides in config.yaml. write_hermes_config claims this value for smaller
 # windows and scales the compaction threshold back down to the real window.
 _HERMES_MIN_CONTEXT = 65536
 _PI_PROVIDER = "unsloth"
+# OpenCode selects a model by "<providerID>/<modelID>" and honors a user
+# disabled_providers list. Register the session provider under a dedicated id a
+# user's disable list would never target, so the model is always selectable
+# without the wrapper having to reconstruct (and override) OpenCode's full,
+# multi-layer disabled_providers resolution.
+_OPENCODE_PROVIDER = "unsloth-studio"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 _CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
@@ -114,6 +133,21 @@ _YOLO_OPTION = typer.Option(
         "flag/config. Any of the three spellings works for any agent."
     ),
 )
+_PERSIST_OPTION = typer.Option(
+    False,
+    "--persist/--no-persist",
+    help = (
+        "Keep this agent's Unsloth-managed session dir so you can resume it later. "
+        "codex/openclaw/hermes/pi have their whole home relocated into an Unsloth dir "
+        "that is a throwaway temp dir (wiped on exit) by default; with --persist it "
+        "lives under the Unsloth agents dir and survives, so their own resume can reopen "
+        "it. claude and opencode keep sessions in your own stores (~/.claude, "
+        "~/.local/share/opencode), so they already resume regardless. To reopen a "
+        "session, pass the agent's own resume command through, e.g. "
+        "`unsloth start codex --persist resume` or `claude --resume <id>`; those flow to "
+        "the agent unchanged."
+    ),
+)
 
 # Per-agent CLI flag for "run tools without prompting". opencode and openclaw have no
 # such flag (config only) and are handled in their config writers, so they are absent.
@@ -130,6 +164,47 @@ _YOLO_COMMAND_FLAGS = {
 def _yolo_command_flags(agent: str, yolo: bool) -> list:
     # .get so a config-based agent (or a typo) yields no flag instead of a KeyError.
     return _YOLO_COMMAND_FLAGS.get(agent, []) if yolo else []
+
+
+def _hermes_install_hint() -> str:
+    return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
+    """Route resumed one-shot prompts through Hermes' session-aware chat command."""
+    has_resume = any(
+        arg in ("--resume", "-r", "--continue", "-c")
+        or arg.startswith(("--resume=", "--continue="))
+        or (len(arg) > 2 and arg.startswith(("-r", "-c")))
+        for arg in args
+    )
+    if not has_resume:
+        return args
+
+    rewritten = list(args)
+    for index, arg in enumerate(rewritten):
+        if arg in ("-z", "--oneshot"):
+            rewritten[index] = "-q"
+        elif len(arg) > 2 and arg.startswith("-z"):
+            # argparse accepts attached short-option values (`-zPROMPT` and
+            # `-z=PROMPT`); preserve the value byte-for-byte when switching to -q.
+            rewritten[index] = f"-q{arg[2:]}"
+        elif arg.startswith("--oneshot="):
+            rewritten[index] = f"--query={arg.partition('=')[2]}"
+        else:
+            continue
+        if any(item == "--usage-file" or item.startswith("--usage-file=") for item in args):
+            raise typer.BadParameter(
+                "Hermes cannot resume a one-shot session with --usage-file; remove that option."
+            )
+        prefix = ["chat", "-Q"]
+        if "--yolo" not in rewritten:
+            prefix.append("--yolo")
+        if "--accept-hooks" not in rewritten:
+            prefix.append("--accept-hooks")
+        rewritten = prefix + rewritten
+        return rewritten
+    return args
 
 
 class LoadOptions(NamedTuple):
@@ -574,6 +649,59 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
+_HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _is_hub_model_id(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if "\\" in text:
+        return False
+    if text.startswith(("/", "./", "../", "~")):
+        return False
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        return False
+    # A hub id is exactly "namespace/name" over a restricted charset. Anything with
+    # extra path segments (e.g. a server-side relative path such as
+    # models/Llama/Foo.gguf on a remote Studio) is not a hub id and must not be
+    # casefold-matched against a differently cased path on a case-sensitive
+    # filesystem. This is host independent, unlike the existence probe below which
+    # cannot see a path that only exists on the server.
+    parts = text.split("/")
+    if len(parts) != 2:
+        return False
+    if any(part in ("", ".", "..") or not _HF_REPO_ID_SEGMENT_RE.match(part) for part in parts):
+        return False
+    try:
+        if Path(os.path.expanduser(text)).exists():
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _model_id_matches(
+    actual: object,
+    requested: object,
+    *,
+    allow_casefold: bool = True,
+) -> bool:
+    if actual == requested:
+        return True
+    # Case-insensitive matching is only safe when the local existence probe in
+    # _is_hub_model_id is authoritative, i.e. against a loopback Studio on this host.
+    # Against a remote Studio a two-segment string is indistinguishable from a
+    # server-side relative path (e.g. Models/Foo vs models/foo), so casefolding it
+    # could attach to the wrong model on a case-sensitive server; defer to an exact
+    # match there and let the load endpoint resolve the requested path.
+    if not allow_casefold:
+        return False
+    if not (_is_hub_model_id(actual) and _is_hub_model_id(requested)):
+        return False
+    return str(actual).casefold() == str(requested).casefold()
+
+
 def _resolve_model(
     base: str,
     key: str,
@@ -581,6 +709,9 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
 ) -> dict:
     models = _loaded_models(base, key)
+    # Only casefold-match ids against a loopback Studio, where _is_hub_model_id's
+    # local existence probe can actually reject a server-side path; see the note there.
+    allow_casefold = is_loopback_url(base)
     # /v1/models reports the model id but not the active GGUF variant or runtime load
     # settings, so an id match alone can hide the wrong quant (Q8_0 serving while the
     # user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to
@@ -590,10 +721,21 @@ def _resolve_model(
     load_has_overrides = bool(
         load.gguf_variant or load.max_seq_length or not load.load_in_4bit or load.tensor_parallel
     )
+    # /v1/models also lists cached-but-unloaded catalog entries (loaded == False);
+    # matching one would skip /api/inference/load and leave the agent pointed at a
+    # model that is not resident, so only attach to an entry that is actually loaded.
     match = (
         None
         if requested and load_has_overrides
-        else next((m for m in models if m["id"] == requested), None)
+        else next(
+            (
+                m
+                for m in models
+                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                and m.get("loaded") is not False
+            ),
+            None,
+        )
     )
     if requested and match is None:
         typer.echo(
@@ -628,7 +770,16 @@ def _resolve_model(
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
-        match = next((m for m in models if m["id"] in wanted), None)
+        match = next(
+            (
+                m
+                for m in models
+                if any(
+                    _model_id_matches(m.get("id"), w, allow_casefold = allow_casefold) for w in wanted
+                )
+            ),
+            None,
+        )
     if match is not None:
         return match
     if requested:
@@ -726,6 +877,60 @@ def _merge_codex_config(existing: str, base: str) -> str:
     )
 
 
+# Keep custom-model behavior aligned with Codex's own unknown-model fallback. This
+# Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
+_CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
+_CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+
+
+def _codex_supports_model_catalog() -> bool:
+    executable = shutil.which("codex")
+    if executable is None:
+        # A --no-launch recipe may be copied to another machine; assume a current Codex.
+        return True
+    try:
+        output = subprocess.check_output(
+            [executable, "--version"], text = True, timeout = 10, stderr = subprocess.DEVNULL
+        )
+    except Exception:
+        return False
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
+    return bool(match) and tuple(int(part) for part in match.groups()) >= (
+        _CODEX_MODEL_CATALOG_MIN_VERSION
+    )
+
+
+def _codex_model_catalog(model: dict) -> dict:
+    """Return conservative metadata for a Studio model unknown to Codex's built-in catalog."""
+    model_id = model["id"]
+    window = model.get("context_length") or model.get("max_context_length")
+    entry = {
+        "slug": model_id,
+        "display_name": model_id,
+        "description": "Model served by Unsloth Studio",
+        "supported_reasoning_levels": [],
+        "shell_type": "default",
+        "visibility": "none",
+        "supported_in_api": True,
+        "priority": 99,
+        "availability_nux": None,
+        "upgrade": None,
+        "base_instructions": _CODEX_FALLBACK_PROMPT.read_text(encoding = "utf-8"),
+        "supports_reasoning_summaries": False,
+        "supports_reasoning_summary_parameter": False,
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": None,
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_parallel_tool_calls": False,
+        "experimental_supported_tools": [],
+    }
+    if window:
+        entry["context_window"] = int(window)
+        entry["max_context_window"] = int(window)
+    return {"models": [entry]}
+
+
 def write_codex_config(base: str, model: dict, home: Path) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
@@ -743,6 +948,16 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
         f'model_provider = "{_CODEX_PROFILE}"\n'
         f"model = {json.dumps(model['id'])}\n"
     )
+    if _codex_supports_model_catalog() and _CODEX_FALLBACK_PROMPT.is_file():
+        catalog = home / "model-catalog.json"
+        catalog_text = json.dumps(_codex_model_catalog(model), indent = 2) + "\n"
+        if not catalog.exists() or catalog.read_text(encoding = "utf-8") != catalog_text:
+            catalog.write_text(catalog_text, encoding = "utf-8")
+            typer.echo(f"Updated {catalog}")
+        # Resolve relative to the profile file. This also survives WSL launching a Windows
+        # Codex binary, where a Linux absolute path inside TOML would not be usable.
+        profile_text += f"model_catalog_json = {json.dumps(catalog.name)}\n"
+
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
@@ -759,6 +974,16 @@ def _wsl_windows_executable(command: list) -> Optional[str]:
     if executable and executable.startswith("/mnt/"):
         return executable
     return None
+
+
+def _wsl_windows_path(path: Path) -> str:
+    try:
+        translated = subprocess.check_output(["wslpath", "-w", str(path)], text = True).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        _fail(f"Could not translate WSL path {path}: {exc}")
+    if not translated:
+        _fail(f"Could not translate WSL path {path}")
+    return translated
 
 
 def _looks_like_path(value: str) -> bool:
@@ -842,6 +1067,60 @@ def _print_env(
     typer.echo(" ".join((*inline, shlex.join(command))))
 
 
+def _refresh_windows_path() -> None:
+    # Merge Windows registry PATH hives after the current process PATH so a
+    # freshly installed agent is visible without changing existing precedence.
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+    except Exception:
+        return
+
+    entries = []
+    seen = set()
+
+    def add_path(value: str) -> bool:
+        added = False
+        for entry in str(value).split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            key = os.path.normcase(entry).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(entry)
+            added = True
+        return added
+
+    add_path(os.environ.get("PATH", ""))
+    added_registry = False
+    hives = (
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+    )
+    for root, sub in hives:
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                value, _ = winreg.QueryValueEx(key, "Path")
+        except OSError:
+            continue
+        if value:
+            added_registry = add_path(os.path.expandvars(str(value))) or added_registry
+    if added_registry:
+        os.environ["PATH"] = os.pathsep.join(entries)
+
+
+def _install_source(install_hint: str) -> Optional[str]:
+    """The first http(s) URL an install hint fetches, or None (e.g. an npm install)."""
+    match = re.search(r"https?://[^\s'\")]+", install_hint)
+    return match.group(0) if match else None
+
+
 def _install_agent(name: str, install_hint: str) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then
     # re-resolve it on PATH. Consent-based (we never auto-run a remote install script
@@ -850,7 +1129,18 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
     if not sys.stdin.isatty():
         return None
     typer.echo(f"`{name}` is not installed.")
-    if not typer.confirm(f"Install it now with `{install_hint}`?", default = False):
+    # Make the supply-chain risk explicit before the prompt: these are the vendors'
+    # own installers (curl | bash, irm | iex, npm), run with the user's privileges,
+    # and nothing checks a signature or hash on the fetched content. Naming the source
+    # turns a blind "yes" into informed consent.
+    source = _install_source(install_hint)
+    warning = (
+        f"This will download and RUN a script from {source} with your privileges"
+        if source
+        else f"This will RUN `{install_hint}` with your privileges"
+    )
+    typer.secho(f"{warning}; there is no signature or hash check.", fg = "yellow", err = True)
+    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
         return None
     # Run each hint through the shell it is written for: PowerShell (irm | iex, or npm)
     # on Windows, /bin/sh (curl | bash, or npm) everywhere else.
@@ -860,6 +1150,9 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
         install_command = ["/bin/sh", "-c", install_hint]
     if subprocess.run(install_command).returncode != 0:
         _fail(f"Install command failed. Run it yourself, then re-run: {install_hint}")
+    # The installer just wrote PATH to the registry (Windows); pull it into this
+    # process so the freshly installed agent resolves without a shell restart.
+    _refresh_windows_path()
     executable = shutil.which(name)
     if executable is None:
         _fail(
@@ -966,15 +1259,20 @@ def _agents_config_root() -> Path:
 
 
 @contextlib.contextmanager
-def _session_config(agent: str, launch: bool):
+def _session_config(
+    agent: str,
+    launch: bool,
+    persist: bool = False,
+):
     """Yield a private directory for an agent's session config (never the user's own).
 
-    launch: an ephemeral temp dir removed after the agent process exits, so nothing
-    persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run later
-    on this machine), reused across runs. Either way the user's real ~/.<agent>
-    config is left untouched.
+    launch (default): an ephemeral temp dir removed after the agent process exits, so
+    nothing persists. no-launch: a stable Unsloth-owned dir (the printed recipe is run
+    later on this machine), reused across runs. persist (from --persist): use that same
+    stable dir even for a launch, so the agent's session survives the exit and can be
+    resumed next time. Either way the user's real ~/.<agent> config is left untouched.
     """
-    if launch:
+    if launch and not persist:
         path = Path(tempfile.mkdtemp(prefix = f"unsloth-{agent}-"))
         try:
             yield path
@@ -983,7 +1281,9 @@ def _session_config(agent: str, launch: bool):
     else:
         # Never wipe this dir: a previously printed recipe may still be running
         # an agent whose sessions/state live here, and every config writer
-        # merges idempotently into an existing home anyway.
+        # merges idempotently into an existing home anyway. Writers must also
+        # reset any state a previous run's flags left behind (--yolo especially),
+        # since files here outlive the invocation that wrote them.
         path = _agents_config_root() / agent
         path.mkdir(parents = True, exist_ok = True, mode = 0o700)
         yield path
@@ -995,6 +1295,7 @@ def write_openclaw_config(
     model: dict,
     path: Path,
     yolo: bool = False,
+    workspace_path: Optional[str] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -1019,8 +1320,23 @@ def write_openclaw_config(
         "models": [provider_model],
     }
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
-    defaults = _subdict(_subdict(config, "agents"), "defaults")
+    agents = _subdict(config, "agents")
+    defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
+    # OPENCLAW_STATE_DIR does not relocate the workspace. Keep it beside the managed
+    # config so ephemeral launches avoid ~/.openclaw and persisted sessions retain it.
+    workspace = path.parent / "workspace"
+    workspace.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    defaults["workspace"] = workspace_path or str(workspace)
+    # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This
+    # config is itself an isolated Unsloth copy, so remove stale explicit paths and let
+    # OpenClaw resolve every listed agent beneath the managed defaults/state directory.
+    agent_list = agents.get("list")
+    if isinstance(agent_list, list):
+        for agent_config in agent_list:
+            if isinstance(agent_config, dict):
+                agent_config.pop("workspace", None)
+                agent_config.pop("agentDir", None)
     # Unauthenticated loopback gateway: without auth.mode=none the client won't open
     # the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
@@ -1043,6 +1359,62 @@ def write_openclaw_config(
             {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
         )
         typer.echo(f"Updated {approvals}")
+    else:
+        # The no-launch config dir is reused across runs, so a previous --yolo run may
+        # have left auto-approval state behind. OpenClaw treats an omitted exec policy as
+        # security=full, ask=off on the gateway host, so deleting the keys would keep
+        # auto-approval on: a non-yolo run must WRITE a prompting policy. Only a
+        # permissive/yolo policy is replaced; a stricter one set by hand survives.
+        tools = config.get("tools")
+        exec_policy = tools.get("exec") if isinstance(tools, dict) else None
+        exec_policy = exec_policy if isinstance(exec_policy, dict) else {}
+        # Match ONLY the exact fingerprint --yolo writes (host=gateway, security=full,
+        # ask=off, all explicit, no mode); anything else is left untouched. host=auto or an
+        # omitted host resolves to security=deny under an active sandbox, so treating those
+        # as the permissive gateway default would broaden a fresh sandboxed config from
+        # deny to allowlist. host=node and host=sandbox are user-set (--yolo only writes
+        # gateway). tools.exec.mode is OpenClaw's normalized knob (it cannot be combined
+        # with security/ask, and OpenClaw never rewrites our security/ask write into it),
+        # so a mode is always a deliberate user policy; never clobber it.
+        permissive = (
+            "mode" not in exec_policy
+            and exec_policy.get("host") == "gateway"
+            and exec_policy.get("security") == "full"
+            and exec_policy.get("ask") == "off"
+        )
+        if permissive:
+            exec_policy = _subdict(_subdict(config, "tools"), "exec")
+            exec_policy.pop("host", None)  # routing only; defaults to the gateway host
+            exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
+            exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
+        # Drop the yolo defaults from the host approvals file (a stricter default set by
+        # the user or OpenClaw is kept). With a prompting tools.exec the stricter of the
+        # two layers wins, so an omitted approvals default still prompts.
+        approvals = path.parent / "exec-approvals.json"
+        if approvals.exists():
+            state = _read_json_object(approvals)
+            if state is not None:
+                defaults = state.get("defaults")
+                # Strip the defaults only when they are exactly the yolo fingerprint; a
+                # user-managed mixed policy that merely shares a field (e.g. askFallback=full,
+                # whose omitted default is deny) must be kept intact.
+                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+                is_yolo = isinstance(defaults, dict) and all(
+                    defaults.get(k) == v for k, v in yolo_defaults
+                )
+                if is_yolo:
+                    for k, _ in yolo_defaults:
+                        del defaults[k]
+                    if not defaults:
+                        del state["defaults"]
+                    if set(state) <= {"version"}:
+                        # Nothing left but our own yolo payload: remove it.
+                        approvals.unlink()
+                        typer.echo(f"Removed {approvals}")
+                    else:
+                        # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
+                        _write_private_json(approvals, state)
+                        typer.echo(f"Updated {approvals}")
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -1054,17 +1426,21 @@ def write_opencode_config(
     model: dict,
     path: Path,
     yolo: bool = False,
-) -> None:
+) -> dict:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
-            f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
-            "yourself, or move the file aside and re-run.",
+            f"Warning: couldn't parse {path} — add an '{_OPENCODE_PROVIDER}' provider "
+            "there yourself, or move the file aside and re-run.",
             err = True,
         )
-        return
+        return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
+    # The session provider is registered under a dedicated id (_OPENCODE_PROVIDER)
+    # that a user's disabled_providers list would never target, so it is always
+    # selectable without this overlay having to reconstruct or override OpenCode's
+    # disabled_providers resolution.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
@@ -1073,27 +1449,50 @@ def write_opencode_config(
         # disables OpenCode's auto-compaction; declare the real window (and a sane
         # output cap) so it compacts instead of overflowing the server.
         model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
-    _subdict(config, "provider")["unsloth"] = {
+    _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
         "options": {"baseURL": f"{base}/v1", "apiKey": key},
         "models": {model["id"]: model_entry},
     }
     # OpenCode selects a model by "<providerID>/<modelID>".
-    config["model"] = f"unsloth/{model['id']}"
+    config["model"] = f"{_OPENCODE_PROVIDER}/{model['id']}"
     if window:
         # Compact with ~10% headroom (near 90% full). The fixed 20k-token default
         # buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
         compaction["reserved"] = max(1, window // 10)
+    tools = ("edit", "bash", "webfetch")
     if yolo:
         # OpenCode has no --yolo flag; auto-approve is the config `permission` block
-        # (singular). Allow the prompting tools so tool calls don't block on the TUI.
-        config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+        # (singular). Allow the prompting tools and paths outside the launch directory so
+        # tool calls don't block on the TUI. This rides inline (OPENCODE_CONFIG_CONTENT) so
+        # --yolo works even over a project config.
+        session_permission = {t: "allow" for t in tools}
+        session_permission["external_directory"] = {"*": "allow"}
+        config["permission"] = dict(session_permission)
+    else:
+        # Undo only what --yolo wrote: our yolo sets an explicit per-tool "allow" for these
+        # three tools, so flip exactly those explicit allows back to "ask". A "deny"/"ask",
+        # a granular object, a string, or a "*" catch-all is the user's own rule and is left
+        # untouched. We do NOT carry a permission inline for a non-yolo session: since
+        # OPENCODE_CONFIG_CONTENT outranks the project opencode.json we cannot read, any
+        # value forced there would override the user's project rules (weakening a project
+        # deny, or auto-approving through a granular object's permissive default). Clearing
+        # our own persisted yolo state is the fix; the project's own permissions are honored.
+        session_permission: dict = {}
+        permission = config.get("permission")
+        if isinstance(permission, dict):
+            for tool in tools:
+                if permission.get(tool) == "allow":
+                    permission[tool] = "ask"
+            if permission.get("external_directory") == {"*": "allow"}:
+                permission["external_directory"] = {"*": "ask"}
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
+    return session_permission
 
 
 def write_hermes_config(base: str, model: dict, path: Path) -> None:
@@ -1205,6 +1604,7 @@ def claude(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1249,6 +1649,9 @@ def claude(
     # --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions.
     # IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a
     # sandbox is detected, and we don't want to falsely claim one on the user's host.
+    # claude keeps its history in ~/.claude/projects, which --settings/env never
+    # relocate, so a session already survives exit; resume it with `claude --continue`
+    # or `--resume <id>` passed through.
     command = [
         "claude",
         "--model",
@@ -1285,6 +1688,7 @@ def codex(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1310,7 +1714,7 @@ def codex(
         *_yolo_command_flags("codex", yolo),
         *ctx.args,
     ]
-    with _session_config("codex", launch) as home:
+    with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
@@ -1328,6 +1732,7 @@ def openclaw(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenClaw at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1337,16 +1742,36 @@ def openclaw(
         serve = serve,
         launch = launch,
     )
-    command = ["openclaw", *ctx.args]
+    openclaw_args = list(ctx.args)
+    # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller
+    # passes through is forwarded verbatim so OpenClaw parses it under its own grammar
+    # (openclaw [global-flags] <command> [options]): an explicit subcommand, a global
+    # flag that must precede the command such as --profile/--dev, or a tui option. We
+    # cannot reinterpret those safely because a leading "--flag value" is ambiguous
+    # between a global (`--profile test`) and a tui option (`--message hi`); prepending
+    # `tui --local` would break the global form, so only the empty case is defaulted.
+    if not openclaw_args:
+        openclaw_args = ["tui", "--local"]
+    command = ["openclaw", *openclaw_args]
     install_hint = (
         "iwr -useb https://openclaw.ai/install.ps1 | iex"
         if os.name == "nt"
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
-    with _session_config("openclaw", launch) as cfg:
+    with _session_config("openclaw", launch, persist = persist) as cfg:
         config_path = cfg / "openclaw.json"
+        workspace_path = None
+        if _wsl_windows_executable(command):
+            workspace_path = _wsl_windows_path(cfg / "workspace")
         # key lives in the config, not the env; --yolo writes the exec policy here too.
-        write_openclaw_config(base, key, entry, config_path, yolo = yolo)
+        write_openclaw_config(
+            base,
+            key,
+            entry,
+            config_path,
+            yolo = yolo,
+            workspace_path = workspace_path,
+        )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
@@ -1364,6 +1789,7 @@ def opencode(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point OpenCode at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1373,20 +1799,55 @@ def opencode(
         serve = serve,
         launch = launch,
     )
-    command = ["opencode", *ctx.args]
-    with _session_config("opencode", launch) as cfg:
+    opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
+    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority
+    # layer, so the session model is forced without a --model flag. Only add --model for
+    # an interactive bare launch (a convenience so the TUI opens on our model). It is
+    # omitted for passthrough (inserting it before a subcommand can be misparsed) and for
+    # --no-launch, where the printed command is consumed by drivers that append a
+    # subcommand such as `run <prompt>`; a leading --model would land before that
+    # subcommand and break it. Those paths rely on the inline pin instead.
+    if ctx.args:
+        command = ["opencode", *ctx.args]
+    elif launch:
+        command = ["opencode", "--model", opencode_model]
+    else:
+        command = ["opencode"]
+    # opencode keeps sessions in ~/.local/share/opencode (never relocated), so resume
+    # already survives exit; reopen the last one by passing `opencode --continue` through.
+    with _session_config("opencode", launch, persist = persist) as cfg:
         config_path = cfg / "opencode.json"
         # OPENCODE_CONFIG is an overlay (loaded between the user's global and project
         # configs), so this adds the Unsloth provider/model for the session without
         # changing the user's default model. Key lives in the config, not the env.
-        write_opencode_config(base, key, entry, config_path, yolo = yolo)
-        # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model
-        # pin (and --yolo permissions) would silently lose to a repo config. Carry the
-        # settings that must win in OPENCODE_CONFIG_CONTENT, which outranks project
-        # config; the API key stays in the private file, never in the printed env.
-        inline_config: dict = {"model": f"unsloth/{entry['id']}"}
-        if yolo:
-            inline_config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "allow"}
+        session_permission = write_opencode_config(base, key, entry, config_path, yolo = yolo)
+        # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin
+        # would silently lose to a repo config. Carry it in OPENCODE_CONFIG_CONTENT, which
+        # outranks project config; the API key stays in the private file, never the env.
+        # Only --yolo carries a permission here (its allow must win over a project config);
+        # a non-yolo session returns no permission, so the project's own rules are honored.
+        # opencode filters every provider (a config-defined custom one included) through
+        # its enabled_providers allowlist and disabled_providers denylist, and a model pin
+        # does not bypass that gate -- a filtered provider resolves to ModelNotFoundError.
+        # To guarantee the session model loads without reading or modifying the user's real
+        # config, scope THIS session to our provider alone: allowlist _OPENCODE_PROVIDER and
+        # clear the denylist. These arrays are replaced (not merged) by higher layers, so
+        # setting them in the highest-priority inline overlay neutralizes any user allowlist
+        # or denylist for the launch. It is session-only: it lives in OPENCODE_CONFIG_CONTENT
+        # for this invocation and never touches the user's config files, so their normal
+        # `opencode` is unchanged; only this session is limited to the Studio provider.
+        # small_model is opencode's separate model for lightweight tasks; pin it to the
+        # session model too, or a user/project small_model on another (now filtered)
+        # provider would resolve a not-found error mid-session. The session serves one
+        # model, so the session model is the only valid target here anyway.
+        inline_config: dict = {
+            "model": opencode_model,
+            "small_model": opencode_model,
+            "enabled_providers": [_OPENCODE_PROVIDER],
+            "disabled_providers": [],
+        }
+        if session_permission:
+            inline_config["permission"] = session_permission
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
@@ -1406,8 +1867,11 @@ def hermes(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Studio server and start it."""
+    native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
+    command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     base, key, entry = _connect(
         api_key,
         model,
@@ -1415,12 +1879,8 @@ def hermes(
         serve = serve,
         launch = launch,
     )
-    command = ["hermes", *_yolo_command_flags("hermes", yolo), *ctx.args]
-    install_hint = (
-        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
-        "/main/scripts/install.sh | bash"
-    )
-    with _session_config("hermes", launch) as home:
+    install_hint = _hermes_install_hint()
+    with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state)
         # like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml")
@@ -1440,6 +1900,7 @@ def pi(
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
 ):
     """Point Pi (coding agent) at the running Studio server and start it."""
     base, key, entry = _connect(
@@ -1464,7 +1925,7 @@ def pi(
     # --ignore-scripts matches Pi's documented install recipe (its README notes Pi needs
     # no install scripts), so accepting the prompt skips dependency lifecycle scripts.
     install_hint = "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
-    with _session_config("pi", launch) as home:
+    with _session_config("pi", launch, persist = persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers
         # it over $HOME/.pi/agent), so pin it at the session dir: an inherited
         # PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real

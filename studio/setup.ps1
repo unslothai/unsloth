@@ -203,6 +203,31 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+function Remove-AgentInstructionFiles {
+    param([string[]]$Roots)
+
+    foreach ($root in $Roots) {
+        if (-not $root) { continue }
+        $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+        if (-not $item -or -not $item.PSIsContainer) { continue }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($item)
+        while ($pending.Count -gt 0) {
+            $current = $pending.Pop()
+            foreach ($child in @(Get-ChildItem -LiteralPath $current.FullName -Force -ErrorAction SilentlyContinue)) {
+                if ($child.PSIsContainer) {
+                    if (-not ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                        $pending.Push($child)
+                    }
+                } elseif ($child.Name -in @("AGENTS.md", "CLAUDE.md")) {
+                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -2314,6 +2339,11 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
+Remove-AgentInstructionFiles -Roots @(
+    (Join-Path $FrontendDir "node_modules"),
+    (Join-Path $OxcValidatorDir "node_modules")
+)
+
 # ==========================================================================
 #  PHASE 3: Python environment + dependencies
 # ==========================================================================
@@ -2621,7 +2651,18 @@ function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     if ($UseUv) {
         $VenvPy = (Get-Command python).Source
-        $result = & uv pip install --python $VenvPy @Args_ 2>&1
+        # An explicit --index-url must win. Inherited uv index env vars otherwise
+        # override it and pull CPU torch over the CUDA/ROCm build (#6898), so drop
+        # them only for index-pinned installs; mirrors still apply elsewhere.
+        $saved = @{}
+        if (@($Args_) -contains '--index-url') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+                $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+                Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+            }
+        }
+        try { $result = & uv pip install --python $VenvPy @Args_ 2>&1 }
+        finally { foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } } }
         if ($LASTEXITCODE -eq 0) { return }
     }
     & python -m pip install @Args_ 2>&1
@@ -3088,12 +3129,11 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-# GPU Windows (CUDA / ROCm) installs the fork's app-* prebuilts; CPU-only stays
-# on ggml-org (the fork ships no windows-cpu bundle). Mirrors setup.sh's routing.
-# A resolved gfx arch counts as a GPU host even when $HasROCm is false (Adrenalin
-# driver only, no HIP runtime): the fork's per-gfx bundle ships its own runtime,
-# so route there instead of ggml-org / a CPU build.
-$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
+# Every host installs the fork's app-* prebuilts now: GPU Windows (CUDA / ROCm)
+# already did, and the fork now also ships the CPU bundles for Windows x64 and
+# arm64 (windows-cpu / windows-arm64). ggml-org artifacts are no longer used by
+# default. Mirrors setup.sh's routing.
+$HelperReleaseRepo = "unslothai/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
@@ -3249,6 +3289,7 @@ if ($LocalLlamaCppSrc) {
         if ($LASTEXITCODE -ne 0) {
             substep "Could not create directory junction; copying instead..." "Yellow"
             Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
         }
         Write-Host ""
         step "llama.cpp" "linked local directory: $ResolvedLocal"
@@ -3283,11 +3324,13 @@ if ($LocalLlamaCppLinked) {
                 # treat a valid ROCm install as mismatched. A name-inferred gfx
                 # arch (Adrenalin-only, no confirmed runtime) still counts as
                 # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
-                # mirroring the --rocm-gfx forward below. NOTE: this block is
-                # currently inert -- write_prebuilt_metadata does not persist an
-                # install_kind key, so $existingKind is always null. If that changes,
-                # add the remaining host kinds (e.g. windows-arm64) before relying on it.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu") }
+                # mirroring the --rocm-gfx forward below. The CPU branch covers both
+                # the x64 windows-cpu and arm64 windows-arm64 bundles (Windows arm64
+                # has no GPU prebuilt). NOTE: this block is currently inert --
+                # write_prebuilt_metadata does not persist an install_kind key, so
+                # $existingKind is always null; keep $expectedKinds in sync with the
+                # kinds install_llama_prebuilt.py installs before relying on it.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -4012,6 +4055,16 @@ if ($LocalLlamaCppLinked) {
     }
 }
 
+$llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+$llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+if (-not $llamaCppIsLink -and (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $LlamaCppDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-StudioOwnedAdoptable $LlamaCppDir)
+    )) {
+    Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
+}
+
 # ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
@@ -4033,7 +4086,9 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     }
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
-step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+step "launch" "unsloth studio -p 8888"
+substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 Write-Host ""
 
 # Match studio/setup.sh: exit non-zero for degraded llama.cpp when called

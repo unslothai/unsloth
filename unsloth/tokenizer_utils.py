@@ -563,8 +563,11 @@ def _load_correct_tokenizer(
         # /tmp of Kaggle seems has a 80GB limit!
         # Let's utilize them
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
-    else:
+    elif cache_dir == "huggingface_tokenizers_cache":
+        # This default name is Colab/Kaggle-only; elsewhere use the HF default cache.
         cache_dir = None
+    # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead
+    # of risking an in-process Hub/Xet transfer.
 
     # Try loading the slow tokenizer. If it fails, then try Fast only
     # Mainly to solve Deepseek models with no tokenizer.model file
@@ -1323,6 +1326,7 @@ def check_tokenizer(
     padding_side = "right",
     token = None,
     _reload = True,
+    cache_dir = None,
 ):
     # Checks tokenizer for out of bounds ids.
     # Mainly a fix for https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha
@@ -1413,10 +1417,11 @@ def check_tokenizer(
                     f"Fix your tokenizer since it'll perform out of bounds memory accesses."
                 )
 
-            if IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT:
-                cache_dir = "huggingface_tokenizers_cache"
-            else:
-                cache_dir = None
+            # Reuse a caller-supplied cache_dir (warmed cache) for the repair reload; else the
+            # Colab/Kaggle sentinel (HF default elsewhere), as load_correct_tokenizer does.
+            reload_cache_dir = cache_dir
+            if reload_cache_dir is None and (IS_COLAB_ENVIRONMENT or IS_KAGGLE_ENVIRONMENT):
+                reload_cache_dir = "huggingface_tokenizers_cache"
 
             # Sometimes slow tokenizer does not work like Deepseek
             try:
@@ -1430,7 +1435,7 @@ def check_tokenizer(
                     use_fast = False,
                     legacy = False,
                     from_slow = True,
-                    cache_dir = cache_dir,
+                    cache_dir = reload_cache_dir,
                 )
                 return check_tokenizer(
                     model = model,
@@ -1440,6 +1445,7 @@ def check_tokenizer(
                     padding_side = padding_side,
                     token = token,
                     _reload = False,
+                    cache_dir = cache_dir,
                 )
                 break
             except:

@@ -7,10 +7,10 @@ export function isBrowserOffline(): boolean {
 
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
-const HUGGING_FACE_REMOTE_ORIGINS = [
-  "https://huggingface.co",
-  "https://datasets-server.huggingface.co",
-] as const;
+// Discovery and repository pages are served by the main Hugging Face origin.
+// Keep optional services such as datasets-server separate so an outage there
+// cannot make the whole Hub appear offline.
+const HUGGING_FACE_ORIGIN = "https://huggingface.co";
 const noopUnsubscribe = () => undefined;
 
 type RemoteNetworkScope = string | readonly string[];
@@ -33,7 +33,7 @@ export function getBrowserOfflineRetryDelayMs(): number {
   // recovery doesn't stall on platforms where navigator.onLine is stuck false.
   return Math.max(
     0,
-    getRemoteOfflineUntil(HUGGING_FACE_REMOTE_ORIGINS) - Date.now(),
+    getRemoteOfflineUntil(HUGGING_FACE_ORIGIN) - Date.now(),
   );
 }
 
@@ -56,7 +56,7 @@ function getRemoteOfflineUntil(scope: RemoteNetworkScope): number {
 }
 
 export function isRemoteNetworkOffline(
-  scope: RemoteNetworkScope = HUGGING_FACE_REMOTE_ORIGINS,
+  scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
 ): boolean {
   return getRemoteOfflineUntil(scope) > Date.now();
 }
@@ -66,7 +66,7 @@ export function isHuggingFaceOffline(): boolean {
   // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
   // remote-offline TTL, set when a real fetch fails and cleared on next success;
   // navigator's online/offline events still drive re-evaluation.
-  return isRemoteNetworkOffline(HUGGING_FACE_REMOTE_ORIGINS);
+  return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN);
 }
 
 export function markRemoteNetworkOnline(origin?: string): void {
@@ -85,13 +85,13 @@ export function markRemoteNetworkOnline(origin?: string): void {
 }
 
 export function markRemoteNetworkOffline(
-  originOrTtl: string | number = HUGGING_FACE_REMOTE_ORIGINS[0],
+  originOrTtl: string | number = HUGGING_FACE_ORIGIN,
   ttlMs = REMOTE_OFFLINE_TTL_MS,
 ): void {
   const origin =
     typeof originOrTtl === "string"
       ? originOrTtl
-      : HUGGING_FACE_REMOTE_ORIGINS[0];
+      : HUGGING_FACE_ORIGIN;
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
   if (nextUntil <= (remoteOfflineUntilByOrigin.get(origin) ?? 0)) {
