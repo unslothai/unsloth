@@ -10,7 +10,14 @@ from pathlib import Path
 
 WORKDIR = Path(__file__).resolve().parents[2]
 MODEL_SELECTOR = (
-    WORKDIR / "studio" / "frontend" / "src" / "components" / "assistant-ui" / "model-selector.tsx"
+    WORKDIR
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "model-picker"
+    / "components"
+    / "model-selector.tsx"
 )
 APP_SIDEBAR = WORKDIR / "studio" / "frontend" / "src" / "components" / "app-sidebar.tsx"
 
@@ -34,17 +41,16 @@ def test_model_selector_trigger_label_uses_leading_tight():
 
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
-    # Match the account-block parent div regardless of utility ordering; this
-    # guard is about the leading-* class, not the layout classes.
+    # Match the account-block parent div regardless of its layout/spacing
+    # utilities (e.g. min-w-0, flex-1, the gap-* class); this guard is about the
+    # leading-* class immediately before the collapsible visibility utility, not
+    # the surrounding flex plumbing.
     pattern = re.compile(
-        r'<div\s+className="(?=[^"]*\bflex\b)(?=[^"]*\bflex-col\b)'
-        r'(?=[^"]*\bgroup-data-\[collapsible=icon\]:hidden\b)([^"]*)">',
+        r'<div\s+className="flex\b[^"]*\bflex-col\b[^"]*\bgap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
     )
     matches = pattern.findall(src)
     assert matches, "could not find sidebar account-block parent div"
-    leading_classes = [
-        token for classes in matches for token in classes.split() if token.startswith("leading-")
-    ]
+    leading_classes = [m for m in matches if m.startswith("leading-")]
     assert leading_classes, f"no leading-* class on sidebar account-block parent: {matches}"
     for cls in leading_classes:
         assert cls == "leading-tight", f"sidebar account-block must use leading-tight, got: {cls}"

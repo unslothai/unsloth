@@ -176,6 +176,7 @@ export function buildCachedInventoryRow(
     runtime?: string | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
+    last_modified?: number | null;
   },
   fallbackFormat: ModelInventoryFormat,
 ): CachedInventoryRow {
@@ -210,6 +211,12 @@ export function buildCachedInventoryRow(
     ),
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
+    lastModified:
+      typeof row.last_modified === "number" &&
+      Number.isFinite(row.last_modified) &&
+      row.last_modified > 0
+        ? row.last_modified
+        : null,
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
     pipelineTag: row.pipeline_tag ?? null,
@@ -272,6 +279,8 @@ export function buildLocalInventoryRows(
         title,
         source: model.source,
         sourceLabel: localSourceLabel(model.source),
+        modelId: model.model_id ?? null,
+        displayName: model.display_name,
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
