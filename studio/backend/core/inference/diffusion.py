@@ -1772,7 +1772,8 @@ class DiffusionBackend:
                 )
                 if transformer is not None:
                     pipe = self._assemble_pipe(
-                        pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir
+                        pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir,
+                        fam = fam,
                     )
                     return pipe, scheme
 
@@ -1787,7 +1788,7 @@ class DiffusionBackend:
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
         pipe = self._assemble_pipe(
-            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir
+            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir, fam = fam
         )
         scheme = quantize_transformer(
             pipe,
@@ -1810,9 +1811,19 @@ class DiffusionBackend:
         hf_token: Optional[str],
         device: str,
         base_local_dir: Optional[str] = None,
+        fam: Optional[DiffusionFamily] = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
+        if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
+            # krea ships transformers-5.x configs and no top-level tokenizer files, so
+            # Pipeline.from_pretrained dies in the tokenizer (vocab_file = None); assemble
+            # per-component like every other krea load path (see diffusion_krea2.py).
+            pipe = load_krea2_pipeline(
+                base_local_dir or base, dtype, hf_token = hf_token, transformer = transformer
+            )
+            pipe.to(device)
+            return pipe
         pipe_kwargs: dict[str, Any] = {"torch_dtype": dtype, "transformer": transformer}
         if hf_token:
             pipe_kwargs["token"] = hf_token
