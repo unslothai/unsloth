@@ -250,7 +250,11 @@ class _TopLevelSourceTokenizer:
         os.makedirs(location, exist_ok = True)
         # Source already lives at location/tokenizer.model, so there is nothing to copy.
 
-    def __call__(self, texts, add_special_tokens = False):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
         class _Encoded:
             pass
 
