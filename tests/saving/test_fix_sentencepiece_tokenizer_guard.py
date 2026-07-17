@@ -183,7 +183,11 @@ class _CopyFromSubdirTokenizer:
             with open(os.path.join(location, "tokenizer.model"), "wb") as dst:
                 dst.write(data)
 
-    def __call__(self, texts, add_special_tokens = False):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+    ):
         class _Encoded:
             pass
 
@@ -211,5 +215,9 @@ def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monk
     new = _FakeTokenizer("new")
     fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
 
-    assert _read_pieces(source_model) == ["<s>", "a", "</s>"], "the original source vocab was modified"
+    assert _read_pieces(source_model) == [
+        "<s>",
+        "a",
+        "</s>",
+    ], "the original source vocab was modified"
     assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")
