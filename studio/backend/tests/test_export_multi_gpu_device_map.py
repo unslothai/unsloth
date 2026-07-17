@@ -32,9 +32,7 @@ from test_export_absolute_paths import (  # noqa: E402
 
 def _export_mod(monkeypatch):
     _install_export_backend_stubs(monkeypatch)
-    return _load_module(
-        "test_core_export_backend_device_map", "core/export/export.py", monkeypatch
-    )
+    return _load_module("test_core_export_backend_device_map", "core/export/export.py", monkeypatch)
 
 
 def _stub_hardware(monkeypatch, visible, device_map):
@@ -80,8 +78,10 @@ def test_hardware_probe_failure_keeps_loader_default(monkeypatch):
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
+
     def _boom():
         raise RuntimeError("no GPUs")
+
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", _boom, raising = False)
     assert mod._multi_gpu_device_map_kwargs() == {}
 
@@ -116,6 +116,7 @@ def _load_text_checkpoint(monkeypatch, tmp_path, device_map_kwargs):
     assert ok, message
     assert len(_RecordingLoader.calls) == 1
     return _RecordingLoader.calls[0]
+
 
 def test_load_checkpoint_forwards_balanced_device_map(monkeypatch, tmp_path):
     kwargs = _load_text_checkpoint(monkeypatch, tmp_path, {"device_map": "balanced"})
