@@ -339,6 +339,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # HunyuanImage-3.0, which stays excluded above: 2.1 has a real diffusers pipeline.
     DiffusionFamily(
         name = "hunyuanimage-2.1",
+        # Hosted checkpoints, verified bit-identical to on-the-fly quantize (the family's
+        # guider pipeline is not run-to-run deterministic, so same-seed LPIPS vs bf16 blends
+        # trajectory divergence with harness noise; per-case hard checks pass and the drift is
+        # compositional, reviewed visually).
+        prequant_repos = (
+            ("int8", "unsloth/HunyuanImage-2.1-FP8"),
+            ("fp8", "unsloth/HunyuanImage-2.1-FP8"),
+        ),
         pipeline_class = "HunyuanImagePipeline",
         transformer_class = "HunyuanImageTransformer2DModel",
         base_repo = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",

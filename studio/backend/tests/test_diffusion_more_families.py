@@ -191,6 +191,15 @@ def test_hunyuanimage21_generation_defaults():
     ) == (50, 3.25)
 
 
+def test_hunyuanimage21_prequant_wiring():
+    # Hosted int8/fp8 checkpoints, verified bit-identical to on-the-fly quantize.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/HunyuanImage-2.1-FP8"
+
+
 def test_hunyuanimage21_bf16_component_table_present():
     fam = detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
     sizes = family_bf16_components_gb(fam)
