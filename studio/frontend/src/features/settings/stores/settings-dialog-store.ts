@@ -19,9 +19,6 @@ export type SettingsScrollTarget = "about-updates";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;
-  // Focus-restore target overriding the activeElement capture. Needed when
-  // the caller is itself about to unmount (command palette): activeElement
-  // still points inside it, so capturing here would grab a dead element.
   opener?: HTMLElement | null;
 }
 

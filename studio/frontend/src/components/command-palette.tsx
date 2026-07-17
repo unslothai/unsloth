@@ -105,9 +105,6 @@ function PaletteContent() {
     action();
   };
 
-  // At selection time focus still sits inside the palette (the close hasn't
-  // flushed), so Settings must restore to the palette's own opener instead
-  // of capturing document.activeElement.
   const openSettings = (tab?: SettingsTab) =>
     runAndClose(() => {
       useSettingsDialogStore.getState().openDialog(tab, {

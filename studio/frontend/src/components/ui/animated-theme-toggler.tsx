@@ -35,9 +35,6 @@ export function useAnimatedThemeToggle(duration = 400) {
     // otherwise queue up and land as invisible back-and-forth flips, so the
     // theme looks stuck until an odd number of clicks gets through.
     if (inFlightRef.current) return
-
-    // Measure now: the anchor can unmount before transition.ready resolves
-    // when the caller closes its own UI in the same tick (command palette).
     const anchorRect = anchorRef.current?.getBoundingClientRect() ?? null
 
     const applyTheme = () => {
