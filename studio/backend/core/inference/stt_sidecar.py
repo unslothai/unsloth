@@ -245,11 +245,22 @@ def is_model_downloaded(model: Optional[str]) -> bool:
         )
         # is_file() follows the cache symlinks, so a link left behind by an
         # interrupted blob download does not count.
-        has_weights = any(
-            p.is_file()
-            for pattern in ("*.safetensors", "pytorch_model*.bin")
-            for p in snapshot.glob(pattern)
-        )
+        index = snapshot / "model.safetensors.index.json"
+        if index.is_file():
+            # Sharded checkpoint: one present shard is not enough; every
+            # shard in the index must exist.
+            weight_map = _read_json_object(index).get("weight_map")
+            if not isinstance(weight_map, dict) or not weight_map:
+                return False
+            has_weights = all(
+                (snapshot / shard).is_file() for shard in set(weight_map.values())
+            )
+        else:
+            has_weights = any(
+                p.is_file()
+                for pattern in ("*.safetensors", "pytorch_model*.bin")
+                for p in snapshot.glob(pattern)
+            )
         return (
             has_weights
             and (snapshot / "config.json").is_file()

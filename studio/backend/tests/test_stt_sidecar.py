@@ -951,3 +951,32 @@ def test_is_model_downloaded_is_false_for_a_cache_miss(monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub", None)
 
     assert stt_sidecar_module.is_model_downloaded("small") is False
+
+
+def test_sharded_snapshot_with_missing_shard_is_not_downloaded(monkeypatch, tmp_path):
+    import json
+
+    snap = tmp_path / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_bytes(b"{}")
+    (snap / "preprocessor_config.json").write_bytes(b"{}")
+    index = {
+        "weight_map": {
+            "a": "model-00001-of-00002.safetensors",
+            "b": "model-00002-of-00002.safetensors",
+        }
+    }
+    (snap / "model.safetensors.index.json").write_text(json.dumps(index))
+    (snap / "model-00001-of-00002.safetensors").write_bytes(b"w" * 8)
+
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda **kwargs: str(snap)
+    )
+
+    assert stt_sidecar_module.is_model_downloaded("unsloth/whisper-small") is False
+
+    # Completing the second shard flips the verdict.
+    (snap / "model-00002-of-00002.safetensors").write_bytes(b"w" * 8)
+    assert stt_sidecar_module.is_model_downloaded("unsloth/whisper-small") is True
