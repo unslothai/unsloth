@@ -71,7 +71,7 @@ export async function loadOpenAIAutoSwitchSettings() {
 
 export async function updateOpenAIAutoSwitchSettings(
   enabled: boolean,
-  autoUnloadIdleSeconds: number,
+  autoUnloadIdleSeconds?: number,
   autoUnloadKeepKv?: boolean,
 ): Promise<OpenAIAutoSwitchSettings> {
   const res = await authFetch("/api/settings/openai-auto-switch", {
@@ -79,8 +79,12 @@ export async function updateOpenAIAutoSwitchSettings(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       enabled,
-      // biome-ignore lint/style/useNamingConvention: API schema
-      auto_unload_idle_seconds: autoUnloadIdleSeconds,
+      // Omitted fields keep their stored value, so a keep-KV-only update can't
+      // persist an env-derived idle TTL under a disabled auto-switch gate.
+      ...(autoUnloadIdleSeconds === undefined
+        ? {}
+        : // biome-ignore lint/style/useNamingConvention: API schema
+          { auto_unload_idle_seconds: autoUnloadIdleSeconds }),
       ...(autoUnloadKeepKv === undefined
         ? {}
         : // biome-ignore lint/style/useNamingConvention: API schema

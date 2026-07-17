@@ -236,6 +236,11 @@ def restore_kv_resume(backend, manifest) -> None:
         binary = manifest.get("binary")
         current = getattr(backend, "_gguf_path", None)
         same_gguf = bool(gguf and current) and Path(current).resolve() == Path(gguf).resolve()
+        if same_gguf:
+            # Same path is not enough: the file may have been overwritten with
+            # different weights between the unload and this reload.
+            st = Path(current).stat()
+            same_gguf = (st.st_size, int(st.st_mtime)) == tuple(manifest.get("gguf_stat") or ())
         if same_gguf and binary and binary == getattr(backend, "_slot_save_binary", None):
             logger.info("Restoring saved slot KV onto the reloaded model")
             backend.restore_slots_for_resume(manifest)
@@ -364,7 +369,10 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     manifest = None
                     if get_auto_unload_keep_kv():
                         try:
-                            manifest = await asyncio.to_thread(backend.save_slots_for_resume)
+                            manifest = await asyncio.to_thread(
+                                backend.save_slots_for_resume,
+                                lambda: not _is_idle(ttl),
+                            )
                         except Exception as exc:
                             logger.debug("slot save before idle unload failed: %s", exc)
                     if not _is_idle(ttl):

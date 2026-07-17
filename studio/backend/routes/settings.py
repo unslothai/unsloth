@@ -35,7 +35,6 @@ from utils.helper_precache_settings import (
 )
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
-    DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
     get_auto_unload_idle_seconds,
@@ -91,8 +90,9 @@ class HelperPrecacheResponse(BaseModel):
 
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
-    auto_unload_idle_seconds: int = Field(default = DEFAULT_AUTO_UNLOAD_IDLE_SECONDS, ge = 0)
-    # None = leave the stored value untouched, so older clients can't reset it.
+    # None = leave the stored value untouched, so a partial update (e.g. the
+    # keep-KV toggle) can't overwrite it or materialize the env-derived TTL.
+    auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
 
 

@@ -8,6 +8,7 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import os
 
 import pytest
 
@@ -33,7 +34,7 @@ class _FakeBackend:
         self.hf_variant = hf_variant
         self._openai_advertised_id = advertised_id
 
-    def save_slots_for_resume(self):
+    def save_slots_for_resume(self, should_abort = None):
         return None
 
     def restore_slots_for_resume(self, manifest):
@@ -3119,8 +3120,13 @@ def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeyp
 def _seed_kv_manifest(
     tmp_path,
     identity = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
-    gguf = "unsloth/A-GGUF",
+    gguf = None,
 ):
+    if gguf is None:
+        gguf_file = tmp_path / "model.gguf"
+        gguf_file.write_bytes(b"gguf")
+        gguf = str(gguf_file)
+    st = os.stat(gguf)
     state_file = tmp_path / "resume-abc-slot0.bin"
     state_file.write_bytes(b"kv")
     return state_file, {
@@ -3128,6 +3134,7 @@ def _seed_kv_manifest(
         "dir": str(tmp_path),
         "binary": ("/bin/llama-server", 111),
         "gguf": gguf,
+        "gguf_stat": (st.st_size, int(st.st_mtime)),
         "slots": [{"id": 0, "filename": state_file.name, "n_saved": 42}],
     }
 
@@ -3169,7 +3176,7 @@ def test_idle_unload_saves_slots_before_unload_and_stashes_manifest(monkeypatch,
         "slots": [{"id": 0, "filename": "f.bin", "n_saved": 42}],
     }
 
-    def _save():
+    def _save(should_abort = None):
         events.append("save")
         return manifest
 
@@ -3206,7 +3213,7 @@ def test_idle_save_failure_still_unloads_plain(monkeypatch):
     unloads = []
     backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
 
-    def _save():
+    def _save(should_abort = None):
         raise RuntimeError("slot save exploded")
 
     def _unload():
@@ -3242,7 +3249,7 @@ def test_keep_kv_setting_off_skips_save(monkeypatch):
         unloads.append(1)
         backend.is_loaded = False
 
-    backend.save_slots_for_resume = lambda: saves.append(1)
+    backend.save_slots_for_resume = lambda *a, **k: saves.append(1)
     backend.unload_model = _unload
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
 
@@ -3263,8 +3270,8 @@ def test_alias_reload_restores_slots_and_deletes_files(monkeypatch, tmp_path):
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", ("unsloth/A-GGUF", "Q4_K_M"))
     state_file, manifest = _seed_kv_manifest(tmp_path)
+    monkeypatch.setattr(kw, "_last_unloaded_model", (manifest["gguf"], "Q4_K_M"))
     monkeypatch.setattr(kw, "_kv_resume", manifest)
 
     _run_hook("gpt-4o-mini")
@@ -3303,12 +3310,29 @@ def test_no_restore_when_different_model_loads(monkeypatch, tmp_path):
 def test_restore_skipped_when_binary_changed(monkeypatch, tmp_path):
     from core.inference import llama_keepwarm as kw
 
+    state_file, manifest = _seed_kv_manifest(tmp_path)
     backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
-    backend._gguf_path = "unsloth/A-GGUF"
+    backend._gguf_path = manifest["gguf"]
     backend._slot_save_binary = ("/bin/llama-server", 222)  # newer mtime
     restored = []
     backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
+
+    kw.restore_kv_resume(backend, manifest)
+    assert restored == []
+    assert not state_file.exists()
+
+
+def test_restore_skipped_when_gguf_rewritten_in_place(tmp_path):
+    from core.inference import llama_keepwarm as kw
+
     state_file, manifest = _seed_kv_manifest(tmp_path)
+    with open(manifest["gguf"], "wb") as fh:
+        fh.write(b"different weights")  # same path, new content
+    backend = _FakeBackend("unsloth/A-GGUF", hf_variant = "Q4_K_M")
+    backend._gguf_path = manifest["gguf"]
+    backend._slot_save_binary = ("/bin/llama-server", 111)
+    restored = []
+    backend.restore_slots_for_resume = lambda manifest: restored.append(manifest)
 
     kw.restore_kv_resume(backend, manifest)
     assert restored == []
@@ -3391,6 +3415,25 @@ def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
         settings.set_openai_auto_switch(True, 60, "garbage")
 
 
+def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
+    # Flipping the keep-KV toggle while idle unload runs purely off
+    # UNSLOTH_MODEL_IDLE_TTL must not materialize the env TTL as a stored value,
+    # which would gate it on the (off) auto-switch toggle and disable it.
+    import routes.settings as settings_route
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
+
+    assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
+    enabled, idle, keep_kv = settings.set_openai_auto_switch(False, None, False)
+    assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
+    assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
+    assert (enabled, idle, keep_kv) == (False, 600, False)
+
+
 def test_load_impl_notes_loaded_with_backend_off_loop():
     import inspect
     src = inspect.getsource(inference_route._load_model_impl)
@@ -3403,7 +3446,10 @@ def test_restore_matches_gguf_realpath_across_naming(tmp_path):
     blob = tmp_path / "blob.gguf"
     blob.write_bytes(b"gguf")
     link = tmp_path / "snapshot.gguf"
-    link.symlink_to(blob)
+    try:
+        link.symlink_to(blob)
+    except OSError:
+        pytest.skip("symlinks unsupported on this host")
 
     backend = _FakeBackend("/hf/snapshots/d7f5", hf_variant = None)
     backend._gguf_path = str(link)  # reload resolved the symlink spelling

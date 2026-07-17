@@ -56,7 +56,7 @@ export function ModelAutoSwitchSection() {
 
   const persist = async (
     enabled: boolean,
-    idleSeconds: number,
+    idleSeconds: number | undefined,
     syncDraft = true,
     keepKv?: boolean,
   ) => {
@@ -108,7 +108,7 @@ export function ModelAutoSwitchSection() {
 
   const handleKeepKvToggle = (keepKv: boolean) => {
     if (!settings) return;
-    void persist(settings.enabled, settings.autoUnloadIdleSeconds, false, keepKv);
+    void persist(settings.enabled, undefined, false, keepKv);
   };
 
   return (

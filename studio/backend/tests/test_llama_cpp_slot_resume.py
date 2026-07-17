@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 from types import SimpleNamespace
 
 import core.inference.llama_cpp as llama_cpp
@@ -21,6 +22,7 @@ def _resume_backend(tmp_path, n_slots = 1):
     backend._port = 8081
     backend._slot_save_dir = str(tmp_path)
     backend._slot_save_binary = ("/bin/llama-server", 1)
+    (tmp_path / "model.gguf").write_bytes(b"gguf")
     backend._gguf_path = str(tmp_path / "model.gguf")
     backend._effective_parallel_slots = n_slots
     backend._estimate_kv_cache_bytes = lambda *a, **k: 0
@@ -96,6 +98,8 @@ def test_save_collects_manifest_across_slots(monkeypatch, tmp_path):
     assert manifest["dir"] == str(tmp_path)
     assert manifest["binary"] == ("/bin/llama-server", 1)
     assert manifest["gguf"] == str(tmp_path / "model.gguf")
+    st = os.stat(manifest["gguf"])
+    assert manifest["gguf_stat"] == (st.st_size, int(st.st_mtime))
     assert [e["id"] for e in manifest["slots"]] == [0, 1]
     assert all(e["n_saved"] == 40 for e in manifest["slots"])
     assert [c[1] for c in calls] == [{"action": "save"}] * 2
@@ -112,7 +116,7 @@ def test_save_unlinks_empty_slot_and_returns_none(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None
-    assert list(tmp_path.iterdir()) == []  # empty-slot file removed
+    assert list(tmp_path.glob("resume-*.bin")) == []  # empty-slot file removed
 
 
 def test_save_cap_breach_discards_all_files(monkeypatch, tmp_path):
@@ -126,7 +130,7 @@ def test_save_cap_breach_discards_all_files(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None  # 200 bytes > 150 cap
-    assert list(tmp_path.iterdir()) == []
+    assert list(tmp_path.glob("resume-*.bin")) == []
 
 
 def test_save_transport_error_aborts_remaining_slots(monkeypatch, tmp_path):
@@ -141,6 +145,36 @@ def test_save_transport_error_aborts_remaining_slots(monkeypatch, tmp_path):
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None
     assert len(calls) == 1  # no retries against a dead server
+
+
+def test_save_transport_error_unlinks_partial_file(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path)
+    _fake_disk(monkeypatch)
+
+    def fake_post(url, **kwargs):
+        (tmp_path / kwargs["json"]["filename"]).write_bytes(b"partial")
+        raise OSError("timed out")
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    assert backend.save_slots_for_resume() is None
+    assert list(tmp_path.glob("resume-*.bin")) == []
+
+
+def test_save_aborts_between_slots_when_no_longer_idle(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path, n_slots = 3)
+    _fake_disk(monkeypatch)
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return _Resp(200, {"n_saved": 5, "n_written": 10})
+
+    monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
+    aborts = iter([False, True, True])
+    manifest = backend.save_slots_for_resume(should_abort = lambda: next(aborts))
+    assert len(calls) == 1  # slots 1 and 2 skipped
+    assert manifest is not None
+    assert [e["id"] for e in manifest["slots"]] == [0]
 
 
 def test_save_non_200_slot_is_skipped_but_others_kept(monkeypatch, tmp_path):

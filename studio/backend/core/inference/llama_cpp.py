@@ -441,7 +441,10 @@ def _hf_offline_if_dns_dead():
             os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
 
-_SLOT_SAVE_MAX_BYTES = int(os.environ.get("UNSLOTH_SLOT_SAVE_MAX_BYTES", str(10 << 30)))
+try:
+    _SLOT_SAVE_MAX_BYTES = int(os.environ.get("UNSLOTH_SLOT_SAVE_MAX_BYTES") or (10 << 30))
+except ValueError:
+    _SLOT_SAVE_MAX_BYTES = 10 << 30
 
 
 def _swa_cache_path() -> Path:
@@ -6649,6 +6652,10 @@ class LlamaCppBackend:
 
                         slot_dir = llama_slot_cache_root()
                         slot_dir.mkdir(parents = True, exist_ok = True)
+                        # Saved KV encodes chat content; keep it out of reach of
+                        # other local users.
+                        with contextlib.suppress(OSError):
+                            os.chmod(slot_dir, 0o700)
                         cmd.extend(["--slot-save-path", str(slot_dir)])
                         self._slot_save_dir = str(slot_dir)
                         self._slot_save_binary = (binary, int(Path(binary).stat().st_mtime))
@@ -8376,7 +8383,9 @@ class LlamaCppBackend:
             return False
         return True
 
-    def save_slots_for_resume(self) -> Optional[dict]:
+    def save_slots_for_resume(
+        self, should_abort: Optional[Callable[[], bool]] = None
+    ) -> Optional[dict]:
         if (
             not self.is_loaded
             or not self._slot_save_dir
@@ -8385,6 +8394,10 @@ class LlamaCppBackend:
         ):
             return None
         save_dir = Path(self._slot_save_dir)
+        try:
+            gguf_stat = Path(self._gguf_path).stat()
+        except OSError:
+            return None
         try:
             estimate = self._estimate_kv_cache_bytes(
                 self._effective_context_length or self._context_length or 0,
@@ -8400,7 +8413,12 @@ class LlamaCppBackend:
         entries: list[dict] = []
         total_bytes = 0
         for slot in range(self.effective_parallel_slots):
+            # A request that went pending mid-save is waiting on the gate; stop
+            # burning its time on the remaining slots.
+            if should_abort is not None and should_abort():
+                break
             filename = f"resume-{token}-slot{slot}.bin"
+            path = save_dir / filename
             try:
                 resp = httpx.post(
                     f"{self.base_url}/slots/{slot}",
@@ -8412,15 +8430,18 @@ class LlamaCppBackend:
                 )
             except Exception as e:
                 logger.debug(f"slot {slot} save failed: {e}")
+                with contextlib.suppress(OSError):
+                    path.unlink()
                 break
             if resp.status_code != 200:
                 logger.debug(f"slot {slot} save returned HTTP {resp.status_code}")
+                with contextlib.suppress(OSError):
+                    path.unlink()
                 continue
             try:
                 body = resp.json()
             except Exception:
                 body = {}
-            path = save_dir / filename
             n_saved = int(body.get("n_saved") or 0)
             if n_saved <= 0:
                 with contextlib.suppress(OSError):
@@ -8450,6 +8471,7 @@ class LlamaCppBackend:
             "dir": self._slot_save_dir,
             "binary": self._slot_save_binary,
             "gguf": str(self._gguf_path),
+            "gguf_stat": (gguf_stat.st_size, int(gguf_stat.st_mtime)),
             "slots": entries,
         }
 
