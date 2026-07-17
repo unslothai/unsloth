@@ -112,6 +112,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
+        # Hosted pre-quantized DiT checkpoints (gate-validated vs same-seed bf16). The loader
+        # verifies the checkpoint's baked base_model_id against the repo actually being loaded,
+        # so a non-default base (e.g. FLUX.1-dev under this family) safely falls back to the
+        # dense-quantize path instead of loading schnell weights.
+        prequant_repos = (
+            ("int8", "unsloth/FLUX.1-schnell-FP8"),
+            ("fp8", "unsloth/FLUX.1-schnell-FP8"),
+        ),
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated.
         trainable = True,
@@ -133,6 +141,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "Flux2KleinPipeline",
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
+        prequant_repos = (
+            ("int8", "unsloth/FLUX.2-klein-4B-FP8"),
+            ("fp8", "unsloth/FLUX.2-klein-4B-FP8"),
+        ),
         aliases = ("flux2-klein",),
         # Flux2KleinPipeline takes reference image(s) via `image`, so it exposes a "reference"
         # workflow atop text-to-image. It has an inpaint pipeline (no img2img) -> inpaint + extend.
@@ -156,6 +168,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "Flux2Pipeline",
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
+        prequant_repos = (
+            ("int8", "unsloth/FLUX.2-dev-FP8"),
+            ("fp8", "unsloth/FLUX.2-dev-FP8"),
+        ),
         aliases = ("flux2-dev", "flux2dev"),
         sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
@@ -201,6 +217,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
+        # int8 only: fp8 is family-denied (_FAMILY_SCHEME_DENY) so a repo entry would be dead.
+        prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
         # LoRA training via the DiT trainer, defaulting to the prequant nf4 repo (QLoRA).
@@ -229,6 +247,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
+        prequant_repos = (
+            ("int8", "unsloth/Z-Image-Turbo-FP8"),
+            ("fp8", "unsloth/Z-Image-Turbo-FP8"),
+        ),
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA.
         trainable = True,
@@ -250,6 +272,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "Krea2Pipeline",
         transformer_class = "Krea2Transformer2DModel",
         base_repo = "krea/Krea-2-Turbo",
+        prequant_repos = (
+            ("int8", "unsloth/Krea-2-Turbo-FP8"),
+            ("fp8", "unsloth/Krea-2-Turbo-FP8"),
+        ),
         aliases = ("krea2",),
         # LoRA training via the DiT trainer (no prequant repo yet, so nf4 quantizes on the fly).
         # Krea's guidance: train on the undistilled Raw, run adapters on Turbo, so Raw is the

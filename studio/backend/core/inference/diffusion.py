@@ -1185,6 +1185,10 @@ class DiffusionBackend:
                 # The GGUF-size `plan` can mis-budget the fast path two ways, so preflight the real
                 # footprint BEFORE eviction; both branches need the base repo + a resolved scheme.
                 dense_declined = False
+                # False when the memory plan only holds a PREQUANT-sized build: if the prequant
+                # load then fails, the loader must raise to GGUF instead of materialising the
+                # dense bf16 transformer the plan never budgeted for.
+                dense_fallback_allowed = True
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
@@ -1221,6 +1225,10 @@ class DiffusionBackend:
                             )
                             if replanned.offload_policy == OFFLOAD_NONE:
                                 quant_plan = replanned
+                                # The GGUF plan already declined resident; a prequant-sized
+                                # replan says nothing about the (larger) dense transformer.
+                                if candidate.prequant:
+                                    dense_fallback_allowed = False
                     else:
                         # The GGUF fits resident, but this path first materialises the base's dense
                         # bf16 transformer (bigger), so re-check the fit against THAT -- a card that
@@ -1242,23 +1250,29 @@ class DiffusionBackend:
                             if scheme is not None
                             else None
                         )
-                        if prequant is None:
-                            dense_mib = int(
-                                self._dense_transformer_resident_bytes(base) // (1024 * 1024)
+                        dense_mib = int(
+                            self._dense_transformer_resident_bytes(base) // (1024 * 1024)
+                        )
+                        if dense_mib > 0:
+                            dense_plan = self._plan_memory(
+                                target,
+                                single_file_path,
+                                base,
+                                fam,
+                                memory_mode,
+                                cpu_offload,
+                                kind = kind,
+                                repo_id = repo_id,
+                                transformer_resident_override_mib = dense_mib,
                             )
-                            if dense_mib > 0:
-                                dense_plan = self._plan_memory(
-                                    target,
-                                    single_file_path,
-                                    base,
-                                    fam,
-                                    memory_mode,
-                                    cpu_offload,
-                                    kind = kind,
-                                    repo_id = repo_id,
-                                    transformer_resident_override_mib = dense_mib,
-                                )
-                                dense_declined = dense_plan.offload_policy != OFFLOAD_NONE
+                            if dense_plan.offload_policy != OFFLOAD_NONE:
+                                dense_fallback_allowed = False
+                                # Without a prequant source the dense build is the ONLY path,
+                                # so a dense misfit skips the fast path entirely (as before); with
+                                # one, the small prequant load proceeds and only the dense
+                                # fallback is forbidden.
+                                if prequant is None:
+                                    dense_declined = True
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
@@ -1280,6 +1294,7 @@ class DiffusionBackend:
                             fam = fam,
                             base_local_dir = _base_local_dir,
                             prequant_path = transformer_prequant_path,
+                            allow_dense_fallback = dense_fallback_allowed,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -1657,6 +1672,7 @@ class DiffusionBackend:
         fam: Optional[DiffusionFamily] = None,
         prequant_path: Optional[str] = None,
         base_local_dir: Optional[str] = None,
+        allow_dense_fallback: bool = True,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -1705,6 +1721,12 @@ class DiffusionBackend:
                     return pipe, scheme
 
         # 2. Fallback: materialise the dense bf16 transformer and quantise it on-device.
+        if not allow_dense_fallback:
+            # The memory plan only budgeted the prequant-sized build; materialising the dense
+            # bf16 transformer here would exceed it after eviction. Raise to the GGUF build.
+            raise RuntimeError(
+                "prequant checkpoint unavailable and the dense transformer does not fit resident"
+            )
         transformer = transformer_cls.from_pretrained(
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )

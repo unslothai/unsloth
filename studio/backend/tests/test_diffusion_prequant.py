@@ -46,7 +46,18 @@ def test_resolve_family_repo_by_scheme():
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"), ("int8", "org/hosted-int8")))
     src = resolve_prequant_source(fam, "int8")
     assert src.kind == "repo" and src.location == "org/hosted-int8"
-    assert src.filename == "transformer_int8.pt"
+    # Model-name convention first (repo scheme suffix stripped), legacy name as fallback.
+    assert src.filename == "hosted-INT8.pt"
+    assert src.fallback_filename == "transformer_int8.pt"
+
+
+def test_prequant_repo_filename_convention():
+    from core.inference.diffusion_prequant import prequant_repo_filename
+    assert prequant_repo_filename("unsloth/Z-Image-Turbo-FP8", "int8") == "Z-Image-Turbo-INT8.pt"
+    assert prequant_repo_filename("unsloth/Z-Image-Turbo-FP8", "fp8") == "Z-Image-Turbo-FP8.pt"
+    assert prequant_repo_filename("unsloth/Qwen-Image-2512-INT8", "int8") == "Qwen-Image-2512-INT8.pt"
+    assert prequant_repo_filename("org/Some-Model-quantized", "fp8") == "Some-Model-FP8.pt"
+    assert prequant_repo_filename("org/PlainRepo", "int8") == "PlainRepo-INT8.pt"
 
 
 def test_resolve_wrong_scheme_is_none():
@@ -458,6 +469,53 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
         logger = None,
     )
     assert result is not None
+
+
+def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
+    # A repo still carrying the legacy transformer_<scheme>.pt name serves the download after
+    # the model-name filename 404s; both names are requested in order.
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, _good_ckpt())
+    monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
+
+    downloaded = tmp_path / "transformer_fp8.pt"
+    downloaded.write_bytes(b"x")
+
+    class _NotFound(Exception):
+        pass
+
+    errors = types.ModuleType("huggingface_hub.errors")
+    errors.EntryNotFoundError = _NotFound
+    requested = []
+
+    def _dl(repo_id, filename, token = None):
+        requested.append(filename)
+        if filename != "transformer_fp8.pt":
+            raise _NotFound(filename)
+        return str(downloaded)
+
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_download = _dl
+    hub.errors = errors
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.errors", errors)
+
+    source = PrequantSource(
+        kind = "repo", location = "org/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt", fallback_filename = "transformer_fp8.pt",
+    )
+    result = load_prequantized_transformer(
+        _FakeTransformer,
+        "Tongyi-MAI/Z-Image-Turbo",
+        source,
+        device = "cuda",
+        dtype = "bfloat16",
+        hf_token = None,
+        scheme = "fp8",
+        logger = None,
+    )
+    assert result is not None
+    assert requested == ["Z-Image-Turbo-FP8.pt", "transformer_fp8.pt"]
 
 
 def test_load_local_path_outside_allowlist_refused(monkeypatch, tmp_path):
