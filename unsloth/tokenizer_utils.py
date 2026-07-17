@@ -423,9 +423,8 @@ def fix_sentencepiece_tokenizer(
         eos_token = new_tokenizer.eos_token,
         pad_token = new_tokenizer.pad_token,
     )
-    # The tokenizer's vocab_file points at this dir, so it must live as long as the
-    # tokenizer (a later save_pretrained copies the patched tokenizer.model from here).
-    # Reclaim it once the tokenizer is garbage collected.
+    # vocab_file points here, so the dir must outlive the tokenizer (a later
+    # save_pretrained copies the patched tokenizer.model from it); reclaim it on GC.
     weakref.finalize(tokenizer, shutil.rmtree, temporary_location, ignore_errors = True)
     return tokenizer
 
