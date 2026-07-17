@@ -2197,16 +2197,48 @@ _torch_flavor_tag() {
     esac
 }
 
+# Whether release base $1 (X.Y[.Z...]) falls inside constraint window $2
+# ("torch>=A.B[.C],<D.E.F"). Compares at major.minor granularity, which is exact
+# for the windows this script uses (ceilings are always X.Y.0); a non-.0 ceiling
+# would only make this conservative (excludes the whole ceiling minor). Anything
+# unparseable answers "no" so the caller fails toward the supported range.
+_torch_release_in_window() {
+    _trw_con="$2"
+    case "$_trw_con" in
+        "torch>="*",<"*) ;;
+        *) echo "no"; return ;;
+    esac
+    _trw_floor="${_trw_con#torch>=}"; _trw_floor="${_trw_floor%%,*}"
+    _trw_ceil="${_trw_con##*,<}"
+    _v_maj="${1%%.*}";          _v_rest="${1#*.}";          _v_min="${_v_rest%%.*}"
+    _f_maj="${_trw_floor%%.*}"; _f_rest="${_trw_floor#*.}"; _f_min="${_f_rest%%.*}"
+    _c_maj="${_trw_ceil%%.*}";  _c_rest="${_trw_ceil#*.}";  _c_min="${_c_rest%%.*}"
+    for _trw_n in "$_v_maj" "$_v_min" "$_f_maj" "$_f_min" "$_c_maj" "$_c_min"; do
+        case "$_trw_n" in ''|*[!0-9]*) echo "no"; return ;; esac
+    done
+    if [ "$_v_maj" -gt "$_f_maj" ] || { [ "$_v_maj" -eq "$_f_maj" ] && [ "$_v_min" -ge "$_f_min" ]; }; then
+        if [ "$_v_maj" -lt "$_c_maj" ] || { [ "$_v_maj" -eq "$_c_maj" ] && [ "$_v_min" -lt "$_c_min" ]; }; then
+            echo "yes"
+            return
+        fi
+    fi
+    echo "no"
+}
+
 # Whether a re-run should keep the previous venv's torch: echo "torch==X.Y.Z" when the
 # probed previous version ($1) has a flavor tag matching the freshly chosen cu*/cpu index
-# leaf ($2), else "". Re-running `curl | sh` rebuilds the venv for clean state, but a
-# healthy torch the user already validated must not be silently moved to a newer release
-# (2.10 -> 2.11); a flavor change (cpu <-> cuda, cu126 -> cu130) still installs the
-# correct new build, and rocm leaves keep their floors (rocm7.2 must land 2.11 for the
-# Strix _grouped_mm fix). Opt out with UNSLOTH_TORCH_UPGRADE=1 to get the newest release.
+# leaf ($2) AND sits inside the active constraint window ($3), else "". Re-running
+# `curl | sh` rebuilds the venv for clean state, but a healthy torch the user already
+# validated must not be silently moved to a newer release (2.10 -> 2.11); a flavor
+# change (cpu <-> cuda, cu126 -> cu130) still installs the correct new build, rocm
+# leaves keep their floors (rocm7.2 must land 2.11 for the Strix _grouped_mm fix), and
+# a release outside the window (2.3.x manual install, 2.12.x manual upgrade) is never
+# kept: the installer's own bounds win. Opt out with UNSLOTH_TORCH_UPGRADE=1 to get
+# the newest release.
 _previous_torch_pin() {
     _ptp_ver="$1"
     _ptp_leaf="$2"
+    _ptp_con="$3"
     [ -n "$_ptp_ver" ] || { echo ""; return; }
     [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
     case "$_ptp_leaf" in
@@ -2219,6 +2251,7 @@ _previous_torch_pin() {
         [0-9]*.[0-9]*) ;;
         *) echo ""; return ;;
     esac
+    [ "$(_torch_release_in_window "$_ptp_base" "$_ptp_con")" = "yes" ] || { echo ""; return; }
     if [ "$(_torch_flavor_tag "$_ptp_ver")" = "$_ptp_leaf" ]; then
         echo "torch==$_ptp_base"
     else
@@ -2535,7 +2568,7 @@ esac
 _PREV_TORCH_PIN=""
 _PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
 if [ "$SKIP_TORCH" = false ]; then
-    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_torch_index_leaf")
+    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$_torch_index_leaf" "$TORCH_CONSTRAINT")
     if [ -n "$_prev_pin" ]; then
         _PREV_TORCH_PIN="$_prev_pin"
         TORCH_CONSTRAINT="$_prev_pin"
