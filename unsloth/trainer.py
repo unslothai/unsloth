@@ -156,14 +156,14 @@ _VISION_DATASET_KEYS = frozenset(
 )
 
 
-def _is_vision_dataset(dataset) -> bool:
+def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
     if dataset is None:
         return False
     column_names = getattr(dataset, "column_names", None)
     if column_names is not None:
         return not _VISION_DATASET_KEYS.isdisjoint(column_names)
     # Unknown-schema streams cannot be safely probed without potentially dropping a sample.
-    return True
+    return unknown_is_vision
 
 
 # Unsloth gradient accumulation fix:
@@ -527,26 +527,39 @@ def _patch_sft_trainer_auto_packing(trl_module):
         else:
             config_arg = kwargs.get("args")
 
-        model = kwargs.get("model")
+        model = args[0] if len(args) >= 1 else kwargs.get("model")
+        is_vlm = False
         is_unsupported_model = False
         if model is not None:
             model_config = getattr(model, "config", None)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
+                architectures = getattr(model_config, "architectures", None) or ()
+                is_vlm = hasattr(model_config, "vision_config") or any(
+                    x.endswith("ForConditionalGeneration") for x in architectures
+                )
 
-        processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
-        data_collator = kwargs.get("data_collator")
+        processing_class = (
+            args[5]
+            if len(args) >= 6
+            else kwargs.get("processing_class") or kwargs.get("tokenizer")
+        )
+        data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
         train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
         is_processor = isinstance(processing_class, ProcessorMixin)
+        is_auto_processor_vlm = is_vlm and processing_class is None
         is_vision_dataset = (
-            data_collator is None and not is_processor and _is_vision_dataset(train_dataset)
+            data_collator is None
+            and not is_processor
+            and _is_vision_dataset(train_dataset, unknown_is_vision = is_vlm)
         )
 
         # Disable padding-free for VLMs / custom collators / blocklisted models
         blocked = (
             (data_collator is not None)
             or is_processor
+            or is_auto_processor_vlm
             or is_vision_dataset
             or is_unsupported_model
             or (
@@ -564,6 +577,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             reason = "custom data collator"
             if data_collator is None and is_processor:
                 reason = "processor-based model"
+            elif is_auto_processor_vlm:
+                reason = "vision-language model with auto processor"
             elif is_vision_dataset:
                 reason = "vision dataset"
             elif is_unsupported_model:

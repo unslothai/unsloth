@@ -183,6 +183,16 @@ def _vlm_model():
     )
 
 
+def _text_model():
+    return SimpleNamespace(
+        config = SimpleNamespace(
+            architectures = ["LlamaForCausalLM"],
+            model_type = "llama",
+        ),
+        max_seq_length = 16,
+    )
+
+
 def test_vlm_text_dataset_allows_explicit_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -199,6 +209,21 @@ def test_vlm_text_dataset_allows_explicit_packing():
     assert trainer.model._unsloth_allow_packed_overlength is True
 
 
+def test_vlm_without_processing_class_still_disables_packing():
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+
+    fake_trainer(
+        _vlm_model(),
+        config,
+        None,
+        Dataset.from_dict({"text": ["text-only sample"]}),
+    )
+
+    assert config.packing is False
+    assert config.padding_free is False
+
+
 def test_vlm_vision_dataset_still_disables_packing():
     fake_trainer = _patch_fake_sft_trainer()
     config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
@@ -208,6 +233,7 @@ def test_vlm_vision_dataset_still_disables_packing():
         config,
         None,
         Dataset.from_dict({"images": [None], "text": ["multimodal sample"]}),
+        None,
         object(),
     )
 
@@ -277,6 +303,31 @@ def test_stateful_stream_is_not_consumed_during_detection(data_collator):
 
     assert config.packing is False
     assert config.padding_free is False
+    assert next(iter(dataset))["text"] == "first"
+
+
+def test_text_model_stream_without_metadata_keeps_packing():
+    class StatefulDataset:
+        def __init__(self):
+            self.rows = iter([{"text": "first"}, {"text": "second"}])
+
+        def __iter__(self):
+            return (row for row in self.rows)
+
+    fake_trainer = _patch_fake_sft_trainer()
+    config = SimpleNamespace(packing = True, padding_free = None, remove_unused_columns = True)
+    dataset = StatefulDataset()
+
+    trainer = fake_trainer(
+        model = _text_model(),
+        args = config,
+        processing_class = object(),
+        train_dataset = dataset,
+    )
+
+    assert config.packing is True
+    assert config.padding_free is True
+    assert trainer.model._unsloth_allow_packed_overlength is True
     assert next(iter(dataset))["text"] == "first"
 
 
