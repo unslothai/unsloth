@@ -168,9 +168,7 @@ def _patch_fake_sft_trainer():
             self.args = args[1] if len(args) >= 2 else kwargs["args"]
             self.data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
 
-    trainer_module._patch_sft_trainer_auto_packing(
-        SimpleNamespace(SFTTrainer = FakeSFTTrainer)
-    )
+    trainer_module._patch_sft_trainer_auto_packing(SimpleNamespace(SFTTrainer = FakeSFTTrainer))
     return FakeSFTTrainer
 
 
@@ -242,7 +240,11 @@ def test_wrapped_packing_preserves_overlength_tokens(monkeypatch):
     prepare_globals = SFTTrainer._prepare_dataset.__globals__
     pack_dataset = prepare_globals["pack_dataset"]
 
-    def legacy_pack_dataset(dataset, seq_length, map_kwargs = None):
+    def legacy_pack_dataset(
+        dataset,
+        seq_length,
+        map_kwargs = None,
+    ):
         return pack_dataset(dataset, seq_length, "wrapped", map_kwargs)
 
     monkeypatch.setitem(prepare_globals, "pack_dataset", legacy_pack_dataset)

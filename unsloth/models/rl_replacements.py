@@ -467,13 +467,13 @@ def sft_trainer_prepare_dataset(function_name, function):
                 "if do_truncation and not packing and max_seq_length > 0:",
             )
             function = function.replace(
-                '''dataset = pack_dataset(
+                """dataset = pack_dataset(
             dataset.select_columns(used_column_names),
             max_seq_length,
             getattr(args, "packing_strategy", "bfd"),
             map_kwargs,
-        )''',
-                '''import inspect as _inspect
+        )""",
+                """import inspect as _inspect
         _pack_kwargs = {"map_kwargs": map_kwargs}
         if "strategy" in _inspect.signature(pack_dataset).parameters:
             _pack_kwargs["strategy"] = getattr(args, "packing_strategy", "bfd")
@@ -481,7 +481,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             dataset.select_columns(used_column_names),
             max_seq_length,
             **_pack_kwargs,
-        )''',
+        )""",
             )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
