@@ -177,6 +177,15 @@ def _sse_objects(chunks):
 # ── Non-streaming ─────────────────────────────────────────────────
 
 
+def test_explicit_reasoning_tags_parse_without_parent_capability_metadata(monkeypatch):
+    backend = _ScriptedBackend(_fixed("<think>plan</think>answer"))
+    response = _call(_request(stream = False), monkeypatch, backend, supports_tools = False)
+
+    message = _json_body(response)["choices"][0]["message"]
+    assert message["reasoning_content"] == "plan"
+    assert message["content"] == "answer"
+
+
 def test_xml_healed_to_tool_calls_non_streaming(monkeypatch):
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(tools = [LOOKUP_TOOL], stream = False)

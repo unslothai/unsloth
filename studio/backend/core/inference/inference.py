@@ -1261,6 +1261,13 @@ class InferenceBackend:
             streamer = self._make_text_streamer(
                 raw_tokenizer,
                 protocol_source = processor,
+                # The text-only VLM fallback above did not render with the
+                # processor template, so its native markers do not describe
+                # this request's response protocol.
+                reasoning_channel_markers = detect_reasoning_channel_markers(processor)
+                if image
+                else None,
+                reasoning_channel_markers_resolved = True,
                 skip_prompt = True,
                 timeout = 0.2,
                 cancel_event = cancel_event,

@@ -270,3 +270,77 @@ def test_native_reasoning_streamer_selected_and_errors_raise():
 
     with pytest.raises(inf._GenerationThreadError, match = "boom"):
         list(backend.generate_stream("prompt", max_new_tokens = 4))
+
+
+def test_text_only_vlm_fallback_resolves_native_markers_off():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+
+    class Batch(dict):
+        def to(self, _device):
+            return self
+
+    class Tokenizer:
+        all_special_tokens = []
+        eos_token_id = 1
+        pad_token_id = None
+
+        def __call__(self, *_args, **_kwargs):
+            return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
+
+    class Processor:
+        chat_template = "<|channel>thought\n...<channel|>"
+        tokenizer = Tokenizer()
+
+    class Model:
+        device = "cpu"
+        generation_config = type("Cfg", (), {"eos_token_id": 1})()
+        config = generation_config
+
+        def generate(self, **_kwargs):
+            return None
+
+    class EmptyStreamer:
+        def __next__(self):
+            raise StopIteration
+
+        def end(self):
+            return None
+
+    captured = {}
+    backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    backend.active_model_name = "vision-test"
+    backend._generation_lock = threading.Lock()
+    backend.models = {
+        "vision-test": {
+            "model": Model(),
+            "processor": Processor(),
+            "tokenizer": Processor(),
+        }
+    }
+    backend.format_chat_prompt = lambda *_args, **_kwargs: "manual text-only prompt"
+
+    def make_streamer(*_args, **kwargs):
+        captured.update(kwargs)
+        return EmptyStreamer()
+
+    backend._make_text_streamer = make_streamer
+
+    assert list(
+        backend._generate_vision_response(
+            messages = [{"role": "user", "content": "hello"}],
+            system_prompt = "",
+            image = None,
+            temperature = 0.7,
+            top_p = 0.9,
+            top_k = 40,
+            min_p = 0.0,
+            max_new_tokens = 1,
+            repetition_penalty = 1.0,
+        )
+    ) == []
+    assert captured["reasoning_channel_markers"] is None
+    assert captured["reasoning_channel_markers_resolved"] is True

@@ -8667,9 +8667,12 @@ async def openai_chat_completions(
 
     # GGUF parity: enable_thinking templates prefill an unclosed <think>; split into
     # reasoning_content deltas so the UI renders the block for safetensors and MLX.
-    _sf_parse_think = bool(
-        _sf_features.get("supports_reasoning") or _sf_features.get("reasoning_always_on")
-    )
+    # Safetensors and MLX streams use explicit <think> tags as their canonical
+    # reasoning contract, including tags synthesized after a worker lazily selects
+    # a native template. Parse explicit tags independently of the parent process's
+    # load-time capability mirror. Capability flags remain necessary only for the
+    # prompt-prefilled mode, whose output begins without an opening tag.
+    _sf_parse_think = True
     # Prefilled-open only for prefill styles with thinking on; gpt-oss uses the normal mode.
     _sf_reasoning_prefilled = _sf_reasoning_prefill_mode(
         _sf_features,

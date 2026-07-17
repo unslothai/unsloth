@@ -205,6 +205,35 @@ def test_cached_native_template_metadata_recovers_reasoning_markers_without_tool
     assert result.reasoning_channel_markers == ("<|channel>thought", "<channel|>")
 
 
+def test_cached_native_markers_do_not_describe_live_tool_template():
+    from types import SimpleNamespace
+
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+
+    class LiveTokenizer:
+        chat_template = "live tool template without native markers"
+
+    def render(_tokenizer, _messages, *, tools, **_kwargs):
+        return "prompt with tools" if tools else "prompt without tools"
+
+    result = render_with_native_template_fallback(
+        formatted_prompt = "prompt with tools",
+        tokenizer = LiveTokenizer(),
+        model_info = {
+            "chat_template_info": {"template": "native <|channel>thought\n<channel|>"},
+            "tokenizer": SimpleNamespace(),
+        },
+        active_model_name = "gemma-test",
+        messages = [{"role": "user", "content": "hi"}],
+        tools = tools,
+        apply_fn = render,
+        return_metadata = True,
+    )
+
+    assert result.prompt == "prompt with tools"
+    assert result.reasoning_channel_markers is None
+
+
 def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
     parser = ReasoningChannelNormalizer("<|channel>thought", "<channel|>")
     output = ""

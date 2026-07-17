@@ -533,9 +533,7 @@ def render_with_native_template_fallback(
     gated/private model's native template can still be fetched. With
     ``return_metadata``, returns the selected prompt plus reasoning-channel markers
     for the exact template used by this request."""
-    live_markers = detect_reasoning_channel_markers_from_model_info(
-        tokenizer, model_info, tools = tools
-    )
+    live_markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
 
     def _result(prompt: str, markers = live_markers):
         if return_metadata:
@@ -543,7 +541,16 @@ def render_with_native_template_fallback(
         return prompt
 
     if not tools:
-        return _result(formatted_prompt)
+        # Gemma 4 can emit its native reasoning protocol even when a generation-time
+        # Unsloth override rendered a marker-free prompt. Preserve the live-verified
+        # no-tools thinking behavior without letting cached native metadata describe
+        # unrelated tool prompts that kept the active override.
+        markers = live_markers
+        if markers is None:
+            markers = detect_reasoning_channel_markers_from_model_info(
+                tokenizer, model_info, tools = None
+            )
+        return _result(formatted_prompt, markers)
     if apply_fn is None:
         apply_fn = apply_chat_template_for_generation
     # Probe whether the live template dropped the schema. A tools-requiring template
