@@ -380,6 +380,30 @@ def test_transient_dflash_download_failure_is_retryable(monkeypatch):
     assert backend.dflash_retry_needed is True
 
 
+def test_hf_download_uses_drafter_quant_not_target_quant(monkeypatch):
+    import core.inference.llama_cpp as llama_cpp
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda *args, **kwargs: [
+            "Qwen3-4B-F16-DFlash-f16.gguf",
+            "Qwen3-4B-F16-DFlash-q8_0.gguf",
+        ],
+    )
+    monkeypatch.setattr(
+        llama_cpp,
+        "hf_hub_download_with_xet_fallback",
+        lambda repo, filename, *args, **kwargs: filename,
+    )
+    backend = LlamaCppBackend()
+    selected = backend._download_dflash(
+        hf_repo = "org/repo", weight_name = "Qwen3-4B-F16.gguf"
+    )
+    assert selected == "Qwen3-4B-F16-DFlash-q8_0.gguf"
+
+
 def _load_inference_routes_module():
     route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
     spec = importlib.util.spec_from_file_location("dflash_drafter_inference_routes", route_path)

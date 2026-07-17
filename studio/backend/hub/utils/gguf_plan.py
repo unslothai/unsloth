@@ -15,15 +15,7 @@ from hub.utils.gguf import (
     is_mmproj_filename,
     is_mtp_drafter_path,
 )
-from utils.models.model_config import _dflash_pairs_weight
-
-# Prefer quantized DFlash builds over these converter outputs.
-_FULL_PRECISION_GGUF_TOKENS = ("bf16", "f16", "f32", "fp16")
-
-
-def _is_full_precision_gguf(path: str) -> bool:
-    name = path.rsplit("/", 1)[-1].lower()
-    return any(token in name for token in _FULL_PRECISION_GGUF_TOKENS)
+from utils.models.model_config import _dflash_is_full_precision, _dflash_pairs_weight
 
 
 @dataclass(frozen = True)
@@ -144,7 +136,10 @@ def preferred_dflash_sibling(
         return None
     return sorted(
         candidates,
-        key = lambda s: (_is_full_precision_gguf(getattr(s, "rfilename")), getattr(s, "rfilename")),
+        key = lambda s: (
+            _dflash_is_full_precision(getattr(s, "rfilename")),
+            getattr(s, "rfilename"),
+        ),
     )[0]
 
 

@@ -1151,6 +1151,17 @@ _GGUF_QUANT_TAG_PATTERN = (
 )
 _GGUF_QUANT_TAG_RE = re.compile(rf"^{_GGUF_QUANT_TAG_PATTERN}$", re.IGNORECASE)
 _GGUF_QUANT_SUFFIX_RE = re.compile(rf"[-_.]{_GGUF_QUANT_TAG_PATTERN}$", re.IGNORECASE)
+_FULL_PRECISION_GGUF_TAGS = frozenset({"bf16", "f16", "f32", "fp16"})
+
+
+def _dflash_is_full_precision(drafter_basename: str) -> bool:
+    """Whether the DFlash drafter's final quant tag is full precision."""
+    name = drafter_basename.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    stem = name[: -len(".gguf")] if name.endswith(".gguf") else name
+    if not _DFLASH_DRAFTER_RE.search(stem):
+        return False
+    match = _GGUF_QUANT_SUFFIX_RE.search(stem)
+    return bool(match and match.group(0).lstrip("-_.") in _FULL_PRECISION_GGUF_TAGS)
 
 
 def _dflash_pairs_weight(drafter_basename: str, weight_basename: Optional[str]) -> bool:

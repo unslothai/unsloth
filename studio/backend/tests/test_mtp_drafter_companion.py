@@ -177,19 +177,18 @@ def test_variant_plans_skip_dflash_for_vision_repos():
     assert plan.mmproj_filenames == frozenset({"mmproj-F16.gguf"})
 
 
-def test_variant_plans_prefer_quant_over_fp16_dflash():
-    # fp16 is full precision even though extract_quant_label doesn't tag it, so
-    # the quantized drafter must still win the download pick.
+def test_variant_plans_prefer_drafter_quant_when_target_is_f16():
+    # The target's F16 tag must not make the q8 drafter look full precision.
     plans = build_gguf_variant_plans(
         [
-            _sib("Qwen3-4B-Q4_K_M.gguf", 4_000, "main-q4"),
-            _sib("Qwen3-4B-DFlash-fp16.gguf", 1_200, "dflash-fp16"),
-            _sib("Qwen3-4B-DFlash-q8_0.gguf", 575, "dflash-q8"),
+            _sib("Qwen3-4B-F16.gguf", 4_000, "main-f16"),
+            _sib("Qwen3-4B-F16-DFlash-f16.gguf", 1_200, "dflash-f16"),
+            _sib("Qwen3-4B-F16-DFlash-q8_0.gguf", 575, "dflash-q8"),
         ]
     )
-    plan = plans["q4_k_m"]
-    assert "Qwen3-4B-DFlash-q8_0.gguf" in plan.target_filenames
-    assert "Qwen3-4B-DFlash-fp16.gguf" not in plan.target_filenames
+    plan = plans["f16"]
+    assert "Qwen3-4B-F16-DFlash-q8_0.gguf" in plan.target_filenames
+    assert "Qwen3-4B-F16-DFlash-f16.gguf" not in plan.target_filenames
 
 
 def test_variant_plans_skip_foreign_dflash():

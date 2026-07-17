@@ -4946,7 +4946,7 @@ class LlamaCppBackend:
         weight_name: Optional[str] = None,
     ) -> Optional[str]:
         """Download the preferred DFlash drafter paired with ``weight_name``."""
-        from utils.models.model_config import _dflash_pairs_weight
+        from utils.models.model_config import _dflash_is_full_precision, _dflash_pairs_weight
 
         self._dflash_retry_needed = False
 
@@ -4962,7 +4962,7 @@ class LlamaCppBackend:
             return sorted(
                 dflash_files,
                 key = lambda f: (
-                    any(t in Path(f).name.lower() for t in ("bf16", "f16", "f32", "fp16")),
+                    _dflash_is_full_precision(Path(f).name),
                     f,
                 ),
             )[0]
