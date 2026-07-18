@@ -18,7 +18,6 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { StudioDictationAdapter } from "@/features/chat/adapters/studio-dictation-adapter";
 import {
   StudioModelDictationAdapter,
   type SttDownloadStatus,
@@ -34,7 +33,6 @@ import {
   curateSystemVoices,
   generateStudioTtsAudio,
 } from "@/features/chat/adapters/studio-speech-synthesis-adapter";
-import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { DownloadProgressBar } from "@/features/hub";
 import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import {
@@ -362,123 +360,6 @@ function useSystemVoices() {
   return voices;
 }
 
-/** Inline mic test: runs dictation on the selected engine and shows the text. */
-function DictationTest() {
-  const t = useT();
-  const [testing, setTesting] = useState(false);
-  const [transcript, setTranscript] = useState("");
-  const [interim, setInterim] = useState("");
-  const sessionRef = useRef<StudioDictationSession | null>(null);
-  // Set before the listen() call so a double click cannot start two sessions.
-  const startingRef = useRef(false);
-
-  const stop = useCallback(() => {
-    // onEnd resets state once the session (and any transcription) finishes.
-    void sessionRef.current?.stop();
-  }, []);
-
-  useEffect(
-    () => () => {
-      sessionRef.current?.cancel();
-      sessionRef.current = null;
-    },
-    [],
-  );
-
-  const start = useCallback(async () => {
-    if (startingRef.current || sessionRef.current) return;
-    if (!StudioDictationAdapter.isSupported()) return;
-    startingRef.current = true;
-    setTranscript("");
-    setInterim("");
-
-    let session: StudioDictationSession;
-    try {
-      // Routes to the browser or STT-model engine; the adapter applies the
-      // dictionary and saves the result to Recent dictations. A settings test
-      // belongs to no chat, so never link whichever chat is open behind it.
-      session = new StudioDictationAdapter({ chatId: null }).listen();
-    } catch {
-      startingRef.current = false;
-      toast.error(t("settings.voice.dictation.micOpenFailed"));
-      return;
-    }
-    sessionRef.current = session;
-    setTesting(true);
-    session.onSpeech((result) => {
-      const text = result.transcript?.trim() ?? "";
-      if (result.isFinal) {
-        setInterim("");
-        if (text) setTranscript((prev) => (prev ? `${prev} ${text}` : text));
-      } else {
-        setInterim(result.transcript ?? "");
-      }
-    });
-    session.onEnd?.(() => {
-      if (sessionRef.current === session) sessionRef.current = null;
-      setTesting(false);
-      setInterim("");
-    });
-    startingRef.current = false;
-  }, [t]);
-
-  const finishedTest = !testing && transcript;
-
-  return (
-    <div className="flex flex-col gap-2">
-      <SettingsRow
-        label={t("settings.voice.dictation.testLabel")}
-        description={t("settings.voice.dictation.testDescription")}
-      >
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            if (testing) {
-              stop();
-            } else {
-              void start();
-            }
-          }}
-        >
-          {testing ? (
-            <>
-              <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
-              {t("settings.voice.dictation.stopTest")}
-            </>
-          ) : (
-            <>
-              <MicIcon className="mr-1.5 size-3.5" />
-              {t("settings.voice.dictation.startTest")}
-            </>
-          )}
-        </Button>
-      </SettingsRow>
-      {(testing || transcript) && (
-        <div className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm">
-          {transcript || interim ? (
-            <>
-              <span className="text-foreground">{transcript}</span>
-              {interim ? (
-                <span className="text-muted-foreground"> {interim}</span>
-              ) : null}
-            </>
-          ) : (
-            <span className="text-muted-foreground">
-              {testing ? t("settings.voice.dictation.listening") : ""}
-            </span>
-          )}
-          {finishedTest ? (
-            <div className="mt-1 text-xs text-muted-foreground">
-              {t("settings.voice.dictation.testSaved")}
-            </div>
-          ) : null}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function VoiceTab() {
   const t = useT();
   const micDeviceId = useVoiceSettingsStore((s) => s.micDeviceId);
@@ -518,7 +399,6 @@ export function VoiceTab() {
     null,
   );
 
-  const dictationSupported = StudioDictationAdapter.isSupported();
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
   const systemTtsSupported =
@@ -1170,14 +1050,6 @@ export function VoiceTab() {
           </Select>
         </SettingsRow>
 
-        {dictationSupported ? (
-          <DictationTest />
-        ) : (
-          <SettingsRow
-            label={t("settings.voice.dictation.testLabel")}
-            description={t("settings.voice.dictation.notSupported")}
-          />
-        )}
         <SettingsRow
           label={t("settings.voice.dictionary.manageLabel")}
           description={t("settings.voice.dictionary.sectionDescription")}

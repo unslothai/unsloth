@@ -153,20 +153,11 @@ export const en = {
           "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
-        micOpenFailed:
-          "Could not open the selected microphone. Check permissions or pick another device.",
         systemDefault: "System default",
         savedMicDisconnected: "Saved microphone (not connected)",
         languageLabel: "Dictation language",
         languageDescription: "Language to recognize",
         languageAuto: "Auto (browser language)",
-        testLabel: "Test dictation",
-        testDescription: "Speak to check your mic and settings",
-        startTest: "Start test",
-        stopTest: "Stop test",
-        listening: "Listening…",
-        testSaved: "Saved to recent dictations",
-        notSupported: "Not supported in this browser",
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
