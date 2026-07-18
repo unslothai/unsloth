@@ -16,6 +16,8 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+$script:InstallExitCode = $null
+
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
@@ -91,7 +93,8 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
-        return $Code
+        $script:InstallExitCode = $Code
+        return
     }
 
     # ── Parse flags ──
@@ -1704,7 +1707,8 @@ exit 0
 
         if ($needsVenvFallback) {
             try { $VenvQuarantine = Move-StudioVenvToQuarantine $VenvStage } catch {
-                return (Exit-InstallFailure "Could not quarantine failed uv venv: $($_.Exception.Message)")
+                Write-Host "[WARN] Could not quarantine failed uv venv: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "       Leaving the failed stage behind and rebuilding in a fresh sibling path." -ForegroundColor Yellow
             }
             $VenvStage = New-StudioVenvSiblingPath "unsloth_studio.stage.fallback"
             $venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvStage }
@@ -2788,7 +2792,8 @@ exit 0
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
-        return 0
+        $script:InstallExitCode = 0
+        return
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
@@ -2859,14 +2864,16 @@ exit 0
         Write-Host ""
     }
 
-    return 0
+    $script:InstallExitCode = 0
+    return
 }
 
-$installExitCode = @(Install-UnslothStudio @args)
-$finalInstallExit = if ($installExitCode.Count -eq 0) {
+$script:InstallExitCode = $null
+Install-UnslothStudio @args
+$finalInstallExit = if ($null -eq $script:InstallExitCode) {
     0
 } else {
-    [int]$installExitCode[-1]
+    [int]$script:InstallExitCode
 }
 if ($PSCommandPath) {
     exit $finalInstallExit

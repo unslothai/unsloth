@@ -374,13 +374,30 @@ def test_install_ps1_rollback_marks_legacy_target_before_move():
 
 def test_install_ps1_entrypoint_returns_for_iex_and_exits_for_file():
     src = INSTALL_PS1.read_text()
-    tail = src[src.index("$installExitCode = @(Install-UnslothStudio @args)") :]
+    tail = src[src.index("$script:InstallExitCode = $null") :]
 
-    assert "$finalInstallExit = if ($installExitCode.Count -eq 0)" in tail
+    assert "Install-UnslothStudio @args" in tail
+    assert "$installExitCode = @(Install-UnslothStudio @args)" not in tail
+    assert "$finalInstallExit = if ($null -eq $script:InstallExitCode)" in tail
     assert "if ($PSCommandPath) {" in tail
     assert "exit $finalInstallExit" in tail
     assert "$global:LASTEXITCODE = $finalInstallExit" in tail
     assert "return $finalInstallExit" in tail
+
+
+def test_install_ps1_uv_fallback_keeps_rebuild_alive_when_quarantine_move_fails():
+    src = INSTALL_PS1.read_text()
+    block_start = src.index("if ($needsVenvFallback) {")
+    block_end = src.index("try { Publish-StudioVenvCandidate $VenvStage }", block_start)
+    block = src[block_start:block_end]
+
+    assert 'Write-Host "[WARN] Could not quarantine failed uv venv:' in block
+    assert 'Exit-InstallFailure "Could not quarantine failed uv venv:' not in block
+    assert (
+        block.index('Write-Host "[WARN] Could not quarantine failed uv venv:')
+        < block.index('$VenvStage = New-StudioVenvSiblingPath "unsloth_studio.stage.fallback"')
+        < block.index('$venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvStage }')
+    )
 
 
 def test_install_ps1_publish_and_migrations_use_exclusive_guarded_move():
