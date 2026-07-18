@@ -1962,11 +1962,17 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
         snapshots_dir = snapshots[0].parent
         try:
             commit = (snapshots_dir.parent / "refs" / "main").read_text(encoding = "utf-8").strip()
-            preferred = snapshots_dir / commit
-            if commit and preferred.is_dir():
-                return (preferred / "modules.json").is_file()
         except OSError:
-            pass  # no ref recorded: fall back to the newest-first scan
+            commit = ""  # no ref recorded: fall back to the newest-first scan
+        if commit:
+            # A ref is recorded, so it is authoritative. If its snapshot is not
+            # materialized (partial download / pruning) treat the repo as not
+            # cached (None) rather than scanning stale history -- the exact
+            # stale-cache class this helper avoids.
+            preferred = snapshots_dir / commit
+            if not preferred.is_dir():
+                return None
+            return (preferred / "modules.json").is_file()
         for snap in snapshots:
             try:
                 if (snap / "modules.json").is_file():
@@ -2016,8 +2022,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     if _env_offline():
         # Offline: the cache is the only source; anything not positively a
         # sentence-transformers model is treated as non-embedding rather than
-        # making a network call that cannot succeed.
-        _embedding_detection_cache[cache_key] = False
+        # making a network call that cannot succeed. Do NOT cache this negative:
+        # it is offline-conditional. A tag-only (feature-extraction) embedder can
+        # only be confirmed online, and the same (model_name, hf_token) key is
+        # reused for online lookups after the env var clears in this process.
         return False
 
     try:

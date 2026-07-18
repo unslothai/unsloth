@@ -134,6 +134,16 @@ def test_marker_missing_ref_falls_back_to_snapshot_scan(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/no-ref") is True
 
 
+def test_marker_ref_points_at_absent_snapshot_is_cache_miss(tmp_path, monkeypatch):
+    # refs/main names a commit whose snapshot dir is absent (partial download /
+    # pruning). The recorded ref is authoritative, so this is a cache miss
+    # (None) -- NOT a fall-through to a stale historical snapshot that has
+    # modules.json.
+    snaps = _repo(tmp_path, ("old", True), main_ref = "missing_commit")
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    assert mc._embedding_marker_in_hf_cache("org/partial") is None
+
+
 def test_marker_never_raises_when_cache_mutates(monkeypatch):
     # A snapshot vanishing mid-iteration (concurrent cached-model deletion)
     # must read as not-cached, not propagate a 500 out of the routes.
@@ -197,4 +207,27 @@ def test_online_uncached_still_uses_network(monkeypatch):
 
     _fake_hf_model_info(monkeypatch, _info)
     assert mc.is_embedding_model("org/gte-modernbert") is True
+    assert calls == ["org/gte-modernbert"]
+
+
+def test_offline_negative_is_not_cached_then_online_detects(monkeypatch):
+    # A tag-only embedder is not identifiable from modules.json. Offline returns
+    # False WITHOUT caching, so once the env var clears the online model_info
+    # lookup still runs and detects it -- the negative must not be sticky.
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(()))
+    calls = []
+
+    def _info(model_name, token = None):
+        calls.append(model_name)
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/gte-modernbert") is False
+    assert calls == []  # offline: no network
+    assert ("org/gte-modernbert", None) not in mc._embedding_detection_cache
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    assert mc.is_embedding_model("org/gte-modernbert") is True  # now detected online
     assert calls == ["org/gte-modernbert"]
