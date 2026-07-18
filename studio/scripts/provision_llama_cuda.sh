@@ -212,10 +212,16 @@ fi
 # Back up any existing (e.g. CPU-only) llama.cpp: restored on any failure exit,
 # dropped only once the fresh build yields a server -- never leave NO server.
 _LLAMA_BAK=""
+_FRESH_CLONE=0
 _restore_prev() {
     if [ -n "$_LLAMA_BAK" ] && [ -e "$_LLAMA_BAK" ]; then
         rm -rf "$LLAMA_DIR" 2>/dev/null
         mv "$_LLAMA_BAK" "$LLAMA_DIR" 2>/dev/null && log "restored previous llama.cpp install"
+    elif [ "$_FRESH_CLONE" = "1" ] && [ ! -x "$SERVER" ]; then
+        # We created this clone and produced no server. Leaving a markerless git
+        # tree under a custom STUDIO_HOME bricks reruns: setup.sh's ownership
+        # assert refuses the unmarked dir and aborts the whole install.
+        rm -rf "$LLAMA_DIR" 2>/dev/null
     fi
 }
 if [ ! -d "$LLAMA_DIR/.git" ]; then
@@ -231,6 +237,7 @@ if [ ! -d "$LLAMA_DIR/.git" ]; then
     if [ "$_clone_ok" -ne 1 ]; then
         git clone --depth 1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR" >/dev/null 2>&1 && _clone_ok=1
     fi
+    [ "$_clone_ok" -eq 1 ] && _FRESH_CLONE=1
     if [ "$_clone_ok" -ne 1 ]; then
         log "git clone failed"
         _restore_prev

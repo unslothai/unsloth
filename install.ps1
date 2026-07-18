@@ -2452,8 +2452,10 @@ exit 0
                     $_jobsLine = if ($env:UNSLOTH_LLAMA_BUILD_JOBS) { "export UNSLOTH_LLAMA_BUILD_JOBS=$($env:UNSLOTH_LLAMA_BUILD_JOBS)`n" } else { "" }
                     # Bridge UNSLOTH_LLAMA_TAG / UNSLOTH_LLAMA_PR pins into WSL, else the deferred build
                     # ignores them. sh-single-quoted since tags/PRs are simple tokens.
-                    $_tagLine = if ($env:UNSLOTH_LLAMA_TAG) { "export UNSLOTH_LLAMA_TAG='$($env:UNSLOTH_LLAMA_TAG)'`n" } else { "" }
-                    $_prLine = if ($env:UNSLOTH_LLAMA_PR) { "export UNSLOTH_LLAMA_PR='$($env:UNSLOTH_LLAMA_PR)'`n" } else { "" }
+                    # Same allow-lists as the other forwarded knobs: a quote in the
+                    # value would break out of the single-quoted export in the runner.
+                    $_tagLine = if ($env:UNSLOTH_LLAMA_TAG -and ($env:UNSLOTH_LLAMA_TAG -match '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) { "export UNSLOTH_LLAMA_TAG='$($env:UNSLOTH_LLAMA_TAG)'`n" } else { "" }
+                    $_prLine = if ($env:UNSLOTH_LLAMA_PR -and ($env:UNSLOTH_LLAMA_PR -match '^\d+$')) { "export UNSLOTH_LLAMA_PR='$($env:UNSLOTH_LLAMA_PR)'`n" } else { "" }
                     $_runner = "#!/usr/bin/env bash`n" + $_pathLine + $_jobsLine + $_tagLine + $_prLine + "exec bash /root/.unsloth/provision_llama_cuda.sh > /root/.unsloth/llama_cuda_build.log 2>&1`n"
                     $_runnerB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_runner))
                     $_fetchCmd = 'mkdir -p /root/.unsloth; if curl -fsSL "' + $_llamaUrl + '" -o /root/.unsloth/provision_llama_cuda.sh && [ -s /root/.unsloth/provision_llama_cuda.sh ]; then chmod +x /root/.unsloth/provision_llama_cuda.sh; echo ' + $_runnerB64 + ' | base64 -d > /root/.unsloth/run_llama_build.sh; chmod +x /root/.unsloth/run_llama_build.sh; echo PROV_FETCHED; else echo PROV_NOSCRIPT; fi'
@@ -2476,8 +2478,12 @@ exit 0
         }
         if ($torchOk) {
             # Success: the Windows venv is vestigial (everything runs in WSL), so drop the
-            # rolled-aside previous-venv backup instead of orphaning it.
-            Complete-StudioVenvRollback
+            # rolled-aside previous-venv backup instead of orphaning it. EXCEPT for a
+            # custom UNSLOTH_STUDIO_HOME: the installer told the user above that their
+            # custom root is not used by the WSL install, so deleting the venv that
+            # lived there would contradict that disclaimer -- put it back instead
+            # (the WSL shim does not depend on the Windows venv).
+            if ($envOverride) { Restore-StudioVenvRollback } else { Complete-StudioVenvRollback }
             substep "GPU training + GGUF export run inside WSL. (GGUF *inference* additionally needs a CUDA llama.cpp build.)" "Yellow"
             $global:LASTEXITCODE = 0
             return

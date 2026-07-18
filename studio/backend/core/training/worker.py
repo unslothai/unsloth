@@ -2876,7 +2876,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
                 _props = _torch_mem.cuda.get_device_properties(0)
-                _marker, _is_spark_uma = _nvidia_classify_spark_unified_memory(_props)
+                # Same UNSLOTH_FORCE_DGX_SPARK override the detectors honor, so a
+                # forced Spark with an unlisted name still gets the fraction guard
+                # and FORCE=0 can disable it on a token-matched device.
+                _force_spark = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+                if _force_spark == "1":
+                    _marker, _is_spark_uma = "forced", True
+                elif _force_spark == "0":
+                    _marker, _is_spark_uma = "forced-off", False
+                else:
+                    _marker, _is_spark_uma = _nvidia_classify_spark_unified_memory(_props)
                 if _is_spark_uma:
                     _mem_fraction = 0.80
                     _frac_env = os.environ.get("UNSLOTH_SPARK_MEM_FRACTION")

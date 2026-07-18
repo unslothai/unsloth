@@ -216,6 +216,20 @@ _remove_path "$HOME/.unsloth/studio"
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
+# Stop a detached CUDA llama.cpp build before deleting its tree: _pkill_studio
+# only matches Studio roots, and a live cmake/nvcc under ~/.unsloth/llama.cpp
+# would keep burning CPU/thermals, recreate build/ files, and defeat the
+# trailing rmdir. TERM first, then KILL after the same grace _pkill_studio uses.
+if command -v pkill >/dev/null 2>&1; then
+    _llama_re=$(_pkill_escape "$HOME/.unsloth/llama.cpp")
+    for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
+        pkill -TERM -f "$_pat" 2>/dev/null || true
+    done
+    sleep 0.5
+    for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
+        pkill -KILL -f "$_pat" 2>/dev/null || true
+    done
+fi
 # WoA/Spark CUDA-build path artifacts (provision script fetched by setup.sh,
 # install.ps1's background-build runner + log, and the persisted shortcut-skip
 # marker). No-ops when absent.

@@ -2021,6 +2021,7 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && command -v nvidia-smi >/dev/null 2>&1 \
         && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && [ "${_setup_nvidia_usable:-}" = true ] \
+        && [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ] \
         && ! _have_cuda_llama_server; then
     # Under WSL this runs ONLY for a DIRECT `install.sh` run: install.ps1 sets
     # UNSLOTH_WSL_LLAMA_DEFERRED=1 and builds in the background; a direct run has
