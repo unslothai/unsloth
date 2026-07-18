@@ -532,9 +532,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "dir": str(tmp_path),
         "slots": [{"id": 0, "filename": saved.name}],
     }
-    monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True)
-    )
+    monkeypatch.setattr(settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True))
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
     payload = settings_route.OpenAIAutoSwitchPayload(enabled = False)
