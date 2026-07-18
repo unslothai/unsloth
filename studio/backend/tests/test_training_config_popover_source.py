@@ -41,27 +41,17 @@ def test_live_view_fetches_the_active_run_config():
     assert "configOverride={runConfigOverride}" in src
 
 
-def test_live_view_fetches_once_the_run_row_exists():
-    # The run row is created on the first progress event OR (for a zero-step
-    # failure/completion) the terminal event. Gating the fetch on both -- not
-    # firstStepReceived alone, which is set only when step > 0 -- keeps the
-    # popover from being stuck on the form store after a pre-step termination.
+def test_live_view_fetches_as_soon_as_the_job_id_exists():
+    # start_training() inserts the run row BEFORE the pump consumes any event, so
+    # the saved config is available during configuring/loading/downloading. The
+    # job id is therefore the whole readiness condition: gating on a first step
+    # or a terminal phase would show the wrong config for the entire pre-step
+    # window of a long load, or for a run adopted from another client.
     src = _read("live-training-view.tsx")
-    assert "const runRowReady =" in src
-    assert 'runtime.phase === "completed"' in src
-    assert 'runtime.phase === "error"' in src
-    assert 'runtime.phase === "stopped"' in src
-    assert "!(runtime.jobId && runRowReady)" in src
-    assert "[runtime.jobId, runRowReady, fetchedRunConfig, fetchAttempt]" in src
-
-
-def test_live_view_treats_a_hydrated_step_as_row_ready():
-    # A run recovered through status/metrics polling (SSE unavailable/blocked)
-    # gets currentStep restored by applyStatus/applyMetrics, but NOT
-    # firstStepReceived. Without currentStep as its own readiness signal the
-    # saved config would never be fetched for the rest of that active run.
-    src = _read("live-training-view.tsx")
-    assert "runtime.currentStep > 0" in src
+    assert "if (!runtime.jobId) {" in src
+    assert "[runtime.jobId, fetchedRunConfig, fetchAttempt]" in src
+    # No step/phase readiness gate may creep back in.
+    assert "runRowReady" not in src
 
 
 def test_live_view_retries_the_transient_row_miss():

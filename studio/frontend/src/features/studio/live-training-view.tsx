@@ -19,9 +19,9 @@ import {
 } from "./sections/run-config-override";
 import { TrainingStartOverlay } from "./training-start-overlay";
 
-/** Retry budget for the run-config lookup. The run row is inserted just after
- * the progress event that reveals the run, so the first fetch can lose that
- * race; a few short retries cover the insert without polling a missing row. */
+/** Retry budget for the run-config lookup. The row is inserted at
+ * start_training(), but a lookup issued in the same instant can still miss it;
+ * a few short retries cover that without polling a genuinely absent row. */
 const RUN_CONFIG_FETCH_RETRIES = 5;
 const RUN_CONFIG_FETCH_RETRY_MS = 1000;
 
@@ -78,25 +78,17 @@ export function LiveTrainingView(): ReactElement {
 
   // The Training Config popover must show the ACTIVE run's saved config, not
   // the editable form store, which the user may have changed since starting
-  // the run (#6853). The backend creates the run record (with its config
-  // snapshot) on the first progress event, and -- for a run that fails or
-  // completes before step 1 -- from the terminal error/complete event. Fetch
-  // only once one of those has happened: this avoids 404s during preparation
-  // and still covers a zero-step termination, which firstStepReceived alone
-  // (set only when step > 0) would miss. Until it loads (or if the fetch fails)
-  // ProgressSection falls back to the form store. The fetched config is keyed by
-  // job id and filtered at render time, so no synchronous reset is needed.
-  // currentStep > 0 is a readiness signal in its own right: when an active run
-  // is recovered through status/metrics polling (SSE unavailable or blocked),
-  // applyStatus/applyMetrics restore currentStep but never set
-  // firstStepReceived, so keying only off that flag would never fetch the saved
-  // config for the rest of the run even though the row exists.
-  const runRowReady =
-    runtime.firstStepReceived ||
-    runtime.currentStep > 0 ||
-    runtime.phase === "completed" ||
-    runtime.phase === "error" ||
-    runtime.phase === "stopped";
+  // the run (#6853). start_training() inserts the run row (with its config
+  // snapshot) BEFORE the pump can consume any event, precisely so it exists
+  // during model loading, and /status exposes the job id throughout those
+  // pre-step phases. So the job id alone is the readiness signal: gating on a
+  // first step or a terminal phase instead would leave a long
+  // configuring/loading/downloading run -- or one adopted from another client --
+  // showing the wrong config for minutes. The bounded retry below covers the
+  // narrow window where the row is not committed yet. Until it loads (or if the
+  // fetch fails) ProgressSection falls back to the form store. The fetched
+  // config is keyed by job id and filtered at render time, so no synchronous
+  // reset is needed.
   const [fetchedRunConfig, setFetchedRunConfig] = useState<{
     jobId: string;
     override: RunConfigOverride | undefined;
@@ -108,7 +100,7 @@ export function LiveTrainingView(): ReactElement {
     count: number;
   } | null>(null);
   useEffect(() => {
-    if (!(runtime.jobId && runRowReady)) {
+    if (!runtime.jobId) {
       return;
     }
     const jobId = runtime.jobId;
@@ -126,8 +118,8 @@ export function LiveTrainingView(): ReactElement {
         });
       })
       .catch(() => {
-        // The backend publishes the progress event before create_run commits,
-        // so the row can still be missing here and this 404 is transient.
+        // The row is inserted at start_training(), but a lookup issued in
+        // the same instant can still miss it, so this 404 is transient.
         // Nothing else in the deps changes on failure, so without an explicit
         // retry the effect would never run again for this job. Bounded, so a
         // genuinely absent row cannot poll forever -- the form-store fallback
@@ -145,7 +137,7 @@ export function LiveTrainingView(): ReactElement {
         clearTimeout(retryTimer);
       }
     };
-  }, [runtime.jobId, runRowReady, fetchedRunConfig, fetchAttempt]);
+  }, [runtime.jobId, fetchedRunConfig, fetchAttempt]);
   const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
 
   const activeProjectName =
