@@ -148,9 +148,9 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
     persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
-    assert persisted == backend, (
-        f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
-    )
+    assert (
+        persisted == backend
+    ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
 # ---------------------------------------------------------------------------
