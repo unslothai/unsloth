@@ -992,7 +992,7 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000,
 }
 
 
@@ -2026,8 +2026,14 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
         snapshots_dir = snapshots[0].parent
         try:
             commit = (snapshots_dir.parent / "refs" / "main").read_text(encoding = "utf-8").strip()
-        except OSError:
+        except FileNotFoundError:
             commit = ""  # no ref recorded: fall back to the newest-first scan
+        except OSError:
+            # A ref exists but is unreadable (transient I/O error, restrictive
+            # permissions): the contract is that an unreadable cache reads as
+            # not-cached, so report a miss rather than scanning stale history --
+            # only a genuinely missing ref may enable the fallback scan.
+            return None
         if commit:
             # A ref is recorded, so it is authoritative. If its snapshot is not
             # materialized (partial download / pruning) treat the repo as not
@@ -2063,35 +2069,35 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         True if embedding model, else False (default for local paths or errors).
     """
     cache_key = (model_name, hf_token)
-    if cache_key in _embedding_detection_cache:
-        return _embedding_detection_cache[cache_key]
 
-    # Local paths: check for sentence-transformer marker (modules.json)
+    # Local paths: check for sentence-transformer marker (modules.json). This is
+    # authoritative for an explicit path, so memoize it.
     if is_local_path(model_name):
+        if cache_key in _embedding_detection_cache:
+            return _embedding_detection_cache[cache_key]
         local_dir = normalize_path(model_name)
         is_emb = os.path.isfile(os.path.join(local_dir, "modules.json"))
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
 
-    # Prefer the local HF cache: a sentence-transformers repo carries
-    # modules.json in its snapshot, so an already-downloaded model needs no
-    # network call. This also lets an offline / HF_HUB_OFFLINE session classify a
-    # cached model instead of hanging on a model_info() request that fails with a
-    # DNS error and only ever gets retried (#6817).
-    cache_hit = _embedding_marker_in_hf_cache(model_name)
-    if cache_hit is True:
-        _embedding_detection_cache[cache_key] = True
-        logger.info(f"Model {model_name} detected as embedding model via HF cache (modules.json)")
-        return True
     if _env_offline():
-        # Offline: the cache is the only source; anything not positively a
-        # sentence-transformers model is treated as non-embedding rather than
-        # making a network call that cannot succeed. Do NOT cache this negative:
-        # it is offline-conditional. A tag-only (feature-extraction) embedder can
-        # only be confirmed online, and the same (model_name, hf_token) key is
-        # reused for online lookups after the env var clears in this process.
-        return False
+        # Offline: the local HF cache is the only source -- a network call cannot
+        # succeed and would only hang on a DNS error and get retried (#6817).
+        # Re-probe the marker on every call and never consult or populate the
+        # memo: a model downloaded later in this session must be seen, and a miss
+        # is not a durable negative (a tag-only feature-extraction embedder can
+        # only be confirmed online, and the same key is reused once the env var
+        # clears in this process).
+        return _embedding_marker_in_hf_cache(model_name) is True
 
+    # Online: the Hub is authoritative for the current remote revision. The local
+    # cache marker reflects only the last-downloaded revision, which may lag the
+    # Hub (a repo can add or drop modules.json), so model_info() decides and the
+    # marker is used solely as a fallback when the Hub is unreachable. Only
+    # Hub-derived results are memoized, so a transient failure never poisons the
+    # cache and a later fresh download or successful lookup can override it.
+    if cache_key in _embedding_detection_cache:
+        return _embedding_detection_cache[cache_key]
     try:
         from huggingface_hub import model_info as hf_model_info
 
@@ -2116,8 +2122,16 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
+        # Hub unreachable: fall back to the local marker, uncached -- it is a
+        # degraded signal a later successful Hub call must be able to override.
+        marker = _embedding_marker_in_hf_cache(model_name)
+        if marker is True:
+            logger.info(
+                f"Model {model_name} detected as embedding model via HF cache "
+                f"(modules.json) after Hub lookup failed: {e}"
+            )
+            return True
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
-        _embedding_detection_cache[cache_key] = False
         return False
 
 

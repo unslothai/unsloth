@@ -144,6 +144,21 @@ def test_marker_ref_points_at_absent_snapshot_is_cache_miss(tmp_path, monkeypatc
     assert mc._embedding_marker_in_hf_cache("org/partial") is None
 
 
+def test_marker_unreadable_ref_is_cache_miss(tmp_path, monkeypatch):
+    # refs/main exists but cannot be read (transient I/O error / restrictive
+    # permissions). Only a genuinely MISSING ref may enable the historical scan;
+    # an unreadable ref is a cache miss (None), never a fall-through to a stale
+    # snapshot that happens to carry modules.json.
+    snaps = _repo(tmp_path, ("old", True))
+    # Make refs/main a directory so read_text() raises IsADirectoryError -- an
+    # OSError that is NOT FileNotFoundError, i.e. "exists but unreadable".
+    refs_main = snaps[0].parent.parent / "refs" / "main"
+    refs_main.parent.mkdir(parents = True, exist_ok = True)
+    refs_main.mkdir()
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    assert mc._embedding_marker_in_hf_cache("org/unreadable-ref") is None
+
+
 def test_marker_never_raises_when_cache_mutates(monkeypatch):
     # A snapshot vanishing mid-iteration (concurrent cached-model deletion)
     # must read as not-cached, not propagate a 500 out of the routes.
@@ -173,11 +188,65 @@ def test_is_embedding_model_survives_cache_race_online(monkeypatch):
 # ── is_embedding_model ──
 
 
-def test_cached_sentence_transformer_skips_network(tmp_path, monkeypatch):
+def test_offline_cached_st_detected_via_marker_no_network(tmp_path, monkeypatch):
+    # Offline: a downloaded sentence-transformers repo is classified from its
+    # modules.json marker with no model_info() network call that would hang on
+    # DNS retries (#6817).
     snaps = _repo(tmp_path, ("aaa", True))
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     _fake_hf_model_info(monkeypatch, _no_network)
     assert mc.is_embedding_model("unsloth/bge-small-en-v1.5") is True
+
+
+def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
+    # Online: the Hub is authoritative for the current revision. Even with a
+    # cached modules.json (the repo WAS an embedder), a Hub lookup that no longer
+    # reports embedding signals wins -- the stale local marker must not
+    # short-circuit model_info().
+    snaps = _repo(tmp_path, ("aaa", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    calls = []
+
+    def _info(model_name, token = None):
+        calls.append(model_name)
+        return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/was-embedder") is False
+    assert calls == ["org/was-embedder"]  # Hub consulted, not skipped
+
+
+def test_online_hub_failure_falls_back_to_marker_uncached(tmp_path, monkeypatch):
+    # A transient model_info() failure falls back to the local marker WITHOUT
+    # caching: the degraded result must not become sticky, so a later successful
+    # Hub lookup can still override it.
+    snaps = _repo(tmp_path, ("aaa", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    _fake_hf_model_info(monkeypatch, _no_network)  # raises -> Hub "unreachable"
+    assert mc.is_embedding_model("org/emb") is True  # marker fallback
+    assert ("org/emb", None) not in mc._embedding_detection_cache  # not poisoned
+
+
+def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeypatch):
+    # An online Hub lookup authoritatively reports non-embedding and is memoized.
+    # The repo is then downloaded WITH modules.json and the session goes offline;
+    # the offline path re-probes the marker (never consulting the online memo),
+    # so the freshly downloaded embedder is detected instead of the stale False.
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(()))
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["text-generation"], pipeline_tag = "text-generation")
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/late-embedder") is False  # online: Hub says no
+    assert mc._embedding_detection_cache[("org/late-embedder", None)] is False
+
+    # Now the model is downloaded (marker appears) and the session goes offline.
+    snaps = _repo(tmp_path, ("aaa", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert mc.is_embedding_model("org/late-embedder") is True  # marker re-probed
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):
