@@ -1144,6 +1144,87 @@ def test_create_without_assistant_id_does_not_eagerly_create_message(research_ho
     assert studio_db.list_chat_messages("thread-1") == before
 
 
+@pytest.mark.parametrize(
+    ("content", "attachments"),
+    [
+        ([{"type": "text", "text": "   \n\t"}], None),
+        (
+            [{"type": "file", "filename": "notes.pdf"}],
+            [{"name": "notes.pdf", "contentType": "application/pdf"}],
+        ),
+    ],
+)
+def test_route_rejects_textless_research_before_claim(research_home, content, attachments):
+    from fastapi import HTTPException
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "role": "user",
+            "content": content,
+            "attachments": attachments,
+            "createdAt": 2,
+        }
+    )
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    with pytest.raises(HTTPException, match = "non-empty text") as caught:
+        asyncio.run(
+            create_research_run(
+                CreateResearchRun(
+                    threadId = "thread-1",
+                    userMessageId = "user-1",
+                    inferenceRequest = {"model": "local-model"},
+                ),
+                request,
+                current_subject = "alice",
+            )
+        )
+
+    assert caught.value.status_code == 400
+    assert research_db.has_thread_claim("thread-1") is False
+    assert research_db.get_run("run-1") is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        ["Research this question"],
+        [{"text": "Research this question"}],
+    ],
+)
+def test_route_accepts_canonical_text_content_shapes(research_home, content):
+    from core import research_runs as worker
+    from routes.research_runs import CreateResearchRun, create_research_run
+
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "role": "user",
+            "content": content,
+            "createdAt": 2,
+        }
+    )
+    run = asyncio.run(
+        create_research_run(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-1",
+                inferenceRequest = {"model": "local-model"},
+            ),
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+            current_subject = "alice",
+        )
+    )
+
+    assert run["status"] == "planning"
+    assert research_db.has_thread_claim("thread-1") is True
+    assert worker._extract_text({"content": content}) == "Research this question"
+
+
 def test_route_rejects_overlapping_active_run_for_thread(research_home):
     from fastapi import HTTPException
     from routes.research_runs import CreateResearchRun, create_research_run

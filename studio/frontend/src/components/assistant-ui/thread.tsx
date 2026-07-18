@@ -3614,20 +3614,23 @@ const ComposerRightControls: FC<{
 };
 
 const MessageError: FC = () => {
+  const research = useResearchMessageState();
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
         {/* Recovery path for interrupted/failed turns: regenerate in place. */}
-        <ActionBarPrimitive.Reload asChild={true}>
-          <button
-            type="button"
-            className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
-          >
-            <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
-            Retry
-          </button>
-        </ActionBarPrimitive.Reload>
+        {!research.runId && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <button
+              type="button"
+              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+            >
+              <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+              Retry
+            </button>
+          </ActionBarPrimitive.Reload>
+        )}
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );
@@ -3975,10 +3978,50 @@ const ForkMessageButton: FC = () => {
   );
 };
 
+const TERMINAL_RESEARCH_MESSAGE_STATUSES = new Set([
+  "cancelled",
+  "completed",
+  "failed",
+]);
+
+const useResearchMessageState = () => {
+  const metadata = useAuiState(({ message }) =>
+    (
+      message.metadata as
+        | {
+            custom?: {
+              researchRunId?: unknown;
+              researchStatus?: unknown;
+              researchRun?: { id?: unknown; status?: unknown };
+            };
+          }
+        | undefined
+    )?.custom,
+  );
+  const metadataRunId = metadata?.researchRunId ?? metadata?.researchRun?.id;
+  const runId = typeof metadataRunId === "string" ? metadataRunId : null;
+  const followedStatus = useResearchRunStore((state) =>
+    runId ? state.sessions[runId]?.run.status : undefined,
+  );
+  const metadataStatus = metadata?.researchStatus ?? metadata?.researchRun?.status;
+  return {
+    runId,
+    status:
+      followedStatus ??
+      (typeof metadataStatus === "string" ? metadataStatus : null),
+  };
+};
+
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const research = useResearchMessageState();
+  const isActiveResearchMessage = Boolean(
+    research.runId &&
+      (!research.status ||
+        !TERMINAL_RESEARCH_MESSAGE_STATUSES.has(research.status)),
+  );
 
   const handleDelete = async () => {
     const thread = aui.thread();
@@ -4022,6 +4065,10 @@ const DeleteMessageButton: FC = () => {
       toast.error("Failed to delete message");
     }
   };
+
+  if (isActiveResearchMessage) {
+    return null;
+  }
 
   return (
     <TooltipIconButton
@@ -4071,18 +4118,11 @@ const CopyButton: FC = () => {
 
 const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
-  const isResearchMessage = useAuiState(({ message }) => {
-    const custom = (
-      message.metadata as
-        | { custom?: { researchRunId?: unknown } }
-        | undefined
-    )?.custom;
-    return typeof custom?.researchRunId === "string";
-  });
+  const research = useResearchMessageState();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
 
-  if (isResearchMessage) return null;
+  if (research.runId) return null;
 
   return (
     <TooltipIconButton
@@ -4101,6 +4141,7 @@ const EditAssistantMessageButton: FC = () => {
 
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  const research = useResearchMessageState();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -4115,11 +4156,13 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         <EditAssistantMessageButton />
-        <ActionBarPrimitive.Reload asChild={true}>
-          <TooltipIconButton tooltip="Refresh">
-            <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
-          </TooltipIconButton>
-        </ActionBarPrimitive.Reload>
+        {!research.runId && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         <ForkCountBadge />
         <DeleteMessageButton />
         {ttsEnabled && (

@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from auth import storage as auth_storage
+from core.inference.message_content import content_to_text
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import RAG_SOURCES_SENTINEL, execute_tool
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
@@ -151,16 +152,7 @@ def _safe_error(exc: BaseException) -> str:
 
 
 def _extract_text(message: dict) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        ).strip()
-    return ""
+    return content_to_text(message.get("content")).strip()
 
 
 def _research_question_context(thread_id: str, user_message_id: str) -> tuple[str, str]:
