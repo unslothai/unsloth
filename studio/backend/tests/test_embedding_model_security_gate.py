@@ -43,7 +43,9 @@ def client(monkeypatch):
     # offline and deterministic for the endpoint tests that use this fixture.
     import core.rag.embeddings as embeddings
 
-    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
+    monkeypatch.setattr(
+        embeddings, "_st_module_subdirs", lambda name, token = None, local_only = False: ()
+    )
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -144,7 +146,9 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     # though the auto resolver would still say sentence-transformers.
     monkeypatch.setattr(embeddings, "_backend", LlamaServerBackend())
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
-    monkeypatch.setattr(embeddings, "_st_module_subdirs", lambda name, token = None: ())
+    monkeypatch.setattr(
+        embeddings, "_st_module_subdirs", lambda name, token = None, local_only = False: ()
+    )
 
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
@@ -227,7 +231,9 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(
-        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
+        embeddings,
+        "_st_module_subdirs",
+        lambda name, token = None, local_only = False: ("0_Transformer",),
     )
     seen = {}
 
@@ -265,9 +271,9 @@ def test_custom_model_saved_in_cache_casing(client, monkeypatch):
     # BAAI/bge-m3). force=True bypasses the verification gate to isolate this.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    import utils.paths as _paths
+    import utils.models as _models
 
-    monkeypatch.setattr(_paths, "resolve_cached_repo_id_case", lambda m: "BAAI/bge-m3")
+    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", lambda m: "BAAI/bge-m3")
     r = c.put("/embedding-model", json = {"embedding_model": "baai/bge-m3", "force": True})
     assert r.status_code == 200
     assert saved.get("model") == "BAAI/bge-m3"
@@ -279,12 +285,12 @@ def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path
     # directory and be read as a Hub repo id, so normalization must be skipped.
     c, saved = client
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
-    import utils.paths as _paths
+    import utils.models as _models
 
     def _must_not_run(m):
         raise AssertionError("a local path must not be casing-normalized")
 
-    monkeypatch.setattr(_paths, "resolve_cached_repo_id_case", _must_not_run)
+    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
     local_dir = tmp_path / "org" / "model"
     local_dir.mkdir(parents = True)
     r = c.put("/embedding-model", json = {"embedding_model": str(local_dir), "force": True})
@@ -292,18 +298,49 @@ def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path
     assert saved.get("model") == str(local_dir)
 
 
+def test_llama_backend_model_is_not_casing_normalized(monkeypatch):
+    # On the llama-server backend nothing loads through SentenceTransformer: the
+    # embedder derives a GGUF companion from this saved spelling via
+    # effective_gguf_repo() and fetches it with hf_hub_download, i.e. from the HUB
+    # cache. Rewriting to an ST_HOME spelling would point it at a GGUF repo that
+    # _hf_gguf_backend_error() never validated and that may be absent offline.
+    saved: dict = {}
+    monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
+    monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
+    monkeypatch.setattr(settings, "set_rag_embedding_model", lambda v: saved.setdefault("model", v))
+    monkeypatch.setattr(settings, "_llama_backend_active", lambda: True)
+    monkeypatch.setattr(settings, "_resolves_as_local_gguf", lambda m: False)
+    monkeypatch.setattr(settings, "get_rag_embedding_model", lambda: saved.get("model", ""))
+    monkeypatch.setattr(settings, "get_stored_embedding_model", lambda: saved.get("model"))
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    import utils.models as _models
+
+    def _must_not_run(m):
+        raise AssertionError("the llama backend must not be ST-casing-normalized")
+
+    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
+
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    c = TestClient(app, raise_server_exceptions = False)
+    r = c.put("/embedding-model", json = {"embedding_model": "baai/bge-m3", "force": True})
+    assert r.status_code == 200
+    assert saved.get("model") == "baai/bge-m3"  # the spelling the GGUF check validated
+
+
 def test_default_model_is_not_casing_normalized(client, monkeypatch):
     # Submitting the exact default must NOT be run through cache-casing
     # normalization: rewriting it would make set_rag_embedding_model()'s exact
     # default comparison treat it as a custom override, so later default changes
-    # would stop applying. resolve_cached_repo_id_case must not be consulted.
+    # would stop applying. resolve_st_cached_repo_id_case must not be consulted.
     c, saved = client
-    import utils.paths as _paths
+    import utils.models as _models
 
     def _must_not_run(m):
         raise AssertionError("the default must not be casing-normalized")
 
-    monkeypatch.setattr(_paths, "resolve_cached_repo_id_case", _must_not_run)
+    monkeypatch.setattr(_models, "resolve_st_cached_repo_id_case", _must_not_run)
     r = c.put("/embedding-model", json = {"embedding_model": "unsloth/default-embed"})
     assert r.status_code == 200
     assert saved.get("model") == "unsloth/default-embed"
@@ -313,13 +350,13 @@ def test_load_sink_refuses_flagged_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     import core.rag.embeddings as embeddings
     with pytest.raises(embeddings.UnsafeEmbeddingModelError):
-        embeddings._guard_model_security("attacker/malicious-embed")
+        embeddings._guard_model_security("attacker/malicious-embed", False)
 
 
 def test_load_sink_allows_clean_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
     import core.rag.embeddings as embeddings
-    embeddings._guard_model_security("acme/clean-embed")  # no raise
+    embeddings._guard_model_security("acme/clean-embed", False)  # no raise
 
 
 def test_sink_threads_ambient_token_into_scan(monkeypatch):
@@ -327,17 +364,17 @@ def test_sink_threads_ambient_token_into_scan(monkeypatch):
     # loader's own token to the scan, or it fails open for the repo that still loads.
     seen = {}
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = (
-        lambda name, token = None: seen.setdefault("subdirs_token", token) or ()
+    mod.security_load_subdirs = lambda name, token = None: (
+        seen.setdefault("subdirs_token", token) or ()
     )
-    mod.evaluate_file_security = lambda *a, **k: seen.setdefault(
-        "scan_token", k.get("hf_token")
-    ) or _Decision(False)
+    mod.evaluate_file_security = lambda *a, **k: (
+        seen.setdefault("scan_token", k.get("hf_token")) or _Decision(False)
+    )
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: "hf_ambient")
-    embeddings._guard_model_security("acme/gated-embed")
+    embeddings._guard_model_security("acme/gated-embed", False)
     assert seen["scan_token"] == "hf_ambient"
     assert seen["subdirs_token"] == "hf_ambient"
 
@@ -353,16 +390,18 @@ def test_sink_scopes_st_module_subdirs_into_scan(monkeypatch):
         return _Decision(False)
 
     mod = _types.ModuleType("utils.security")
-    mod.security_load_subdirs = lambda name, token = None: ()
+    mod.security_load_subdirs = lambda name, token = None, local_only = False: ()
     mod.evaluate_file_security = _capture
     monkeypatch.setitem(sys.modules, "utils.security", mod)
     import core.rag.embeddings as embeddings
 
     monkeypatch.setattr(embeddings, "_ambient_hf_token", lambda: None)
     monkeypatch.setattr(
-        embeddings, "_st_module_subdirs", lambda name, token = None: ("0_Transformer",)
+        embeddings,
+        "_st_module_subdirs",
+        lambda name, token = None, local_only = False: ("0_Transformer",),
     )
-    embeddings._guard_model_security("acme/embed-with-module-dir")
+    embeddings._guard_model_security("acme/embed-with-module-dir", False)
     assert "0_Transformer" in seen["subdirs"]
 
 
@@ -381,7 +420,7 @@ def test_st_module_subdirs_reads_local_modules_json(tmp_path, monkeypatch):
             ]
         )
     )
-    subdirs = embeddings._st_module_subdirs(str(tmp_path), None)
+    subdirs = embeddings._st_module_subdirs(str(tmp_path), None, False)
     assert subdirs == ("0_Transformer", "1_Pooling")
 
 
@@ -395,7 +434,7 @@ def test_st_module_subdirs_swallows_errors(monkeypatch):
         raise RuntimeError("offline")
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _boom)
-    assert embeddings._st_module_subdirs("acme/no-such-repo-xyz", None) == ()
+    assert embeddings._st_module_subdirs("acme/no-such-repo-xyz", None, False) == ()
 
 
 def test_security_block_is_not_swallowed_by_llama_fallback(monkeypatch):

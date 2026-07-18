@@ -80,12 +80,20 @@ def _ambient_hf_token() -> str | None:
         return None
 
 
-def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
+def _st_module_subdirs(name: str, token: str | None, local_only: bool) -> tuple[str, ...]:
     """The module directories a SentenceTransformer load reads weights from, taken from
     the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
     ST deserializes ``pytorch_model.bin`` from these dirs, so they are load roots for the
     security scan: a flagged pickle directly under one must block. Returns () on any
     failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
+
+    ``local_only`` MUST be the value the caller captured for the load, not a fresh
+    read of the environment. ``_hf_offline_if_dns_dead()`` flips the process-wide
+    offline vars and restores them, so re-reading here could force this probe
+    local-only, return () because modules.json is not cached, and leave the scan
+    with NO module load roots -- a flagged pickle under ``0_Transformer/`` would
+    then pass as an unreferenced nested artifact while the loader, using the
+    captured predicate, still fetched and deserialized it.
     """
     try:
         import json
@@ -103,18 +111,18 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         else:
             from huggingface_hub import hf_hub_download
             from huggingface_hub.utils import EntryNotFoundError
-            from utils.utils import hf_env_offline
 
             try:
-                # local_files_only when offline: huggingface_hub honors only
-                # HF_HUB_OFFLINE natively, so a TRANSFORMERS_OFFLINE-only session
-                # would otherwise block on network timeouts here even though the
-                # cached snapshot already has modules.json.
+                # local_files_only from the CAPTURED predicate: huggingface_hub
+                # honors only HF_HUB_OFFLINE natively, so an offline session would
+                # otherwise block on network timeouts here even though the cached
+                # snapshot already has modules.json -- but it must be the same
+                # value the load uses, never a fresh env read (see the docstring).
                 local = hf_hub_download(
                     name,
                     "modules.json",
                     token = token or None,
-                    local_files_only = hf_env_offline(),
+                    local_files_only = local_only,
                 )
             except EntryNotFoundError:
                 return ()
@@ -151,7 +159,12 @@ def _guard_model_security(name: str, local_only_load: bool) -> None:
         # directly under a Transformer module dir (0_Transformer/) blocks instead of
         # passing as an unreferenced nested shard.
         load_subdirs = tuple(
-            dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
+            dict.fromkeys(
+                (
+                    *security_load_subdirs(name, token),
+                    *_st_module_subdirs(name, token, local_only_load),
+                )
+            )
         )
         blocked = evaluate_file_security(
             name,

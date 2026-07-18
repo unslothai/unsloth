@@ -413,6 +413,14 @@ def update_embedding_model(
     scan_st_pickle = (
         model != default_embedding_model() and not is_local_gguf and not _llama_backend_active()
     )
+    # Read the offline state ONCE for this request and reuse it: the module probe
+    # and the scan must agree, and _hf_offline_if_dns_dead() can flip the
+    # process-wide vars between two reads (a probe forced local-only can return no
+    # module roots, letting a flagged 0_Transformer/ pickle pass as a nested
+    # artifact while the scan was skipped on a different value).
+    from utils.utils import hf_env_offline
+
+    local_only_load = hf_env_offline()
     if scan_st_pickle:
         # Malware/pickle gate before we persist a repo the embedder later loads with
         # SentenceTransformer. Runs even under force (force only skips the is-embedding
@@ -430,20 +438,18 @@ def update_embedding_model(
             dict.fromkeys(
                 (
                     *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token),
+                    *_st_module_subdirs(model, scan_token, local_only_load),
                 )
             )
         )
         # local_only_load: this gate covers the RAG embedder, whose loader pins
         # SentenceTransformer to the local cache with the same predicate, so
         # offline the scan can only stall on timeouts before failing open.
-        from utils.utils import hf_env_offline
-
         if evaluate_file_security(
             model,
             hf_token = scan_token,
             load_subdirs = load_subdirs,
-            local_only_load = hf_env_offline(),
+            local_only_load = local_only_load,
         ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
@@ -480,13 +486,25 @@ def update_embedding_model(
     # no-op when nothing case-matching is cached) to keep the model loadable.
     # Resolved against the cache the ST loader itself searches (ST_HOME when set,
     # else the Hub cache), so the persisted spelling is one the offline
-    # exact-case load can actually find. Skip the default: rewriting its casing
-    # would make the exact-string default comparison in set_rag_embedding_model()
-    # treat it as a custom override, so later changes to the configured default
-    # would stop applying. Skip local paths too: a relative directory like
-    # "org/model" is loaded from disk, and rewriting it to a case-insensitive
-    # cache collision ("Org/model") would stop resolving to that directory.
-    if model != default_embedding_model() and not is_local_path(model):
+    # exact-case load can actually find. Three cases are deliberately left alone:
+    #
+    #   * the default -- rewriting its casing would make the exact-string default
+    #     comparison in set_rag_embedding_model() treat it as a custom override,
+    #     so later changes to the configured default would stop applying;
+    #   * a local path -- a relative directory like "org/model" is loaded from
+    #     disk, and rewriting it to a case-insensitive cache collision
+    #     ("Org/model") would stop resolving to that directory;
+    #   * the llama-server backend -- it does not load through SentenceTransformer
+    #     at all. It derives a GGUF companion via effective_gguf_repo() from this
+    #     saved spelling and fetches it with hf_hub_download, i.e. from the HUB
+    #     cache. Normalizing to an ST_HOME spelling would change the derived repo
+    #     to one _hf_gguf_backend_error() never validated (BAAI/bge-m3-GGUF rather
+    #     than the checked baai/bge-m3-GGUF) and which may be absent offline.
+    if (
+        model != default_embedding_model()
+        and not is_local_path(model)
+        and not _llama_backend_active()
+    ):
         model = resolve_st_cached_repo_id_case(model)
     set_rag_embedding_model(model)
     logger.info(
