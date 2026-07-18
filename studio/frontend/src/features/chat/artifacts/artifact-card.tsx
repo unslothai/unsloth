@@ -23,7 +23,7 @@ import {
 } from "./types";
 
 const CARD_BASE =
-  "group/artifact-card relative flex min-h-[52px] cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:bg-muted/10 dark:hover:bg-muted/20";
+  "group/artifact-card relative flex min-h-[52px] cursor-pointer items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left transition-colors hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-muted/10 dark:hover:bg-muted/20";
 
 export function ArtifactCard({
   code,

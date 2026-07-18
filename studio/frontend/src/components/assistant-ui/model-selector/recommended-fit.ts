@@ -114,3 +114,35 @@ export function fitsDevice(opts: {
   }
   return requireKnown ? false : true;
 }
+
+/** Fit predicate for one Hub listing row, shared by the chat model selector
+ * and the Hub page "Fits on device" filter. GGUF repos: metadata size (actual
+ * weights) or the smallest-quant estimate from the param count. Safetensors /
+ * MLX repos: always the params-based smallest-quant estimate, matching the
+ * VRAM badge's quantized-load assumption; their estimatedSizeBytes is the
+ * full-precision checkpoint and would wrongly hide models the quantized load
+ * path can run. Anything unsizable is hidden (requireKnown) so over-budget
+ * models with no metadata don't slip through. An unknown device budget keeps
+ * everything. */
+export function hfModelFitsDevice(
+  model: {
+    id: string;
+    totalParams?: number;
+    estimatedSizeBytes?: number;
+    isGguf?: boolean;
+  },
+  gpu: { memoryTotalGb: number; systemRamAvailableGb: number },
+): boolean {
+  if (gpu.memoryTotalGb <= 0 && gpu.systemRamAvailableGb <= 0) return true;
+  const params = model.totalParams ?? paramsFromId(model.id);
+  const quantBytes = params ? estimateQuantBytes(params) : undefined;
+  const sizeBytes = isGgufId(model.id, model.isGguf)
+    ? (model.estimatedSizeBytes ?? quantBytes)
+    : (quantBytes ?? model.estimatedSizeBytes);
+  return fitsDevice({
+    sizeBytes,
+    gpuGb: gpu.memoryTotalGb,
+    systemRamGb: gpu.systemRamAvailableGb,
+    requireKnown: true,
+  });
+}

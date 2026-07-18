@@ -109,11 +109,12 @@ def create_document(
     status: str = "pending",
     stored_path: str | None = None,
     document_id: str | None = None,
+    embedding_model: str | None = None,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
-        "status, stored_path, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "status, stored_path, created_at, embedding_model) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
@@ -125,6 +126,7 @@ def create_document(
             status,
             stored_path,
             _now(),
+            embedding_model,
         ),
     )
     conn.commit()
@@ -261,20 +263,50 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
     return [(r["chunk_id"], -r["s"]) for r in rows]
 
 
-def search_dense(conn: sqlite3.Connection, scope, vector, k: int):
+def search_dense(
+    conn: sqlite3.Connection,
+    scope,
+    vector,
+    k: int,
+    *,
+    embedding_model: str | None = None,
+):
     """Cosine KNN over vec0 for one scope or several. Returns
     [(chunk_id, 1 - distance)]. vec0 KNN constrains its partition key by
-    equality, so multi-scope runs one query per scope and merges by score."""
+    equality, so multi-scope runs one query per scope and merges by score.
+    ``embedding_model`` drops hits from documents indexed under a different
+    (same-width) model, whose vectors live in another space; NULL-model legacy
+    documents are assumed current, matching the ingestion dedupe rule."""
     if not rag_db.vec_table_exists(conn):
         return []
+    dim = rag_db.vec_table_dim(conn)
+    if dim is not None and dim != len(vector):
+        # Embedding model switched widths and nothing re-indexed yet; the stale
+        # table cannot answer new-model queries (vec0 errors on the MATCH).
+        return []
+    # Over-fetch when filtering so stale-model hits don't starve the top-k.
+    fetch = k * 3 if embedding_model else k
     out: list[tuple[str, float]] = []
     for s in _scopes(scope):
         rows = conn.execute(
             "SELECT chunk_id, distance FROM chunks_vec "
             "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
-            (s, _f32(vector), k),
+            (s, _f32(vector), fetch),
         ).fetchall()
         out.extend((r["chunk_id"], 1.0 - r["distance"]) for r in rows)
+    if embedding_model and out:
+        ids = [cid for cid, _ in out]
+        placeholders = ",".join("?" * len(ids))
+        valid = {
+            r["id"]
+            for r in conn.execute(
+                f"SELECT c.id FROM chunks c JOIN documents d ON d.id=c.document_id "
+                f"WHERE c.id IN ({placeholders}) "
+                f"AND (d.embedding_model IS NULL OR d.embedding_model=?)",
+                (*ids, embedding_model),
+            ).fetchall()
+        }
+        out = [t for t in out if t[0] in valid]
     out.sort(key = lambda t: t[1], reverse = True)
     return out[:k]
 

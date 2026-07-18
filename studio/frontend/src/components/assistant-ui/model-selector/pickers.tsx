@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -102,6 +103,7 @@ import {
   type FormatFilter,
   estimateQuantBytes,
   fitsDevice,
+  hfModelFitsDevice,
   isMlxId,
   isMobileVariant,
   isRecommendableFormat,
@@ -391,6 +393,7 @@ function ModelRow({
   vramEst,
   gpuGb,
   tooltipText,
+  hubUrl,
   optionProps,
   onArrowDownIntoChildren,
   capabilities,
@@ -407,6 +410,10 @@ function ModelRow({
   vramEst?: number;
   gpuGb?: number;
   tooltipText?: ReactNode;
+  /** Hugging Face address (e.g. "huggingface.co/owner/name") for online/Hub
+   * rows; surfaced on hover so their repo id / URL is discoverable the same
+   * way local rows show an on-disk path. Omit to show no address line. */
+  hubUrl?: string;
   optionProps?: ModelRowOptionProps;
   onArrowDownIntoChildren?: () => boolean;
   /** Capability override (HF rows have tags); falls back to name detection. */
@@ -452,7 +459,7 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
@@ -544,30 +551,41 @@ function ModelRow({
     </button>
   );
 
-  if (vramTooltipText) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
-        >
-          {label}
-          <span className="block text-[10px] mt-1">{vramTooltipText}</span>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
+  // Optional Hugging Face address line for online/Hub rows, rendered under
+  // whichever tooltip shows so the repo id / URL is always visible on hover.
+  const hubUrlLine = hubUrl ? (
+    <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+      {hubUrl}
+    </span>
+  ) : null;
 
-  if (tooltipText) {
+  const tooltipBody = vramTooltipText ? (
+    <>
+      {label}
+      <span className="block text-[10px] mt-1">{vramTooltipText}</span>
+      {hubUrlLine}
+    </>
+  ) : tooltipText ? (
+    <>
+      {tooltipText}
+      {hubUrlLine}
+    </>
+  ) : hubUrl ? (
+    <>
+      <span className="block break-words">{label}</span>
+      {hubUrlLine}
+    </>
+  ) : null;
+
+  if (tooltipBody) {
     return (
-      <Tooltip>
+      <Tooltip delayDuration={700}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
         <TooltipContent
           side="left"
           className="tooltip-compact max-w-xs break-all"
         >
-          {tooltipText}
+          {tooltipBody}
         </TooltipContent>
       </Tooltip>
     );
@@ -917,7 +935,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1191,6 +1209,13 @@ function localPathTooltip(name: string, path: string): ReactNode {
   );
 }
 
+/** Hugging Face address for an online/Hub row, or undefined when the repo id is
+ * missing so the row shows no (empty) address line on hover. */
+function hubRepoUrl(id: string | null | undefined): string | undefined {
+  const trimmed = id?.trim();
+  return trimmed ? `huggingface.co/${trimmed}` : undefined;
+}
+
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
@@ -1245,11 +1270,8 @@ export function HubModelPicker({
   onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
-  // The currently-loaded/running model id. We read params.checkpoint from the
-  // runtime store (backend-mirrored from /api/inference/status.active_model, see
-  // chat-runtime-store) rather than the dropdown `isSelected` highlight (which is
-  // just `value === repo_id` and can reflect a staged, not-yet-loaded pick). Used
-  // to disable the cached-row update action for the model that's live in memory.
+  // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
+  // highlight which can be a staged pick. Disables the update action for it.
   const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
@@ -1340,6 +1362,9 @@ export function HubModelPicker({
   }, []);
   // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  // Shared with the Hub page: list only models sized within the device budget.
+  const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
   // Repos the user clicked to collapse while expand-by-default is on. Kept in
   // memory only, so it resets on reload (and when the setting is toggled).
   const [collapsedGguf, setCollapsedGguf] = useState<Set<string>>(
@@ -1584,11 +1609,8 @@ export function HubModelPicker({
     refreshLocalModelsList();
   }, [hfToken, refreshLocalModelsList]);
 
-  // Updates run as MANAGED downloads (they show in the global Downloads panel
-  // with manifest-based progress + a working Cancel), instead of a blocking
-  // call. The worker re-resolves `main` and pulls only changed blobs, so the
-  // cached copy stays usable until the new revision lands. The row's
-  // ModelUpdateAction refreshes the list when this repo+variant completes.
+  // Updates run as managed downloads (Downloads panel: progress + Cancel), not a blocking
+  // call. The worker pulls only changed blobs, so the cached copy stays usable until done.
   const startManagedUpdate = useCallback((repoId: string, variant: string, expectedBytes: number) => {
     return downloadManager
       .requestStart({
@@ -1717,34 +1739,19 @@ export function HubModelPicker({
       formatFilter === "all"
         ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
         : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
-    if (recommendedSort !== "recommended") return rows;
+    // The "recommended" sort always applies the device-fit filter; the shared
+    // "Fits on device" tick extends it to the other sorts too.
+    if (recommendedSort !== "recommended" && !fitOnDeviceOnly) return rows;
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
       if (downloadedSet.has(r.id.toLowerCase())) return true;
-      // Unified-memory hosts (Mac / no discrete GPU) still report system RAM,
-      // so fall back to that budget instead of skipping the fit check entirely.
-      const hasDeviceBudget =
-        gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
-      if (!hasDeviceBudget) return true;
-      // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
-      // GGUF param count, then the repo name, for a size estimate. Anything we
-      // still cannot size is hidden (requireKnown) so over-budget models like a
-      // 1T GGUF don't slip into Recommended.
-      const params = r.totalParams ?? paramsFromId(r.id);
-      const sizeBytes =
-        r.estimatedSizeBytes ??
-        (params ? estimateQuantBytes(params) : undefined);
-      return fitsDevice({
-        sizeBytes,
-        gpuGb: gpu.memoryTotalGb,
-        systemRamGb: gpu.systemRamAvailableGb,
-        requireKnown: true,
-      });
+      return hfModelFitsDevice(r, gpu);
     });
   }, [
     recommendedSearch.results,
     downloadedSet,
     recommendedSort,
+    fitOnDeviceOnly,
     formatFilter,
     isMac,
     gpu,
@@ -1976,23 +1983,6 @@ export function HubModelPicker({
     [visibleCachedModelRows],
   );
 
-  // Recommended models that match the current search query
-  const filteredRecommendedIds = useMemo(() => {
-    if (!showHfSection) return [];
-    const q = normalizeForSearch(debouncedQuery.trim());
-    return recommendedIds
-      .filter((id) => normalizeForSearch(id).includes(q))
-      .filter((id) =>
-        matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
-      );
-  }, [
-    showHfSection,
-    debouncedQuery,
-    recommendedIds,
-    formatFilter,
-    isKnownGgufRepo,
-  ]);
-
   // Param counts come straight off the unsloth listings the picker already
   // loaded, so no extra per-id fetch is needed for the VRAM badges.
   const recommendedParamCountById = useMemo(() => {
@@ -2002,6 +1992,42 @@ export function HubModelPicker({
     }
     return map;
   }, [results, recommendedSearch.results]);
+
+  // Recommended models that match the current search query
+  const filteredRecommendedIds = useMemo(() => {
+    if (!showHfSection) return [];
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return recommendedIds
+      .filter((id) => normalizeForSearch(id).includes(q))
+      .filter((id) =>
+        matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+      )
+      // Curated defaults obey the fit toggle like the live HF rows, else large
+      // defaults resurface in search results with the filter on.
+      .filter(
+        (id) =>
+          !fitOnDeviceOnly ||
+          downloadedSet.has(id.toLowerCase()) ||
+          hfModelFitsDevice(
+            {
+              id,
+              totalParams: recommendedParamCountById.get(id),
+              isGguf: isKnownGgufRepo(id),
+            },
+            gpu,
+          ),
+      );
+  }, [
+    showHfSection,
+    debouncedQuery,
+    recommendedIds,
+    formatFilter,
+    isKnownGgufRepo,
+    fitOnDeviceOnly,
+    downloadedSet,
+    recommendedParamCountById,
+    gpu,
+  ]);
 
   const recommendedSet = useMemo(
     () => new Set(filteredRecommendedIds),
@@ -2013,6 +2039,12 @@ export function HubModelPicker({
     if (!showHfSection || section !== "recommended") return [];
     return results
       .filter(isChatSupported)
+      .filter(
+        (r) =>
+          !fitOnDeviceOnly ||
+          downloadedSet.has(r.id.toLowerCase()) ||
+          hfModelFitsDevice(r, gpu),
+      )
       .map((result) => result.id)
       .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
@@ -2035,6 +2067,9 @@ export function HubModelPicker({
     isKnownGgufRepo,
     isChatSupported,
     formatFilter,
+    fitOnDeviceOnly,
+    downloadedSet,
+    gpu,
     isMac,
   ]);
 
@@ -2323,6 +2358,35 @@ export function HubModelPicker({
   // selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+  // Device-fit toggle lives inside the sort menu (shared with the Hub page).
+  // The whole row is the click target (a button): a Checkbox renders as a
+  // <button>, and label-click forwarding to a button is unreliable, so the row
+  // owns the toggle and the Checkbox is presentational (pointer-events-none).
+  const fitOnDeviceFooter = (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={fitOnDeviceOnly}
+          onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
+          className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <Checkbox
+            checked={fitOnDeviceOnly}
+            tabIndex={-1}
+            aria-hidden
+            className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+          />
+          Only show models that fit
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        Hides models larger than this device's memory budget. Downloaded models
+        stay visible.
+      </TooltipContent>
+    </Tooltip>
+  );
   const sectionSortDropdown =
     section === "recommended" ? (
       <HubOptionMenu
@@ -2333,6 +2397,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        footer={fitOnDeviceFooter}
       />
     ) : section === "downloaded" ? (
       <HubOptionMenu
@@ -2343,6 +2408,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        footer={fitOnDeviceFooter}
       />
     ) : (
       <HubOptionMenu
@@ -2353,6 +2419,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        footer={fitOnDeviceFooter}
       />
     );
 
@@ -2418,6 +2485,7 @@ export function HubModelPicker({
           <div className="min-w-0 flex-1">
             <ModelRow
               label={c.repo_id}
+              tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               selected={isSelected}
@@ -2474,6 +2542,7 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
+            hubUrl={hubRepoUrl(c.repo_id)}
             meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
               c.size_bytes,
             )}`}
@@ -3334,6 +3403,7 @@ export function HubModelPicker({
                         <div key={id}>
                           <ModelRow
                             label={id}
+                            hubUrl={hubRepoUrl(id)}
                             hideOwner={true}
                             downloaded={downloadedSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}
@@ -3419,6 +3489,7 @@ export function HubModelPicker({
                       <div key={id}>
                         <ModelRow
                           label={id}
+                          hubUrl={hubRepoUrl(id)}
                           capabilities={capsById.get(id)}
                           meta={
                             isKnownGgufRepo(id)
@@ -3501,6 +3572,7 @@ export function HubModelPicker({
                         <div key={id}>
                           <ModelRow
                             label={id}
+                            hubUrl={hubRepoUrl(id)}
                             capabilities={capsById.get(id)}
                             meta={
                               isSearchGguf

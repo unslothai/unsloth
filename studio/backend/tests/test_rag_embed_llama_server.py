@@ -373,6 +373,8 @@ def test_ensure_ready_respawns_dead_process(monkeypatch):
     def fake_spawn():
         spawned["n"] += 1
         b._process = _FakeProc(alive = True)
+        # _current() now also checks the served repo, so mark it current.
+        b._model_repo = config.effective_gguf_repo()
 
     monkeypatch.setattr(b, "_spawn", fake_spawn)
     b._ensure_ready()
