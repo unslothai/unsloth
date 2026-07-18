@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The two HF offline flags are not interchangeable.
+"""Effective-offline handling for the embedding preflight.
 
-``huggingface_hub`` honors only ``HF_HUB_OFFLINE``. ``TRANSFORMERS_OFFLINE``
-expresses the same user intent but does NOT stop a Hub fetch, so it may be used
-to pass ``local_files_only`` (a real guarantee) but must never be used to skip a
-security gate -- doing so would wave through the very download the gate exists
-to block.
+``huggingface_hub`` honors only ``HF_HUB_OFFLINE``; ``TRANSFORMERS_OFFLINE``
+expresses the same user intent but does not itself stop a fetch. Studio treats
+either as offline (``hf_env_offline``) and makes that real by passing
+``local_files_only`` to the loader, which lets the metadata-only Hub security
+scan skip straight to its documented fail-open instead of burning both request
+timeouts on a session the user declared offline.
+
+That skip is only sound while the loader really is pinned to the local cache, so
+the coupling between the two is pinned here as an explicit invariant rather than
+left to a comment.
 """
 
 from __future__ import annotations
@@ -48,7 +53,7 @@ def _build_structlog_stub():
 _maybe_stub("loggers", _build_loggers_stub)
 _maybe_stub("structlog", _build_structlog_stub)
 
-from utils.utils import hf_env_offline, hf_hub_offline  # noqa: E402
+from utils.utils import hf_env_offline  # noqa: E402
 
 
 @pytest.fixture(autouse = True)
@@ -62,36 +67,28 @@ def _clean_env(monkeypatch):
 
 
 def test_neither_flag_is_online():
-    assert hf_hub_offline() is False
     assert hf_env_offline() is False
 
 
-def test_transformers_offline_is_intent_but_not_a_fetch_guarantee(monkeypatch):
-    # The distinction the security gate depends on: intent yes, guarantee no.
-    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    assert hf_env_offline() is True
-    assert hf_hub_offline() is False
-
-
-def test_hub_offline_sets_both(monkeypatch):
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    assert hf_hub_offline() is True
+@pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_either_flag_means_offline(monkeypatch, var):
+    monkeypatch.setenv(var, "1")
     assert hf_env_offline() is True
 
 
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", "  1  "])
 def test_truthy_values_parse(monkeypatch, value):
     monkeypatch.setenv("HF_HUB_OFFLINE", value)
-    assert hf_hub_offline() is True
+    assert hf_env_offline() is True
 
 
 @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
 def test_non_truthy_values_do_not_parse(monkeypatch, value):
     monkeypatch.setenv("HF_HUB_OFFLINE", value)
-    assert hf_hub_offline() is False
+    assert hf_env_offline() is False
 
 
-# ── the security gate must not be skipped on the weaker flag ──
+# ── the offline security short-circuit, and the invariant it rests on ──
 
 
 def _fake_hub(monkeypatch, calls):
@@ -105,29 +102,18 @@ def _fake_hub(monkeypatch, calls):
     monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
 
 
-def test_security_scan_still_runs_under_transformers_offline(monkeypatch):
-    # TRANSFORMERS_OFFLINE does NOT stop SentenceTransformer from fetching, so
-    # the scan must still be attempted; skipping it here would let an unscanned
-    # repo be downloaded and its pickle deserialized anyway.
+@pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_security_scan_short_circuits_when_offline(monkeypatch, var):
+    # Metadata-only lookup with no local fallback: on a session the user declared
+    # offline it must skip straight to its documented fail-open rather than burn
+    # both request timeouts (10s + 20s) on every save and load.
     import utils.security.file_security as fs
 
     calls: list = []
     _fake_hub(monkeypatch, calls)
-    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
-    assert fs._fetch_security_status("org/model", None) is None  # fails open
-    assert calls, "the security scan must not be skipped for TRANSFORMERS_OFFLINE"
-
-
-def test_security_scan_short_circuits_under_hub_offline(monkeypatch):
-    # With HF_HUB_OFFLINE no fetch is possible, so this metadata-only lookup can
-    # skip straight to its documented fail-open instead of burning both timeouts.
-    import utils.security.file_security as fs
-
-    calls: list = []
-    _fake_hub(monkeypatch, calls)
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv(var, "1")
     assert fs._fetch_security_status("org/model", None) is None
-    assert calls == [], "no Hub call is possible when HF_HUB_OFFLINE is set"
+    assert calls == [], f"the scan must not hit the Hub under {var}"
 
 
 def test_security_scan_runs_when_online(monkeypatch):
@@ -137,3 +123,22 @@ def test_security_scan_runs_when_online(monkeypatch):
     _fake_hub(monkeypatch, calls)
     assert fs._fetch_security_status("org/model", None) is None  # fails open on error
     assert calls, "online must attempt the Hub"
+
+
+def test_embedding_loader_forces_local_only_when_offline():
+    """The invariant the offline scan skip rests on.
+
+    Skipping the Hub security scan offline is only sound while every loader
+    behind that gate is pinned to the local cache by the SAME predicate -- if the
+    loader could still fetch, an unscanned repo's pickle would be downloaded and
+    deserialized. Pinned at source level because importing the loader would drag
+    in sentence_transformers/torch.
+    """
+    src = (Path(__file__).resolve().parents[1] / "core" / "rag" / "embeddings.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "local_files_only = hf_env_offline()" in src, (
+        "core/rag/embeddings.py must pin SentenceTransformer to local files when "
+        "hf_env_offline(); without it the offline security-scan skip in "
+        "utils/security/file_security.py is unsafe"
+    )

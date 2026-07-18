@@ -241,17 +241,22 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     retries once on a transient error, then returns None so the caller fails open.
     """
     from huggingface_hub import model_info as hf_model_info
-    from utils.utils import hf_hub_offline
+    from utils.utils import hf_env_offline
 
-    # Only HF_HUB_OFFLINE -- deliberately NOT the weaker hf_env_offline(). This is
-    # a security gate: huggingface_hub honors only HF_HUB_OFFLINE, so under a
-    # TRANSFORMERS_OFFLINE-only session the later SentenceTransformer load can
-    # still fetch and deserialize the repo's pickle. Skipping the scan there would
-    # wave through exactly the download _guard_model_security exists to block.
-    # With HF_HUB_OFFLINE set no fetch is possible, so this metadata-only lookup
-    # would just burn both request timeouts before failing open anyway.
-    if hf_hub_offline():
-        logger.debug("HF security scan skipped for '%s': hub offline; failing open.", model_name)
+    # Effective offline: skip this metadata-only lookup instead of burning both
+    # request timeouts (10s + 20s) on a session the user declared offline.
+    #
+    # SAFETY INVARIANT: this is only sound because every loader behind this gate
+    # forces local-only loading from the SAME predicate -- see
+    # core/rag/embeddings.py, which passes local_files_only = hf_env_offline() to
+    # SentenceTransformer. Nothing can therefore be fetched here, so the scan's
+    # job (block a poisoned pickle from being downloaded and deserialized) is
+    # already served; the residual case, a model cached BEFORE it was flagged, is
+    # the same fail-open this function has always documented for an unavailable
+    # scan. If a loader ever stops honoring hf_env_offline(), this skip becomes
+    # unsafe -- tests/test_hf_offline_flags.py pins that coupling.
+    if hf_env_offline():
+        logger.debug("HF security scan skipped for '%s': offline; failing open.", model_name)
         return None
 
     token_arg = hf_token if hf_token else False
