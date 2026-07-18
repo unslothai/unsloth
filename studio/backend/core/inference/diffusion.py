@@ -1463,7 +1463,15 @@ class DiffusionBackend:
                             if fam.name == HIDREAM_FAMILY_NAME:
                                 # The repo names a Llama text_encoder_4 it does not ship;
                                 # supply it from the open mirror (diffusion_hidream.py).
-                                pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
+                                pipe_kwargs.update(
+                                    hidream_te4_kwargs(
+                                        dtype,
+                                        hf_token,
+                                        fam = fam,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                    )
+                                )
                             # A hosted pre-cast fp8 text encoder (when the family ships one and
                             # the runtime cast would engage) skips the dense TE download; the
                             # later quantize_text_encoders re-applies the cast idempotently.
@@ -1520,7 +1528,15 @@ class DiffusionBackend:
                                 pipe_kwargs["token"] = hf_token
                             if fam.name == HIDREAM_FAMILY_NAME:
                                 # Same Llama TE4 assembly as the full-pipeline branch above.
-                                pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
+                                pipe_kwargs.update(
+                                    hidream_te4_kwargs(
+                                        dtype,
+                                        hf_token,
+                                        fam = fam,
+                                        te_quant_mode = text_encoder_quant,
+                                        target = target,
+                                    )
+                                )
                             # Same pre-cast TE injection as the full-pipeline branch: the GGUF
                             # supplies the transformer, so the companion TE is the big download.
                             pipe_kwargs.update(
@@ -2008,7 +2024,15 @@ class DiffusionBackend:
         if getattr(fam, "name", None) == HIDREAM_FAMILY_NAME:
             # The repo ships no Llama text_encoder_4; assemble it from the open mirror
             # (diffusion_hidream.py) exactly like the full-pipeline load branch.
-            pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
+            pipe_kwargs.update(
+                hidream_te4_kwargs(
+                    dtype,
+                    hf_token,
+                    fam = fam,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                )
+            )
         # Same pre-cast TE injection as the full-pipeline and GGUF branches: the dense
         # fast path supplies only the transformer, so the companion TE is the big download.
         if target is not None:

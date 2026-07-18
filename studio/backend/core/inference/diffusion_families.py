@@ -381,6 +381,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/HiDream-I1-Full-FP8"),
             ("fp8", "unsloth/HiDream-I1-Full-FP8"),
         ),
+        # Pre-cast Llama-3.1-8B TE4 (16.1 GB bf16 -> 8.1 GB). The generic TE pass only covers
+        # text_encoder.._3, so TE4 engages via hidream_te4_kwargs, not te_prequant_pipe_kwargs.
+        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
         pipeline_class = "HiDreamImagePipeline",
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
