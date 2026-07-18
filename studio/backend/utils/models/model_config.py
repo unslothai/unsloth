@@ -2027,14 +2027,22 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
         try:
             commit = (snapshots_dir.parent / "refs" / "main").read_text(encoding = "utf-8").strip()
         except FileNotFoundError:
-            commit = ""  # no ref recorded: fall back to the newest-first scan
+            # No ref recorded at all: fall back to the newest-first scan.
+            commit = None
         except OSError:
             # A ref exists but is unreadable (transient I/O error, restrictive
             # permissions): the contract is that an unreadable cache reads as
             # not-cached, so report a miss rather than scanning stale history --
             # only a genuinely missing ref may enable the fallback scan.
             return None
-        if commit:
+        else:
+            if not commit:
+                # The ref file exists but is empty / whitespace (a partial write
+                # or an in-progress truncate-and-rewrite). The active revision is
+                # unknown, so this is a cache miss -- NOT a fall-through to stale
+                # history, which is the class of bug this helper avoids.
+                return None
+        if commit is not None:
             # A ref is recorded, so it is authoritative. If its snapshot is not
             # materialized (partial download / pruning) treat the repo as not
             # cached (None) rather than scanning stale history -- the exact
@@ -2052,6 +2060,38 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
         return False
     except Exception:
         return None
+
+
+def resolve_cached_repo_casing(repo_id: str) -> str:
+    """Return *repo_id* in the exact casing of its local HF cache directory.
+
+    HF cache lookups here are case-insensitive (see _iter_hf_cache_snapshots), so
+    ``baai/bge-m3`` can validate against a ``models--BAAI--bge-m3`` cache dir. But
+    an offline SentenceTransformer load resolves the cache by EXACT case, so the
+    requested spelling must be normalized to the cached one before it is persisted
+    or the load fails on a case-sensitive filesystem even though validation
+    passed. Returns *repo_id* unchanged for a local path, a non-repo string, or
+    when nothing case-matching is cached (online the loader re-resolves casing via
+    the Hub, so leaving it as-is there is harmless)."""
+    if is_local_path(repo_id) or "/" not in repo_id:
+        return repo_id
+    try:
+        from huggingface_hub import constants as hf_constants
+
+        cache_dir = Path(hf_constants.HF_HUB_CACHE)
+        if not cache_dir.is_dir():
+            return repo_id
+        prefix = "models--"
+        target = f"{prefix}{repo_id.replace('/', '--')}".lower()
+        for entry in cache_dir.iterdir():
+            if entry.is_dir() and entry.name.lower() == target:
+                # HF encodes org/name as models--org--name; reverse it. The `--`
+                # separator only appears at path boundaries, so splitting on it
+                # recovers the Hub-canonical casing the cache dir was named with.
+                return entry.name[len(prefix) :].replace("--", "/")
+    except OSError:
+        return repo_id
+    return repo_id
 
 
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
@@ -2083,11 +2123,16 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     if _env_offline():
         # Offline: the local HF cache is the only source -- a network call cannot
         # succeed and would only hang on a DNS error and get retried (#6817).
-        # Re-probe the marker on every call and never consult or populate the
-        # memo: a model downloaded later in this session must be seen, and a miss
-        # is not a durable negative (a tag-only feature-extraction embedder can
-        # only be confirmed online, and the same key is reused once the env var
-        # clears in this process).
+        # Retain a positive already confirmed online this session: model_info()
+        # only ever memoizes Hub-derived results, so a cached True is a real
+        # detection (e.g. a tag-only feature-extraction embedder with no
+        # modules.json) that _hf_offline_if_dns_dead() flipping the process to
+        # offline mid-load must NOT downgrade to False. Otherwise re-probe the
+        # marker every call without consulting or populating the memo: a cached
+        # negative must not stick (a model downloaded later, or a tag-only
+        # embedder, could not be confirmed here), so a miss is not durable.
+        if _embedding_detection_cache.get(cache_key) is True:
+            return True
         return _embedding_marker_in_hf_cache(model_name) is True
 
     # Online: the Hub is authoritative for the current remote revision. The local

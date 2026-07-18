@@ -159,6 +159,15 @@ def test_marker_unreadable_ref_is_cache_miss(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/unreadable-ref") is None
 
 
+def test_marker_empty_ref_is_cache_miss(tmp_path, monkeypatch):
+    # refs/main exists but is empty / whitespace (a partial write or in-progress
+    # truncate-and-rewrite): the active revision is unknown, so this is a cache
+    # miss (None), NOT a fall-through to a stale snapshot that carries modules.json.
+    snaps = _repo(tmp_path, ("old", True), main_ref = "   \n")
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+    assert mc._embedding_marker_in_hf_cache("org/empty-ref") is None
+
+
 def test_marker_never_raises_when_cache_mutates(monkeypatch):
     # A snapshot vanishing mid-iteration (concurrent cached-model deletion)
     # must read as not-cached, not propagate a 500 out of the routes.
@@ -247,6 +256,55 @@ def test_online_negative_does_not_block_later_offline_download(tmp_path, monkeyp
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     assert mc.is_embedding_model("org/late-embedder") is True  # marker re-probed
+
+
+def test_offline_retains_online_confirmed_positive(monkeypatch):
+    # A tag-only embedder (feature-extraction, no modules.json) is confirmed
+    # online and cached True. _hf_offline_if_dns_dead() then flips the process to
+    # offline mid-load; the offline path must RETAIN that positive, not re-probe
+    # the absent marker and downgrade a model already verified this session.
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(()))
+
+    def _info(model_name, token = None):
+        return types.SimpleNamespace(tags = ["feature-extraction"], pipeline_tag = None)
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/gte-modernbert") is True  # online: cached True
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    _fake_hf_model_info(monkeypatch, _no_network)  # offline must not hit network
+    assert mc.is_embedding_model("org/gte-modernbert") is True  # positive retained
+
+
+# ── resolve_cached_repo_casing ──
+
+
+def _fake_hf_constants(monkeypatch, cache_root):
+    fake = types.ModuleType("huggingface_hub")
+    fake.constants = types.SimpleNamespace(HF_HUB_CACHE = str(cache_root))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake.constants)
+
+
+def test_resolve_cached_repo_casing_normalizes_to_cache_dir(tmp_path, monkeypatch):
+    # baai/bge-m3 requested, models--BAAI--bge-m3 cached: the persisted id must be
+    # normalized to the cached casing so an offline exact-case load still finds it.
+    (tmp_path / "models--BAAI--bge-m3").mkdir()
+    _fake_hf_constants(monkeypatch, tmp_path)
+    assert mc.resolve_cached_repo_casing("baai/bge-m3") == "BAAI/bge-m3"
+
+
+def test_resolve_cached_repo_casing_noop_when_uncached(tmp_path, monkeypatch):
+    _fake_hf_constants(monkeypatch, tmp_path)
+    assert mc.resolve_cached_repo_casing("org/not-cached") == "org/not-cached"
+
+
+def test_resolve_cached_repo_casing_ignores_local_and_non_repo(tmp_path, monkeypatch):
+    # A local dir and a bare (no-slash) name are returned unchanged without a
+    # cache lookup at all.
+    _fake_hf_constants(monkeypatch, tmp_path)
+    assert mc.resolve_cached_repo_casing(str(tmp_path)) == str(tmp_path)
+    assert mc.resolve_cached_repo_casing("bare-name") == "bare-name"
 
 
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):

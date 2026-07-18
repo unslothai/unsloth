@@ -387,7 +387,7 @@ def update_embedding_model(
     A repo flagged unsafe by HF's security scan returns 403 instead: a hard block
     that ``force`` cannot bypass, so the UI must not offer "save anyway".
     Documents indexed under the previous model must be re-uploaded."""
-    from utils.models import is_embedding_model
+    from utils.models import is_embedding_model, resolve_cached_repo_casing
 
     try:
         model = validate_embedding_model(payload.embedding_model)
@@ -463,6 +463,11 @@ def update_embedding_model(
         gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
+    # Persist the casing the local HF cache actually uses: validation above
+    # accepts a case-insensitive cache hit, but the offline SentenceTransformer
+    # load resolves the cache by exact case, so store the cached spelling (a
+    # no-op when nothing case-matching is cached) to keep the model loadable.
+    model = resolve_cached_repo_casing(model)
     set_rag_embedding_model(model)
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",
