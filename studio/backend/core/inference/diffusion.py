@@ -580,7 +580,26 @@ class DiffusionBackend:
             )
             # A prequant candidate loads a small checkpoint, not the dense transformer/ shards,
             # so widening for it defeats the savings and can disk-full the fallback-less begin_load pull.
-            return candidate is not None and not candidate.prequant
+            if candidate is None or candidate.prequant:
+                return False
+            # Capacity gate: on a device that cannot hold even the candidate's post-quant
+            # resident set, load_pipeline's re-plan is CERTAIN to decline the dense path, so
+            # widening would fetch the multi-GB base transformer/ shards (47 GB on Qwen-Image)
+            # only to run the GGUF as-is. Mirror plan_fits_total_capacity's bar against TOTAL
+            # capacity (not instantaneous free, which a transient tenant could undercount).
+            from .diffusion_memory import (
+                _reserve_mib,
+                snapshot_device_memory,
+            )
+
+            memory = snapshot_device_memory(target)
+            total = memory.total_mib
+            steady = getattr(candidate, "steady_total_mib", None)
+            if total is not None and steady is not None:
+                budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
+                if int(steady) > budget:
+                    return False
+            return True
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
@@ -1378,6 +1397,25 @@ class DiffusionBackend:
                 if transformer_quant_engaged is not None and quant_plan is not None:
                     # The engaged dense build uses the re-planned placement; the GGUF-size plan stays for fallback.
                     plan = quant_plan
+
+                if (
+                    pipe is None
+                    and kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and any(w != 0 for (_lid, w) in (loras or ()))
+                ):
+                    # The client asked for adapters BAKED into a quantized build, and that
+                    # build was declined (memory plan) or failed. The GGUF fallback cannot
+                    # carry the adapters, so completing it would return HTTP success while
+                    # silently generating without the requested LoRAs -- wrong output with
+                    # no signal. Fail the load with the recovery options instead.
+                    raise RuntimeError(
+                        "The requested LoRA adapters could not be applied: baking adapters "
+                        "requires the quantized (int8/fp8) transformer build, which was "
+                        "declined or failed on this device (see the server log), and the "
+                        "GGUF fallback cannot carry them. Retry without transformer_quant "
+                        "adapters, free VRAM, or pick a smaller model."
+                    )
 
                 if pipe is None:
                     if kind == "pipeline":
