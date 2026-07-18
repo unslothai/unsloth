@@ -120,14 +120,12 @@ def test_default_mode_skips_sentinel_check(tmp_path):
 
 def test_install_ps1_has_matching_env_mode_guard():
     src = INSTALL_PS1.read_text()
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
-    block = src[block_start : block_start + 2000]
-    assert (
-        "$StudioRedirectMode -eq 'env'" in block
-    ), "install.ps1 must gate Remove-Item $VenvDir on env-mode"
-    assert "share\\studio.conf" in block, "install.ps1 guard must check share\\studio.conf sentinel"
-    assert "bin\\unsloth.exe" in block, "install.ps1 guard must check bin\\unsloth.exe sentinel"
-    assert "Refusing to delete non-Studio venv" in block
+    block_start = src.index("function Get-StudioVenvPathState")
+    block = src[block_start : block_start + 2500]
+    assert "Get-StudioVenvPathState $VenvDir" in src
+    assert "Refusing to mutate non-Studio venv" in src
+    assert "ReparsePoint" in block
+    assert "markerIsRegular" in block
 
 
 def test_setup_ps1_has_writability_probe():
@@ -192,16 +190,16 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
 
 
 def test_install_ps1_sentinel_uses_pathtype_leaf():
-    """Remove-Item $VenvDir gate must use -PathType Leaf so a sentinel-path directory cannot satisfy it."""
+    """The marker guard must treat only a regular non-reparse marker file as ownership evidence."""
     src = INSTALL_PS1.read_text()
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("function Get-StudioVenvPathState")
     block = src[block_start : block_start + 2000]
     assert (
-        'share\\studio.conf") -PathType Leaf' in block
-    ), "install.ps1 share\\studio.conf check must use -PathType Leaf"
+        'Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue' in block
+    ), "install.ps1 must read the in-VENV marker through the current-state helper"
     assert (
-        'bin\\unsloth.exe") -PathType Leaf' in block
-    ), "install.ps1 bin\\unsloth.exe check must use -PathType Leaf"
+        "markerIsRegular" in block and "ReparsePoint" in block
+    ), "install.ps1 marker evidence must reject reparse-point or non-file sentinels"
 
 
 def test_setup_ps1_stale_venv_has_env_mode_guard():
@@ -328,35 +326,55 @@ def test_install_sh_writes_venv_marker_after_uv_venv():
 
 
 def test_install_ps1_writes_venv_marker_after_uv_venv():
-    """install.ps1 must write .unsloth-studio-owned into $VenvDir after `uv venv` succeeds."""
+    """install.ps1 must mark a validated staged candidate before publishing it."""
     src = INSTALL_PS1.read_text()
     assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
-    venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 5200]
-    assert (
-        'WriteAllText($VenvOwnershipMarker, "")' in tail
-    ), "install.ps1 must write .unsloth-studio-owned after uv venv create"
+    venv_create = src.index("uv venv $VenvStage --python")
+    tail = src[venv_create : venv_create + 7000]
+    assert 'WriteAllText($marker, "")' in src, "install.ps1 must mark the staged candidate"
+    assert "Publish-StudioVenvCandidate $VenvStage" in tail
+    assert "Assert-StudioVenvAbsent $VenvDir" in src
 
 
 def test_install_ps1_fallback_rebuild_preserves_env_mode_ownership_guard():
-    """install.ps1 must not rebuild over a pre-existing env-mode path unless it was already marked as Studio-owned."""
+    """install.ps1 must guard the current target in every redirect mode."""
     src = INSTALL_PS1.read_text()
-    venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 3600]
-    assert "$VenvPathExistedBeforeCreate" in tail
-    assert "$VenvDirOwnedBeforeCreate" in tail
-    assert "Refusing to rebuild non-Studio venv" in tail
+    assert "Get-StudioVenvPathState $VenvDir" in src
+    assert "Assert-StudioVenvMutationPath" in src
+    assert "Refusing to mutate non-Studio venv" in src
+    guard_start = src.index("function Get-StudioVenvPathState")
+    venv_create = src.index("uv venv $VenvStage --python")
+    guarded_region = src[guard_start : venv_create + 5000]
+    assert "$StudioRedirectMode -eq 'env'" not in guarded_region
 
 
 def test_install_ps1_guard_accepts_venv_marker():
     """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     src = INSTALL_PS1.read_text()
     assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
-    block = src[block_start : block_start + 2000]
+    block_start = src.index("function Get-StudioVenvPathState")
+    block = src[block_start : block_start + 5000]
     assert (
-        "Test-Path -LiteralPath $VenvOwnershipMarker -PathType Leaf" in block
+        "ReparsePoint" in block and "markerIsRegular" in block
     ), "install.ps1 guard must check the in-VENV marker through $VenvOwnershipMarker"
+
+
+def test_install_ps1_publish_and_migrations_use_exclusive_guarded_move():
+    src = INSTALL_PS1.read_text()
+    publish_start = src.index("function Publish-StudioVenvCandidate")
+    publish_end = src.index("function Start-StudioVenvRollback", publish_start)
+    publish = src[publish_start:publish_end]
+    assert "Assert-StudioVenvAbsent $VenvDir" in publish
+    assert "[System.IO.Directory]::Move" in publish
+    assert "Move-Item -LiteralPath $Candidate -Destination $VenvDir" not in publish
+
+    legacy_start = src.index("if ($legacyOk)")
+    migration_end = src.index("if (-not (Test-Path -LiteralPath $VenvPython))", legacy_start)
+    migrations = src[legacy_start:migration_end]
+    assert "Publish-StudioVenvCandidate $OldVenv -AllowExternalSource" in migrations
+    assert "Publish-StudioVenvCandidate $CwdVenv -AllowExternalSource" in migrations
+    assert "Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force" not in migrations
+    assert "Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force" not in migrations
 
 
 def test_setup_helpers_gate_on_canonical_custom_root():
