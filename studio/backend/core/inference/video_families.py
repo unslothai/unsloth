@@ -73,6 +73,9 @@ class VideoFamily:
     vae_force_fp32: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
+    # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id) triples;
+    # same semantics as DiffusionFamily.te_prequant_repos (diffusion_te_prequant.py).
+    te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
