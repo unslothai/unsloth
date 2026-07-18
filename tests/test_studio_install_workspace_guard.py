@@ -358,7 +358,7 @@ def test_install_ps1_guard_accepts_venv_marker():
         "ReparsePoint" in block and "markerIsRegular" in block
     ), "install.ps1 guard must check the in-VENV marker through $VenvOwnershipMarker"
     assert "share\\studio.conf" in block and "bin\\unsloth.exe" in block
-    assert 'Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))' in block
+    assert "Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))" in block
 
 
 def test_install_ps1_publish_and_migrations_use_exclusive_guarded_move():
