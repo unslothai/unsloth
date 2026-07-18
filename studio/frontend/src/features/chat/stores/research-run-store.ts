@@ -706,6 +706,9 @@ export function ingestResearchUpdate(
   }
 
   const pending = pendingStreamEvents.get(run.id);
+  if (pending && event.id <= pending.event.id) {
+    return;
+  }
   if (pending && canCoalesceStreamEvent(pending.event, event)) {
     const reasoningDelta =
       event.event === "reasoning.updated"

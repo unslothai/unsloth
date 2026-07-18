@@ -11,6 +11,7 @@ def source(path: str) -> str:
 
 def test_research_api_is_isolated_and_cursor_based() -> None:
     api = source("features/chat/api/research-api.ts")
+    store = source("features/chat/stores/research-run-store.ts")
     assert 'authFetch("/api/chat/research-runs"' in api
     assert "authFetch(`/api/chat/research-runs/active?${query}`)" in api
     assert "const { runs, hasRun }" in api
@@ -22,11 +23,12 @@ def test_research_api_is_isolated_and_cursor_based() -> None:
     assert "Math.min(8_000, 500 * 2 ** (failures - 1))" in api
     assert "for await (const event of streamResearchEvents" in api
     assert 'source: "event"' in api
-    assert "fresh.report !== run.report" in api
+    assert "fresh.report !== currentRun.report" in api
     assert "await waitForReconnect(" in api
     assert "while (!(run || signal?.aborted))" in api
     assert "isPermanentResearchError(error)" in api
     assert 'yield { run, source: "snapshot" }' in api
+    assert "event.id <= pending.event.id" in store
     for action in ("cancel", "retry"):
         assert f'mutate(id, "{action}")' in api
     assert 'mutate(id, "approve", { planRevision, planHash })' in api

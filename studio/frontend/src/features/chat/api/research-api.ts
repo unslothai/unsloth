@@ -8,6 +8,11 @@ import type {
   ResearchRun,
 } from "../types/research";
 
+type StreamResearchEvent = Omit<ResearchEvent, "data" | "run"> & {
+  data: Omit<ResearchEvent["data"], "run">;
+  run?: ResearchRun;
+};
+
 type JsonObject = Record<string, unknown>;
 const TERMINAL_RESEARCH_STATUSES = new Set([
   "completed",
@@ -139,7 +144,7 @@ export async function* streamResearchEvents(
   id: string,
   after: number,
   signal?: AbortSignal,
-): AsyncGenerator<ResearchEvent> {
+): AsyncGenerator<StreamResearchEvent> {
   const response = await authFetch(
     `/api/chat/research-runs/${id}/events?after=${Math.max(0, after)}`,
     { headers: { accept: "text/event-stream" }, signal },
@@ -176,18 +181,16 @@ export async function* streamResearchEvents(
         if (data.length > 0) {
           const parsed = camelize(JSON.parse(data.join("\n"))) as JsonObject;
           const candidate = parsed.run as ResearchRun | undefined;
-          if (candidate?.id && candidate.status) {
-            yield {
-              id: eventId,
-              event: event as ResearchEvent["event"],
-              createdAt:
-                typeof parsed.createdAt === "number"
-                  ? parsed.createdAt
-                  : candidate.updatedAt,
-              data: parsed as unknown as ResearchEvent["data"],
-              run: candidate,
-            };
-          }
+          yield {
+            id: eventId,
+            event: event as ResearchEvent["event"],
+            createdAt:
+              typeof parsed.createdAt === "number"
+                ? parsed.createdAt
+                : (candidate?.updatedAt ?? Date.now()),
+            data: parsed as unknown as StreamResearchEvent["data"],
+            ...(candidate?.id && candidate.status ? { run: candidate } : {}),
+          };
         }
         boundary = buffer.indexOf("\n\n");
       }
@@ -272,20 +275,31 @@ export async function* followResearchRun(
   ) {
     return;
   }
+  let currentRun: ResearchRun = run;
   let cursor = replayFrom ?? run.lastEventSeq;
   while (!signal?.aborted) {
     try {
       for await (const event of streamResearchEvents(id, cursor, signal)) {
         cursor = Math.max(cursor, event.id);
-        run = event.run;
+        const eventRun: ResearchRun = event.run ?? {
+          ...currentRun,
+          lastEventSeq: Math.max(currentRun.lastEventSeq, event.id),
+          updatedAt: Math.max(currentRun.updatedAt, event.createdAt),
+        };
+        const hydratedEvent: ResearchEvent = {
+          ...event,
+          data: { ...event.data, run: eventRun },
+          run: eventRun,
+        };
+        currentRun = eventRun;
         failures = 0;
-        yield { run, event, source: "event" };
+        yield { run: currentRun, event: hydratedEvent, source: "event" };
         if (
-          (event.event === "run.completed" ||
-            event.event === "run.failed" ||
-            event.event === "run.cancelled") &&
-          TERMINAL_RESEARCH_STATUSES.has(event.run.status) &&
-          (event.data.attempt ?? 0) === (event.run.retryCount ?? 0)
+          (hydratedEvent.event === "run.completed" ||
+            hydratedEvent.event === "run.failed" ||
+            hydratedEvent.event === "run.cancelled") &&
+          TERMINAL_RESEARCH_STATUSES.has(eventRun.status) &&
+          (hydratedEvent.data.attempt ?? 0) === (eventRun.retryCount ?? 0)
         ) {
           return;
         }
@@ -306,21 +320,21 @@ export async function* followResearchRun(
     try {
       const fresh = await getResearchRun(id, signal);
       const changed =
-        fresh.lastEventSeq !== run.lastEventSeq ||
-        fresh.updatedAt !== run.updatedAt ||
-        fresh.status !== run.status ||
-        fresh.report !== run.report;
+        fresh.lastEventSeq !== currentRun.lastEventSeq ||
+        fresh.updatedAt !== currentRun.updatedAt ||
+        fresh.status !== currentRun.status ||
+        fresh.report !== currentRun.report;
       const needsCatchup = cursor < fresh.lastEventSeq;
-      run = fresh;
+      currentRun = fresh;
       if (replayFrom === undefined) {
         cursor = Math.max(cursor, fresh.lastEventSeq);
       }
       if (changed || needsCatchup) {
-        yield { run, source: "snapshot" };
+        yield { run: currentRun, source: "snapshot" };
       }
       if (
-        TERMINAL_RESEARCH_STATUSES.has(run.status) &&
-        cursor >= run.lastEventSeq
+        TERMINAL_RESEARCH_STATUSES.has(currentRun.status) &&
+        cursor >= currentRun.lastEventSeq
       ) {
         return;
       }

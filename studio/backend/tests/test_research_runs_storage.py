@@ -1498,6 +1498,11 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
     research_db.upsert_source(
         "run-1", 0, "https://example.com/final", "Final source", "Final evidence"
     )
+    research_db.append_event(
+        "run-1",
+        "report.updated",
+        {"delta": "Draft chunk", "offset": 0, "length": 11},
+    )
     report = "# Durable report\n\nFinal markdown."
     assert (
         research_db.finish("run-1", "worker-1", "completed", event_payload = {"report": report})
@@ -1525,6 +1530,11 @@ def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home)
         return "".join(chunks)
 
     stream = asyncio.run(consume())
+    delta = next(block for block in stream.split("\n\n") if "event: report.updated" in block)
+    delta_line = next(line for line in delta.splitlines() if line.startswith("data: "))
+    delta_payload = json.loads(delta_line[6:])
+    assert delta_payload["delta"] == "Draft chunk"
+    assert "run" not in delta_payload
     terminal = next(block for block in stream.split("\n\n") if "event: run.completed" in block)
     data_line = next(line for line in terminal.splitlines() if line.startswith("data: "))
     payload = json.loads(data_line[6:])

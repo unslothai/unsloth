@@ -24,6 +24,7 @@ from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_mes
 router = APIRouter()
 _SENSITIVE_KEY = re.compile(r"^(?:api.?key|secret|token|authorization|password)$", re.IGNORECASE)
 _MAX_PLAN_STEPS = 30
+_DELTA_ONLY_EVENTS = {"reasoning.updated", "report.updated"}
 
 
 class CreateResearchRun(BaseModel):
@@ -389,7 +390,8 @@ async def research_events(
                 cursor = int(event["seq"])
                 event_data = dict(event["data"])
                 event_data["createdAt"] = event["createdAt"]
-                event_data["run"] = snapshot
+                if event["type"] not in _DELTA_ONLY_EVENTS:
+                    event_data["run"] = snapshot
                 data = json.dumps(event_data, separators = (",", ":"), ensure_ascii = False)
                 yield f"id: {cursor}\nevent: {event['type']}\ndata: {data}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
