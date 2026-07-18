@@ -225,6 +225,70 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     ) == {}
 
 
+def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
+    """A family hosting several TE components (flux.1: T5 as text_encoder_2) gets each
+    one injected under its own attr; unhosted components stay dense."""
+    import core.inference.diffusion_precision as precision
+
+    fam = _fam(
+        te_prequant_repos = (
+            ("fp8", "text_encoder", "org/hosted"),
+            ("fp8", "text_encoder_2", "org/hosted-2"),
+        )
+    )
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    markers = {"text_encoder": object(), "text_encoder_2": object()}
+    monkeypatch.setattr(
+        tpq,
+        "load_prequant_text_encoder",
+        lambda base, component, source, **kw: markers[component],
+    )
+    out = te_prequant_pipe_kwargs(
+        fam, "some/base", te_quant_mode = "fp8", target = _target(), dtype = None
+    )
+    assert out == markers
+
+
+# ── base equivalence ─────────────────────────────────────────────────────────
+def test_te_base_equivalent_groups():
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+
+    # Same repo (case-folded) always matches.
+    assert te_base_equivalent("Qwen/Qwen-Image", "qwen/qwen-image")
+    # Verified byte-identical groups match across repos, both directions.
+    assert te_base_equivalent(
+        "Qwen/Qwen-Image", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
+    )
+    assert te_base_equivalent(
+        "black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-dev"
+    )
+    assert te_base_equivalent(
+        "black-forest-labs/FLUX.1-Krea-dev", "black-forest-labs/FLUX.1-schnell"
+    )
+    # Unrelated bases stay refused, including across groups.
+    assert not te_base_equivalent("Qwen/Qwen-Image", "black-forest-labs/FLUX.1-schnell")
+    assert not te_base_equivalent("Tongyi-MAI/Z-Image-Turbo", "black-forest-labs/FLUX.2-klein-4B")
+
+
+def test_validate_accepts_equivalent_base():
+    ckpt = {
+        "format": TE_PREQUANT_FORMAT,
+        "state_dict": {},
+        "metadata": {
+            "scheme": "fp8",
+            "component": "text_encoder",
+            "base_model_id": "Qwen/Qwen-Image",
+        },
+    }
+    assert tpq._validate_checkpoint(
+        ckpt, "fp8", "text_encoder",
+        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", None,
+    )
+    assert not tpq._validate_checkpoint(
+        ckpt, "fp8", "text_encoder", "black-forest-labs/FLUX.1-schnell", None
+    )
+
+
 # ── family field wiring ──────────────────────────────────────────────────────
 def test_family_dataclasses_declare_te_prequant_field():
     from core.inference.diffusion_families import DiffusionFamily, detect_family
@@ -232,8 +296,9 @@ def test_family_dataclasses_declare_te_prequant_field():
 
     assert DiffusionFamily.__dataclass_fields__["te_prequant_repos"].default_factory is tuple
     assert VideoFamily.__dataclass_fields__["te_prequant_repos"].default_factory is tuple
-    # Families without a hosted TE checkpoint keep the empty default.
-    fam = detect_family("unsloth/FLUX.1-schnell-GGUF")
+    # Families without a hosted TE checkpoint keep the empty default (sdxl's CLIPs
+    # stay dense; flux.1 now hosts its T5 and is asserted below).
+    fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
     assert fam.te_prequant_repos == ()
 
 
@@ -269,6 +334,29 @@ def test_hosted_te_prequant_entries():
     assert te_prequant_repo_filename(
         "unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8"
     ) == "HiDream-I1-Full-text_encoder_4-FP8.pt"
+    # Round 2: T5-XXL for every flux.1 base (byte-identical weights, one artifact),
+    # Gemma2-2B, Qwen3-4B, Qwen3-VL-4B, and hunyuanimage reusing the Qwen-Image artifact.
+    assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
+        ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
+    )
+    assert te_prequant_repo_filename(
+        "unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8"
+    ) == "FLUX.1-schnell-text_encoder_2-FP8.pt"
+    assert detect_family("Alpha-VLLM/Lumina-Image-2.0").te_prequant_repos == (
+        ("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),
+    )
+    assert detect_family("Tongyi-MAI/Z-Image-Turbo").te_prequant_repos == (
+        ("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),
+    )
+    assert detect_family("krea/Krea-2-Turbo").te_prequant_repos == (
+        ("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),
+    )
+    assert detect_family(
+        "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
+    ).te_prequant_repos == (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),)
+    # flux.2-klein-4B hosts NO TE entry: its Qwen3-4B retrained layer 35's MLP, so the
+    # z-image artifact must not serve it (verified tensor diff, maxdiff 0.86).
+    assert detect_family("black-forest-labs/FLUX.2-klein-4B").te_prequant_repos == ()
 
 
 def _hidream_transformers_stub(monkeypatch, recorder):

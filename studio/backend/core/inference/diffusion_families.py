@@ -141,6 +141,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("black-forest-labs/flux.1-krea-dev", "int8", "unsloth/FLUX.1-Krea-dev-FP8"),
             ("black-forest-labs/flux.1-krea-dev", "fp8", "unsloth/FLUX.1-Krea-dev-FP8"),
         ),
+        # Pre-cast T5-XXL (9.52 -> 5.90 GB; CLIP-L stays dense, 0.25 GB). One artifact
+        # serves schnell/dev/Krea-dev: the T5 shards are byte-identical across all three
+        # (verified sha256, see diffusion_te_prequant._TE_EQUIVALENT_BASES).
+        te_prequant_repos = (("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),),
         aliases = ("flux1", "flux-1"),
         # LoRA training targets FLUX.1-dev via the DiT trainer (QLoRA nf4); the dev repo is gated.
         trainable = True,
@@ -284,6 +288,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
         ),
+        # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB). NOT shared with flux.2-klein-4B: klein's
+        # TE retrained layer 35's MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA.
         trainable = True,
@@ -309,6 +316,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Krea-2-Turbo-FP8"),
             ("fp8", "unsloth/Krea-2-Turbo-FP8"),
         ),
+        # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline
+        # directly (constructor assembly never sees pipe_kwargs).
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
         aliases = ("krea2",),
         # LoRA training via the DiT trainer (no prequant repo yet, so nf4 quantizes on the fly).
         # Krea's guidance: train on the undistilled Raw, run adapters on Turbo, so Raw is the
@@ -336,6 +346,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Lumina-Image-2.0-FP8"),
             ("fp8", "unsloth/Lumina-Image-2.0-FP8"),
         ),
+        # Pre-cast Gemma2-2B TE. The Hub stores it fp32 (10.46 GB), so the 3.20 GB
+        # artifact is a 3.3x download cut even though the model is small.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),),
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         # Published and validated bf16-only upstream; keep the fp16 fallback off like z-image.
         fp16_incompatible = True,
@@ -358,6 +371,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/HunyuanImage-2.1-FP8"),
             ("fp8", "unsloth/HunyuanImage-2.1-FP8"),
         ),
+        # The Qwen2.5-VL TE is byte-identical to Qwen-Image's (verified sha256, see
+        # _TE_EQUIVALENT_BASES), so the family reuses the Qwen-Image artifact: zero new
+        # hosting, 16.58 -> 8.84 GB download. ByT5 (text_encoder_2) stays dense.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         pipeline_class = "HunyuanImagePipeline",
         transformer_class = "HunyuanImageTransformer2DModel",
         base_repo = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
