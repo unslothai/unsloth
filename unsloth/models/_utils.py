@@ -1670,10 +1670,8 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
-# Faster safetensors loads on unified-memory (integrated) GPUs: clone tensors
-# before .to(device) to restore the fast DMA path. The is_integrated gate runs
-# lazily in the wrapper, so this import never inits CUDA (fork-safe; runs before
-# patch_dgx_spark_memory_config). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
+# Faster safetensors loads on UMA (integrated) GPUs; lazy gate keeps this import
+# fork-safe (no CUDA init). No-op off-UMA. Opt out: UNSLOTH_DISABLE_UMA_CLONE_LOAD=1.
 from ._uma_safetensors import patch_unified_memory_safetensors_load
 
 patch_unified_memory_safetensors_load()

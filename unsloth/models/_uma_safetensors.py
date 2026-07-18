@@ -100,7 +100,7 @@ def patch_unified_memory_safetensors_load():
     if real_safe_open is None:
         return False
     if getattr(real_safe_open, "_unsloth_uma_clone", False):
-        return True  # idempotent
+        return True
 
     class _ClonedSlice:
         """Proxy over a safetensors ``PySafeSlice`` that clones+moves on read."""
@@ -126,7 +126,7 @@ def patch_unified_memory_safetensors_load():
 
         def __init__(self, args, kwargs):
             self._device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
-            # Open on CPU; we do the device move ourselves.
+            # Open on CPU; move ourselves.
             if len(args) > 2:
                 args = args[:2] + ("cpu",) + tuple(args[3:])
             else:
@@ -156,7 +156,7 @@ def patch_unified_memory_safetensors_load():
     def _uma_safe_open(*args, **kwargs):
         framework = kwargs.get("framework", args[1] if len(args) > 1 else None)
         device = kwargs.get("device", args[2] if len(args) > 2 else "cpu")
-        # Device check FIRST so non-CUDA loads never trigger the CUDA-init gate.
+        # Device check first: non-CUDA loads must not trigger the CUDA-init gate.
         if (
             framework in ("pt", "pytorch")
             and _is_cuda_target(device)
