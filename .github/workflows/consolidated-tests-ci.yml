@@ -268,6 +268,7 @@ jobs:
             tests/saving/test_save_shell_injection.py \
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
+            tests/saving/test_fix_sentencepiece_tokenizer_guard.py \
             tests/saving/test_compressed_export_schemes.py \
             tests/saving/test_export_api_surface.py \
             tests/saving/test_export_dispatch.py \
@@ -358,6 +359,7 @@ jobs:
             tests/saving/test_save_shell_injection.py \
             tests/saving/test_patch_saving_none_tokenizer.py \
             tests/saving/test_fix_sentencepiece_gguf_robustness.py \
+            tests/saving/test_fix_sentencepiece_tokenizer_guard.py \
             tests/saving/test_compressed_export_schemes.py \
             tests/saving/test_export_api_surface.py \
             tests/saving/test_export_dispatch.py \
