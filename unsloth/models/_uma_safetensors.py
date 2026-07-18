@@ -14,11 +14,16 @@
 
 """Faster safetensors weight loading on unified-memory (integrated) GPUs.
 
-A direct ``safe_open(..., device=<cuda>)`` on UMA GPUs (AMD APUs, NVIDIA GB10
-Spark, Intel iGPUs) misses torch's fast pinned-DMA path: the mmap-backed
+A direct ``safe_open(..., device=<cuda>)`` on CUDA/HIP UMA GPUs (AMD APUs,
+NVIDIA GB10 Spark) misses torch's fast pinned-DMA path: the mmap-backed
 safetensors buffers aren't recognized, so it falls to a slow per-tensor copy
 with page faults. Cloning each tensor into a normal torch CPU allocation before
 moving it restores the fast path; outputs are bit-identical.
+
+CUDA/HIP only, and only for loads that pass a CUDA device to ``safe_open``
+directly: Intel XPU iGPUs and the CPU-open + later ``.to()`` flows (e.g. bnb /
+HQQ quantized loads) keep the stock path until they can be validated on real
+hardware.
 """
 
 import os
