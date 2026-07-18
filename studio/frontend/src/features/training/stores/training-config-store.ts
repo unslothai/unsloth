@@ -989,6 +989,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...(patch.contextLength !== undefined
               ? { contextLengthManuallySet: true }
               : {}),
+            ...(patch.trainOnCompletions !== undefined
+              ? { trainOnCompletionsManuallySet: true }
+              : {}),
             ...(patch.learningRate !== undefined
               ? { learningRateManuallySet: false }
               : {}),
