@@ -264,11 +264,13 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       throw new Error("Recording is not supported in this browser.");
     }
 
-    // Pin the model and language chosen when recording began so later
-    // segments are not transcribed with settings the user changed mid-session.
+    // Pin the model, language, and linked chat chosen when recording began so
+    // later segments are not transcribed with settings the user changed
+    // mid-session and a thread switch cannot relink the saved transcript.
     const { sttModel: sessionModel, dictationLanguage: sessionLanguage } =
       useVoiceSettingsStore.getState();
     const sessionEngine = sttEngineFor(sessionModel);
+    const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -358,7 +360,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         for (const callback of speechCallbacks) {
           callback({ transcript: corrected, isFinal: true });
         }
-        recordRecentDictation(corrected, resolveDictationChatId(this.chatId));
+        recordRecentDictation(corrected, sessionChatId);
       }
       for (const callback of speechEndCallbacks) {
         callback({ transcript: corrected });

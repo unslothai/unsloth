@@ -144,6 +144,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     recognition.lang = this.language ?? resolveDictationLanguage();
     recognition.continuous = this.continuous;
     recognition.interimResults = this.interimResults;
+    // Pin the linked chat now; a thread switch while the recording finalizes
+    // must not relink the transcript to the newly opened chat.
+    const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -276,7 +279,7 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
         for (const callback of speechCallbacks) {
           callback({ transcript, isFinal: true });
         }
-        recordRecentDictation(transcript, resolveDictationChatId(this.chatId));
+        recordRecentDictation(transcript, sessionChatId);
       }
       // assistant-ui uses this standard lifecycle callback to leave dictation
       // mode. It is required even for silence and cancelled recordings.

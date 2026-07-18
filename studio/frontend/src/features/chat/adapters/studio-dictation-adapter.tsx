@@ -56,6 +56,10 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   listen(): StudioDictationSession {
     const session = this.createSession();
+    // A second entry point (chat, Compare, settings test) replaces the active
+    // session; cancel the old one so it cannot keep the microphone open or
+    // save a transcript with no discard button pointing at it.
+    cancelActiveStudioDictation();
     activeSession = session;
     // Forget the session once it ends so a later cancel is a no-op.
     const clear = () => {

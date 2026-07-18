@@ -53,6 +53,7 @@ from core.inference.stt_sidecar import (
     _TARGET_SAMPLE_RATE,
     normalize_whisper_language,
 )
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 logger = get_logger(__name__)
 
@@ -406,6 +407,8 @@ class GgmlSttSidecar:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout = 10)
+        if process is not None:
+            forget_pid(process.pid)
 
     def unload(self) -> None:
         with self._lock:
@@ -462,13 +465,18 @@ class GgmlSttSidecar:
                 stdout = subprocess.DEVNULL,
                 stderr = subprocess.DEVNULL,
                 stdin = subprocess.DEVNULL,
+                # Die with Studio (Linux PDEATHSIG, Windows job) so a crash
+                # never orphans a server still holding the model.
+                **child_popen_kwargs(),
             )
+            adopt_pid(process.pid)  # terminate_all backstop for graceful exits
             try:
                 self._wait_for_server(process, port)
             except Exception:
                 if process.poll() is None:
                     process.kill()
                     process.wait(timeout = 10)
+                forget_pid(process.pid)
                 raise
             self._process = process
             self._port = port

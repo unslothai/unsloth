@@ -165,6 +165,42 @@ def test_unloaded_sidecar_reports_nothing_resident():
     sidecar.unload()  # no-op, must not raise
 
 
+def test_server_pid_is_tracked_for_parent_lifetime(monkeypatch):
+    # The spawned server must be adopted for the terminate_all backstop and
+    # forgotten once this sidecar has reaped it.
+    _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
+
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self, *args, **kwargs):
+            self.terminated = False
+
+        def poll(self):
+            return 1 if self.terminated else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout = None):
+            return 0
+
+    events = []
+    monkeypatch.setattr(ggml_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(ggml_module, "adopt_pid", lambda pid: events.append(("adopt", pid)))
+    monkeypatch.setattr(ggml_module, "forget_pid", lambda pid: events.append(("forget", pid)))
+    monkeypatch.setattr(
+        GgmlSttSidecar, "_wait_for_server", staticmethod(lambda process, port: None)
+    )
+
+    sidecar = GgmlSttSidecar()
+    sidecar.load("small")
+    assert events == [("adopt", 4242)]
+    sidecar.unload()
+    assert events == [("adopt", 4242), ("forget", 4242)]
+
+
 class _FakeWhisperHandler(http.server.BaseHTTPRequestHandler):
     """Stands in for whisper-server's /inference endpoint."""
 
