@@ -29,6 +29,7 @@ import {
 import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
 import { useGpuUtilization } from "@/hooks";
+import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
 import { cn } from "@/lib/utils";
 import {
   ChartAverageIcon,
@@ -42,7 +43,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartSettingsSheet } from "./charts/chart-settings-sheet";
 import {
@@ -123,18 +124,17 @@ export function ProgressSection({
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
 
-  // Auto-resets when training stops; no useEffect needed
   const stopRequested = data.isTrainingRunning && stopRequestedLocal;
 
   const pct =
     data.totalSteps > 0
       ? Math.min(
-          100,
-          Math.max(
-            0,
-            Math.round((data.currentStep / data.totalSteps) * 100),
-          ),
-        )
+        100,
+        Math.max(
+          0,
+          Math.round((data.currentStep / data.totalSteps) * 100),
+        ),
+      )
       : Math.round(data.progressPercent);
 
   const elapsed = data.elapsedSeconds;
@@ -214,16 +214,16 @@ export function ProgressSection({
     },
     ...(data.trainingMethod !== "full"
       ? [
-          {
-            section: "LoRA",
-            rows: [
-              configRow(t("studio.progress.rank"), cfgLoraRank),
-              configRow(t("studio.progress.alpha"), cfgLoraAlpha),
-              configRow(t("studio.progress.dropout"), cfgLoraDropout),
-              configRow(t("studio.progress.variant"), cfgLoraVariant),
-            ],
-          },
-        ]
+        {
+          section: "LoRA",
+          rows: [
+            configRow(t("studio.progress.rank"), cfgLoraRank),
+            configRow(t("studio.progress.alpha"), cfgLoraAlpha),
+            configRow(t("studio.progress.dropout"), cfgLoraDropout),
+            configRow(t("studio.progress.variant"), cfgLoraVariant),
+          ],
+        },
+      ]
       : []),
   ];
 
@@ -350,8 +350,8 @@ export function ProgressSection({
               {stepsPerSecond == null
                 ? t("studio.progress.noStepsPerSecond")
                 : t("studio.progress.stepsPerSecond", {
-                    value: stepsPerSecond.toFixed(2),
-                  })}
+                  value: stepsPerSecond.toFixed(2),
+                })}
             </span>
             {data.currentNumTokens != null && (
               <span>{t("studio.progress.tokens", { value: data.currentNumTokens })}</span>
@@ -373,14 +373,50 @@ function LiveGpuPanel({
   isTrainingRunning: boolean;
 }): ReactElement {
   const t = useT();
-  const gpu = useGpuUtilization(isTrainingRunning);
+  const [selectedGpu, setSelectedGpu] = useState(0);
+  const gpuData = useGpuUtilization(isTrainingRunning);
+  const gpus: GpuUtilization[] =
+    Array.isArray(gpuData?.devices) && gpuData.devices.length > 0
+      ? gpuData.devices
+      : gpuData && Object.keys(gpuData).length > 0
+        ? [gpuData]
+        : [];
+
+  useEffect(() => {
+    if (selectedGpu > 0 && selectedGpu >= gpus.length) {
+      setSelectedGpu(0);
+    }
+  }, [gpus.length, selectedGpu]);
+
+  const gpuCount = gpus.length;
+  const currentGpu: Partial<GpuUtilization> = gpus[selectedGpu] || gpus[0] || {};
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-medium text-muted-foreground">
-          {t("studio.progress.gpuMonitor")}
-        </p>
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-muted-foreground">
+            {t("studio.progress.gpuMonitor")}
+          </p>
+          {gpuCount > 1 && (
+            <select
+              value={selectedGpu}
+              onChange={(e) => setSelectedGpu(Number(e.target.value))}
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              title="Select GPU"
+            >
+              {gpus.map((device, index) => (
+                <option
+                  key={device.index ?? index}
+                  value={index}
+                  className="bg-popover text-popover-foreground dark:bg-zinc-900 dark:text-zinc-100"
+                >
+                  GPU {device.visible_ordinal ?? index} - {device.backend} ({device.vram_total_gb ? `${Math.round(device.vram_total_gb)}GiB` : "N/A"})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
         <span className="text-[11px] text-muted-foreground">
           {t("studio.progress.live")}
         </span>
@@ -388,51 +424,44 @@ function LiveGpuPanel({
       <div className="grid grid-cols-2 gap-2.5">
         <GpuStat
           label={t("studio.progress.utilization")}
-          icon={
-            <HugeiconsIcon
-              icon={DashboardSpeed01Icon}
-              className="size-3.5"
-            />
-          }
+          icon={<HugeiconsIcon icon={DashboardSpeed01Icon} className="size-3.5" />}
           value={
-            gpu.gpu_utilization_pct != null
-              ? `${gpu.gpu_utilization_pct}%`
+            currentGpu.gpu_utilization_pct != null
+              ? `${currentGpu.gpu_utilization_pct}%`
               : "--"
           }
-          pct={gpu.gpu_utilization_pct ?? 0}
+          pct={currentGpu.gpu_utilization_pct ?? 0}
         />
         <GpuStat
           label={t("studio.progress.temperature")}
-          icon={
-            <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
-          }
+          icon={<HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />}
           value={
-            gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"
+            currentGpu.temperature_c != null ? `${currentGpu.temperature_c}°C` : "--"
           }
-          pct={gpu.temperature_c ?? 0}
+          pct={currentGpu.temperature_c ?? 0}
           max={100}
         />
         <GpuStat
           label={t("studio.progress.vram")}
           icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
           value={
-            gpu.vram_used_gb != null && gpu.vram_total_gb != null
-              ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB`
+            currentGpu.vram_used_gb != null && currentGpu.vram_total_gb != null
+              ? `${currentGpu.vram_used_gb} / ${currentGpu.vram_total_gb} GiB`
               : "--"
           }
-          pct={gpu.vram_utilization_pct ?? 0}
+          pct={currentGpu.vram_utilization_pct ?? 0}
         />
         <GpuStat
           label={t("studio.progress.power")}
           icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
           value={
-            gpu.power_draw_w != null
-              ? gpu.power_limit_w != null
-                ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W`
-                : `${gpu.power_draw_w} W`
+            currentGpu.power_draw_w != null
+              ? currentGpu.power_limit_w != null
+                ? `${currentGpu.power_draw_w} / ${currentGpu.power_limit_w} W`
+                : `${currentGpu.power_draw_w} W`
               : "--"
           }
-          pct={gpu.power_utilization_pct ?? 0}
+          pct={currentGpu.power_utilization_pct ?? 0}
         />
       </div>
     </div>
@@ -560,7 +589,10 @@ function TrainingHeaderActions({
           <HugeiconsIcon icon={StopIcon} className="size-3" />
           {stopRequested ? t("studio.training.stopping") : t("studio.training.stopAction")}
         </Button>
-        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+        <AlertDialogContent
+          className="w-max max-w-[95vw]"
+          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
@@ -693,7 +725,7 @@ function GpuStat({
   const clamped = Math.max(0, Math.min(pct, max ?? 100));
   let barColor = "bg-red-500";
   if (clamped < 60) {
-    barColor = "bg-emerald-500";
+    barColor = "bg-control-accent";
   } else if (clamped < 95) {
     barColor = "bg-amber-500";
   }

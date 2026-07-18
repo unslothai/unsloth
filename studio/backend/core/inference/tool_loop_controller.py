@@ -233,13 +233,48 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
+def _strip_mcp_image_suffix(result: str) -> str:
+    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
+    image array appended by _flatten_result, so legit tool text that merely
+    mentions the marker is not truncated."""
+    head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
+    if not sep:
+        return result
+    try:
+        images = json.loads(payload)
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(images, list) or not images:
+        return result
+    if not all(
+        isinstance(img, dict)
+        and isinstance(img.get("data"), str)
+        and isinstance(img.get("mimeType"), str)
+        for img in images
+    ):
+        return result
+    return head.rstrip()
+
+
 def strip_result_for_model(result: str) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
     feeding the result back to the model."""
+    result = _strip_mcp_image_suffix(result)
     for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
         if sentinel in result:
             result = result.split(sentinel, 1)[0].rstrip()
     return result
+
+
+def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
+    """Append a batch's no-op nudges as one deduped ``role=user`` message.
+
+    Deferred to after the batch's tool results so a no-op never splits an
+    assistant's ``tool_calls`` from their ``role=tool`` results.
+    """
+    contents = list(dict.fromkeys(msg["content"] for msg in msgs))
+    if contents:
+        conversation.append({"role": "user", "content": "\n\n".join(contents)})
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
@@ -253,8 +288,9 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
 def _noop_result(reason: NoopReason, tool_name: str) -> str:
     if reason == "duplicate":
         return (
-            "The previous tool request was not executed because this exact "
-            "tool call already completed successfully. Do not repeat the same "
+            f"One earlier request to call tool '{tool_name}' in this batch was "
+            "not executed because an identical call had already completed "
+            "successfully. Do not repeat the same "
             "tool call. Continue with a different enabled tool if that would "
             "materially help, or provide the final answer if you have enough "
             "information."
@@ -267,8 +303,8 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
             "the requested final note or answer."
         )
     return (
-        f"The previous tool request was not executed because tool "
-        f"'{tool_name}' is not enabled for this request. Provide the "
+        f"One earlier request to call tool '{tool_name}' in this batch was "
+        "not executed because that tool is not enabled for this request. Provide the "
         "final answer now without calling more tools."
     )
 

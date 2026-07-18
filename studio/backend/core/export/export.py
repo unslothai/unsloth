@@ -13,7 +13,18 @@ import shutil
 import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
-from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
+
+# unsloth imports torch on non-MLX hosts, so a --no-torch install raises here. Stay importable
+# (null the classes) so exports return a clean "PyTorch is not installed" error, not an import crash.
+try:
+    from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
+    _UNSLOTH_IMPORT_ERROR = None
+except Exception as _unsloth_exc:  # ImportError (e.g. missing torch) or a broken native load
+    FastLanguageModel = None
+    FastVisionModel = None
+    _IS_MLX = False
+    _UNSLOTH_IMPORT_ERROR = _unsloth_exc
+
 from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
@@ -27,13 +38,45 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 
-# GPU-only imports — guarded for Apple Silicon where these aren't needed
+# GPU/PyTorch-only imports, skipped on MLX and on a --no-torch install so the module stays
+# importable; export then degrades to a clear "PyTorch is not installed" error.
+torch = None
+_TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
-    from peft import PeftModel, PeftModelForCausalLM
-    from transformers.modeling_utils import PushToHubMixin
-    import torch
+    try:
+        from peft import PeftModel, PeftModelForCausalLM
+        from transformers.modeling_utils import PushToHubMixin
+        import torch
+    except Exception as _torch_exc:  # ImportError, or a broken native torch load
+        _TORCH_IMPORT_ERROR = _torch_exc
 
 logger = get_logger(__name__)
+
+
+def _export_runtime_available() -> bool:
+    """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
+    return bool(_IS_MLX) or (FastLanguageModel is not None)
+
+
+def _export_runtime_message() -> str:
+    """Precise reason the export runtime is unavailable, mirroring hardware.export_capability()."""
+    if torch is None:
+        return (
+            "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+            "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+        )
+    return (
+        "Export requires an NVIDIA, AMD, or Intel GPU, or Apple Silicon (MLX). No supported "
+        "accelerator was found on this host. (PyTorch is installed, but Unsloth cannot export on "
+        "CPU only.)"
+    )
+
+
+# Kept for call sites / tests referencing the PyTorch-missing text.
+_PYTORCH_MISSING_MESSAGE = (
+    "PyTorch is not installed. Model export requires PyTorch with a supported accelerator "
+    "(NVIDIA, AMD, or Intel GPU) or Apple Silicon (MLX). Install PyTorch to enable export."
+)
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
@@ -87,6 +130,28 @@ def _compressed_export_supported():
         return hasattr(_us, "_normalize_compressed_method")
     except Exception:
         return False
+
+
+def _torchao_export_supported():
+    """True if the installed unsloth build has the portable torchao FP8/INT8 export path."""
+    try:
+        import unsloth.save as _us
+        return hasattr(_us, "_normalize_torchao_method")
+    except Exception:
+        return False
+
+
+def _has_nvidia_gpu():
+    """True only on a real NVIDIA CUDA box (not ROCm/XPU/CPU/MLX); compressed-tensors needs it."""
+    try:
+        from utils.hardware import hardware as _hw
+        return _hw.DEVICE == _hw.DeviceType.CUDA and not _hw.IS_ROCM
+    except Exception:
+        try:
+            import torch
+            return bool(torch.cuda.is_available()) and getattr(torch.version, "hip", None) is None
+        except Exception:
+            return False
 
 
 def _hf_offline(timeout = 3):
@@ -436,13 +501,17 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export merged model (for PEFT models).
 
         Args:
             save_directory: Local directory to save model
-            format_type: "16-bit (FP16)" or "4-bit (FP4)"
+            format_type: "16-bit (FP16)", "4-bit (FP4)", or a compressed-tensors label
+            compressed_method: Optional compressed-tensors scheme alias (e.g. "fp8",
+                "fp8_static", "w8a8", "w4a16", "mxfp4", "mxfp8", "nvfp4"). Overrides
+                format_type and is resolved against unsloth.save COMPRESSED_EXPORT_SCHEMES.
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID (username/model-name)
             hf_token: Hugging Face token
@@ -451,38 +520,108 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        if not self.is_peft:
-            return (
-                False,
-                "This is not a PEFT model. Use 'Export Base Model' instead.",
-                None,
-            )
+        # Merged export works for PEFT adapters and non-PEFT Local/HF base models alike
+        # (save_pretrained_merged is a no-op merge that just saves the base).
 
         output_path: Optional[str] = None
-        # compressed-tensors formats run save_pretrained_merged with an FP8/FP4 save_method and
-        # write to a sibling "<dir>-<suffix>" directory (for vLLM).
-        _COMPRESSED = {
-            "FP8 (compressed-tensors)": ("fp8", "fp8"),
-            "NVFP4 (compressed-tensors)": ("nvfp4", "nvfp4"),
+        # Quantized formats save to a sibling "<dir>-<suffix>". Two backends: compressed-tensors
+        # (llm-compressor, NVIDIA-only) and portable torchao FP8/INT8 (device-agnostic). The alias
+        # comes from `compressed_method` (the "all formats" dropdown) or the `format_type` label.
+        _LABEL_TO_ALIAS = {
+            "FP8 (compressed-tensors)": "fp8",
+            "NVFP4 (compressed-tensors)": "nvfp4",
         }
-        is_compressed = format_type in _COMPRESSED
+        compressed_alias = compressed_method or _LABEL_TO_ALIAS.get(format_type)
+        compressed_suffix: Optional[str] = None
+        # Classify the alias: torchao-portable vs compressed-tensors.
+        torchao_info = None
+        if compressed_alias and _torchao_export_supported():
+            try:
+                import unsloth.save as _us_t
+                torchao_info = _us_t._normalize_torchao_method(compressed_alias)
+            except Exception:
+                torchao_info = None
+        is_torchao = torchao_info is not None
+        is_compressed = compressed_alias is not None and not is_torchao
         try:
-            if _IS_MLX:
-                if is_compressed:
-                    return False, "Compressed-tensors export is not supported on macOS/MLX.", None
-                mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
-            elif is_compressed:
+            if _IS_MLX and (is_compressed or is_torchao):
+                return (
+                    False,
+                    "Quantized (FP8/FP4/INT) export is not supported on macOS/MLX. "
+                    "Use 16-bit or GGUF.",
+                    None,
+                )
+
+            if is_torchao:
+                # Portable torchao: no NVIDIA GPU, no calibration.
+                compressed_suffix = torchao_info[1]
+
+            if is_compressed:
+                # compressed-tensors needs CUDA; enforce in the backend even if the UI gate is bypassed.
+                if not _has_nvidia_gpu():
+                    return (
+                        False,
+                        "Compressed-tensors (FP8/FP4) export requires an NVIDIA GPU. On other "
+                        "hardware use the portable FP8/INT8 (torchao) formats or 16-bit.",
+                        None,
+                    )
                 if not _compressed_export_supported():
                     return (
                         False,
-                        "Compressed-tensors (FP8/NVFP4) export requires an Unsloth build with "
+                        "Compressed-tensors (FP8/FP4) export requires an Unsloth build with "
                         "compressed-tensors support. Upgrade unsloth, or choose 16-bit.",
                         None,
                     )
-                save_method = _COMPRESSED[format_type][0]
+                import unsloth.save as _us
+
+                # Prefer the llm-compressor-main shadow (transformers 5.x): it quantizes newer models
+                # (Qwen3.5, Gemma-4, ...) the shipped 0.10.x cannot. Route all compressed exports
+                # through it when available; else fall back to the workspace 0.10.x path below.
+                _shadow_pp = None
+                try:
+                    from utils.transformers_version import llmcompressor_shadow_pythonpath
+                    _shadow_pp = llmcompressor_shadow_pythonpath()
+                except Exception as e:
+                    logger.warning(f"llm-compressor-main shadow unavailable: {e}")
+                if _shadow_pp:
+                    os.environ[_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV] = _shadow_pp
+                else:
+                    # No shadow (disabled/offline/failed): the workspace 0.10.x cannot exceed its
+                    # transformers ceiling, so fail fast for sidecar models; default-tier still works.
+                    os.environ.pop(_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV, None)
+                    _exceeds, _tf_ver = _us._transformers_exceeds_llm_compressor_ceiling()
+                    if _exceeds:
+                        return (
+                            False,
+                            "FP8/FP4 compressed-tensors export is not available for this model: it "
+                            f"runs under transformers {_tf_ver}, but the installed llm-compressor "
+                            f"supports transformers <= {_us._LLM_COMPRESSOR_MAX_TRANSFORMERS} and the "
+                            "llm-compressor-main runtime could not be provisioned (offline or "
+                            "UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN). Export to GGUF or 16-bit instead.",
+                            None,
+                        )
+
+                try:
+                    info = _us._normalize_compressed_method(compressed_alias)
+                except Exception as e:
+                    return False, f"Unsupported compressed export '{compressed_alias}': {e}", None
+                if info is None:
+                    return (
+                        False,
+                        f"'{compressed_alias}' is not a recognized compressed-tensors export.",
+                        None,
+                    )
+                compressed_suffix = info[2]
+
+            if _IS_MLX:
+                mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
+            elif is_compressed or is_torchao:
+                save_method = compressed_alias
             elif format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
             elif self._audio_type == "whisper":
@@ -506,10 +645,10 @@ class ExportBackend:
                         save_directory, self.current_tokenizer, save_method = save_method
                     )
 
-                # Compressed export writes to the "<dir>-<suffix>" sibling; report that as output.
+                # Compressed / torchao writes to the "<dir>-<suffix>" sibling; report that as output.
                 final_dir = (
-                    f"{save_directory}-{_COMPRESSED[format_type][1]}"
-                    if is_compressed
+                    f"{save_directory}-{compressed_suffix}"
+                    if (is_compressed or is_torchao)
                     else save_directory
                 )
                 self._write_export_metadata(final_dir)
@@ -549,10 +688,9 @@ class ExportBackend:
                                 token = hf_token,
                                 private = private,
                             )
-                elif is_compressed and output_path and Path(output_path).is_dir():
-                    # The compressed model was already built locally in output_path; upload it
-                    # directly so we do not re-run the (expensive, OOM-prone) compression that
-                    # push_to_hub_merged(save_method=fp8/nvfp4) would otherwise do a second time.
+                elif (is_compressed or is_torchao) and output_path and Path(output_path).is_dir():
+                    # Already built in output_path; upload it directly instead of re-running the
+                    # expensive quantization that push_to_hub_merged(save_method=...) would redo.
                     hf_api = HfApi(token = hf_token)
                     repo_id = PushToHubMixin._create_repo(
                         PushToHubMixin,
@@ -564,7 +702,7 @@ class ExportBackend:
                         username = repo_id.split("/")[0],
                         base_model = getattr(self.current_model.config, "_name_or_path", "unknown"),
                         model_type = getattr(self.current_model.config, "model_type", "llm"),
-                        method = format_type,
+                        method = compressed_alias or format_type,
                         extra = "unsloth",
                     )
                     ModelCard(content).push_to_hub(
@@ -610,6 +748,8 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -728,7 +868,7 @@ class ExportBackend:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
@@ -739,7 +879,9 @@ class ExportBackend:
 
         Args:
             save_directory: Local directory to save model
-            quantization_method: GGUF quantization method (e.g., "Q4_K_M")
+            quantization_method: A single GGUF quant method (e.g., "Q4_K_M") or a list of them
+                (e.g., ["Q4_K_M", "Q8_0"]). A list produces one GGUF per quant from a single
+                model load (unsloth save_to_gguf loops internally).
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
@@ -747,11 +889,13 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
-        # Only forward imatrix_file to an unsloth build that accepts it; otherwise even a plain
-        # no-imatrix export would fail with an unexpected-keyword error against an older unsloth.
+        # Only forward imatrix_file to an unsloth build that accepts it, else older builds raise
+        # an unexpected-keyword error even for a plain no-imatrix export.
         if imatrix_file is not None and not _supports_kwarg(
             self.current_model.save_pretrained_gguf, "imatrix_file"
         ):
@@ -766,8 +910,14 @@ class ExportBackend:
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
         try:
-            # unsloth expects lowercase quant method
-            quant_method = quantization_method.lower()
+            # Normalize to a lowercased list so multiple quants come from one model load.
+            if isinstance(quantization_method, (list, tuple)):
+                quant_methods = [str(q).lower() for q in quantization_method if str(q).strip()]
+            else:
+                quant_methods = [str(quantization_method).lower()]
+            if not quant_methods:
+                quant_methods = ["q4_k_m"]
+            quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
 
             # Pin convert_hf_to_gguf.py to setup.sh's tagged llama.cpp ref so it
             # can't drift past the pinned llama-quantize binary's gguf API.
@@ -889,7 +1039,7 @@ class ExportBackend:
 
             return (
                 True,
-                f"GGUF model exported successfully ({quantization_method})",
+                f"GGUF model exported successfully ({', '.join(quant_methods)})",
                 output_path,
             )
 
@@ -909,18 +1059,55 @@ class ExportBackend:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        gguf: bool = False,
+        gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export LoRA adapter only (not merged).
 
+        Args:
+            gguf: If True, also convert the adapter to a GGUF LoRA file (llama.cpp
+                convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.
+            gguf_outtype: GGUF LoRA output float type; one of q8_0/f16/bf16/f32.
+
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
         """
+        if not _export_runtime_available():
+            return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
+
+        _GGUF_LORA_OUTTYPES = ("q8_0", "f16", "bf16", "f32")
+        if gguf:
+            if _IS_MLX:
+                return (
+                    False,
+                    "GGUF LoRA adapter export is not supported on macOS/MLX. "
+                    "Use the safetensors adapter instead.",
+                    None,
+                )
+            outtype = str(gguf_outtype).lower()
+            if outtype not in _GGUF_LORA_OUTTYPES:
+                return (
+                    False,
+                    f"Invalid GGUF LoRA outtype '{gguf_outtype}'. "
+                    f"Choose one of {', '.join(_GGUF_LORA_OUTTYPES)}.",
+                    None,
+                )
+            # getattr so an older build without save_pretrained_gguf returns a clean message
+            # instead of an AttributeError (a generic 500).
+            _save_gguf_fn = getattr(self.current_model, "save_pretrained_gguf", None)
+            if _save_gguf_fn is None or not _supports_kwarg(_save_gguf_fn, "save_method"):
+                return (
+                    False,
+                    "This Unsloth build does not support GGUF LoRA adapter export. "
+                    "Upgrade unsloth and unsloth_zoo, or export the safetensors adapter.",
+                    None,
+                )
 
         output_path: Optional[str] = None
         try:
@@ -929,7 +1116,24 @@ class ExportBackend:
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
-                if _IS_MLX:
+                if gguf:
+                    # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
+                    _apply_wsl_sudo_patch()
+                    self.current_model.save_pretrained_gguf(
+                        save_directory,
+                        self.current_tokenizer,
+                        save_method = "lora",
+                        quantization_method = outtype,
+                        # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
+                        token = hf_token or None,
+                    )
+                    final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+                    logger.info(
+                        "LoRA GGUF export complete. Files in %s:\n  %s",
+                        save_directory,
+                        "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
+                    )
+                elif _IS_MLX:
                     # MLX: save adapters.safetensors + tokenizer files
                     self.current_model.save_lora_adapters(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
@@ -949,7 +1153,24 @@ class ExportBackend:
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
-                if _IS_MLX:
+                if gguf:
+                    # Upload the locally-built GGUF folder; needs a local save_directory so the
+                    # conversion is not re-run.
+                    if not (output_path and Path(output_path).is_dir()):
+                        return (
+                            False,
+                            "GGUF LoRA Hub upload requires a local save directory; set one and "
+                            "retry.",
+                            None,
+                        )
+                    hf_api = HfApi(token = hf_token)
+                    hf_api.create_repo(repo_id, private = private, exist_ok = True)
+                    hf_api.upload_folder(
+                        folder_path = output_path,
+                        repo_id = repo_id,
+                        repo_type = "model",
+                    )
+                elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)

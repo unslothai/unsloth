@@ -393,6 +393,7 @@ function ModelRow({
   vramEst,
   gpuGb,
   tooltipText,
+  hubUrl,
   optionProps,
   onArrowDownIntoChildren,
   capabilities,
@@ -409,6 +410,10 @@ function ModelRow({
   vramEst?: number;
   gpuGb?: number;
   tooltipText?: ReactNode;
+  /** Hugging Face address (e.g. "huggingface.co/owner/name") for online/Hub
+   * rows; surfaced on hover so their repo id / URL is discoverable the same
+   * way local rows show an on-disk path. Omit to show no address line. */
+  hubUrl?: string;
   optionProps?: ModelRowOptionProps;
   onArrowDownIntoChildren?: () => boolean;
   /** Capability override (HF rows have tags); falls back to name detection. */
@@ -454,7 +459,7 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
         className,
       )}
@@ -546,30 +551,41 @@ function ModelRow({
     </button>
   );
 
-  if (vramTooltipText) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent
-          side="left"
-          className="tooltip-compact max-w-xs break-all"
-        >
-          {label}
-          <span className="block text-[10px] mt-1">{vramTooltipText}</span>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
+  // Optional Hugging Face address line for online/Hub rows, rendered under
+  // whichever tooltip shows so the repo id / URL is always visible on hover.
+  const hubUrlLine = hubUrl ? (
+    <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+      {hubUrl}
+    </span>
+  ) : null;
 
-  if (tooltipText) {
+  const tooltipBody = vramTooltipText ? (
+    <>
+      {label}
+      <span className="block text-[10px] mt-1">{vramTooltipText}</span>
+      {hubUrlLine}
+    </>
+  ) : tooltipText ? (
+    <>
+      {tooltipText}
+      {hubUrlLine}
+    </>
+  ) : hubUrl ? (
+    <>
+      <span className="block break-words">{label}</span>
+      {hubUrlLine}
+    </>
+  ) : null;
+
+  if (tooltipBody) {
     return (
-      <Tooltip>
+      <Tooltip delayDuration={700}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
         <TooltipContent
           side="left"
           className="tooltip-compact max-w-xs break-all"
         >
-          {tooltipText}
+          {tooltipBody}
         </TooltipContent>
       </Tooltip>
     );
@@ -919,7 +935,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, expectedBytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1193,6 +1209,13 @@ function localPathTooltip(name: string, path: string): ReactNode {
   );
 }
 
+/** Hugging Face address for an online/Hub row, or undefined when the repo id is
+ * missing so the row shows no (empty) address line on hover. */
+function hubRepoUrl(id: string | null | undefined): string | undefined {
+  const trimmed = id?.trim();
+  return trimmed ? `huggingface.co/${trimmed}` : undefined;
+}
+
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
  * callers gate visibility on the host being a Mac. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
@@ -1247,11 +1270,8 @@ export function HubModelPicker({
   onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
-  // The currently-loaded/running model id. We read params.checkpoint from the
-  // runtime store (backend-mirrored from /api/inference/status.active_model, see
-  // chat-runtime-store) rather than the dropdown `isSelected` highlight (which is
-  // just `value === repo_id` and can reflect a staged, not-yet-loaded pick). Used
-  // to disable the cached-row update action for the model that's live in memory.
+  // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
+  // highlight which can be a staged pick. Disables the update action for it.
   const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
@@ -1589,11 +1609,8 @@ export function HubModelPicker({
     refreshLocalModelsList();
   }, [hfToken, refreshLocalModelsList]);
 
-  // Updates run as MANAGED downloads (they show in the global Downloads panel
-  // with manifest-based progress + a working Cancel), instead of a blocking
-  // call. The worker re-resolves `main` and pulls only changed blobs, so the
-  // cached copy stays usable until the new revision lands. The row's
-  // ModelUpdateAction refreshes the list when this repo+variant completes.
+  // Updates run as managed downloads (Downloads panel: progress + Cancel), not a blocking
+  // call. The worker pulls only changed blobs, so the cached copy stays usable until done.
   const startManagedUpdate = useCallback((repoId: string, variant: string, expectedBytes: number) => {
     return downloadManager
       .requestStart({
@@ -2468,6 +2485,7 @@ export function HubModelPicker({
           <div className="min-w-0 flex-1">
             <ModelRow
               label={c.repo_id}
+              tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               selected={isSelected}
@@ -2524,6 +2542,7 @@ export function HubModelPicker({
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
+            hubUrl={hubRepoUrl(c.repo_id)}
             meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
               c.size_bytes,
             )}`}
@@ -3384,6 +3403,7 @@ export function HubModelPicker({
                         <div key={id}>
                           <ModelRow
                             label={id}
+                            hubUrl={hubRepoUrl(id)}
                             hideOwner={true}
                             downloaded={downloadedSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}
@@ -3469,6 +3489,7 @@ export function HubModelPicker({
                       <div key={id}>
                         <ModelRow
                           label={id}
+                          hubUrl={hubRepoUrl(id)}
                           capabilities={capsById.get(id)}
                           meta={
                             isKnownGgufRepo(id)
@@ -3551,6 +3572,7 @@ export function HubModelPicker({
                         <div key={id}>
                           <ModelRow
                             label={id}
+                            hubUrl={hubRepoUrl(id)}
                             capabilities={capsById.get(id)}
                             meta={
                               isSearchGguf
