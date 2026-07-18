@@ -166,14 +166,29 @@ def format_error_message(error: Exception, model_name: str) -> str:
 _HF_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
+def _offline_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+
+
+def hf_hub_offline() -> bool:
+    """True when ``HF_HUB_OFFLINE`` is truthy -- the ONLY offline flag
+    ``huggingface_hub`` honors natively, so it is the one that actually prevents
+    a Hub fetch.
+
+    Use this (never :func:`hf_env_offline`) to decide whether a network call is
+    *impossible*. A security gate must not be skipped on the weaker signal: with
+    only ``TRANSFORMERS_OFFLINE`` set, hub operations still reach the network, so
+    skipping a scan there would let an unscanned repo be downloaded anyway.
+    """
+    return _offline_flag("HF_HUB_OFFLINE")
+
+
 def hf_env_offline() -> bool:
     """True when either HF offline env var is truthy (strip+lower, on/true/yes/1).
 
-    ``huggingface_hub`` natively honors only ``HF_HUB_OFFLINE``; callers that make
-    direct Hub calls must consult this so a ``TRANSFORMERS_OFFLINE``-only session
-    does not block on network timeouts for data the local cache already has.
+    This is the user's *intent* to work offline. ``huggingface_hub`` honors only
+    ``HF_HUB_OFFLINE``, so callers that must GUARANTEE no fetch have to pass
+    ``local_files_only`` explicitly (or consult :func:`hf_hub_offline`) rather
+    than assume this alone stops the network.
     """
-    return (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
-    )
+    return hf_hub_offline() or _offline_flag("TRANSFORMERS_OFFLINE")

@@ -165,10 +165,21 @@ def _get(model_name: str | None = None):
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
 
+            from utils.utils import hf_env_offline
+
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
             _guard_model_security(name)
-            _model = SentenceTransformer(name, device = device, model_kwargs = dtype_kwargs("float16"))
+            # Propagate the user's offline intent into the loader: SentenceTransformer
+            # performs its own Hub operations, and huggingface_hub honors only
+            # HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only session would otherwise
+            # still fetch missing repo files over the network.
+            _model = SentenceTransformer(
+                name,
+                device = device,
+                model_kwargs = dtype_kwargs("float16"),
+                local_files_only = hf_env_offline(),
+            )
             _name = name
         return _model
 

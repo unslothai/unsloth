@@ -241,14 +241,17 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     retries once on a transient error, then returns None so the caller fails open.
     """
     from huggingface_hub import model_info as hf_model_info
-    from utils.utils import hf_env_offline
+    from utils.utils import hf_hub_offline
 
-    # Offline (including a TRANSFORMERS_OFFLINE-only session, which huggingface_hub
-    # does not honor natively): this is a pure Hub-metadata lookup with no local
-    # fallback, so attempting it would just burn both request timeouts before
-    # failing open anyway. Skip straight to the fail-open path.
-    if hf_env_offline():
-        logger.debug("HF security scan skipped for '%s': offline; failing open.", model_name)
+    # Only HF_HUB_OFFLINE -- deliberately NOT the weaker hf_env_offline(). This is
+    # a security gate: huggingface_hub honors only HF_HUB_OFFLINE, so under a
+    # TRANSFORMERS_OFFLINE-only session the later SentenceTransformer load can
+    # still fetch and deserialize the repo's pickle. Skipping the scan there would
+    # wave through exactly the download _guard_model_security exists to block.
+    # With HF_HUB_OFFLINE set no fetch is possible, so this metadata-only lookup
+    # would just burn both request timeouts before failing open anyway.
+    if hf_hub_offline():
+        logger.debug("HF security scan skipped for '%s': hub offline; failing open.", model_name)
         return None
 
     token_arg = hf_token if hf_token else False
