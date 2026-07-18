@@ -1861,7 +1861,12 @@ class VideoBackend:
                     "transformer_quant": (
                         transformer_quant,
                         transformer_quant_engaged or "off",
-                        "dense DiT(s) torchao-quantised onto the low-precision tensor cores"
+                        # Honest framing: the shipped torchao schemes cut load time (hosted
+                        # prequant) and resident memory ~2x, but measured on B200 the per-step
+                        # GEMMs are at best parity with bf16 (int8 dynamic can be slower); the
+                        # generation-speed lever is a calibrated static-scale fp8 path, not this.
+                        "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
+                        "load time; per-step speed is roughly bf16 parity)"
                         if transformer_quant_engaged is not None
                         else (
                             "skipped: offload moves the DiT, unsupported for torchao "
@@ -2338,6 +2343,24 @@ class VideoBackend:
                     "num_frames": frames,
                     "generator": generator,
                 }
+                # The 2.3 distilled DiT was trained against a fixed 8-step sigma curve
+                # (ltx_core DISTILLED_SIGMA_VALUES); at the distilled default step count
+                # pass it verbatim, with the scheduler's re-shaping transforms neutralised
+                # for the call (they distort even explicit sigmas). Any other step count
+                # keeps the scheduler's own spacing.
+                sigma_ctx: Any = contextlib.nullcontext()
+                if fam.name == "ltx-2" and "sigmas" in call_params:
+                    from .video_ltx2 import (
+                        LTX23_DISTILLED_SIGMAS,
+                        ltx2_distilled_ids,
+                        ltx23_verbatim_sigmas,
+                    )
+
+                    if steps == len(LTX23_DISTILLED_SIGMAS) and ltx2_distilled_ids(
+                        state.gguf_filename, state.repo_id, state.base_repo
+                    ):
+                        kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
+                        sigma_ctx = ltx23_verbatim_sigmas(pipe)
                 # Image-conditioned families (WanImageToVideoPipeline) REQUIRE a source image;
                 # text-only families have no ``image`` kwarg to feed one to. Both mismatches are
                 # client input -> ValueError (the route/worker map it to a 400-style message).
@@ -2521,7 +2544,7 @@ class VideoBackend:
                         except Exception:  # noqa: BLE001
                             pass
                 try:
-                    with torch.inference_mode(), progress_ctx:
+                    with torch.inference_mode(), progress_ctx, sigma_ctx:
                         output = pipe(**kwargs)
                 except _VideoGenerationCancelled:
                     # Unwinding by exception skips the pipeline's end-of-call maybe_free_model_hooks();

@@ -349,6 +349,52 @@ def checkpoint_variant(checkpoint_path: Path | str) -> str:
     return "dev" if "dev" in Path(checkpoint_path).name.lower() else "distilled"
 
 
+# Upstream ltx_core's DISTILLED_SIGMA_VALUES: the fixed 8-step sampling curve the 22B distilled
+# DiT was trained against (the scheduler appends the terminal 0 itself). The base scheduler's
+# resolution-shifted flow-match spacing lands FAR from it at every mu the pipeline can compute
+# (measured second sigma 0.945-0.981 vs 0.99375, and a 0.37-0.61 -> 0.1 tail vs 0.725 -> 0.42),
+# so the distilled default of 8 steps must pass this list verbatim.
+LTX23_DISTILLED_SIGMAS: tuple[float, ...] = (
+    1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875,
+)
+
+
+def ltx2_distilled_ids(*ids: Optional[str]) -> bool:
+    """True when any loaded-checkpoint id names the distilled DiT (same substring the
+    generation-defaults table keys on, so sigmas and the 8-step default stay in lockstep)."""
+    return any("distilled" in str(i or "").lower() for i in ids)
+
+
+def ltx23_verbatim_sigmas(pipe: Any) -> Any:
+    """Context manager neutralising the scheduler transforms that re-shape even explicit
+    ``sigmas`` (FlowMatchEulerDiscreteScheduler applies dynamic time-shift and the
+    shift_terminal stretch to caller-provided lists): dynamic shifting off, shift 1.0
+    (identity), no terminal stretch, restored on exit. Without this the calibrated curve
+    above would arrive at the DiT distorted (its 0.421875 tail clamped to 0.1)."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _ctx():
+        sched = getattr(pipe, "scheduler", None)
+        cfg = getattr(sched, "config", None)
+        register = getattr(sched, "register_to_config", None)
+        if cfg is None or not callable(register):
+            yield
+            return
+        saved = {
+            "use_dynamic_shifting": cfg.get("use_dynamic_shifting", False),
+            "shift": cfg.get("shift", 1.0),
+            "shift_terminal": cfg.get("shift_terminal", None),
+        }
+        register(use_dynamic_shifting = False, shift = 1.0, shift_terminal = None)
+        try:
+            yield
+        finally:
+            register(**saved)
+
+    return _ctx()
+
+
 # ── component builders ───────────────────────────────────────────────────────
 
 
