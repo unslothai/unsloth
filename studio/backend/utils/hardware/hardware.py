@@ -724,6 +724,49 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         return None, None
 
 
+def _rocm_linux_amdgpu_cards() -> list[tuple[str, int, str]]:
+    """The amdgpu-bound DRM cards, in PCI order: ``(pci_bdf, card_no, device_dir)``.
+
+    Membership is decided by the BOUND DRIVER (``device/driver`` resolves to
+    amdgpu), not by the presence of the VRAM sysfs files: an AMD device with
+    incomplete sysfs support (some APUs expose no mem_info_vram_* at all) is still
+    a device that consumes a ROCm ordinal, and dropping it would shift every later
+    card down one. PCI order is ROCm/HIP's default enumeration order, so the
+    position in this list is the ROCm ordinal; the DRM card number is a stable
+    tiebreak (the kernel assigns it in PCI-probe order too) for when the device
+    symlink cannot be resolved to a BDF.
+
+    NOTE this is a superset of the ROCm-visible set: an amdgpu-bound but
+    HIP-unsupported adapter appears here too. Callers must therefore not assume a
+    1:1 mapping onto torch devices without checking the counts agree.
+    """
+    if platform.system() != "Linux":
+        return []
+    amd_cards: list[tuple[str, int, str]] = []
+    try:
+        for card_path in glob.glob("/sys/class/drm/card*"):
+            # Match card<N> exactly so connector nodes (card0-DP-1) are skipped.
+            m = re.fullmatch(r".*/card(\d+)", card_path)
+            if m is None:
+                continue
+            dev_dir = os.path.join(card_path, "device")
+            try:
+                driver = os.path.basename(os.path.realpath(os.path.join(dev_dir, "driver")))
+            except OSError:
+                continue
+            if driver != "amdgpu":
+                continue  # foreign adapter: not a ROCm device, takes no ordinal
+            try:
+                bdf = os.path.basename(os.path.realpath(dev_dir))
+            except OSError:
+                bdf = ""
+            amd_cards.append((bdf, int(m.group(1)), dev_dir))
+    except Exception:
+        return []
+    amd_cards.sort(key = lambda c: (c[0], c[1]))
+    return amd_cards
+
+
 def _rocm_linux_sysfs_vram_per_card_gb() -> dict[int, tuple[float, float]]:
     """Per-device system-wide AMD VRAM via Linux DRM sysfs, keyed by ROCm
     physical device ordinal.
@@ -753,30 +796,7 @@ def _rocm_linux_sysfs_vram_per_card_gb() -> dict[int, tuple[float, float]]:
         return {}
 
     try:
-        amd_cards: list[tuple[str, int, str]] = []  # (pci_bdf, card_no, device_dir)
-        for card_path in glob.glob("/sys/class/drm/card*"):
-            # Match card<N> exactly so connector nodes (card0-DP-1) are skipped.
-            m = re.fullmatch(r".*/card(\d+)", card_path)
-            if m is None:
-                continue
-            dev_dir = os.path.join(card_path, "device")
-            try:
-                driver = os.path.basename(os.path.realpath(os.path.join(dev_dir, "driver")))
-            except OSError:
-                continue
-            if driver != "amdgpu":
-                continue  # foreign adapter: not a ROCm device, takes no ordinal
-            try:
-                bdf = os.path.basename(os.path.realpath(dev_dir))
-            except OSError:
-                bdf = ""
-            amd_cards.append((bdf, int(m.group(1)), dev_dir))
-
-        # PCI order == ROCm's default enumeration order; the DRM card number is a
-        # stable tiebreak (the kernel assigns it in PCI-probe order too) for when
-        # the device symlink cannot be resolved to a BDF.
-        amd_cards.sort(key = lambda c: (c[0], c[1]))
-
+        amd_cards = _rocm_linux_amdgpu_cards()
         cards: dict[int, tuple[float, float]] = {}
         for ordinal, (_bdf, _card_no, dev_dir) in enumerate(amd_cards):
             try:
@@ -1122,20 +1142,30 @@ def _reconcile_primary_rocm_unified_memory(
     _apply_unified_memory_correction(utilization, torch_devices[0])
 
 
-def _rocm_visibility_masks_layered() -> bool:
-    """True when a ROCR mask is combined with a HIP-layer mask, so the reported
-    ordinal indexes into the ROCR-filtered set rather than the physical devices.
+def _rocm_device_index_unreliable() -> bool:
+    """True when the reported device ``index`` cannot be trusted as a physical
+    GPU id, so it must not be matched to a DRM card.
 
-    ROCR_VISIBLE_DEVICES filters physical GPUs at the HSA/ROCr layer; a HIP-layer
-    mask set on top then selects WITHIN that already-filtered set (apply_gpu_ids
-    relies on this -- it sets HIP while leaving an inherited ROCR mask in place).
-    On ROCm the HIP layer honors HIP_VISIBLE_DEVICES *and* CUDA_VISIBLE_DEVICES,
-    so either one composed over ROCR produces the same layering: ROCR=2,3 with
-    CUDA=1 means physical GPU 3, yet _get_parent_visible_gpu_spec() reports the
-    ROCR value [2,3] and would label that device index 2. The resulting ``index``
-    is a ROCR-relative ordinal, NOT a physical GPU id, and cannot be matched to a
-    DRM card by physical index. A single mask on its own keeps ``index`` physical
-    (each filters the full physical set), so that is not layered."""
+    Two cases:
+
+    * **Layered masks.** ROCR_VISIBLE_DEVICES filters physical GPUs at the
+      HSA/ROCr layer; a HIP-layer mask set on top then selects WITHIN that
+      already-filtered set (apply_gpu_ids relies on this -- it sets HIP while
+      leaving an inherited ROCR mask in place). The HIP layer honors
+      HIP_VISIBLE_DEVICES *and* CUDA_VISIBLE_DEVICES, so either composed over
+      ROCR layers identically: ROCR=2,3 with CUDA=1 is physical GPU 3, yet
+      _get_parent_visible_gpu_spec() reports the ROCR value [2,3] and would label
+      that device index 2. A single mask on its own keeps ``index`` physical
+      (each filters the full physical set), so that is not layered.
+
+    * **GPU_DEVICE_ORDINAL.** A supported ROCm visibility variable that
+      _get_parent_visible_gpu_spec() does not consult at all, so with
+      GPU_DEVICE_ORDINAL=1 physical GPU 1 arrives as torch ordinal 0 and is
+      mislabeled index 0. Any value at all makes the reported index unresolved.
+    """
+    ordinal_mask = os.environ.get("GPU_DEVICE_ORDINAL")
+    if ordinal_mask and ordinal_mask.strip():
+        return True
     rocr = os.environ.get("ROCR_VISIBLE_DEVICES")
     if not (rocr and rocr.strip()):
         return False
@@ -1165,6 +1195,16 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     the multi-GPU view keeps the torch fallback there rather than risk
     misattributing another adapter's usage."""
     if not devices or platform.system() != "Linux":
+        return
+    # The amdgpu card list is only a SUPERSET of the ROCm-visible devices: an
+    # amdgpu-bound adapter HIP cannot enumerate (an unsupported older AMD GPU
+    # beside a supported one) still appears there and would take an ordinal,
+    # shifting every real compute device onto the wrong card. There is no
+    # torch-side PCI identity to match against, so require the counts to agree --
+    # that is exactly the condition under which position-in-PCI-order is a sound
+    # 1:1 mapping. Any disagreement means an unenumerable card is present, so keep
+    # torch's process-local figures (less informative, never misattributed).
+    if len(_rocm_linux_amdgpu_cards()) != len(devices):
         return
     # Keyed by ROCm physical device ordinal (amdgpu cards in PCI order), so a
     # device is matched to ITS GPU by physical index -- a non-amdgpu adapter on an
@@ -1248,7 +1288,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                         "power_utilization_pct": None,
                     }
                 )
-            if IS_ROCM and index_kind == "physical" and not _rocm_visibility_masks_layered():
+            if IS_ROCM and index_kind == "physical" and not _rocm_device_index_unreliable():
                 # Torch VRAM here is process-local; swap in system-wide readings
                 # (Windows perf counters / Linux sysfs) so a model held by the
                 # separate llama-server process shows up (#7072). Mirrors the

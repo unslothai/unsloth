@@ -160,6 +160,12 @@ def test_linux_per_card_reserves_ordinal_for_amd_without_vram_files(monkeypatch,
 # ── overlay ──
 
 
+def _patch_card_count(monkeypatch, n):
+    """The overlay only maps 1:1 when the amdgpu card count equals the device
+    count, so every overlay test must declare how many AMD cards the host has."""
+    monkeypatch.setattr(hw, "_rocm_linux_amdgpu_cards", lambda: [("", i, "") for i in range(n)])
+
+
 def test_overlay_windows_is_noop_keeps_torch(monkeypatch):
     # Windows multi-GPU is intentionally not overlaid (perf counters can't be
     # mapped to ROCm ordinals and miss WDDM shared memory): keep torch figures.
@@ -170,6 +176,7 @@ def test_overlay_windows_is_noop_keeps_torch(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("sysfs must not run on Windows")),
     )
     devices = [_device(0, used = 0.02, total = 8.0)]
+    _patch_card_count(monkeypatch, 1)
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 0.02  # untouched
 
@@ -184,6 +191,7 @@ def test_overlay_linux_matches_by_device_ordinal(monkeypatch):
         lambda: {0: (30.0, 45.0), 1: (0.5, 8.0)},  # device 0 big, device 1 small
     )
     devices = [_device(1, used = 0.01, total = 8.0), _device(0, used = 0.02, total = 45.0)]
+    _patch_card_count(monkeypatch, 2)
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 0.5  # index 1 -> device 1 (small)
     assert devices[0]["vram_total_gb"] == 8.0
@@ -197,6 +205,7 @@ def test_overlay_linux_ordinal_hole_does_not_shift(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {1: (0.5, 8.0)})
     devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
+    _patch_card_count(monkeypatch, 2)
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 0.02  # no ordinal 0 -> torch kept
     assert devices[1]["vram_used_gb"] == 0.5  # ordinal 1 -> device 1, not device 0
@@ -209,6 +218,7 @@ def test_overlay_linux_skips_unified_memory_card(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {0: (0.4, 1.0)})
     devices = [_device(0, used = 12.0, total = 96.0)]  # torch's unified pool
+    _patch_card_count(monkeypatch, 1)
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 12.0
     assert devices[0]["vram_total_gb"] == 96.0
@@ -223,6 +233,7 @@ def test_overlay_linux_skips_partitioned_device(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {0: (40.0, 192.0)})
     devices = [_device(0, used = 1.0, total = 24.0)]  # torch partition
+    _patch_card_count(monkeypatch, 1)
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 1.0  # partition figures kept
     assert devices[0]["vram_total_gb"] == 24.0
@@ -235,8 +246,38 @@ def test_overlay_linux_out_of_range_index_untouched(monkeypatch):
         hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {0: (30.0, 45.0), 1: (0.5, 8.0)}
     )
     devices = [_device(5, used = 0.02, total = 45.0)]
+    _patch_card_count(monkeypatch, 1)
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 0.02
+
+
+def test_overlay_skips_when_amdgpu_card_count_exceeds_devices(monkeypatch):
+    # An amdgpu-bound adapter HIP cannot enumerate (an unsupported older AMD GPU
+    # beside a supported one) still appears in the DRM card list, so it would take
+    # ordinal 0 and shift the real compute device onto the wrong card. With no
+    # torch-side PCI identity to match on, a count disagreement is the signal that
+    # position-in-PCI-order is NOT a sound 1:1 mapping -- keep torch's figures.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {0: (30.0, 45.0)})
+    _patch_card_count(monkeypatch, 2)  # 2 amdgpu cards, but ROCm exposes 1 device
+    devices = [_device(0, used = 0.02, total = 45.0)]
+    hw._overlay_system_wide_vram(devices)
+    assert devices[0]["vram_used_gb"] == 0.02  # untouched
+
+
+def test_gpu_device_ordinal_makes_index_unreliable(monkeypatch):
+    # GPU_DEVICE_ORDINAL is a supported ROCm visibility variable that the parent
+    # spec never consults, so GPU_DEVICE_ORDINAL=1 surfaces physical GPU 1 as
+    # torch ordinal 0 and it gets mislabeled index 0. Any value must disable the
+    # overlay, else card 0's usage lands on GPU 1.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+    assert hw._rocm_device_index_unreliable() is False
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "1")
+    assert hw._rocm_device_index_unreliable() is True
+    monkeypatch.setenv("GPU_DEVICE_ORDINAL", "  ")  # empty is not an active mask
+    assert hw._rocm_device_index_unreliable() is False
 
 
 def test_overlay_empty_devices_is_noop(monkeypatch):
@@ -248,8 +289,13 @@ def test_overlay_empty_devices_is_noop(monkeypatch):
 
 
 def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
-    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    for _var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(_var, raising = False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
@@ -327,16 +373,16 @@ def test_visible_utilization_nvidia_fallback_skips_overlay(monkeypatch):
 def test_masks_layered_only_when_both_active(monkeypatch):
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
-    assert hw._rocm_visibility_masks_layered() is False
+    assert hw._rocm_device_index_unreliable() is False
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
-    assert hw._rocm_visibility_masks_layered() is False  # HIP alone -> physical
+    assert hw._rocm_device_index_unreliable() is False  # HIP alone -> physical
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
-    assert hw._rocm_visibility_masks_layered() is True  # HIP over ROCR -> layered
+    assert hw._rocm_device_index_unreliable() is True  # HIP over ROCR -> layered
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-    assert hw._rocm_visibility_masks_layered() is False  # ROCR alone -> physical
+    assert hw._rocm_device_index_unreliable() is False  # ROCR alone -> physical
     # An empty value is not an active filter, so it does not layer.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "  ")
-    assert hw._rocm_visibility_masks_layered() is False
+    assert hw._rocm_device_index_unreliable() is False
 
 
 def test_cuda_over_rocr_counts_as_layered(monkeypatch):
@@ -346,9 +392,9 @@ def test_cuda_over_rocr_counts_as_layered(monkeypatch):
     for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
-    assert hw._rocm_visibility_masks_layered() is False  # CUDA alone -> physical
+    assert hw._rocm_device_index_unreliable() is False  # CUDA alone -> physical
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
-    assert hw._rocm_visibility_masks_layered() is True  # CUDA over ROCR -> layered
+    assert hw._rocm_device_index_unreliable() is True  # CUDA over ROCR -> layered
 
 
 def test_visible_utilization_layered_masks_skip_overlay(monkeypatch):
