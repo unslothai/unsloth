@@ -99,8 +99,8 @@ class VideoFamily:
 
 _FAMILIES: tuple[VideoFamily, ...] = (
     # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio +
-    # video in one pass. The Gemma3-27B text encoder is the memory heavyweight (~50 GB bf16,
-    # more than the DiT). Base repo carries the dev config (40 steps, CFG 4); distilled runs few-step.
+    # video in one pass. The Gemma3-12B text encoder is stored fp32 on the hub (~49 GB
+    # download; ~24 GB resident once cast to bf16). Base repo carries the dev config (40 steps, CFG 4); distilled runs few-step.
     VideoFamily(
         name = "ltx-2",
         pipeline_class = "LTX2Pipeline",
@@ -116,8 +116,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_multiple = 32,
         # 768x512 native default; 1216x704 the card's quality target; 704x1216 vertical.
         resolution_presets = ((768, 512), (1216, 704), (704, 1216), (512, 768)),
-        # transformer 37.8 bf16; Gemma3-27B TE ~50.4; VAE 2.4 + connectors 2.9 + audio 0.2.
-        bf16_components_gb = (37.8, 50.4, 5.5),
+        # transformer 37.8 bf16; Gemma3-12B TE ~24.4 bf16 RESIDENT (the hub stores it fp32,
+        # ~49 GB download, but the pipeline loads torch_dtype=bf16); VAE 2.4 + connectors 2.9
+        # + audio 0.2. The old 50.4 figure double-counted the fp32 store and pushed the auto
+        # memory plan toward offload on cards that fit the real footprint.
+        bf16_components_gb = (37.8, 24.4, 5.5),
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # Pre-cast Gemma3-12B TE (hub store is fp32 ~49 GB, pre-cast ~13.2 GB): the biggest
         # download win of the hosted TE set.
