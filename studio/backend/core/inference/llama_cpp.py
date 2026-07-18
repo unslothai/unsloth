@@ -1345,6 +1345,11 @@ _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 # reserve (_estimate_mtp_overhead_bytes). Applied to both the fit budget and pin.
 _MTP_VRAM_RESERVE_FRAC = 0.05
 
+# CPU-only: cap an auto context to this ceiling (a full native context puts tens to
+# hundreds of GB of KV + MTP reserve in RAM), then fit it to RAM. Explicit -c wins.
+_CPU_CTX_AUTO_CEILING = 32768
+_CPU_RAM_BUDGET_FRAC = 0.9  # RAM headroom for compute buffers + OS
+
 
 def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     """Bytes per KV-cache element for a llama.cpp cache type (f16 default)."""
@@ -1643,6 +1648,37 @@ def _extra_args_n_ubatch(
     return None
 
 
+def _extra_args_forces_cpu_offload(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the launch runs fully on CPU despite a visible GPU, so the CPU-only
+    safe defaults apply: zero GPU layers (-ngl 0 / --n-gpu-layers 0 / --gpu-layers 0)
+    or no device (--device/-dev none). CLI extras win (each control's last value); else
+    the inherited LLAMA_ARG_N_GPU_LAYERS / LLAMA_ARG_DEVICE env the child would honor."""
+    args = [str(a) for a in extra_args] if extra_args else []
+    ngl_zero: Optional[bool] = None
+    device_none: Optional[bool] = None
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if flag in ("-ngl", "--n-gpu-layers", "--gpu-layers"):
+            try:
+                ngl_zero = int(value) == 0
+            except (TypeError, ValueError):
+                continue
+        elif flag in ("--device", "-dev"):
+            device_none = value.strip().lower() == "none"
+    _env = os.environ if env is None else env
+    if ngl_zero is None and _env.get("LLAMA_ARG_N_GPU_LAYERS") is not None:
+        try:
+            ngl_zero = int(_env["LLAMA_ARG_N_GPU_LAYERS"]) == 0
+        except (TypeError, ValueError):
+            pass
+    if device_none is None and _env.get("LLAMA_ARG_DEVICE") is not None:
+        device_none = _env["LLAMA_ARG_DEVICE"].strip().lower() == "none"
+    return bool(ngl_zero) or bool(device_none)
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -1856,6 +1892,8 @@ class LlamaCppBackend:
 
     def __init__(self):
         self._process: Optional[subprocess.Popen] = None
+        # Spawn-time argv prefix (e.g. numactl --interleave=all); recomputed per load.
+        self._numa_prefix: list[str] = []
         self._port: Optional[int] = None
         self._model_identifier: Optional[str] = None
         self._gguf_path: Optional[str] = None
@@ -3292,6 +3330,24 @@ class LlamaCppBackend:
         key = cls._tensor_split_cache_key(binary, model)
         if key is not None:
             cls._tensor_split_abort_keys.add(key)
+
+    # (binary, mtime, model) that aborted in the ggml graph scheduler this process
+    # (GGML_ASSERT(*cur_backend_id != -1)): an unsupported op, so reloading just
+    # repeats the crash. Keyed like the tensor-split memo; mtime drops it on update.
+    _sched_reserve_abort_keys: set[tuple[str, int, str]] = set()
+
+    @classmethod
+    def _sched_reserve_aborts(cls, binary: Optional[str], model: Optional[str]) -> bool:
+        """True if (binary, model) aborted in graph-scheduler reserve this session."""
+        key = cls._tensor_split_cache_key(binary, model)
+        return key is not None and key in cls._sched_reserve_abort_keys
+
+    @classmethod
+    def _record_sched_reserve_abort(cls, binary: Optional[str], model: Optional[str]) -> None:
+        """Remember a (binary, model) that aborts in graph-scheduler reserve."""
+        key = cls._tensor_split_cache_key(binary, model)
+        if key is not None:
+            cls._sched_reserve_abort_keys.add(key)
 
     @staticmethod
     def _windows_pip_nvidia_dll_dirs(prefix: str) -> list[str]:
@@ -5222,6 +5278,10 @@ class LlamaCppBackend:
                 "settings and reload."
             )
 
+        # ggml graph-scheduler abort: surface the real cause, not the generic fallback.
+        if LlamaCppBackend._is_sched_reserve_abort(output or ""):
+            return LlamaCppBackend._sched_reserve_abort_message()
+
         # Detect Ollama source up front so the arch branch can keep the
         # Ollama hint instead of the generic "unsupported arch" message.
         gguf = gguf_path or ""
@@ -5555,6 +5615,41 @@ class LlamaCppBackend:
         return "split_axis" in text
 
     @staticmethod
+    def _is_sched_reserve_abort(output: str) -> bool:
+        """True for the ggml graph-scheduler abort GGML_ASSERT(*cur_backend_id != -1):
+        no backend can run an op in the graph (e.g. an MLA/sparse-attention/MTP op
+        unimplemented on this build). Needs a ggml-abort marker plus a scheduler marker
+        (matched on the backtrace frames, which outlive the [New LWP] dump in a short
+        tail). Excludes the #6415 split-axis abort. stderr is merged into output."""
+        text = (output or "").lower()
+        if "ggml_assert" not in text and "ggml_abort" not in text:
+            return False
+        # #6415 split-axis abort shares the frame but is handled by the tensor latch.
+        if "split_axis" in text:
+            return False
+        return (
+            "cur_backend_id" in text
+            or "ggml_backend_sched_split_graph" in text
+            or "sched_reserve" in text
+            or "graph_reserve" in text
+        )
+
+    @staticmethod
+    def _sched_reserve_abort_message() -> str:
+        """Actionable message for the graph-scheduler abort (classifier + fail-fast guard)."""
+        return (
+            "llama.cpp aborted while reserving the compute graph "
+            "(GGML_ASSERT(*cur_backend_id != -1) in ggml_backend_sched_split_graph): "
+            "the active backend cannot run an operation in this model's graph. This "
+            "usually means a newer attention variant (MLA / sparse-attention / MTP) "
+            "is not implemented in this llama.cpp build for the backend you're using "
+            "(commonly CPU-only). Disabling flash attention did not help. Try: run "
+            "`unsloth studio update` for a newer llama.cpp, use a different "
+            "quantization, run on a supported GPU/backend, or disable speculative "
+            "decoding / MTP and lower the context length."
+        )
+
+    @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
         """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
         Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
@@ -5675,12 +5770,13 @@ class LlamaCppBackend:
             logger.debug(f"Could not open llama-server log file: {e}")
             self._llama_log_path = None
 
-        # Log the argv per attempt (the text-only mmproj retry re-enters here
-        # with --mmproj stripped), redacting the API key.
-        logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
+        # Log the argv per attempt (mmproj retry re-enters with --mmproj stripped),
+        # redacting the API key. Prepend _numa_prefix so the log matches what runs.
+        _run_cmd = [*self._numa_prefix, *cmd]
+        logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(_run_cmd))}")
 
         self._process = subprocess.Popen(
-            cmd,
+            _run_cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
@@ -5804,14 +5900,39 @@ class LlamaCppBackend:
 
             self._cancel_event.clear()
 
-            # ── Phase 1: kill old process (under lock, fast) ──────────
-            with self._lock:
-                self._kill_process()
-
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
             is_vulkan_backend = self._is_vulkan_backend(binary)
+
+            # Fail fast BEFORE killing the live server (so a known-bad reload is
+            # non-destructive) if this exact launch already aborted in the graph
+            # scheduler this session: reloading re-reads the weights into the same crash
+            # (a startup crash 500s and the UI replays /load). The key includes the
+            # variant AND the launch settings (context, spec) so an identical replay is
+            # blocked but a user changing quant / lowering -c / disabling spec -- the
+            # exact recovery the error message recommends -- is allowed to retry.
+            _abort_memo_model = "\x00".join(
+                [
+                    model_identifier or "",
+                    hf_variant or "",
+                    gguf_path or "",
+                    str(n_ctx),
+                    str(speculative_type or ""),
+                    " ".join(str(a) for a in (extra_args or [])),
+                ]
+            )
+            if LlamaCppBackend._sched_reserve_aborts(binary, _abort_memo_model):
+                logger.warning(
+                    "Skipping reload of '%s': it already aborted in the llama.cpp "
+                    "graph scheduler this session (unsupported op on this backend).",
+                    model_identifier,
+                )
+                raise RuntimeError(self._sched_reserve_abort_message())
+
+            # ── Phase 1: kill old process (under lock, fast) ──────────
+            with self._lock:
+                self._kill_process()
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -6041,9 +6162,16 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                model_size_fit = None  # weights + compute buffer; set in the fit try
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
+                # CPU-only (no discrete GPU, not Apple Metal): drives safe defaults
+                # below since no GPU/Apple fit branch runs. Bound before the try (the
+                # --fit except path needs it); refined once gpus is known.
+                from utils.hardware import is_apple_silicon as _is_apple_silicon
+
+                _cpu_only = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -6057,6 +6185,13 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory(binary)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    # A user -ngl 0 / --n-gpu-layers 0 pins every layer on CPU even with a
+                    # visible GPU; drop the GPU list so the CPU-only safe defaults and the
+                    # RAM-aware fit apply, not a GPU launch that then runs on CPU anyway.
+                    if gpus and _extra_args_forces_cpu_offload(extra_args):
+                        logger.info("User set zero GPU offload (-ngl 0): treating as CPU-only.")
+                        gpus, total_by_idx = [], {}
+                    _cpu_only = (not gpus) and not _is_apple_silicon()
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total.
@@ -6161,6 +6296,16 @@ class LlamaCppBackend:
                     )
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras or _user_draft_via_extras or _auto_studio_mtp
+                    )
+                    # Auto drops embedded MTP for MLA models (GLM-5.2/DeepSeek/Kimi) unless
+                    # forced; mirror that gate so the CPU cap / NUMA footprint don't reserve
+                    # a target-KV copy for a drafter the launch will not start.
+                    _mtp_will_engage_cpu = _mtp_will_engage and not (
+                        _auto_studio_mtp
+                        and bool(self._nextn_predict_layers)
+                        and self._kv_lora_rank is not None
+                        and not bool(mtp_draft_path)
+                        and not _mla_mtp_auto_enabled()
                     )
                     # The duplicated full target-KV copy (ctx_tgt) is an MTP-only
                     # cost: the MTP head runs a second context over the target
@@ -6853,6 +6998,81 @@ class LlamaCppBackend:
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
+                # CPU-only safe defaults (user extra_args win, appended last): no --fit
+                # (its graph-reserve estimator hits the same abort, llama.cpp #21932, and
+                # mis-counts MTP KV #23472/#24117; offloads nothing on CPU) and flash-attn
+                # off (CPU FA is unsafe for large MLA/sparse/MTP graphs).
+                _flash_default = "off" if _cpu_only else "on"
+                if _cpu_only and use_fit:
+                    use_fit = False
+                    logger.info("CPU-only host: launching with --fit off and --flash-attn off.")
+
+                if _cpu_only:
+                    _avail_mib = self._available_system_memory_mib()
+                    # Preflight: weights over total RAM get OS-killed mid-load (interleave
+                    # spreads across nodes but can't beat the total).
+                    if _avail_mib and model_size and model_size > _avail_mib * 1024 * 1024:
+                        logger.warning(
+                            "CPU-only memory preflight: model weights ~%.0f GB exceed "
+                            "available RAM ~%.0f GB; loading may be OS-killed.",
+                            model_size / (1024**3),
+                            _avail_mib / 1024,
+                        )
+                    # Fit an auto context to a RAM-aware ceiling (explicit -c is honored).
+                    # Runs for every auto context, not only above the ceiling: a large
+                    # small-context GGUF can still exceed RAM and must be reduced too.
+                    if requested_ctx <= 0 and effective_ctx > 0:
+                        _ctx_ceiling = min(effective_ctx, _CPU_CTX_AUTO_CEILING)
+                        _cpu_cap = _ctx_ceiling
+                        try:
+                            if _avail_mib and model_size and self._can_estimate_kv():
+                                _budget_b = _avail_mib * _CPU_RAM_BUDGET_FRAC * 1024 * 1024
+                                # Fixed footprint = weights + compute buffer (the same lump
+                                # the load allocates), so a context that only fits ignoring
+                                # the buffer can't slip through and get OS-killed at startup.
+                                _fixed = model_size_fit or model_size
+                                if _fixed >= _budget_b:
+                                    # Footprint alone over budget: _fit_context_to_vram returns
+                                    # the ceiling unchanged, but KV could still OOM. Floor to
+                                    # the minimum so the tightest fit gets the smallest context.
+                                    _cpu_cap = 4096
+                                else:
+                                    # MTP engages but the draft KV can't be byte-sized:
+                                    # _mtp_bytes returns 0 and budget_frac skips the flat
+                                    # reserve, so trim the budget to still hold back MTP RAM.
+                                    _cpu_budget = _CPU_RAM_BUDGET_FRAC
+                                    if _mtp_will_engage_cpu and mtp_overhead_fn is None:
+                                        _cpu_budget -= _MTP_VRAM_RESERVE_FRAC
+                                    _fit = self._fit_context_to_vram(
+                                        requested_ctx = _ctx_ceiling,
+                                        available_mib = _avail_mib,
+                                        model_size_bytes = _fixed,
+                                        cache_type_kv = cache_type_kv,
+                                        min_ctx = 4096,
+                                        n_parallel = n_parallel,
+                                        kv_on_gpu = True,  # KV lives in the RAM budget we fit
+                                        # mtp_engaged alone is a no-op once budget_frac is set;
+                                        # pass the byte-accurate overhead so MTP KV is reserved.
+                                        mtp_engaged = _mtp_will_engage_cpu,
+                                        mtp_overhead_fn = (
+                                            _mtp_bytes if _mtp_will_engage_cpu else None
+                                        ),
+                                        budget_frac = _cpu_budget,
+                                    )
+                                    _cpu_cap = max(4096, min(_ctx_ceiling, _fit))
+                        except Exception as _cap_exc:  # best-effort; fall back to ceiling
+                            logger.debug("CPU context-fit failed; using ceiling: %s", _cap_exc)
+                        if _cpu_cap < effective_ctx:
+                            logger.info(
+                                "CPU-only: capping context %d -> %d (set -c to override).",
+                                effective_ctx,
+                                _cpu_cap,
+                            )
+                            effective_ctx = _cpu_cap
+                            # Advertise the capped window as the ceiling too, so /status and
+                            # the UI safe-zone don't steer back to the unlaunched native size.
+                            max_available_ctx = min(max_available_ctx, _cpu_cap)
+
                 cmd = [
                     binary,
                     "-m",
@@ -6864,7 +7084,7 @@ class LlamaCppBackend:
                     "--parallel",
                     str(n_parallel),
                     "--flash-attn",
-                    "on",  # Force flash attention for speed
+                    _flash_default,  # CPU-only: off; GPU: on for speed
                     # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
                     "--no-context-shift",
                 ]
@@ -6887,6 +7107,10 @@ class LlamaCppBackend:
                     # and offloads ~1 GB at --parallel 4 even though the model fits.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
+                elif _cpu_only:
+                    # --fit defaults to on in recent llama.cpp, so omitting it still runs
+                    # the graph-reserve fitting step (same abort path); disable explicitly.
+                    cmd.extend(["--fit", "off"])
 
                 server_caps = self.probe_server_capabilities(binary)
                 # Expose Prometheus /metrics for the engine-stats logger, only
@@ -7108,7 +7332,59 @@ class LlamaCppBackend:
                     cmd.extend(str(a) for a in extra_args)
                     logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
 
-                logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
+                # NUMA auto-interleave: when the model overflows one node but fits
+                # across all (else first-touch thrashes/OOMs), wrap with
+                # `numactl --interleave=all` (applied at the Popen sites) AND pass
+                # `--numa distribute` -- both are needed, numactl alone doesn't spread
+                # pages evenly (llama.cpp #19102). User --numa wins.
+                self._numa_prefix = []
+                try:
+                    from core.inference.numa import decide_interleave
+
+                    # Decide on the full resident footprint (weights + compute buffer + KV
+                    # at the capped context + MTP reserve), not weights alone, so a model
+                    # whose weights fit one node but whose footprint does not still
+                    # interleaves instead of first-touch thrashing on one node.
+                    _resident = model_size_fit or model_size
+                    _numa_footprint = _resident
+                    if _resident and effective_ctx > 0 and self._can_estimate_kv():
+                        try:
+                            # Recompute MTP at the post-cap context; the pre-cap
+                            # _mtp_reserve_bytes would overstate a capped million-token load.
+                            _numa_mtp = _mtp_bytes(effective_ctx) if _mtp_will_engage_cpu else 0
+                            _numa_footprint = (
+                                _resident
+                                + self._estimate_kv_cache_bytes(
+                                    effective_ctx, cache_type_kv, n_parallel = n_parallel
+                                )
+                                + _numa_mtp
+                            )
+                        except Exception:
+                            _numa_footprint = _resident
+                    _numa = decide_interleave(_numa_footprint, cpu_only = _cpu_only)
+                    if _numa.interleave and _extra_args_set_any_flag(extra_args, {"--numa"}):
+                        # User set an explicit --numa policy: respect it. The numactl wrap
+                        # is an argv prefix they can't override, so skip it (and --numa
+                        # distribute) rather than force interleaving over their choice.
+                        logger.info("NUMA: user --numa set; leaving auto-interleave off")
+                    elif _numa.interleave:
+                        self._numa_prefix = list(_numa.prefix)
+                        cmd.extend(["--numa", "distribute"])
+                        logger.info("NUMA: %s", _numa.reason)
+                    elif _cpu_only and (
+                        "numactl` is not installed" in _numa.reason
+                        or "interleave cannot help" in _numa.reason
+                    ):
+                        # Actionable: numactl missing, or the footprint exceeds total RAM
+                        # across all nodes (the weights-only preflight can't catch this).
+                        logger.warning("NUMA: %s", _numa.reason)
+                except Exception as _numa_exc:  # never block a load on the NUMA probe
+                    logger.debug("NUMA interleave probe failed: %s", _numa_exc)
+
+                logger.info(
+                    "Starting llama-server: "
+                    f"{' '.join(self._redacted_cmd_for_log([*self._numa_prefix, *cmd]))}"
+                )
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
@@ -7251,9 +7527,11 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        # _last_spawn_cmd stays un-prefixed (retry helpers slice it);
+                        # the NUMA prefix goes on the actual argv only, so retries don't double it.
                         _last_spawn_cmd = list(run_cmd)
                         self._process = subprocess.Popen(
-                            run_cmd,
+                            [*self._numa_prefix, *run_cmd],
                             stdout = subprocess.PIPE,
                             stderr = subprocess.STDOUT,
                             text = True,
@@ -7356,6 +7634,9 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                # A scheduler abort on the first launch must still be memoed even if a later
+                # no-spec/text-only fallback overwrites the stdout tail; track it across them.
+                _pre_fallback_sched_abort = False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -7455,6 +7736,12 @@ class LlamaCppBackend:
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
                 if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
+                    # The no-spec retry below resets the stdout tail; capture a scheduler
+                    # abort from this first launch now so it can still be memoed if the
+                    # retries then fail for another reason (else the UI replays the load).
+                    _pre_fallback_sched_abort = _pre_fallback_sched_abort or (
+                        self._is_sched_reserve_abort("\n".join(self._stdout_lines[-200:]))
+                    )
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
@@ -7514,6 +7801,25 @@ class LlamaCppBackend:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
                     _crash_rc = self._process.poll() if self._process is not None else None
+                    # Graph-scheduler abort (flash-off retry already failed)? Capture now (a
+                    # text-only retry overwrites the stdout tail) but memo it only once the
+                    # mmproj fallback is ruled out, so a VLM that recovers text-only is not
+                    # blocked by the fail-fast guard on its next load. Wider slice as the
+                    # GGML_ASSERT line can scroll past the [New LWP] dump.
+                    _was_sched_abort = (
+                        not self._cancel_event.is_set()
+                        and (
+                            # A scheduler abort captured before the no-spec fallback reset stdout,
+                            _pre_fallback_sched_abort
+                            # or one still visible in the current tail.
+                            or (
+                                (self._is_signal_crash(_crash_rc) or self._is_abort_exit(_crash_rc))
+                                and self._is_sched_reserve_abort(
+                                    "\n".join(self._stdout_lines[-200:])
+                                )
+                            )
+                        )
+                    )
                     self._kill_process()
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
@@ -7543,6 +7849,11 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
+                            # Fallback exhausted: now memo the original scheduler abort.
+                            if _was_sched_abort:
+                                LlamaCppBackend._record_sched_reserve_abort(
+                                    binary, _abort_memo_model
+                                )
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
                                 "build, and the text-only retry also failed: "
@@ -7554,6 +7865,10 @@ class LlamaCppBackend:
                                 )
                             )
                     else:
+                        # No mmproj fallback available/eligible: memo the scheduler abort
+                        # (if that is what crashed) so the next /load fails fast, then raise.
+                        if _was_sched_abort:
+                            LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
                         raise RuntimeError(
                             self._classify_llama_start_failure(
                                 out,
