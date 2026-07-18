@@ -16,6 +16,8 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+$script:InstallExitCode = $null
+
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
@@ -91,7 +93,8 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
-        throw $Message
+        $script:InstallExitCode = $Code
+        return
     }
 
     # ── Parse flags ──
@@ -1384,18 +1387,131 @@ exit 0
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
 
+    function Get-StudioVenvPathState {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [switch]$AllowExternalSource
+        )
+        function Test-StudioRegularLeaf {
+            param([Parameter(Mandatory = $true)][string]$LeafPath)
+            $leaf = Get-Item -LiteralPath $LeafPath -Force -ErrorAction SilentlyContinue
+            return $null -ne $leaf -and -not $leaf.PSIsContainer -and
+                (($leaf.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+        }
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $parent = [System.IO.Path]::GetFullPath((Split-Path -Parent $fullPath))
+        $expectedParent = [System.IO.Path]::GetFullPath($StudioHome)
+        if (-not $AllowExternalSource -and
+            -not [System.StringComparer]::OrdinalIgnoreCase.Equals($parent, $expectedParent)) {
+            throw "Studio venv path escaped StudioHome: $Path"
+        }
+        $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item) {
+            return [pscustomobject]@{ Path = $fullPath; Exists = $false; Owned = $false; SafeDirectory = $false }
+        }
+        $isReparse = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+        $isDirectory = [bool]$item.PSIsContainer
+        $marker = Join-Path $fullPath ".unsloth-studio-owned"
+        $markerIsRegular = if ($isDirectory -and -not $isReparse) {
+            Test-StudioRegularLeaf $marker
+        } else { $false }
+        $legacySentinelIsRegular = $false
+        if ($isDirectory -and -not $isReparse -and
+            [System.StringComparer]::OrdinalIgnoreCase.Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))) {
+            $legacySentinelIsRegular =
+                (Test-StudioRegularLeaf (Join-Path $expectedParent "share\studio.conf")) -or
+                (Test-StudioRegularLeaf (Join-Path $expectedParent "bin\unsloth.exe"))
+        }
+        return [pscustomobject]@{
+            Path = $fullPath
+            Exists = $true
+            Owned = $markerIsRegular -or $legacySentinelIsRegular
+            SafeDirectory = $isDirectory -and -not $isReparse
+            Reparse = $isReparse
+            Item = $item
+        }
+    }
+
+    function Assert-StudioVenvMutationPath {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [switch]$AllowUnownedStage,
+            [switch]$AllowExternalSource
+        )
+        $state = Get-StudioVenvPathState $Path -AllowExternalSource:$AllowExternalSource
+        if (-not $state.Exists -or -not $state.SafeDirectory -or
+            (-not $state.Owned -and -not $AllowUnownedStage)) {
+            throw "Refusing to mutate an unowned or unsafe Studio venv path: $Path"
+        }
+        return $state
+    }
+
+    function Assert-StudioVenvAbsent {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $state = Get-StudioVenvPathState $Path
+        if ($state.Exists) { throw "Studio venv target appeared before publish: $Path" }
+    }
+
+    function New-StudioVenvSiblingPath {
+        param([Parameter(Mandatory = $true)][string]$Prefix)
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            $candidate = Join-Path $StudioHome ("{0}.{1}.{2}" -f $Prefix, $PID, [guid]::NewGuid().ToString("N"))
+            if (-not (Test-Path -LiteralPath $candidate)) { return $candidate }
+        }
+        throw "Could not allocate a fresh Studio venv staging path"
+    }
+
+    function Remove-StudioVenvDirectory {
+        param(
+            [Parameter(Mandatory = $true)][string]$Path,
+            [switch]$AllowUnownedStage
+        )
+        $state = Assert-StudioVenvMutationPath $Path -AllowUnownedStage:$AllowUnownedStage
+        Remove-Item -LiteralPath $state.Path -Recurse -Force -ErrorAction Stop
+        if ((Get-StudioVenvPathState $state.Path).Exists) {
+            throw "Studio venv cleanup did not remove $Path"
+        }
+    }
+
+    function Move-StudioVenvToQuarantine {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $state = Get-StudioVenvPathState $Path
+        if (-not $state.Exists) { return $null }
+        $state = Assert-StudioVenvMutationPath $Path -AllowUnownedStage
+        $quarantine = New-StudioVenvSiblingPath "unsloth_studio.quarantine"
+        [System.IO.Directory]::Move(
+            [System.IO.Path]::GetFullPath($state.Path),
+            [System.IO.Path]::GetFullPath($quarantine)
+        )
+        return $quarantine
+    }
+
+    function Publish-StudioVenvCandidate {
+        param(
+            [Parameter(Mandatory = $true)][string]$Candidate,
+            [switch]$AllowExternalSource
+        )
+        Assert-StudioVenvMutationPath $Candidate -AllowUnownedStage -AllowExternalSource:$AllowExternalSource | Out-Null
+        $marker = Join-Path $Candidate ".unsloth-studio-owned"
+        [System.IO.File]::WriteAllText($marker, "")
+        Assert-StudioVenvMutationPath $Candidate -AllowExternalSource:$AllowExternalSource | Out-Null
+        Assert-StudioVenvAbsent $VenvDir
+        [System.IO.Directory]::Move(
+            [System.IO.Path]::GetFullPath($Candidate),
+            [System.IO.Path]::GetFullPath($VenvDir)
+        )
+    }
+
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
-        $stamp = Get-Date -Format "yyyyMMddHHmmss"
-        $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID"
-        $suffix = 0
-        # -LiteralPath: a custom $StudioHome may contain [ ] * ? which
-        # plain Test-Path / Move-Item would interpret as wildcards.
-        while (Test-Path -LiteralPath $candidate) {
-            $suffix++
-            $candidate = Join-Path $StudioHome "unsloth_studio.rollback.$stamp.$PID.$suffix"
-        }
-        Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
+        $state = Assert-StudioVenvMutationPath $ExistingDir
+        $candidate = New-StudioVenvSiblingPath "unsloth_studio.rollback"
+        $marker = Join-Path $state.Path ".unsloth-studio-owned"
+        [System.IO.File]::WriteAllText($marker, "")
+        [System.IO.Directory]::Move(
+            [System.IO.Path]::GetFullPath($state.Path),
+            [System.IO.Path]::GetFullPath($candidate)
+        )
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
@@ -1406,16 +1522,26 @@ exit 0
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
-        if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
+        if (-not $backup) {
             $script:StudioVenvRollbackActive = $false
             return
         }
         substep "restoring previous environment after failed install..." "Yellow"
         try {
-            if (Test-Path -LiteralPath $target) {
-                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            if ((Get-StudioVenvPathState $backup).Exists -eq $false) {
+                throw "Rollback source disappeared: $backup"
             }
-            Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
+            Assert-StudioVenvMutationPath $backup | Out-Null
+            $targetState = Get-StudioVenvPathState $target
+            if ($targetState.Exists) {
+                Assert-StudioVenvMutationPath $target | Out-Null
+                Remove-StudioVenvDirectory $target
+            }
+            Assert-StudioVenvAbsent $target
+            [System.IO.Directory]::Move(
+                [System.IO.Path]::GetFullPath($backup),
+                [System.IO.Path]::GetFullPath($target)
+            )
             substep "restored previous environment"
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
@@ -1428,29 +1554,30 @@ exit 0
     function Complete-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
-        if ($backup -and (Test-Path -LiteralPath $backup)) {
-            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+        if ($backup -and (Get-StudioVenvPathState $backup).Exists) {
+            try {
+                Remove-StudioVenvDirectory $backup
+            } catch {
+                Write-Host "[WARN] Could not remove rollback copy at $backup" -ForegroundColor Yellow
+                Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
     }
 
-    if (Test-Path -LiteralPath $VenvPython) {
-        # why: matching guard to the .venv branch below -- in env-mode
-        # $StudioHome is a user-chosen workspace, so refuse to nuke an
-        # existing $StudioHome\unsloth_studio that lacks Studio sentinels.
-        # -PathType Leaf rejects a directory at the sentinel path. Accept the
-        # in-VENV ownership marker so partial-install retries are not blocked.
-        if (
-            $StudioRedirectMode -eq 'env' -and
-            -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
-            -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf)
-        ) {
+    $VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"
+    $venvState = Get-StudioVenvPathState $VenvDir
+    if ($venvState.Exists -and -not $venvState.SafeDirectory) {
+        Write-Host "[ERROR] $VenvDir is not a safe regular directory." -ForegroundColor Red
+        return (Exit-InstallFailure "Refusing to mutate unsafe Studio venv path")
+    }
+    if ($venvState.Exists -and -not $venvState.Owned) {
             Write-Host "[ERROR] $VenvDir already exists but does not look like an Unsloth Studio install." -ForegroundColor Red
             Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
-            throw "Refusing to delete non-Studio venv at $VenvDir"
-        }
+            return (Exit-InstallFailure "Refusing to mutate non-Studio venv at $VenvDir")
+    }
+    if ($venvState.Exists) {
         # New layout already exists -- replace only after preserving rollback copy.
         substep "preserving existing environment for rollback..."
         try {
@@ -1482,13 +1609,20 @@ exit 0
         $ErrorActionPreference = $prevEAP2
         if ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
-            Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force
+            Publish-StudioVenvCandidate $OldVenv -AllowExternalSource
             substep "moved .venv -> unsloth_studio"
             $_Migrated = $true
         } else {
             substep "legacy environment failed validation -- creating fresh environment" "Yellow"
             $invalidVenv = Join-Path $StudioHome (".venv.invalid.{0}.{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), $PID)
-            Move-Item -LiteralPath $OldVenv -Destination $invalidVenv -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $invalidVenv)) {
+                try {
+                    [System.IO.Directory]::Move(
+                        [System.IO.Path]::GetFullPath($OldVenv),
+                        [System.IO.Path]::GetFullPath($invalidVenv)
+                    )
+                } catch {}
+            }
         }
     } elseif (
         $StudioRedirectMode -ne 'env' `
@@ -1499,29 +1633,104 @@ exit 0
         # the workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Studio environment, migrating to $VenvDir..."
-        Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
+        Publish-StudioVenvCandidate $CwdVenv -AllowExternalSource
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
-        substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        $VenvStage = New-StudioVenvSiblingPath "unsloth_studio.stage.uv"
+        substep "$VenvStage"
+        $venvExit = Invoke-InstallCommand { uv venv $VenvStage --python "$($DetectedPython.Path)" }
+        # Trust neither uv's exit code nor a half-baked Scripts\python.exe.
+        function Test-VenvPythonReady {
+            param(
+                [Parameter(Mandatory = $true)][string]$PythonExe,
+                [Parameter(Mandatory = $true)][string]$VenvRoot
+            )
+            if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
+            if (-not (Test-Path -LiteralPath (Join-Path $VenvRoot "pyvenv.cfg") -PathType Leaf)) { return $false }
+            $prevExpectedVenv = [Environment]::GetEnvironmentVariable("UNSLOTH_EXPECTED_VENV", "Process")
+            $proc = $null
+            try {
+                $env:UNSLOTH_EXPECTED_VENV = $VenvRoot
+                $probe = 'import os, sys; expected = os.path.normcase(os.path.abspath(os.environ["UNSLOTH_EXPECTED_VENV"])); prefix = os.path.normcase(os.path.abspath(sys.prefix)); base_prefix = os.path.normcase(os.path.abspath(sys.base_prefix)); raise SystemExit(0 if prefix == expected and prefix != base_prefix else 1)'
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $PythonExe
+                $psi.Arguments = "-"
+                $psi.UseShellExecute = $false
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError = $true
+                $psi.RedirectStandardInput = $true
+                $psi.CreateNoWindow = $true
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                $proc.StandardInput.WriteLine($probe)
+                $proc.StandardInput.Close()
+                $outTask = $proc.StandardOutput.ReadToEndAsync()
+                $errTask = $proc.StandardError.ReadToEndAsync()
+                if (-not $proc.WaitForExit(15000)) {
+                    try {
+                        $proc.Kill()
+                    } catch {}
+                    $proc.WaitForExit()
+                    $null = $outTask.GetAwaiter().GetResult()
+                    $null = $errTask.GetAwaiter().GetResult()
+                    return $false
+                }
+                $null = $outTask.GetAwaiter().GetResult()
+                $null = $errTask.GetAwaiter().GetResult()
+                return ($proc.ExitCode -eq 0)
+            } catch {
+                return $false
+            } finally {
+                if ($proc) {
+                    $proc.Dispose()
+                }
+                if ($null -eq $prevExpectedVenv) {
+                    [Environment]::SetEnvironmentVariable("UNSLOTH_EXPECTED_VENV", $null, "Process")
+                }
+                if ($null -ne $prevExpectedVenv) {
+                    $env:UNSLOTH_EXPECTED_VENV = $prevExpectedVenv
+                }
+            }
+        }
+
+        $needsVenvFallback = $false
         if ($venvExit -ne 0) {
-            Write-Host "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
-            return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
+            substep "uv venv failed; rebuilding with python -m venv..." "Yellow"
+            $needsVenvFallback = $true
+        } elseif (-not (Test-VenvPythonReady (Join-Path $VenvStage "Scripts\python.exe") $VenvStage)) {
+            substep "uv venv returned success but left an unusable venv; rebuilding with python -m venv..." "Yellow"
+            $needsVenvFallback = $true
+        }
+
+        if ($needsVenvFallback) {
+            try { $VenvQuarantine = Move-StudioVenvToQuarantine $VenvStage } catch {
+                Write-Host "[WARN] Could not quarantine failed uv venv: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "       Leaving the failed stage behind and rebuilding in a fresh sibling path." -ForegroundColor Yellow
+            }
+            $VenvStage = New-StudioVenvSiblingPath "unsloth_studio.stage.fallback"
+            $venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvStage }
+            if ($venvExit -ne 0) {
+                Write-Host "[ERROR] Failed to rebuild virtual environment (exit code $venvExit)" -ForegroundColor Red
+                try { $VenvQuarantine = Move-StudioVenvToQuarantine $VenvStage } catch {}
+                return (Exit-InstallFailure "Failed to rebuild virtual environment (exit code $venvExit)" $venvExit)
+            }
+            if (-not (Test-VenvPythonReady (Join-Path $VenvStage "Scripts\python.exe") $VenvStage)) {
+                Write-Host "[ERROR] Rebuilt virtual environment is still unusable" -ForegroundColor Red
+                try { $VenvQuarantine = Move-StudioVenvToQuarantine $VenvStage } catch {}
+                return (Exit-InstallFailure "Rebuilt virtual environment is still unusable" $venvExit)
+            }
+        }
+        try { Publish-StudioVenvCandidate $VenvStage } catch {
+            try { Move-StudioVenvToQuarantine $VenvStage | Out-Null } catch {}
+            return (Exit-InstallFailure "Could not publish virtual environment: $($_.Exception.Message)")
         }
     } else {
         step "venv" "using migrated environment"
         substep "$VenvDir"
-    }
-
-    # Mark the freshly-created venv as Studio-owned so a partial install can be
-    # repaired by re-running install.ps1; the env-mode deletion guard above
-    # accepts this marker as the primary sentinel.
-    if (Test-Path -LiteralPath $VenvDir -PathType Container) {
-        try { [System.IO.File]::WriteAllText((Join-Path $VenvDir ".unsloth-studio-owned"), "") } catch {}
+        try { [System.IO.File]::WriteAllText($VenvOwnershipMarker, "") } catch {}
     }
 
     # ── Helper: run amd-smi without triggering a UAC elevation prompt ──
@@ -2583,6 +2792,7 @@ exit 0
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
+        $script:InstallExitCode = 0
         return
     }
 
@@ -2653,6 +2863,20 @@ exit 0
         substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
         Write-Host ""
     }
+
+    $script:InstallExitCode = 0
+    return
 }
 
+$script:InstallExitCode = $null
 Install-UnslothStudio @args
+$finalInstallExit = if ($null -eq $script:InstallExitCode) {
+    0
+} else {
+    [int]$script:InstallExitCode
+}
+if ($PSCommandPath) {
+    exit $finalInstallExit
+}
+$global:LASTEXITCODE = $finalInstallExit
+return $finalInstallExit

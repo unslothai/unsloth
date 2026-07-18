@@ -120,14 +120,12 @@ def test_default_mode_skips_sentinel_check(tmp_path):
 
 def test_install_ps1_has_matching_env_mode_guard():
     src = INSTALL_PS1.read_text()
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
-    block = src[block_start : block_start + 2000]
-    assert (
-        "$StudioRedirectMode -eq 'env'" in block
-    ), "install.ps1 must gate Remove-Item $VenvDir on env-mode"
-    assert "share\\studio.conf" in block, "install.ps1 guard must check share\\studio.conf sentinel"
-    assert "bin\\unsloth.exe" in block, "install.ps1 guard must check bin\\unsloth.exe sentinel"
-    assert "Refusing to delete non-Studio venv" in block
+    block_start = src.index("function Get-StudioVenvPathState")
+    block = src[block_start : block_start + 2500]
+    assert "Get-StudioVenvPathState $VenvDir" in src
+    assert "Refusing to mutate non-Studio venv" in src
+    assert "ReparsePoint" in block
+    assert "markerIsRegular" in block
 
 
 def test_setup_ps1_has_writability_probe():
@@ -192,16 +190,16 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
 
 
 def test_install_ps1_sentinel_uses_pathtype_leaf():
-    """Remove-Item $VenvDir gate must use -PathType Leaf so a sentinel-path directory cannot satisfy it."""
+    """The marker guard must treat only a regular non-reparse marker file as ownership evidence."""
     src = INSTALL_PS1.read_text()
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
+    block_start = src.index("function Get-StudioVenvPathState")
     block = src[block_start : block_start + 2000]
     assert (
-        'share\\studio.conf") -PathType Leaf' in block
-    ), "install.ps1 share\\studio.conf check must use -PathType Leaf"
+        "function Test-StudioRegularLeaf" in block
+    ), "install.ps1 must normalize leaf checks through the current-state helper"
     assert (
-        'bin\\unsloth.exe") -PathType Leaf' in block
-    ), "install.ps1 bin\\unsloth.exe check must use -PathType Leaf"
+        "markerIsRegular" in block and "ReparsePoint" in block
+    ), "install.ps1 marker evidence must reject reparse-point or non-file sentinels"
 
 
 def test_setup_ps1_stale_venv_has_env_mode_guard():
@@ -328,23 +326,98 @@ def test_install_sh_writes_venv_marker_after_uv_venv():
 
 
 def test_install_ps1_writes_venv_marker_after_uv_venv():
-    """install.ps1 must write .unsloth-studio-owned into $VenvDir after `uv venv` succeeds."""
+    """install.ps1 must mark a validated staged candidate before publishing it."""
     src = INSTALL_PS1.read_text()
-    venv_create = src.index("uv venv $VenvDir --python")
-    tail = src[venv_create : venv_create + 1500]
-    assert (
-        ".unsloth-studio-owned" in tail
-    ), "install.ps1 must write .unsloth-studio-owned after uv venv create"
+    assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
+    venv_create = src.index("uv venv $VenvStage --python")
+    tail = src[venv_create : venv_create + 7000]
+    assert 'WriteAllText($marker, "")' in src, "install.ps1 must mark the staged candidate"
+    assert "Publish-StudioVenvCandidate $VenvStage" in tail
+    assert "Assert-StudioVenvAbsent $VenvDir" in src
+
+
+def test_install_ps1_fallback_rebuild_preserves_env_mode_ownership_guard():
+    """install.ps1 must guard the current target in every redirect mode."""
+    src = INSTALL_PS1.read_text()
+    assert "Get-StudioVenvPathState $VenvDir" in src
+    assert "Assert-StudioVenvMutationPath" in src
+    assert "Refusing to mutate non-Studio venv" in src
+    guard_start = src.index("function Get-StudioVenvPathState")
+    venv_create = src.index("uv venv $VenvStage --python")
+    guarded_region = src[guard_start : venv_create + 5000]
+    assert "$StudioRedirectMode -eq 'env'" not in guarded_region
 
 
 def test_install_ps1_guard_accepts_venv_marker():
-    """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
+    """install.ps1 final-target guard must accept current and legacy Studio sentinels without widening sibling ownership."""
     src = INSTALL_PS1.read_text()
-    block_start = src.index("if (Test-Path -LiteralPath $VenvPython)")
-    block = src[block_start : block_start + 2000]
+    assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
+    block_start = src.index("function Get-StudioVenvPathState")
+    block = src[block_start : block_start + 5000]
     assert (
-        '$VenvDir ".unsloth-studio-owned") -PathType Leaf' in block
-    ), "install.ps1 guard must check the in-VENV marker with -PathType Leaf"
+        "ReparsePoint" in block and "markerIsRegular" in block
+    ), "install.ps1 guard must check the in-VENV marker through $VenvOwnershipMarker"
+    assert "share\\studio.conf" in block and "bin\\unsloth.exe" in block
+    assert "Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))" in block
+
+
+def test_install_ps1_rollback_marks_legacy_target_before_move():
+    src = INSTALL_PS1.read_text()
+    block_start = src.index("function Start-StudioVenvRollback {")
+    block_end = src.index("function Restore-StudioVenvRollback {", block_start)
+    block = src[block_start:block_end]
+
+    assert '$marker = Join-Path $state.Path ".unsloth-studio-owned"' in block
+    assert '[System.IO.File]::WriteAllText($marker, "")' in block
+    assert block.index('WriteAllText($marker, "")') < block.index("[System.IO.Directory]::Move(")
+
+
+def test_install_ps1_entrypoint_returns_for_iex_and_exits_for_file():
+    src = INSTALL_PS1.read_text()
+    tail = src[src.index("$script:InstallExitCode = $null") :]
+
+    assert "Install-UnslothStudio @args" in tail
+    assert "$installExitCode = @(Install-UnslothStudio @args)" not in tail
+    assert "$finalInstallExit = if ($null -eq $script:InstallExitCode)" in tail
+    assert "if ($PSCommandPath) {" in tail
+    assert "exit $finalInstallExit" in tail
+    assert "$global:LASTEXITCODE = $finalInstallExit" in tail
+    assert "return $finalInstallExit" in tail
+
+
+def test_install_ps1_uv_fallback_keeps_rebuild_alive_when_quarantine_move_fails():
+    src = INSTALL_PS1.read_text()
+    block_start = src.index("if ($needsVenvFallback) {")
+    block_end = src.index("try { Publish-StudioVenvCandidate $VenvStage }", block_start)
+    block = src[block_start:block_end]
+
+    assert 'Write-Host "[WARN] Could not quarantine failed uv venv:' in block
+    assert 'Exit-InstallFailure "Could not quarantine failed uv venv:' not in block
+    assert (
+        block.index('Write-Host "[WARN] Could not quarantine failed uv venv:')
+        < block.index('$VenvStage = New-StudioVenvSiblingPath "unsloth_studio.stage.fallback"')
+        < block.index(
+            "$venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvStage }"
+        )
+    )
+
+
+def test_install_ps1_publish_and_migrations_use_exclusive_guarded_move():
+    src = INSTALL_PS1.read_text()
+    publish_start = src.index("function Publish-StudioVenvCandidate")
+    publish_end = src.index("function Start-StudioVenvRollback", publish_start)
+    publish = src[publish_start:publish_end]
+    assert "Assert-StudioVenvAbsent $VenvDir" in publish
+    assert "[System.IO.Directory]::Move" in publish
+    assert "Move-Item -LiteralPath $Candidate -Destination $VenvDir" not in publish
+
+    legacy_start = src.index("if ($legacyOk)")
+    migration_end = src.index("if (-not (Test-Path -LiteralPath $VenvPython))", legacy_start)
+    migrations = src[legacy_start:migration_end]
+    assert "Publish-StudioVenvCandidate $OldVenv -AllowExternalSource" in migrations
+    assert "Publish-StudioVenvCandidate $CwdVenv -AllowExternalSource" in migrations
+    assert "Move-Item -LiteralPath $OldVenv -Destination $VenvDir -Force" not in migrations
+    assert "Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force" not in migrations
 
 
 def test_setup_helpers_gate_on_canonical_custom_root():
