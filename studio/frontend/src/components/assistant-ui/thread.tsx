@@ -3997,18 +3997,28 @@ const useResearchMessageRunId = () => {
   return useAuiState(({ message }) => getResearchRunId(message.metadata));
 };
 
-const DeleteMessageButton: FC = () => {
+const useOwnsResearchMessage = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const researchRunId = useResearchMessageRunId();
-  const ownsResearchMessage = aui
+  const messages = useAuiState(({ thread }) => thread.messages);
+  if (messages.length === 0) {
+    return false;
+  }
+  return aui
     .thread()
     .export()
     .messages.some(
       ({ parentId, message }) =>
         parentId === messageId && Boolean(getResearchRunId(message.metadata)),
-  );
+    );
+};
+
+const DeleteMessageButton: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchRunId = useResearchMessageRunId();
+  const ownsResearchMessage = useOwnsResearchMessage();
 
   const handleDelete = async () => {
     const thread = aui.thread();
@@ -4270,21 +4280,24 @@ const UserMessage: FC = () => {
 };
 
 const UserActionBar: FC = () => {
+  const ownsResearchMessage = useOwnsResearchMessage();
   return (
     <ActionBarPrimitive.Root
       autohide="always"
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
-      <ActionBarPrimitive.Edit asChild={true}>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <HugeiconsIcon
-            icon={Edit03Icon}
-            strokeWidth={1.75}
-            className="size-icon"
-          />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
+      {!ownsResearchMessage && (
+        <ActionBarPrimitive.Edit asChild={true}>
+          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+            <HugeiconsIcon
+              icon={Edit03Icon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Edit>
+      )}
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />

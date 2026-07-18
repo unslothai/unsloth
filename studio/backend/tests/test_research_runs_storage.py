@@ -799,6 +799,8 @@ def test_research_prompts_define_quality_and_citation_contracts():
     assert "1 to 7" in planner
     assert "primary and authoritative" in planner
     assert "verification or counterevidence" in planner
+    assert "prior conversation context and chat instructions as private" in planner
+    assert "only concise public research terms" in planner
     assert "Do not assume the user's premise is correct" in planner
 
     assert "[Source Title](exact URL)" in _REPORT_SYSTEM_PROMPT
@@ -808,13 +810,46 @@ def test_research_prompts_define_quality_and_citation_contracts():
     assert "approved plan is guidance, not a script" in _AGENT_SYSTEM_PROMPT
     assert "<untrusted_web_evidence>" in _AGENT_SYSTEM_PROMPT
     assert "private knowledge-base evidence" in _AGENT_SYSTEM_PROMPT
+    assert "context, chat instructions, or evidence" in _AGENT_SYSTEM_PROMPT
     assert '"action":"search"' in _AGENT_SYSTEM_PROMPT
     assert '"action":"fetch"' in _AGENT_SYSTEM_PROMPT
     assert '"action":"finish"' in _AGENT_SYSTEM_PROMPT
 
 
 def test_research_agent_actions_are_model_directed_and_url_bounded():
-    from core.research_runs import _validate_agent_action
+    from core.research_runs import _sanitize_public_query, _validate_agent_action
+
+    assert (
+        _sanitize_public_query(
+            "Acme roadmap alice@example.com api_key=sk-1234567890abcdef123456 public sources"
+        )
+        == "Acme roadmap public sources"
+    )
+    assert _sanitize_public_query('Acme password="correct horse battery staple" sources') == (
+        "Acme sources"
+    )
+    assert _sanitize_public_query("Acme password=“correct horse battery staple” sources") == (
+        "Acme sources"
+    )
+    assert _sanitize_public_query("公开研究资料") == "公开研究资料"
+    with pytest.raises(ValueError, match = "only private"):
+        _sanitize_public_query(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        )
+    long_action = _validate_agent_action(
+        {
+            "action": "search",
+            "query": "public evidence " * 30
+            + 'password="'
+            + "private phrase " * 60
+            + '" useful sources',
+        },
+        set(),
+    )
+    assert "private" not in long_action["query"]
+    assert len(long_action["query"]) <= 500
 
     assert _validate_agent_action(
         {"action": "search", "title": "Verify", "query": "primary source"},
