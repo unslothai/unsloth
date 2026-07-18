@@ -95,6 +95,7 @@ from .diffusion_cache import (
     normalize_transformer_cache,
 )
 from .diffusion_precision import TE_QUANT_AUTO, normalize_te_quant, quantize_text_encoders
+from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_vae_quant import VAE_QUANT_AUTO, normalize_vae_quant, quantize_vae
 from .diffusion_prequant import (
     load_prequantized_transformer,
@@ -1462,6 +1463,20 @@ class DiffusionBackend:
                                 # The repo names a Llama text_encoder_4 it does not ship;
                                 # supply it from the open mirror (diffusion_hidream.py).
                                 pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
+                            # A hosted pre-cast fp8 text encoder (when the family ships one and
+                            # the runtime cast would engage) skips the dense TE download; the
+                            # later quantize_text_encoders re-applies the cast idempotently.
+                            pipe_kwargs.update(
+                                te_prequant_pipe_kwargs(
+                                    fam,
+                                    repo_id,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                )
+                            )
                             # The prefetched snapshot dir keeps from_pretrained off the hub (its
                             # sweep re-pulls files the scoped prefetch skipped: 24 GB per FLUX.1).
                             pipe = pipeline_cls.from_pretrained(
@@ -1505,6 +1520,19 @@ class DiffusionBackend:
                             if fam.name == HIDREAM_FAMILY_NAME:
                                 # Same Llama TE4 assembly as the full-pipeline branch above.
                                 pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
+                            # Same pre-cast TE injection as the full-pipeline branch: the GGUF
+                            # supplies the transformer, so the companion TE is the big download.
+                            pipe_kwargs.update(
+                                te_prequant_pipe_kwargs(
+                                    fam,
+                                    base,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                )
+                            )
                             pipe = pipeline_cls.from_pretrained(
                                 _base_local_dir or base, **pipe_kwargs
                             )
