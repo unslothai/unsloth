@@ -13,6 +13,22 @@ LLAMA_DIR="${UNSLOTH_LLAMA_CPP_PATH:-$HOME/.unsloth/llama.cpp}"
 SERVER="$LLAMA_DIR/build/bin/llama-server"
 log() { printf '  - %s\n' "$*"; }
 
+# Serialize against install_llama_prebuilt.py (same lock file as its
+# install_lock_path: <parent>/.<name>.install.lock; its filelock backend is
+# flock(2), so this interoperates) and against a second copy of this script: the
+# detached background builder can otherwise race an installer rerun or `unsloth
+# studio update`, both of which mv/rm -rf inside $LLAMA_DIR. Append-mode open so
+# the Python O_EXCL fallback's PID file is never truncated. 2h cap matches a
+# worst-case source build; losing the wait means another provisioner is already
+# doing this exact job, so exiting 0 is correct.
+_LOCK_DIR="$(dirname "$LLAMA_DIR")"
+mkdir -p "$_LOCK_DIR" 2>/dev/null
+if command -v flock >/dev/null 2>&1; then
+    if exec 9>>"$_LOCK_DIR/.$(basename "$LLAMA_DIR").install.lock" 2>/dev/null; then
+        flock -w 7200 9 || { log "another llama.cpp install holds the lock; skipping"; exit 0; }
+    fi
+fi
+
 # Detect CUDA two ways: monolithic (libggml-cuda in ldd) or split (dlopen-ed
 # libggml-cuda.so* beside the binary, missed by ldd). CPU-only builds ship no
 # libggml-cuda.so, so its presence is the reliable signal.
@@ -23,18 +39,24 @@ is_cuda_server() {
     return 1
 }
 
-# 0. Already provisioned? A co-located libggml-cuda.so* is the trusted signal: the
-# prebuilt resolver validates the server it installs, and a *source* build that gets
-# interrupted is caught by the build-failure wipe+rebuild below (section 6), so the
-# early-skip can rely on the structural check. We deliberately do NOT run a functional
+# 0. Already provisioned? Skip when the server links libggml-cuda directly (ldd)
+# or when a co-located libggml-cuda.so* is paired with the completion stamp this
+# script writes after its own final CUDA check. The stamp closes the one gap in
+# the structural check: an in-place rebuild interrupted after libggml-cuda.so is
+# linked but before llama-server relinks leaves new .so + old CPU server, which
+# the bare .so test would wrongly skip. We deliberately do NOT run a functional
 # `--list-devices` probe here: this script runs in a stripped-down detached shell whose
 # loader path can miss /usr/lib/wsl/lib, so the CUDA backend may fail to enumerate even
 # on a perfectly good server -- and a false negative would wipe a validated build and
 # trigger a needless, thermally-dangerous source rebuild on the NVIDIA-ARM laptops this
 # targets. Trust the .so; never gamble the machine's thermals on an env-fragile probe.
+_CUDA_STAMP="$LLAMA_DIR/build/bin/.unsloth-cuda-ok"
 if is_cuda_server "$SERVER"; then
-    log "CUDA llama-server already present: $SERVER"
-    exit 0
+    if ldd "$SERVER" 2>/dev/null | grep -qi 'libggml-cuda' || [ -e "$_CUDA_STAMP" ]; then
+        log "CUDA llama-server already present: $SERVER"
+        exit 0
+    fi
+    log "CUDA .so present but the build never stamped complete (interrupted relink?); rebuilding"
 fi
 
 # 1. Require an NVIDIA GPU (this script is only meaningful with one).
@@ -259,6 +281,7 @@ _cmake_build_extras
 _restore_build
 
 if is_cuda_server "$SERVER"; then
+    : > "$_CUDA_STAMP" 2>/dev/null || true
     log "CUDA llama-server ready: $SERVER"
     [ -n "$_LLAMA_BAK" ] && rm -rf "$_LLAMA_BAK" 2>/dev/null
 elif [ -x "$SERVER" ]; then

@@ -320,6 +320,16 @@ case "$_os" in
                         $shim = (Join-Path $ud "bin").TrimEnd("\","/");
                         $up = [Environment]::GetEnvironmentVariable("Path","User");
                         if ($up) { [Environment]::SetEnvironmentVariable("Path", (($up -split ";" | Where-Object { $_ -and ($_.TrimEnd("\","/") -ine $shim) }) -join ";"), "User") }
+                        # The WoA-fallback shortcuts target powershell.exe + launch-studio-wsl.ps1
+                        # (not wsl.exe), so the sweep above keeps them; remove them here before
+                        # their launcher dir is deleted or they would dangle.
+                        foreach ($d in $dirs) {
+                            if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
+                            $l = Join-Path $d "Unsloth Studio.lnk";
+                            if (Test-Path -LiteralPath $l) {
+                                try { $sc2 = $ws.CreateShortcut($l); if ($sc2.Arguments -match "launch-studio-wsl\.ps1") { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue } } catch { }
+                            }
+                        }
                         if (Test-Path -LiteralPath $ud) { Remove-Item -LiteralPath $ud -Recurse -Force -ErrorAction SilentlyContinue }
                     }
                     # Keep the shared icon while any Unsloth shortcut still uses it (native

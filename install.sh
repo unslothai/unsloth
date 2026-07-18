@@ -1234,7 +1234,8 @@ STUB_EOF
         fi
         _css_created=1
 
-    elif [ "$_css_os" = "wsl" ] && [ "${UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT:-0}" != "1" ]; then
+    elif [ "$_css_os" = "wsl" ] && [ "${UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT:-0}" != "1" ] \
+            && [ ! -f "$HOME/.unsloth/.skip-wsl-windows-shortcut" ]; then
         # ── WSL: create Windows Desktop and Start Menu shortcuts ──
         # Detect current WSL distro for targeted shortcut
         _css_distro="${WSL_DISTRO_NAME:-}"

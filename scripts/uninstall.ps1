@@ -399,17 +399,50 @@ function Uninstall-UnslothStudio {
     }
 
     # ── Remove desktop and Start Menu shortcuts ──
-    # Canonical name is "Unsloth Studio.lnk"; also sweep legacy distro-suffixed names
-    # ("Unsloth Studio (WSL - <distro>).lnk") left by pre-release dev builds.
+    # Canonical name is "Unsloth Studio.lnk". Distro-suffixed names
+    # ("Unsloth Studio (WSL - <distro>).lnk") belong to per-distro WSL installs, which
+    # the WSL-fallback section below only cleans for evidenced distros (env var,
+    # wsl-distro.txt marker, or the legacy ARM64 probe) -- scope this sweep to the
+    # same set so a surviving WSL install keeps its launcher. Anything that is not a
+    # live wsl.exe launcher (pre-release leftovers) is still swept.
     _Step "Removing desktop and Start Menu shortcuts..."
+    $_scCands = @()
+    if ($env:UNSLOTH_WSL_DISTRO) { $_scCands += $env:UNSLOTH_WSL_DISTRO }
+    try {
+        if ($env:LOCALAPPDATA) {
+            $_scDf = Join-Path (Join-Path $env:LOCALAPPDATA "Unsloth") "wsl-distro.txt"
+            if (Test-Path -LiteralPath $_scDf) {
+                $_scRd = (Get-Content -LiteralPath $_scDf -ErrorAction SilentlyContinue | Select-Object -First 1)
+                if ($_scRd -and $_scRd.Trim()) { $_scCands += $_scRd.Trim() }
+            }
+        }
+    } catch { }
+    if ((-not $_scCands) -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')) {
+        $_scCands = @('Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
+    }
+    $_scWs = $null
+    try { $_scWs = New-Object -ComObject WScript.Shell } catch { }
     $shortcutDirs = @()
     try { $d = [Environment]::GetFolderPath("Desktop"); if ($d) { $shortcutDirs += $d } } catch { }
     if ($env:APPDATA) { $shortcutDirs += (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs") }
     foreach ($dir in $shortcutDirs) {
         if (-not (Test-Path -LiteralPath $dir)) { continue }
         _RemovePath (Join-Path $dir "Unsloth Studio.lnk")
-        Get-ChildItem -LiteralPath $dir -Filter "Unsloth Studio (*.lnk" -ErrorAction SilentlyContinue |
-            ForEach-Object { _RemovePath $_.FullName }
+        Get-ChildItem -LiteralPath $dir -Filter "Unsloth Studio (*.lnk" -ErrorAction SilentlyContinue | ForEach-Object {
+            $_scKeep = $false
+            if ($_scWs) {
+                try {
+                    $_sc = $_scWs.CreateShortcut($_.FullName)
+                    if ("$($_sc.TargetPath) $($_sc.Arguments)" -match "wsl\.exe") {
+                        $_scD = $null
+                        if ($_sc.Arguments -match '-d\s+"?([^"\s]+)"?') { $_scD = $Matches[1] }
+                        elseif ($_.Name -match '^Unsloth Studio \(WSL - (.+)\)\.lnk$') { $_scD = $Matches[1] }
+                        if ($_scD -and ($_scCands -notcontains $_scD)) { $_scKeep = $true }
+                    }
+                } catch { }
+            }
+            if (-not $_scKeep) { _RemovePath $_.FullName }
+        }
     }
     # Invalidate the Win11 Start Menu tile cache so the removed shortcut's tile
     # disappears promptly instead of lingering stale (mirrors install.ps1's

@@ -2111,6 +2111,13 @@ exit 0
         if ($envOverride) {
             substep "note: $envOverrideVar='$envOverride' is not used for the Windows-on-ARM WSL install -- Studio installs inside WSL at /root/.unsloth." "Yellow"
         }
+        # --with-llama-cpp-dir names a Windows-side llama.cpp, but this install runs
+        # llama.cpp inside WSL2 and would silently ignore the user's explicit binary
+        # choice. Reject like --local and point at the supported WSL-side pins.
+        if ($WithLlamaCppDir -or $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR) {
+            Restore-StudioVenvRollback
+            return (Exit-InstallFailure "--with-llama-cpp-dir / UNSLOTH_LOCAL_LLAMA_CPP_DIR can't be honored on Windows-on-ARM + NVIDIA: llama.cpp runs inside WSL2 and can't use a Windows path. Remove it, or pin the WSL-side build with UNSLOTH_LLAMA_TAG or UNSLOTH_LLAMA_PR instead." 1)
+        }
 
         $wslReady = $false
         if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
@@ -2208,7 +2215,10 @@ exit 0
         # install.ps1 owns the WoA shortcut (one canonical "Unsloth Studio.lnk" with a
         # %USERPROFILE%\.unsloth icon that renders on WoA). Tell install.sh to skip its own
         # WSL .lnk so we don't get a duplicate whose %LOCALAPPDATA% icon renders blank.
-        $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; '
+        # Persist the skip as a marker file too: `unsloth studio update` reruns
+        # install.sh --shortcuts-only through the wsl.exe shim, which carries no env,
+        # so without the marker the first update would recreate the duplicate .lnk.
+        $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; mkdir -p /root/.unsloth; touch /root/.unsloth/.skip-wsl-windows-shortcut; '
         if ($_instRef -eq 'main') {
             $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh'
         } else {
