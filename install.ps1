@@ -91,7 +91,11 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
+<<<<<<< HEAD
         throw $Message
+=======
+        return $Code
+>>>>>>> 946c8179f (Studio: preserve Windows venv lifecycle outcomes)
     }
 
     # ── Parse flags ──
@@ -1389,6 +1393,12 @@ exit 0
             [Parameter(Mandatory = $true)][string]$Path,
             [switch]$AllowExternalSource
         )
+        function Test-StudioRegularLeaf {
+            param([Parameter(Mandatory = $true)][string]$LeafPath)
+            $leaf = Get-Item -LiteralPath $LeafPath -Force -ErrorAction SilentlyContinue
+            return $null -ne $leaf -and -not $leaf.PSIsContainer -and
+                (($leaf.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+        }
         $fullPath = [System.IO.Path]::GetFullPath($Path)
         $parent = [System.IO.Path]::GetFullPath((Split-Path -Parent $fullPath))
         $expectedParent = [System.IO.Path]::GetFullPath($StudioHome)
@@ -1403,15 +1413,20 @@ exit 0
         $isReparse = (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
         $isDirectory = [bool]$item.PSIsContainer
         $marker = Join-Path $fullPath ".unsloth-studio-owned"
-        $markerItem = if ($isDirectory -and -not $isReparse) {
-            Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
-        } else { $null }
-        $markerIsRegular = $null -ne $markerItem -and -not $markerItem.PSIsContainer -and
-            (($markerItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+        $markerIsRegular = if ($isDirectory -and -not $isReparse) {
+            Test-StudioRegularLeaf $marker
+        } else { $false }
+        $legacySentinelIsRegular = $false
+        if ($isDirectory -and -not $isReparse -and
+            [System.StringComparer]::OrdinalIgnoreCase.Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))) {
+            $legacySentinelIsRegular =
+                (Test-StudioRegularLeaf (Join-Path $expectedParent "share\studio.conf")) -or
+                (Test-StudioRegularLeaf (Join-Path $expectedParent "bin\unsloth.exe"))
+        }
         return [pscustomobject]@{
             Path = $fullPath
             Exists = $true
-            Owned = $markerIsRegular
+            Owned = $markerIsRegular -or $legacySentinelIsRegular
             SafeDirectory = $isDirectory -and -not $isReparse
             Reparse = $isReparse
             Item = $item
@@ -1539,7 +1554,12 @@ exit 0
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         if ($backup -and (Get-StudioVenvPathState $backup).Exists) {
-            Remove-StudioVenvDirectory $backup
+            try {
+                Remove-StudioVenvDirectory $backup
+            } catch {
+                Write-Host "[WARN] Could not remove rollback copy at $backup" -ForegroundColor Yellow
+                Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
@@ -1630,26 +1650,38 @@ exit 0
             )
             if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
             if (-not (Test-Path -LiteralPath (Join-Path $VenvRoot "pyvenv.cfg") -PathType Leaf)) { return $false }
-            $prevEap = $ErrorActionPreference
             $prevExpectedVenv = [Environment]::GetEnvironmentVariable("UNSLOTH_EXPECTED_VENV", "Process")
-            $ErrorActionPreference = "Stop"
+            $proc = $null
             try {
                 $env:UNSLOTH_EXPECTED_VENV = $VenvRoot
                 $probe = 'import os, sys; expected = os.path.normcase(os.path.abspath(os.environ["UNSLOTH_EXPECTED_VENV"])); prefix = os.path.normcase(os.path.abspath(sys.prefix)); base_prefix = os.path.normcase(os.path.abspath(sys.base_prefix)); raise SystemExit(0 if prefix == expected and prefix != base_prefix else 1)'
-                $global:LASTEXITCODE = -1
-                $null = & $PythonExe -c $probe 2>$null
-                $probeExit = $LASTEXITCODE
-                return ($probeExit -eq 0)
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $PythonExe
+                $psi.Arguments = "-"
+                $psi.UseShellExecute = $false
+                $psi.RedirectStandardOutput = $true
+                $psi.RedirectStandardError = $true
+                $psi.RedirectStandardInput = $true
+                $psi.CreateNoWindow = $true
+                $proc = [System.Diagnostics.Process]::Start($psi)
+                $proc.StandardInput.WriteLine($probe)
+                $proc.StandardInput.Close()
+                $null = $proc.StandardOutput.ReadToEnd()
+                $null = $proc.StandardError.ReadToEnd()
+                $proc.WaitForExit()
+                return ($proc.ExitCode -eq 0)
             } catch {
                 return $false
             } finally {
+                if ($proc) {
+                    $proc.Dispose()
+                }
                 if ($null -eq $prevExpectedVenv) {
                     [Environment]::SetEnvironmentVariable("UNSLOTH_EXPECTED_VENV", $null, "Process")
                 }
                 if ($null -ne $prevExpectedVenv) {
                     $env:UNSLOTH_EXPECTED_VENV = $prevExpectedVenv
                 }
-                $ErrorActionPreference = $prevEap
             }
         }
 
@@ -2748,7 +2780,7 @@ exit 0
     # ── Tauri mode: done, skip shortcuts and auto-launch ──
     if ($TauriMode) {
         Write-TauriLog "DONE" ""
-        return
+        return 0
     }
 
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
@@ -2818,6 +2850,12 @@ exit 0
         substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
         Write-Host ""
     }
+
+    return 0
 }
 
-Install-UnslothStudio @args
+$installExitCode = @(Install-UnslothStudio @args)
+if ($installExitCode.Count -eq 0) {
+    exit 0
+}
+exit ([int]$installExitCode[-1])

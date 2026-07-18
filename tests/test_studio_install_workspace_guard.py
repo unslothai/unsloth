@@ -195,8 +195,8 @@ def test_install_ps1_sentinel_uses_pathtype_leaf():
     block_start = src.index("function Get-StudioVenvPathState")
     block = src[block_start : block_start + 2000]
     assert (
-        'Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue' in block
-    ), "install.ps1 must read the in-VENV marker through the current-state helper"
+        "function Test-StudioRegularLeaf" in block
+    ), "install.ps1 must normalize leaf checks through the current-state helper"
     assert (
         "markerIsRegular" in block and "ReparsePoint" in block
     ), "install.ps1 marker evidence must reject reparse-point or non-file sentinels"
@@ -349,7 +349,7 @@ def test_install_ps1_fallback_rebuild_preserves_env_mode_ownership_guard():
 
 
 def test_install_ps1_guard_accepts_venv_marker():
-    """install.ps1 env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
+    """install.ps1 final-target guard must accept current and legacy Studio sentinels without widening sibling ownership."""
     src = INSTALL_PS1.read_text()
     assert '$VenvOwnershipMarker = Join-Path $VenvDir ".unsloth-studio-owned"' in src
     block_start = src.index("function Get-StudioVenvPathState")
@@ -357,6 +357,8 @@ def test_install_ps1_guard_accepts_venv_marker():
     assert (
         "ReparsePoint" in block and "markerIsRegular" in block
     ), "install.ps1 guard must check the in-VENV marker through $VenvOwnershipMarker"
+    assert "share\\studio.conf" in block and "bin\\unsloth.exe" in block
+    assert 'Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))' in block
 
 
 def test_install_ps1_publish_and_migrations_use_exclusive_guarded_move():

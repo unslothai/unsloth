@@ -38,7 +38,7 @@ def _extract_venv_bootstrap_body(source: str) -> str:
             break
     if helper_start is None or start is None or end is None:
         raise AssertionError("failed to locate the install.ps1 venv bootstrap block")
-    return "\n".join(lines[helper_start:start - 1] + lines[start:end])
+    return "\n".join(lines[helper_start : start - 1] + lines[start:end])
 
 
 def _source_without_uv_repair() -> str:
@@ -141,6 +141,7 @@ def _run_bootstrap(
     preexisting_venv_file: bool = False,
     preexisting_venv_directory: bool = False,
     preexisting_venv_reparse: bool = False,
+    legacy_root_sentinel: str | None = None,
     redirect_mode: str = "env",
     powershell_exe: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
@@ -155,6 +156,14 @@ def _run_bootstrap(
     elif preexisting_venv_directory:
         venv_dir.mkdir(parents = True)
         (venv_dir / "important.txt").write_text("user-owned", encoding = "utf-8")
+        if legacy_root_sentinel == "share":
+            sentinel = venv_dir.parent / "share" / "studio.conf"
+            sentinel.parent.mkdir(parents = True, exist_ok = True)
+            sentinel.write_text("legacy", encoding = "utf-8")
+        elif legacy_root_sentinel == "bin":
+            sentinel = venv_dir.parent / "bin" / "unsloth.exe"
+            sentinel.parent.mkdir(parents = True, exist_ok = True)
+            sentinel.write_text("legacy", encoding = "utf-8")
     elif preexisting_venv_reparse:
         target = tmp_path / "reparse-target"
         target.mkdir()
@@ -280,6 +289,8 @@ def _run_full_install_script(
     *,
     powershell_exe: str | None = None,
     preexisting_venv_directory: bool = False,
+    legacy_root_sentinel: str | None = None,
+    stop_after_rollback: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     powershell_exe = powershell_exe or PWSH
     if powershell_exe is None:
@@ -290,19 +301,30 @@ def _run_full_install_script(
     if preexisting_venv_directory:
         venv_dir.mkdir(parents = True)
         (venv_dir / "important.txt").write_text("user-owned", encoding = "utf-8")
+        if legacy_root_sentinel == "share":
+            sentinel = studio_home / "share" / "studio.conf"
+            sentinel.parent.mkdir(parents = True, exist_ok = True)
+            sentinel.write_text("legacy", encoding = "utf-8")
+        elif legacy_root_sentinel == "bin":
+            sentinel = studio_home / "bin" / "unsloth.exe"
+            sentinel.parent.mkdir(parents = True, exist_ok = True)
+            sentinel.write_text("legacy", encoding = "utf-8")
 
     stub_dir = tmp_path / "script-stub-bin"
     log_file = tmp_path / "script-uv.log"
     _write_uv_stub(stub_dir, "healthy")
     _write_python_stub(stub_dir, "real")
 
+    stop_anchor = (
+        "    # Env-mode session export AFTER Refresh-SessionPath; otherwise a legacy"
+        if stop_after_rollback
+        else "    # ── Helper: run amd-smi without triggering a UAC elevation prompt ──"
+    )
     source_text = source_text.replace(
-        '    # ── Helper: run amd-smi without triggering a UAC elevation prompt ──',
-        '    if ($env:UNSLOTH_TEST_STOP_AFTER_VENV -eq "1") { exit 0 }\n\n'
-        '    # ── Helper: run amd-smi without triggering a UAC elevation prompt ──',
+        stop_anchor,
+        '    if ($env:UNSLOTH_TEST_STOP_AFTER_VENV -eq "1") { exit 0 }\n\n' + stop_anchor,
         1,
     )
-    source_text = source_text.replace("Install-UnslothStudio @args", "exit (Install-UnslothStudio @args)", 1)
     script_path = REPO_ROOT / f"install.full-entrypoint.{tmp_path.name}.ps1"
     script_path.write_text(source_text, encoding = "utf-8")
 
@@ -347,10 +369,13 @@ def test_install_ps1_rechecks_uv_success_before_continuing():
     assert 'Join-Path $VenvRoot "pyvenv.cfg"' in body
     assert "sys.prefix" in body
     assert "sys.base_prefix" in body
-    assert "return ($probeExit -eq 0)" in body
-    assert '$ErrorActionPreference = "Stop"' in body
+    assert "System.Diagnostics.ProcessStartInfo" in body
+    assert "return ($proc.ExitCode -eq 0)" in body
     assert "Invoke-InstallCommand { & $PythonExe -c" not in body
-    assert "Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue" not in body
+    assert (
+        "Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction SilentlyContinue"
+        not in body
+    )
     assert "& $DetectedPython.Path -m venv $VenvStage" in body
     assert "Move-StudioVenvToQuarantine" in body
     assert "Publish-StudioVenvCandidate" in body
@@ -398,7 +423,9 @@ def test_uv_venv_prefix_identity_rejection_runs_after_zero_exit(tmp_path):
     proc, venv_dir, log_file, partial_marker = _run_bootstrap(tmp_path, "base_python", source)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "pyvenv.cfg").is_file()
-    assert not partial_marker.exists(), "prefix-identity rejection must trigger fallback after zero-exit uv output"
+    assert (
+        not partial_marker.exists()
+    ), "prefix-identity rejection must trigger fallback after zero-exit uv output"
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
@@ -413,10 +440,14 @@ def test_publish_fails_closed_when_target_appears_after_absence_check(tmp_path):
         "        [System.IO.Directory]::Move("
     )
     assert needle in source
-    proc, venv_dir, _, _ = _run_bootstrap(tmp_path, "healthy", source.replace(needle, replacement, 1))
+    proc, venv_dir, _, _ = _run_bootstrap(
+        tmp_path, "healthy", source.replace(needle, replacement, 1)
+    )
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert venv_dir.is_dir()
-    assert not (venv_dir / "Scripts").exists(), "candidate must not be nested into substituted target"
+    assert not (
+        venv_dir / "Scripts"
+    ).exists(), "candidate must not be nested into substituted target"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
@@ -442,6 +473,7 @@ def test_install_ps1_full_entrypoint_rejects_foreign_target_under_powershell_51(
         powershell_exe = POWERSHELL_51,
         preexisting_venv_directory = True,
     )
+    assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "does not look like an Unsloth Studio install" in (proc.stdout + proc.stderr)
     assert (venv_dir / "important.txt").read_text(encoding = "utf-8") == "user-owned"
 
@@ -498,6 +530,29 @@ def test_uv_venv_probe_allows_python_startup_stderr(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(POWERSHELL_51 is None, reason = "Windows PowerShell 5.1 not available")
+def test_uv_venv_probe_allows_python_startup_stderr_under_powershell_51(tmp_path):
+    sitecustomize_dir = tmp_path / "sitecustomize"
+    sitecustomize_dir.mkdir()
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        "import sys; sys.stderr.write('startup warning\\n')\n",
+        encoding = "utf-8",
+    )
+
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(
+        tmp_path,
+        "healthy",
+        _source(),
+        extra_env = {"PYTHONPATH": str(sitecustomize_dir)},
+        powershell_exe = POWERSHELL_51,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert not partial_marker.exists()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_healthy_skips_fallback(tmp_path):
     proc, venv_dir, log_file, _ = _run_bootstrap(tmp_path, "healthy", _source())
@@ -528,6 +583,23 @@ def test_uv_venv_nonzero_preserves_preexisting_file_path(tmp_path):
     assert venv_dir.is_file()
     assert venv_dir.read_text(encoding = "utf-8") == "user-owned"
     assert not log_file.exists(), "foreign path must be rejected before uv runs"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+@pytest.mark.parametrize("legacy_root_sentinel", ["share", "bin"])
+def test_uv_venv_legacy_studio_root_is_accepted_for_final_target(tmp_path, legacy_root_sentinel):
+    proc, venv_dir, log_file, _ = _run_bootstrap(
+        tmp_path,
+        "healthy",
+        _source(),
+        preexisting_venv_directory = True,
+        legacy_root_sentinel = legacy_root_sentinel,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (venv_dir / ".unsloth-studio-owned").is_file()
+    assert not (venv_dir / "important.txt").exists()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
@@ -572,6 +644,33 @@ def test_uv_venv_retry_after_failed_fallback_uses_fresh_stage(tmp_path):
     assert second_proc.returncode == 0, second_proc.stdout + second_proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()
     assert second_log.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+def test_install_ps1_successful_reinstall_warns_when_rollback_cleanup_fails(tmp_path):
+    source = _source()
+    source = source.replace(
+        "                Remove-StudioVenvDirectory $backup",
+        '                throw "simulated rollback cleanup lock"',
+        1,
+    )
+    source = source.replace(
+        "        & $UnslothExe @studioArgs\n        $setupExit = $LASTEXITCODE",
+        "        $setupExit = 0",
+        1,
+    )
+    proc, venv_dir, log_file = _run_full_install_script(
+        tmp_path,
+        source,
+        preexisting_venv_directory = True,
+        legacy_root_sentinel = "share",
+        stop_after_rollback = True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Could not remove rollback copy" in (proc.stdout + proc.stderr)
+    assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
