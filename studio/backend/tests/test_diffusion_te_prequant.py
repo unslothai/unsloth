@@ -261,6 +261,136 @@ def test_hosted_te_prequant_entries():
     assert te_prequant_repo_filename(
         "unsloth/LTX-2-FP8", "text_encoder", "fp8"
     ) == "LTX-2-text_encoder-FP8.pt"
+    # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs because
+    # the generic quantize_text_encoders pass only covers text_encoder.._3.
+    assert detect_family("HiDream-ai/HiDream-I1-Full").te_prequant_repos == (
+        ("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),
+    )
+    assert te_prequant_repo_filename(
+        "unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8"
+    ) == "HiDream-I1-Full-text_encoder_4-FP8.pt"
+
+
+def _hidream_transformers_stub(monkeypatch, recorder):
+    """Fake transformers surface for hidream_te4_kwargs: records from_pretrained calls."""
+    import sys
+
+    class _FakeLlama:
+        def __init__(self, tag):
+            self.tag = tag
+
+    class _LlamaCls:
+        @staticmethod
+        def from_pretrained(repo, **kwargs):
+            recorder.append(("llama_from_pretrained", repo))
+            return _FakeLlama(f"dense{len(recorder)}")
+
+    class _TokCls:
+        @staticmethod
+        def from_pretrained(repo, **kwargs):
+            recorder.append(("tokenizer", repo))
+            return "tok4"
+
+    fake = types.ModuleType("transformers")
+    fake.AutoTokenizer = _TokCls
+    fake.LlamaForCausalLM = _LlamaCls
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    return _FakeLlama
+
+
+def test_hidream_te4_stays_dense_without_fp8(monkeypatch):
+    from core.inference.diffusion_hidream import hidream_te4_kwargs
+
+    recorder: list = []
+    _hidream_transformers_stub(monkeypatch, recorder)
+    out = hidream_te4_kwargs(
+        None, None, fam = _fam(name = "hidream-i1"), te_quant_mode = None, target = _target()
+    )
+    assert out["tokenizer_4"] == "tok4"
+    assert getattr(out["text_encoder_4"], "tag", "").startswith("dense")
+    # No cast attempted: mode None normalises to no TE quant.
+    assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") in recorder
+
+
+def test_hidream_te4_prefers_precast_checkpoint(monkeypatch):
+    import core.inference.diffusion_hidream as dh
+    import core.inference.diffusion_precision as precision
+
+    recorder: list = []
+    _hidream_transformers_stub(monkeypatch, recorder)
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    precast = object()
+    calls: dict = {}
+
+    def _fake_load(base, component, source, **kwargs):
+        calls["base"] = base
+        calls["component"] = component
+        calls["config_subfolder"] = kwargs.get("config_subfolder")
+        calls["config_overrides"] = kwargs.get("config_overrides")
+        return precast
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", _fake_load)
+    fam = _fam(
+        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
+        name = "hidream-i1",
+    )
+    out = dh.hidream_te4_kwargs(
+        None, None, fam = fam, te_quant_mode = "fp8", target = _target()
+    )
+    assert out["text_encoder_4"] is precast
+    assert calls["base"] == "unsloth/Meta-Llama-3.1-8B-Instruct"
+    assert calls["component"] == "text_encoder_4"
+    # Standalone repo: config at the root, forward flags the pipeline needs applied.
+    assert calls["config_subfolder"] == ""
+    assert calls["config_overrides"] == {
+        "output_hidden_states": True,
+        "output_attentions": True,
+    }
+    # The dense Llama download never ran.
+    assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") not in recorder
+
+
+def test_hidream_te4_falls_back_to_dense_cast(monkeypatch):
+    import core.inference.diffusion_hidream as dh
+    import core.inference.diffusion_precision as precision
+
+    recorder: list = []
+    _hidream_transformers_stub(monkeypatch, recorder)
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: None)
+    cast: list = []
+    monkeypatch.setattr(precision, "_cast_fp8", lambda enc, tgt: cast.append(enc))
+    fam = _fam(
+        te_prequant_repos = (("fp8", "text_encoder_4", "unsloth/HiDream-I1-Full-FP8"),),
+        name = "hidream-i1",
+    )
+    out = dh.hidream_te4_kwargs(
+        None, None, fam = fam, te_quant_mode = "fp8", target = _target()
+    )
+    assert cast == [out["text_encoder_4"]]
+    assert ("llama_from_pretrained", "unsloth/Meta-Llama-3.1-8B-Instruct") in recorder
+
+
+def test_hidream_te4_partial_cast_reloads_dense(monkeypatch):
+    """A mid-pass TE4 cast failure must ship a FRESH dense encoder, not partial fp8 state."""
+    import core.inference.diffusion_hidream as dh
+    import core.inference.diffusion_precision as precision
+
+    recorder: list = []
+    _hidream_transformers_stub(monkeypatch, recorder)
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+
+    def _boom(enc, tgt):
+        raise RuntimeError("cast failed mid-pass")
+
+    monkeypatch.setattr(precision, "_cast_fp8", _boom)
+    fam = _fam(name = "hidream-i1")  # no hosted entry -> dense + cast path
+    out = dh.hidream_te4_kwargs(
+        None, None, fam = fam, te_quant_mode = "fp8", target = _target()
+    )
+    dense_loads = [r for r in recorder if r[0] == "llama_from_pretrained"]
+    assert len(dense_loads) == 2  # initial load + the fail-safe reload
+    assert getattr(out["text_encoder_4"], "tag", "").startswith("dense")
 
 
 def test_assemble_pipe_injects_precast_te(monkeypatch):

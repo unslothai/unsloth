@@ -37,6 +37,13 @@ def main(argv = None) -> int:
         default = "text_encoder",
         help = "pipeline component attribute (also the repo subfolder)",
     )
+    p.add_argument(
+        "--config-subfolder",
+        default = None,
+        help = "where the encoder lives inside --base (default: the component name; "
+        "pass '' for a standalone encoder repo whose config sits at the root, "
+        "e.g. HiDream's Llama text_encoder_4)",
+    )
     p.add_argument("--scheme", default = "fp8", choices = ["fp8"])
     p.add_argument("--out", required = True, help = "output .pt path for the checkpoint")
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
@@ -54,12 +61,15 @@ def main(argv = None) -> int:
     # branch (diffusion_families vs video_families), so resolve best-effort by name.
     family = args.family.strip().lower()
 
+    subfolder = args.component if args.config_subfolder is None else args.config_subfolder
+    from_pretrained_kwargs = {"token": args.hf_token}
+    if subfolder:
+        from_pretrained_kwargs["subfolder"] = subfolder
+
     print(f"== build TE prequant ({family}/{args.component}/{args.scheme}) ==", flush = True)
-    print(f"  loading dense encoder from {args.base} (subfolder={args.component}) ...", flush = True)
+    print(f"  loading dense encoder from {args.base} (subfolder={subfolder!r}) ...", flush = True)
     t0 = time.time()
-    config = transformers.AutoConfig.from_pretrained(
-        args.base, subfolder = args.component, token = args.hf_token
-    )
+    config = transformers.AutoConfig.from_pretrained(args.base, **from_pretrained_kwargs)
     # Prefer the checkpoint's own architecture (what the diffusers pipeline instantiates,
     # e.g. Gemma3ForConditionalGeneration); AutoModel.from_config would give the bare base
     # class and record a te_class whose state dict the pipeline cannot use.
@@ -72,9 +82,8 @@ def main(argv = None) -> int:
         del encoder
     encoder = getattr(transformers, encoder_cls_name).from_pretrained(
         args.base,
-        subfolder = args.component,
         torch_dtype = torch.bfloat16,
-        token = args.hf_token,
+        **from_pretrained_kwargs,
     )
     print(f"  casting in place (layerwise {args.scheme}) ...", flush = True)
 

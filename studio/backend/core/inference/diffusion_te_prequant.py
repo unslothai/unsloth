@@ -115,13 +115,21 @@ def load_prequant_text_encoder(
     hf_token: Optional[str] = None,
     scheme: str = "fp8",
     logger: Any = None,
+    config_subfolder: Optional[str] = None,
+    config_overrides: Optional[dict] = None,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
 
     Returns the encoder, or None on any problem (missing / mismatched / unreadable
     checkpoint) so the caller falls back to the dense download + cast. Best-effort:
-    never raises for an unavailable artifact."""
+    never raises for an unavailable artifact.
+
+    ``config_subfolder`` overrides where the encoder config lives in ``base`` (default:
+    the component name; "" means the repo root, for encoders assembled from a separate
+    standalone repo like HiDream's Llama TE4). ``config_overrides`` sets config fields
+    the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
+    flags only; the state dict is unaffected by them)."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -161,9 +169,13 @@ def load_prequant_text_encoder(
                 ValueError(f"checkpoint te_class {te_class!r} not found in transformers"),
             )
             return None
-        config = transformers.AutoConfig.from_pretrained(
-            base, subfolder = component, token = hf_token
-        )
+        subfolder = component if config_subfolder is None else config_subfolder
+        config_kwargs: dict[str, Any] = {"token": hf_token}
+        if subfolder:
+            config_kwargs["subfolder"] = subfolder
+        config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)
+        for key, value in (config_overrides or {}).items():
+            setattr(config, key, value)
         from accelerate import init_empty_weights
 
         with init_empty_weights():
