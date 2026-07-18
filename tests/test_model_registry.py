@@ -1,5 +1,7 @@
 """Register each model set and check the registered ids exist on the HF Hub."""
 
+import subprocess
+import sys
 from dataclasses import dataclass
 
 import pytest
@@ -77,3 +79,30 @@ def test_quant_type():
     assert all(m.quant_type == QuantType.UNSLOTH for m in dynamic_quant_models)
     quant_tag = QUANT_TAG_MAP[QuantType.UNSLOTH]
     assert all(quant_tag in m.model_path for m in dynamic_quant_models)
+
+
+def test_importing_registry_does_not_register_models():
+    """Importing the registry must not populate MODEL_REGISTRY on its own.
+
+    ``_deepseek`` used to call ``register_deepseek_models(...)`` at module
+    scope, so merely importing ``unsloth.registry`` registered models (and hit
+    the hub) as an import side effect, unlike every other family which only
+    registers on demand. Run in a subprocess so the check is independent of any
+    ``register_models()`` calls other tests make on the shared registry.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import unsloth.registry\n"
+            "from unsloth.registry.registry import MODEL_REGISTRY\n"
+            "print('REGISTRY_SIZE', len(MODEL_REGISTRY))",
+        ],
+        capture_output = True,
+        text = True,
+        check = True,
+    )
+    size_lines = [
+        line for line in result.stdout.splitlines() if line.startswith("REGISTRY_SIZE")
+    ]
+    assert size_lines == ["REGISTRY_SIZE 0"], result.stdout
