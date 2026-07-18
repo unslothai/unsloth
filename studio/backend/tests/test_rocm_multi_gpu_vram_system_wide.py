@@ -183,6 +183,20 @@ def test_overlay_linux_skips_unified_memory_card(monkeypatch):
     assert devices[0]["vram_total_gb"] == 96.0
 
 
+def test_overlay_linux_skips_partitioned_device(monkeypatch):
+    # MI300 CPX mode: HIP exposes several logical devices for one physical card,
+    # but sysfs reports the WHOLE card's aggregate. The card total (192) dwarfs
+    # the partition total (24), so the overlay must NOT overwrite the partition
+    # with whole-card usage/capacity -- else downstream selection would treat the
+    # partition as having the entire card's free VRAM.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {0: (40.0, 192.0)})
+    devices = [_device(0, used = 1.0, total = 24.0)]  # torch partition
+    hw._overlay_system_wide_vram(devices)
+    assert devices[0]["vram_used_gb"] == 1.0  # partition figures kept
+    assert devices[0]["vram_total_gb"] == 24.0
+
+
 def test_overlay_linux_out_of_range_index_untouched(monkeypatch):
     # A masked host exposing physical index 5 with no card 5: keep torch data.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")

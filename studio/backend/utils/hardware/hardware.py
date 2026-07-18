@@ -1159,10 +1159,19 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
         if entry is None:
             continue
         used, total = entry
-        # Unified-memory APU (Strix Halo): sysfs reports only the dedicated
-        # VRAM slice while torch sees the real GTT-backed pool; keep torch's
-        # larger figures there (mirrors _apply_unified_memory_correction).
-        if total < (dev.get("vram_total_gb") or 0.0):
+        dev_total = dev.get("vram_total_gb") or 0.0
+        # Overlay only a device that maps 1:1 to this whole physical card: its
+        # torch total must match the card's sysfs total (within ~10%). A mismatch
+        # in EITHER direction means sysfs describes a different memory scope than
+        # the torch device and must not overwrite it:
+        #   * unified-memory APU (Strix Halo): sysfs reports only the small
+        #     dedicated VRAM slice while torch sees the larger GTT-backed pool;
+        #   * partitioned ROCm device (MI300 CPX mode): HIP exposes several
+        #     logical devices per card while sysfs reports the whole card's
+        #     aggregate, so the card total dwarfs a partition's torch total.
+        # Overlaying either would misstate the device's capacity and free VRAM
+        # (a partition would look like it has the whole card free).
+        if dev_total <= 0 or abs(total - dev_total) > 0.1 * dev_total:
             continue
         dev["vram_used_gb"] = used
         dev["vram_total_gb"] = total
