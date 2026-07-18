@@ -11,7 +11,10 @@ RUN apt-get update \
 
 ARG COMPUTE_BACKEND="hip"
 ARG BNB_ROCM_ARCHS="gfx942"
-ARG BNB_COMMIT="4b0257482bef447106fcaada67d1c6d081fdc82f"
+# Must be at or after bnb PR #1887 (merged as this commit, 0.50.0.dev0): earlier
+# builds (<= 0.49.2) NaN at the 4-bit GEMV decode shape on every AMD GPU, the
+# same floor install.sh enforces for its ROCm wheel.
+ARG BNB_COMMIT="713a3b83e405d32449e1cb392e5e25985ab927c6"
 ARG BNB_REPO="https://github.com/bitsandbytes-foundation/bitsandbytes.git"
 
 # Fetch only the pinned commit via init + shallow fetch: minimal, reproducible.
@@ -33,10 +36,14 @@ ARG UNSLOTH_REPO="https://github.com/unslothai/unsloth.git"
 ARG UNSLOTH_BRANCH="main"
 
 
+# huggingfacenotorch pulls the full HF training stack (transformers, trl, peft,
+# datasets, accelerate) without torch/torchvision, so the base image's ROCm
+# torch is never clobbered by a PyPI CPU/CUDA build. Bare `-e .` installs only
+# the CLI deps and the image cannot actually train.
 RUN git clone --branch ${UNSLOTH_BRANCH} --depth 1 ${UNSLOTH_REPO} unsloth \
     && cd unsloth \
     && rm -rf .git \
-    && pip install -e .
+    && pip install -e '.[huggingfacenotorch]'
 
 
 ARG UNSLOTH_ZOO_REPO="https://github.com/unslothai/unsloth-zoo.git"
