@@ -19,6 +19,12 @@ import {
 } from "./sections/run-config-override";
 import { TrainingStartOverlay } from "./training-start-overlay";
 
+/** Retry budget for the run-config lookup. The run row is inserted just after
+ * the progress event that reveals the run, so the first fetch can lose that
+ * race; a few short retries cover the insert without polling a missing row. */
+const RUN_CONFIG_FETCH_RETRIES = 5;
+const RUN_CONFIG_FETCH_RETRY_MS = 1000;
+
 /** The fetched run config only applies while it belongs to the active job;
  * a stale record from a previous run falls back to the form store. */
 function activeRunOverride(
@@ -80,14 +86,26 @@ export function LiveTrainingView(): ReactElement {
   // (set only when step > 0) would miss. Until it loads (or if the fetch fails)
   // ProgressSection falls back to the form store. The fetched config is keyed by
   // job id and filtered at render time, so no synchronous reset is needed.
+  // currentStep > 0 is a readiness signal in its own right: when an active run
+  // is recovered through status/metrics polling (SSE unavailable or blocked),
+  // applyStatus/applyMetrics restore currentStep but never set
+  // firstStepReceived, so keying only off that flag would never fetch the saved
+  // config for the rest of the run even though the row exists.
   const runRowReady =
     runtime.firstStepReceived ||
+    runtime.currentStep > 0 ||
     runtime.phase === "completed" ||
     runtime.phase === "error" ||
     runtime.phase === "stopped";
   const [fetchedRunConfig, setFetchedRunConfig] = useState<{
     jobId: string;
     override: RunConfigOverride | undefined;
+  } | null>(null);
+  // Retry budget for the transient 404 below, keyed by job so a new run always
+  // starts with a fresh budget.
+  const [fetchAttempt, setFetchAttempt] = useState<{
+    jobId: string;
+    count: number;
   } | null>(null);
   useEffect(() => {
     if (!(runtime.jobId && runRowReady)) {
@@ -97,7 +115,9 @@ export function LiveTrainingView(): ReactElement {
     if (fetchedRunConfig !== null && fetchedRunConfig.jobId === jobId) {
       return; // already resolved for this job
     }
+    const attempts = fetchAttempt?.jobId === jobId ? fetchAttempt.count : 0;
     const controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     getTrainingRun(jobId, controller.signal)
       .then((detail) => {
         setFetchedRunConfig({
@@ -106,11 +126,26 @@ export function LiveTrainingView(): ReactElement {
         });
       })
       .catch(() => {
-        // Run record not available yet: keep the form-store fallback; a change
-        // to runRowReady / fetchedRunConfig re-runs this effect.
+        // The backend publishes the progress event before create_run commits,
+        // so the row can still be missing here and this 404 is transient.
+        // Nothing else in the deps changes on failure, so without an explicit
+        // retry the effect would never run again for this job. Bounded, so a
+        // genuinely absent row cannot poll forever -- the form-store fallback
+        // simply stays in place once the budget is spent.
+        if (controller.signal.aborted || attempts >= RUN_CONFIG_FETCH_RETRIES) {
+          return;
+        }
+        retryTimer = setTimeout(() => {
+          setFetchAttempt({ jobId, count: attempts + 1 });
+        }, RUN_CONFIG_FETCH_RETRY_MS);
       });
-    return () => controller.abort();
-  }, [runtime.jobId, runRowReady, fetchedRunConfig]);
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) {
+        clearTimeout(retryTimer);
+      }
+    };
+  }, [runtime.jobId, runRowReady, fetchedRunConfig, fetchAttempt]);
   const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
 
   const activeProjectName =

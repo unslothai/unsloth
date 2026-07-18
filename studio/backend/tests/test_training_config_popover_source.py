@@ -52,7 +52,32 @@ def test_live_view_fetches_once_the_run_row_exists():
     assert 'runtime.phase === "error"' in src
     assert 'runtime.phase === "stopped"' in src
     assert "!(runtime.jobId && runRowReady)" in src
-    assert "[runtime.jobId, runRowReady, fetchedRunConfig]" in src
+    assert "[runtime.jobId, runRowReady, fetchedRunConfig, fetchAttempt]" in src
+
+
+def test_live_view_treats_a_hydrated_step_as_row_ready():
+    # A run recovered through status/metrics polling (SSE unavailable/blocked)
+    # gets currentStep restored by applyStatus/applyMetrics, but NOT
+    # firstStepReceived. Without currentStep as its own readiness signal the
+    # saved config would never be fetched for the rest of that active run.
+    src = _read("live-training-view.tsx")
+    assert "runtime.currentStep > 0" in src
+
+
+def test_live_view_retries_the_transient_row_miss():
+    # The progress event that reveals the run is published before create_run
+    # commits, so the first fetch can 404. Nothing else in the effect deps
+    # changes on failure, so the retry has to be explicit -- and bounded, so a
+    # genuinely absent row falls back to the form store instead of polling.
+    src = _read("live-training-view.tsx")
+    assert "RUN_CONFIG_FETCH_RETRIES" in src
+    assert "RUN_CONFIG_FETCH_RETRY_MS" in src
+    assert "setFetchAttempt(" in src
+    assert "attempts >= RUN_CONFIG_FETCH_RETRIES" in src
+    # The budget is keyed by job so a new run always starts fresh.
+    assert "fetchAttempt?.jobId === jobId ? fetchAttempt.count : 0" in src
+    # The pending retry must be cancelled with the effect.
+    assert "clearTimeout(retryTimer)" in src
 
 
 def test_live_view_prefers_saved_training_method():
