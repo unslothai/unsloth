@@ -3513,7 +3513,7 @@ def test_build_validation_sandbox_plan_linux_skips_broad_inherited_library_binds
     assert not _command_has_bind(plan, "--ro-bind", Path("/home/alice"))
 
 
-def test_build_validation_sandbox_plan_linux_gpu_validation_binds_vulkan_render_nodes(
+def test_build_validation_sandbox_plan_linux_rocm_gpu_validation_binds_vulkan_render_nodes(
     monkeypatch, tmp_path
 ):
     bwrap_path = tmp_path / "bwrap"
@@ -3574,7 +3574,7 @@ def test_build_validation_sandbox_plan_linux_gpu_validation_binds_vulkan_render_
         runtime_line = None,
         env = {"LD_LIBRARY_PATH": str(binary_dir)},
         enable_gpu_layers = True,
-        gpu_backend = "cuda",
+        gpu_backend = "rocm",
     )
 
     assert plan.is_runnable

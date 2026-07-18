@@ -5591,8 +5591,6 @@ def _linux_validation_bwrap_prefix(
             "/etc/vulkan",
             "/usr/share/vulkan",
         ]
-        dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("card*"))
-        dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("renderD*"))
         if gpu_backend == "cuda":
             dev_nodes.extend(
                 [
