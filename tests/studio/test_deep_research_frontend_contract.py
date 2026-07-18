@@ -59,6 +59,7 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "signal: researchFollowController.signal" in adapter
     assert "beginExternalResearchFollow(" in adapter
     assert "ragScope" in adapter
+    assert "runtime.ragEnabled\n                    ? { thread_id: resolvedThreadId }" in adapter
     create_block = adapter.split("createdRun = await createResearchRun({", 1)[1].split("});", 1)[0]
     assert "modelId:" not in create_block
     assert "prompt," not in create_block

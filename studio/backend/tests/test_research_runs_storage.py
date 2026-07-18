@@ -448,6 +448,43 @@ def test_recovery_releases_expired_leases(research_home, status):
     assert claimed["status"] == expected
 
 
+def test_execution_reset_clears_steps_and_sources(research_home):
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.upsert_execution_step(
+        "run-1", 0, "Old step", "old query", "completed", worker_id = "worker-1"
+    )
+    research_db.upsert_source("run-1", 0, "https://old.example", "Old", "Stale", "worker-1")
+
+    assert research_db.reset_execution_steps("run-1", "worker-1") is True
+    run = research_db.get_run("run-1")
+    assert run["steps"] == []
+    assert run["sources"] == []
+
+
+def test_supervisor_stop_signals_tool_cancellation_before_task_cancelled(research_home):
+    from core.research_runs import ResearchSupervisor
+    async def scenario():
+        supervisor = ResearchSupervisor(SimpleNamespace(state = SimpleNamespace()))
+        cancel_event = supervisor._cancel_event("run-1")
+
+        async def active_run():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                assert cancel_event.is_set()
+                raise
+
+        supervisor._task = asyncio.create_task(active_run())
+        await asyncio.sleep(0)
+        await supervisor.stop()
+        assert cancel_event.is_set()
+
+    asyncio.run(scenario())
+
+
 def test_sources_are_normalized_by_url(research_home):
     _create()
     research_db.upsert_source("run-1", 0, "https://example.com/a", "Old", "one")

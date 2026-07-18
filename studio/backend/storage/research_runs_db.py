@@ -865,6 +865,7 @@ def reset_execution_steps(run_id: str, worker_id: str | None = None) -> bool:
             conn.commit()
             return False
         conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
         conn.commit()
         return True
     except Exception:

@@ -2036,7 +2036,9 @@ export function createOpenAIStreamAdapter(
                    autoinject_min_score: runtime.ragAutoInjectMinScore,
                 }
               : {
-                  thread_id: resolvedThreadId,
+                  ...(runtime.ragEnabled
+                    ? { thread_id: resolvedThreadId }
+                    : {}),
                   ...(researchProjectId
                     ? { project_id: researchProjectId }
                     : {}),

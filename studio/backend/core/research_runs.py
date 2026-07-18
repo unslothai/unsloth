@@ -385,6 +385,8 @@ class ResearchSupervisor:
         self._stopping.set()
         try:
             if self._task is not None:
+                for cancel_event in self._cancel_events.values():
+                    cancel_event.set()
                 self._task.cancel()
                 try:
                     await self._task
