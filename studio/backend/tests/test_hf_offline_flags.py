@@ -103,17 +103,29 @@ def _fake_hub(monkeypatch, calls):
 
 
 @pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
-def test_security_scan_short_circuits_when_offline(monkeypatch, var):
-    # Metadata-only lookup with no local fallback: on a session the user declared
-    # offline it must skip straight to its documented fail-open rather than burn
-    # both request timeouts (10s + 20s) on every save and load.
+def test_shared_gate_still_scans_when_offline_by_default(monkeypatch, var):
+    # THE important one. This gate is shared by every loader (training, MLX,
+    # export, ...), and most do NOT constrain their loaders to the local cache,
+    # so an offline-looking env var alone must never disable the malware scan --
+    # those paths can still fetch and deserialize an unscanned model.
     import utils.security.file_security as fs
 
     calls: list = []
     _fake_hub(monkeypatch, calls)
     monkeypatch.setenv(var, "1")
-    assert fs._fetch_security_status("org/model", None) is None
-    assert calls == [], f"the scan must not hit the Hub under {var}"
+    assert fs._fetch_security_status("org/model", None) is None  # fails open on error
+    assert calls, f"{var} alone must NOT bypass the shared malware gate"
+
+
+def test_security_scan_short_circuits_for_a_local_only_caller(monkeypatch):
+    # A caller that guarantees a local-only load gets the Hub round-trip skipped
+    # instead of burning both request timeouts (10s + 20s) before failing open.
+    import utils.security.file_security as fs
+
+    calls: list = []
+    _fake_hub(monkeypatch, calls)
+    assert fs._fetch_security_status("org/model", None, True) is None
+    assert calls == [], "a local-only caller must not hit the Hub"
 
 
 def test_security_scan_runs_when_online(monkeypatch):
@@ -125,20 +137,46 @@ def test_security_scan_runs_when_online(monkeypatch):
     assert calls, "online must attempt the Hub"
 
 
-def test_embedding_loader_forces_local_only_when_offline():
-    """The invariant the offline scan skip rests on.
+def _read_backend(rel: str) -> str:
+    return (Path(__file__).resolve().parents[1] / rel).read_text(encoding = "utf-8")
 
-    Skipping the Hub security scan offline is only sound while every loader
-    behind that gate is pinned to the local cache by the SAME predicate -- if the
-    loader could still fetch, an unscanned repo's pickle would be downloaded and
-    deserialized. Pinned at source level because importing the loader would drag
-    in sentence_transformers/torch.
+
+def test_embedding_loader_forces_local_only_when_offline():
+    """The invariant the RAG opt-in rests on.
+
+    core/rag/embeddings.py is allowed to pass local_only_load because its loader
+    is pinned to the local cache by the SAME predicate. If that pin is removed
+    the opt-in silently becomes a hole -- an unscanned repo's pickle could be
+    fetched and deserialized -- so it is enforced here rather than by comment.
+    Checked at source level because importing the loader drags in
+    sentence_transformers/torch.
     """
-    src = (Path(__file__).resolve().parents[1] / "core" / "rag" / "embeddings.py").read_text(
-        encoding = "utf-8"
-    )
+    src = _read_backend("core/rag/embeddings.py")
     assert "local_files_only = hf_env_offline()" in src, (
         "core/rag/embeddings.py must pin SentenceTransformer to local files when "
-        "hf_env_offline(); without it the offline security-scan skip in "
-        "utils/security/file_security.py is unsafe"
+        "hf_env_offline(); without it passing local_only_load to "
+        "evaluate_file_security is unsafe"
     )
+
+
+def test_only_the_rag_embedding_path_opts_into_the_bypass():
+    """No other loader may claim local-only without constraining its loader.
+
+    The MLX/inference, training and export gates call from_pretrained without a
+    local-only argument, so if one of them started passing local_only_load the
+    malware gate would be disabled for a path that can still fetch.
+    """
+    allowed = {"core/rag/embeddings.py", "routes/settings.py"}
+    callers = [
+        "core/inference/worker.py",
+        "core/training/worker.py",
+        "core/export/worker.py",
+        "routes/models.py",
+        "routes/inference.py",
+    ]
+    for rel in callers:
+        assert rel not in allowed
+        assert "local_only_load" not in _read_backend(rel), (
+            f"{rel} passes local_only_load but does not pin its loader to the "
+            "local cache; that would disable the malware gate for a fetching path"
+        )

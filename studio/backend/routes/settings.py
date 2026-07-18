@@ -434,7 +434,17 @@ def update_embedding_model(
                 )
             )
         )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        # local_only_load: this gate covers the RAG embedder, whose loader pins
+        # SentenceTransformer to the local cache with the same predicate, so
+        # offline the scan can only stall on timeouts before failing open.
+        from utils.utils import hf_env_offline
+
+        if evaluate_file_security(
+            model,
+            hf_token = scan_token,
+            load_subdirs = load_subdirs,
+            local_only_load = hf_env_offline(),
+        ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
             raise HTTPException(

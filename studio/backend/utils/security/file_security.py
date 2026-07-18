@@ -236,27 +236,31 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     return model_name, load_subdirs
 
 
-def _fetch_security_status(model_name: str, hf_token: Optional[str]):
+def _fetch_security_status(
+    model_name: str,
+    hf_token: Optional[str],
+    local_only_load: bool = False,
+):
     """``security_repo_status`` (a dict) or None if unavailable. Hub metadata only;
     retries once on a transient error, then returns None so the caller fails open.
+
+    ``local_only_load`` is an explicit promise from the caller that the load it is
+    gating cannot reach the Hub. See :func:`evaluate_file_security`.
     """
     from huggingface_hub import model_info as hf_model_info
-    from utils.utils import hf_env_offline
 
-    # Effective offline: skip this metadata-only lookup instead of burning both
-    # request timeouts (10s + 20s) on a session the user declared offline.
-    #
-    # SAFETY INVARIANT: this is only sound because every loader behind this gate
-    # forces local-only loading from the SAME predicate -- see
-    # core/rag/embeddings.py, which passes local_files_only = hf_env_offline() to
-    # SentenceTransformer. Nothing can therefore be fetched here, so the scan's
-    # job (block a poisoned pickle from being downloaded and deserialized) is
-    # already served; the residual case, a model cached BEFORE it was flagged, is
-    # the same fail-open this function has always documented for an unavailable
-    # scan. If a loader ever stops honoring hf_env_offline(), this skip becomes
-    # unsafe -- tests/test_hf_offline_flags.py pins that coupling.
-    if hf_env_offline():
-        logger.debug("HF security scan skipped for '%s': offline; failing open.", model_name)
+    # Only when the CALLER guarantees a local-only load. This is deliberately not
+    # keyed off hf_env_offline() here: this gate is shared by every loader
+    # (training, MLX/inference, export, ...), and most of them do not pass
+    # local_files_only, so an offline-looking session can still fetch and
+    # deserialize an unscanned model through those paths. Skipping the scan for
+    # them would disable the malware gate outright, so the bypass has to be
+    # opted into by the callers that actually hold the invariant.
+    if local_only_load:
+        logger.debug(
+            "HF security scan skipped for '%s': caller loads local-only; failing open.",
+            model_name,
+        )
         return None
 
     token_arg = hf_token if hf_token else False
@@ -287,6 +291,7 @@ def evaluate_file_security(
     hf_token: Optional[str] = None,
     *,
     load_subdirs = (),
+    local_only_load: bool = False,
 ) -> FileSecurityDecision:
     """Block a load when HF's security scan flags unsafe serialized files.
 
@@ -297,6 +302,16 @@ def evaluate_file_security(
     ``load_subdirs`` names subdirs the load calls ``from_pretrained`` on (e.g. ``("LLM",)``
     for Spark-TTS / BiCodec, loading ``<snapshot>/LLM``): a flagged file directly under one
     is root-level there and blocks, and an index inside it is honored when scoping shards.
+
+    ``local_only_load`` lets a caller skip the Hub round-trip when it GUARANTEES the
+    load it is gating cannot fetch -- e.g. the RAG embedder, which passes
+    ``local_files_only`` to SentenceTransformer from the same predicate. Pass it only
+    with that guarantee in hand: the scan exists to stop a poisoned pickle being
+    downloaded and deserialized, so claiming local-only while the loader can still
+    fetch disables the gate. Default False, because most callers here (training,
+    MLX/inference, export) do not constrain their loaders. Even when set, an
+    already-cached repo still loads unscanned -- the same fail-open this function
+    documents for an unavailable scan.
     """
     # Scan the repo the load actually fetches, not the literal alias (which 404s and
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.
@@ -312,7 +327,7 @@ def evaluate_file_security(
         # Cannot classify the path -> do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
 
-    status = _fetch_security_status(model_name, hf_token)
+    status = _fetch_security_status(model_name, hf_token, local_only_load)
     if not isinstance(status, dict):
         return FileSecurityDecision(
             model_name, False, reason = "scan unavailable; allowed (fail-open)"

@@ -145,7 +145,17 @@ def _guard_model_security(name: str) -> None:
         load_subdirs = tuple(
             dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
         )
-        blocked = evaluate_file_security(name, hf_token = token, load_subdirs = load_subdirs).blocked
+        from utils.utils import hf_env_offline
+
+        # local_only_load: _get() pins SentenceTransformer to the local cache with
+        # the same predicate, so offline nothing can be fetched and the Hub scan
+        # would only stall on timeouts before failing open anyway.
+        blocked = evaluate_file_security(
+            name,
+            hf_token = token,
+            load_subdirs = load_subdirs,
+            local_only_load = hf_env_offline(),
+        ).blocked
     except Exception:
         return
     if blocked:
