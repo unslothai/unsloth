@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
 
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
@@ -54,8 +56,16 @@ class LoadRequest(BaseModel):
     @field_validator("chat_template_override")
     @classmethod
     def normalize_blank_chat_template_override(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value.strip() == "":
+        if value is None:
             return None
+        # Character count is a lower bound on the UTF-8 byte length, so reject an
+        # obviously-oversized template before spending work encoding it.
+        if len(value) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        if value.strip() == "":
+            return None
+        if len(value.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
         return value
 
     cache_type_kv: Optional[str] = Field(
