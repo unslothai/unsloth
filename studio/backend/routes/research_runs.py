@@ -63,8 +63,8 @@ class ApprovePlan(BaseModel):
     planHash: str = Field(min_length = 64, max_length = 64)
 
 
-def _require_run(run_id: str, subject: str) -> dict:
-    run = db.get_run(run_id, subject)
+def _require_run(run_id: str) -> dict:
+    run = db.get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Research run not found")
     return run
@@ -270,14 +270,14 @@ async def active_research_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {
-        "runs": db.list_active(current_subject, thread_id),
+        "runs": db.list_active(thread_id),
         "hasRun": db.has_thread_claim(thread_id),
     }
 
 
 @router.get("/{run_id}")
 async def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
-    return _require_run(run_id, current_subject)
+    return _require_run(run_id)
 
 
 @router.put("/{run_id}/plan")
@@ -286,12 +286,12 @@ async def update_research_plan(
     payload: UpdatePlan,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
+    _require_run(run_id)
     try:
         db.set_plan(run_id, payload.plan.model_dump(), payload.expectedRevision)
     except (db.ResearchConflictError, KeyError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    run = _require_run(run_id, current_subject)
+    run = _require_run(run_id)
     _sync_assistant(run)
     return run
 
@@ -303,7 +303,7 @@ async def approve_research_plan(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
+    _require_run(run_id)
     try:
         db.approve(run_id, payload.planRevision, payload.planHash)
     except (db.ResearchConflictError, KeyError) as exc:
@@ -312,7 +312,7 @@ async def approve_research_plan(
     if supervisor is not None:
         supervisor.note_request_port(request)
         supervisor.wake()
-    run = _require_run(run_id, current_subject)
+    run = _require_run(run_id)
     _sync_assistant(run)
     return run
 
@@ -323,12 +323,12 @@ async def cancel_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
+    _require_run(run_id)
     status = db.request_cancel(run_id)
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None and status == "cancelling":
         supervisor.cancel(run_id)
-    run = _require_run(run_id, current_subject)
+    run = _require_run(run_id)
     _sync_assistant(run)
     return run
 
@@ -339,7 +339,7 @@ async def retry_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
+    _require_run(run_id)
     try:
         db.retry(run_id)
     except (db.ResearchConflictError, KeyError) as exc:
@@ -348,7 +348,7 @@ async def retry_research_run(
     if supervisor is not None:
         supervisor.note_request_port(request)
         supervisor.wake()
-    run = _require_run(run_id, current_subject)
+    run = _require_run(run_id)
     _sync_assistant(run)
     return run
 
@@ -361,7 +361,7 @@ async def research_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id, current_subject)
+    _require_run(run_id)
     header_after = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
     cursor = max(after or 0, header_after)
 
@@ -371,11 +371,10 @@ async def research_events(
             events = await asyncio.to_thread(
                 db.wait_for_events,
                 run_id,
-                current_subject,
                 cursor,
                 15,
             )
-            snapshot = await asyncio.to_thread(db.get_run, run_id, current_subject)
+            snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return
             for event in events:

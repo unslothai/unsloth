@@ -1766,6 +1766,55 @@ def sync_chat_messages(
         conn.close()
 
 
+_RESEARCH_LINK_KEYS = {
+    "researchRunId",
+    "researchRun",
+    "researchStatus",
+    "researchPlanRevision",
+    "serverManaged",
+}
+
+
+def _detach_research_message_json(
+    content_json: str, metadata_json: str | None
+) -> tuple[str, str | None]:
+    content = _json_loads(content_json, [])
+    metadata = _json_loads(metadata_json, None)
+    custom = metadata.get("custom") if isinstance(metadata, dict) else None
+    linked = (
+        isinstance(metadata, dict)
+        and any(key in metadata for key in _RESEARCH_LINK_KEYS)
+        or isinstance(custom, dict)
+        and any(key in custom for key in _RESEARCH_LINK_KEYS)
+        or isinstance(content, list)
+        and any(
+            isinstance(part, dict) and any(key in part for key in _RESEARCH_LINK_KEYS)
+            for part in content
+        )
+    )
+    if not linked:
+        return content_json, metadata_json
+
+    if isinstance(content, list):
+        content = [
+            {key: value for key, value in part.items() if key not in _RESEARCH_LINK_KEYS}
+            if isinstance(part, dict)
+            else part
+            for part in content
+        ]
+    if isinstance(metadata, dict):
+        metadata = {key: value for key, value in metadata.items() if key not in _RESEARCH_LINK_KEYS}
+        custom = metadata.get("custom")
+        if isinstance(custom, dict):
+            metadata["custom"] = {
+                key: value for key, value in custom.items() if key not in _RESEARCH_LINK_KEYS
+            }
+    return (
+        json.dumps(content, ensure_ascii = False),
+        json.dumps(metadata, ensure_ascii = False) if metadata is not None else None,
+    )
+
+
 def fork_chat_thread(
     source_thread_id: str,
     branch_message_id: str,
@@ -1838,6 +1887,23 @@ def fork_chat_thread(
                 branch_message_id,
             ),
         )
+        fork_messages = []
+        for row in ancestry:
+            content_json, metadata_json = _detach_research_message_json(
+                row["content_json"], row["metadata_json"]
+            )
+            fork_messages.append(
+                (
+                    id_map[row["id"]],
+                    new_thread_id,
+                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
+                    row["role"],
+                    content_json,
+                    row["attachments_json"],
+                    metadata_json,
+                    int(row["created_at"]),
+                )
+            )
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -1845,19 +1911,7 @@ def fork_chat_thread(
                  metadata_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [
-                (
-                    id_map[row["id"]],
-                    new_thread_id,
-                    id_map.get(row["parent_id"]) if row["parent_id"] else None,
-                    row["role"],
-                    row["content_json"],
-                    row["attachments_json"],
-                    row["metadata_json"],
-                    int(row["created_at"]),
-                )
-                for row in ancestry
-            ],
+            fork_messages,
         )
         conn.commit()
         thread_row = conn.execute(

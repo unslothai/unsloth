@@ -142,6 +142,10 @@ def test_research_presentation_is_integrated() -> None:
     assert "effectiveDeepResearchEnabled ||" in thread
     assert "replayFrom: session?.lastAppliedSeq ?? 0" in coordinator
     assert "loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in store
+    checkpoint_update = store.split("setCheckpoint: (modelId, ggufVariant) =>", 1)[1].split(
+        "setActiveThreadId:", 1
+    )[0]
+    assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
     assert "const permissionMode = loadPermissionMode();" in store
     assert "permissionMode," in store
 

@@ -426,9 +426,9 @@ def test_revision_hash_conflicts_and_idempotent_approval(research_home):
         research_db.approve("run-1", 1, "0" * 64)
 
     assert research_db.approve("run-1", 1, first["planHash"]) == "queued"
-    event_count = len(research_db.list_events("run-1", "alice"))
+    event_count = len(research_db.list_events("run-1"))
     assert research_db.approve("run-1", 1, first["planHash"]) == "queued"
-    assert len(research_db.list_events("run-1", "alice")) == event_count
+    assert len(research_db.list_events("run-1")) == event_count
 
 
 def test_planner_cannot_finalize_after_its_lease_timestamp_expires(research_home):
@@ -489,7 +489,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
         )
         is False
     )
-    events = research_db.list_events("run-1", "alice")
+    events = research_db.list_events("run-1")
     assert all(event["type"] != "reasoning.updated" for event in events)
     assert research_db.finish("run-1", "worker-1", "completed") is None
     assert research_db.get_run("run-1")["status"] == "running"
@@ -527,30 +527,29 @@ def test_cancel_is_durable_and_idempotent(research_home):
     _create()
     research_db.set_plan("run-1", _plan())
     assert research_db.request_cancel("run-1") == "cancelled"
-    event_count = len(research_db.list_events("run-1", "alice"))
+    event_count = len(research_db.list_events("run-1"))
     assert research_db.request_cancel("run-1") == "cancelled"
     run = research_db.get_run("run-1")
     assert run["cancelRequested"] is True
-    assert len(research_db.list_events("run-1", "alice")) == event_count
+    assert len(research_db.list_events("run-1")) == event_count
 
 
 def test_repeated_running_cancel_does_not_emit_duplicate_event(research_home):
     _create()
     assert research_db.claim_next("worker-1") is not None
     assert research_db.request_cancel("run-1") == "cancelling"
-    event_count = len(research_db.list_events("run-1", "alice"))
+    event_count = len(research_db.list_events("run-1"))
     assert research_db.request_cancel("run-1") == "cancelling"
-    assert len(research_db.list_events("run-1", "alice")) == event_count
+    assert len(research_db.list_events("run-1")) == event_count
 
 
-def test_event_replay_is_monotonic_and_owner_scoped(research_home):
+def test_event_replay_is_monotonic_for_shared_run(research_home):
     _create()
     for number in range(4):
         research_db.append_event("run-1", "progress", {"number": number})
-    events = research_db.list_events("run-1", "alice", after = 2)
+    events = research_db.list_events("run-1", after = 2)
     assert [event["seq"] for event in events] == [3, 4, 5]
     assert [event["data"]["number"] for event in events] == [1, 2, 3]
-    assert research_db.list_events("run-1", "bob") == []
 
 
 @pytest.mark.parametrize("status", ["planning", "queued", "running"])
@@ -652,9 +651,7 @@ def test_sources_are_normalized_by_url(research_home):
     assert source["snippet"] == "two"
     assert source["stepPosition"] == 1
     source_events = [
-        event
-        for event in research_db.list_events("run-1", "alice")
-        if event["type"] == "source.added"
+        event for event in research_db.list_events("run-1") if event["type"] == "source.added"
     ]
     assert source_events[-1]["data"]["snippet"] == "two"
     assert source_events[-1]["data"]["stepPosition"] == 1
@@ -673,7 +670,7 @@ def test_partial_report_is_persisted_and_emits_an_event(research_home):
     run = research_db.get_run("run-1")
     assert run["report"] == "Partial report"
     assert run["lastEventSeq"] == before + 1
-    [event] = research_db.list_events("run-1", "alice", after = before)
+    [event] = research_db.list_events("run-1", after = before)
     assert event["type"] == "report.updated"
     assert event["data"] == {"length": 14, "delta": " report", "offset": 7, "attempt": 0}
 
@@ -857,7 +854,7 @@ def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
     assert retried["steps"] == []
     assert retried["sources"] == []
     assert research_db.get_reasoning_text("run-1") == ""
-    assert research_db.list_events("run-1", "alice")[-1]["data"]["attempt"] == 1
+    assert research_db.list_events("run-1")[-1]["data"]["attempt"] == 1
     research_db.claim_next("worker-2")
     research_db.finish("run-1", "worker-2", "failed", "again")
     with pytest.raises(research_db.ResearchConflictError, match = "budget"):
@@ -1275,12 +1272,36 @@ def test_research_claim_is_global_across_authenticated_subjects(research_home):
     assert research_db.has_thread_claim("thread-1") is True
 
 
+def test_shared_chat_subject_can_follow_and_cancel_research(research_home):
+    from routes.research_runs import (
+        active_research_runs,
+        cancel_research_run,
+        get_research_run,
+    )
+
+    _create()
+    visible = asyncio.run(get_research_run("run-1", current_subject = "bob"))
+    active = asyncio.run(active_research_runs("thread-1", current_subject = "bob"))
+    cancelled = asyncio.run(
+        cancel_research_run(
+            "run-1",
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+            current_subject = "bob",
+        )
+    )
+
+    assert visible["ownerSubject"] == "alice"
+    assert [run["id"] for run in active["runs"]] == ["run-1"]
+    assert active["hasRun"] is True
+    assert cancelled["status"] == "cancelling"
+
+
 def test_list_active_returns_complete_snapshots(research_home):
     _create()
     research_db.set_plan("run-1", _plan())
     research_db.upsert_source("run-1", 0, "https://example.com/source", "Source", "Evidence")
 
-    [run] = research_db.list_active("alice", "thread-1")
+    [run] = research_db.list_active("thread-1")
     assert [step["title"] for step in run["steps"]] == ["First", "Second"]
     assert run["sources"][0]["url"] == "https://example.com/source"
 
@@ -1463,7 +1484,7 @@ def test_cancel_requested_wins_finish_cas(research_home, requested):
     snapshot = research_db.get_run("run-1")
     assert snapshot["status"] == "cancelled"
     assert snapshot["report"] is None
-    terminal = research_db.list_events("run-1", "alice")[-1]
+    terminal = research_db.list_events("run-1")[-1]
     assert terminal["type"] == "run.cancelled"
     assert "report" not in terminal["data"]
     assert terminal["data"]["error"] is None

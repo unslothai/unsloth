@@ -310,18 +310,18 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict | None:
         conn.close()
 
 
-def list_active(owner_subject: str, thread_id: str) -> list[dict]:
+def list_active(thread_id: str) -> list[dict]:
     conn = get_connection()
     try:
         placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
         rows = conn.execute(
-            f"SELECT id FROM research_runs WHERE owner_subject = ? AND thread_id = ? "
+            f"SELECT id FROM research_runs WHERE thread_id = ? "
             f"AND status IN ({placeholders}) ORDER BY created_at",
-            (owner_subject, thread_id, *sorted(ACTIVE_STATUSES)),
+            (thread_id, *sorted(ACTIVE_STATUSES)),
         ).fetchall()
     finally:
         conn.close()
-    return [run for row in rows if (run := get_run(row["id"], owner_subject)) is not None]
+    return [run for row in rows if (run := get_run(row["id"])) is not None]
 
 
 def has_thread_claim(thread_id: str) -> bool:
@@ -1130,17 +1130,16 @@ def upsert_document_source(
 
 def list_events(
     run_id: str,
-    owner_subject: str,
     after: int = 0,
     limit: int = 1000,
 ) -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            """SELECT e.seq, e.event_type, e.data_json, e.created_at
-               FROM research_events e JOIN research_runs r ON r.id=e.run_id
-               WHERE e.run_id=? AND r.owner_subject=? AND e.seq>? ORDER BY e.seq LIMIT ?""",
-            (run_id, owner_subject, after, limit),
+            """SELECT seq, event_type, data_json, created_at
+               FROM research_events
+               WHERE run_id=? AND seq>? ORDER BY seq LIMIT ?""",
+            (run_id, after, limit),
         ).fetchall()
         return [
             {
@@ -1157,22 +1156,21 @@ def list_events(
 
 def wait_for_events(
     run_id: str,
-    owner_subject: str,
     after: int = 0,
     timeout: float = 15,
 ) -> list[dict]:
     """Block until committed events are available or the keep-alive timeout expires."""
-    events = list_events(run_id, owner_subject, after)
+    events = list_events(run_id, after)
     if events:
         return events
     with _EVENTS_CHANGED:
         # Recheck under the condition lock so a commit cannot be missed between
         # the initial query and waiting for its notification.
-        events = list_events(run_id, owner_subject, after)
+        events = list_events(run_id, after)
         if events:
             return events
         _EVENTS_CHANGED.wait(timeout)
-    return list_events(run_id, owner_subject, after)
+    return list_events(run_id, after)
 
 
 def recover_expired(now: int | None = None) -> int:
