@@ -956,6 +956,12 @@ class MLXInferenceBackend:
             with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
                 final_response = None
                 try:
+                    # Emit any prefilled <think> block before the first token so the
+                    # UI renders it during prefill, matching _generate_text. Done
+                    # inside the adapter context so an unsupported request raises
+                    # before any output escapes.
+                    if cumulative:
+                        yield cumulative
                     for response in vlm_stream(
                         self._model,
                         self._processor,

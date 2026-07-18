@@ -431,6 +431,66 @@ def test_mlx_generate_chat_response_accepts_template_kwargs():
         ), f"{name!r} must default to None so existing callers stay valid"
 
 
+def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
+    """A prefilled <think> block must be re-emitted as the first VLM snapshot,
+    inside the adapter context (so unsupported requests still raise first), so
+    the UI renders the thinking block during prefill and a pre-first-token
+    cancel does not drop it. Mirrors _generate_text."""
+    from core.inference import mlx_inference
+
+    MLXInferenceBackend = mlx_inference.MLXInferenceBackend
+
+    order = []
+
+    @contextmanager
+    def _adapter_state(_model, state):
+        assert backend._generation_lock.locked()
+        order.append("adapter_enter")
+        try:
+            yield
+        finally:
+            order.append("adapter_exit")
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.detect_think_prefill",
+        lambda *_a, **_k: "<think>\n",
+    )
+
+    prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {"deepseek_vl_v2": object()},
+        apply_chat_template = lambda *_a, **_k: "<image> model-aware",
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+
+    def _vlm_stream(*_a, **_k):
+        # The prefill must have been emitted before any generated token.
+        assert order[-1] == "adapter_enter"
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<image> model-aware",
+    )
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+
+    gen = backend._generate_vlm(*args, _adapter_state = False)
+    # First snapshot is the prefill alone, emitted after entering the adapter context.
+    assert next(gen) == "<think>\n"
+    assert order == ["adapter_enter"]
+    # Subsequent snapshots are cumulative (prefill + generated text).
+    assert next(gen) == "<think>\nok"
+    gen.close()
+    assert order == ["adapter_enter", "adapter_exit"]
+
+
 def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     from core.inference import mlx_inference
 
