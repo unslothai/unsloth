@@ -276,7 +276,7 @@ jobs:
                   print(
                       f"[{label}] WARN non-determinism at temperature=0.0 across "
                       f"{len(determinism_failures)} of {len(first)} turn(s); "
-                      f"small-quant model drift, not a Unsloth regression. "
+                      f"small-quant model drift, not an Unsloth regression. "
                       f"Details: " + " | ".join(determinism_failures)
                   )
               # Sanity: turn-2 reply should mention the earlier question, and

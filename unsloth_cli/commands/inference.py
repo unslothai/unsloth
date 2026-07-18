@@ -67,7 +67,7 @@ def inference(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Unsloth server is running.",
+        help = "Load the model in-process even if an Unsloth server is running.",
     ),
 ):
     """Run a single inference using the specified model."""

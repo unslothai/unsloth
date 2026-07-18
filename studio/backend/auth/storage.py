@@ -305,7 +305,7 @@ def get_or_create_identity_secret() -> bytes:
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof
-    relayed from a Unsloth on a different address/port (a squatter proxying to the
+    relayed from an Unsloth on a different address/port (a squatter proxying to the
     real one, e.g. localhost resolving to ::1 while Unsloth is on 127.0.0.1) was
     computed for that other endpoint and won't match the one the client dialed."""
     try:

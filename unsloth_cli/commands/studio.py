@@ -767,7 +767,7 @@ def _apply_supplied_password_before_launch(supplied_password: "str | None") -> N
             raise typer.Exit(1)
         if not row[2]:
             typer.echo(
-                "Error: a Unsloth admin password is already set; --password only sets "
+                "Error: an Unsloth admin password is already set; --password only sets "
                 "the initial password. Run `unsloth studio reset-password` first "
                 "(or change it in the UI).",
                 err = True,
@@ -1404,7 +1404,7 @@ def studio_default(
         studio_python = _studio_venv_python()
         run_py = _find_run_py()
         if not (studio_python and run_py):
-            typer.echo("Unsloth not set up. Run install.sh first.")
+            typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
         # A public UI launch must have a servable login page BEFORE the gate can
         # strip the seeded .bootstrap_password, or the child has no way to change
@@ -1522,7 +1522,7 @@ def studio_default(
             else:
                 os.execvp(str(studio_python), args)
         else:
-            typer.echo("Unsloth not set up. Run install.sh first.")
+            typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
 
     run_mod = _load_run_module()
@@ -1878,7 +1878,7 @@ def run(
     if not in_studio_venv:
         studio_python = _studio_venv_python()
         if not studio_python:
-            typer.echo("Unsloth not set up. Run install.sh first.")
+            typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
         # Re-exec via the studio venv's `unsloth` console-script.
         studio_bin = studio_python.parent / "unsloth"

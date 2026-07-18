@@ -206,7 +206,7 @@ def chat(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Unsloth server is running.",
+        help = "Load the model in-process even if an Unsloth server is running.",
     ),
 ):
     """Start an interactive chat with a model (loads once, stays warm)."""

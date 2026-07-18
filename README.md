@@ -65,7 +65,7 @@ Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
 * **CPU:** Supported for Chat and Data Recipes currently
 * **NVIDIA:** Training works on RTX 30/40/50, Blackwell, DGX Spark, Station and more
 * **macOS:** Training, MLX and GGUF inference are ALL supported.
-* **AMD:** Chat + Data works. Train with [Unsloth Core](#unsloth-core-code-based). Unsloth support is out soon.
+* **AMD:** Chat + Data works. Train with [Unsloth Core](#unsloth-core-code-based). Unsloth Studio support is out soon.
 * **Multi-GPU:** Available now, with a major upgrade on the way
 
 #### macOS, Linux, WSL:

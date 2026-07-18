@@ -803,7 +803,7 @@ def connect_studio_server(
         )
     token = _studio_token()
     if not token:
-        return _refuse("couldn't self-issue a Unsloth token (is Unsloth set up here?).")
+        return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model,

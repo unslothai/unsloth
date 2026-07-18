@@ -2402,7 +2402,7 @@ _maybe_bootstrap_rocm_wsl() {
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
-            # librocdxg present but the env drop-in is gone (e.g. a Unsloth
+            # librocdxg present but the env drop-in is gone (e.g. an Unsloth
             # uninstall removed it while keeping shared ROCm). Restore the env.
             _persist_rocm_wsl_dropin
         fi

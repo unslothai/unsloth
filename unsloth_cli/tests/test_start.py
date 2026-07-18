@@ -2937,7 +2937,7 @@ def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
 def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     # The persistence flag is --persist, NOT --resume, so an agent's own
     # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
-    # through to the agent verbatim and is not swallowed as a Unsloth option.
+    # through to the agent verbatim and is not swallowed as an Unsloth option.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])

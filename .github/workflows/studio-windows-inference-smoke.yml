@@ -1303,7 +1303,7 @@ jobs:
               print(
                   f"[image/anthropic] WARN anthropic image SDK call raised: "
                   f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp vision "
-                  f"behaviour, NOT a Unsloth regression."
+                  f"behaviour, NOT an Unsloth regression."
               )
           PY
 

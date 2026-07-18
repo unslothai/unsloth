@@ -901,7 +901,7 @@ def _codex_supports_model_catalog() -> bool:
 
 
 def _codex_model_catalog(model: dict) -> dict:
-    """Return conservative metadata for a Unsloth model unknown to Codex's built-in catalog."""
+    """Return conservative metadata for an Unsloth model unknown to Codex's built-in catalog."""
     model_id = model["id"]
     window = model.get("context_length") or model.get("max_context_length")
     entry = {

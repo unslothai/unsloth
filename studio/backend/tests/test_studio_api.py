@@ -31,7 +31,7 @@ Usage:
     python tests/test_studio_api.py
     python tests/test_studio_api.py --model unsloth/... --gguf-variant ...
 
-    # Pytest mode, external server — start a Unsloth server yourself,
+    # Pytest mode, external server — start an Unsloth server yourself,
     # then point pytest at it. Fastest iteration loop.
     unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL &
     export UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8080

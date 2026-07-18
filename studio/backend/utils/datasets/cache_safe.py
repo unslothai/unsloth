@@ -7,7 +7,7 @@ A shared HF datasets cache can contain subtrees owned by another user (for
 example populated by an earlier root-run job). datasets then raises
 "[Errno 13] Permission denied: ..._builder.lock" while locking the cached
 builder, killing the training run even though the dataset itself is fine.
-Retry such loads in a Unsloth-owned cache so the run proceeds; the worst case
+Retry such loads in an Unsloth-owned cache so the run proceeds; the worst case
 is one rebuild of the dataset in the fallback location.
 """
 
@@ -26,7 +26,7 @@ def studio_datasets_cache() -> str:
 
 
 def load_dataset_cache_safe(*args, **kwargs):
-    """datasets.load_dataset, retried in a Unsloth-owned cache on EACCES."""
+    """datasets.load_dataset, retried in an Unsloth-owned cache on EACCES."""
     from datasets import load_dataset
     try:
         return load_dataset(*args, **kwargs)

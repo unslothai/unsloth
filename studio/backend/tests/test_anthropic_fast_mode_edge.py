@@ -330,7 +330,7 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
 
 
 def test_refusal_tool_event_chunk_shape(monkeypatch):
-    """Drop signal rides a Unsloth `_toolEvent` envelope (delta={},
+    """Drop signal rides an Unsloth `_toolEvent` envelope (delta={},
     finish_reason=null); the frontend latches on
     `_toolEvent.type == "anthropic_refusal"`."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")

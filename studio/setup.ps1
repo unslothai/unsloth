@@ -2147,7 +2147,7 @@ if ($NeedNodeForSetup) {
             $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
             $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
             if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
-                Write-Host "[ERROR] $NodeDir already exists and is not a Unsloth-owned Node install." -ForegroundColor Red
+                Write-Host "[ERROR] $NodeDir already exists and is not an Unsloth-owned Node install." -ForegroundColor Red
                 Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
                 exit 1
             }
@@ -2506,7 +2506,7 @@ function Assert-StudioOwnedOrAbsent {
             Mark-StudioOwned $Path
             return
         }
-        Write-Host "[ERROR] $Path already exists and is not marked as a Unsloth-owned $Label." -ForegroundColor Red
+        Write-Host "[ERROR] $Path already exists and is not marked as an Unsloth-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1
     }

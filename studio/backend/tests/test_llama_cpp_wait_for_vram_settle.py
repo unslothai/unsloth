@@ -392,7 +392,7 @@ def test_kill_orphaned_servers_returns_count():
 
 
 def test_kill_orphaned_servers_spares_live_parent():
-    """A Unsloth-owned llama-server whose parent is still running is not an
+    """An Unsloth-owned llama-server whose parent is still running is not an
     orphan (a live Unsloth or the user's shell owns it) and must never be
     killed; only the true orphan (parent gone) is reaped."""
     import os

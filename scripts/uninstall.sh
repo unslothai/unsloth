@@ -12,7 +12,7 @@
 
 set -e
 
-# Stop a Unsloth server via its PID file (written by install.sh's _spawn_terminal).
+# Stop an Unsloth server via its PID file (written by install.sh's _spawn_terminal).
 _kill_pid_file() {
     _pid_file="$1"
     [ -f "$_pid_file" ] || return 0
@@ -175,7 +175,7 @@ _custom_studio_roots() {
     _from_conf "$HOME/.local/share/unsloth/studio.conf"
 }
 
-# Remove $HOME/.local/bin/unsloth only if it's a Unsloth-managed symlink.
+# Remove $HOME/.local/bin/unsloth only if it's an Unsloth-managed symlink.
 # Unsloth's install.sh writes this as a symlink into the studio venv
 # (install.sh: `ln -sfn "$VENV_DIR/bin/unsloth" "$_shim_path"`). A
 # pip-installed `unsloth` CLI is a regular file — leave it alone to avoid

@@ -1053,7 +1053,7 @@ jobs:
           except Exception as exc:
               print(
                   f"[image/openai] WARN image_url SDK call raised: {type(exc).__name__}: "
-                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT a Unsloth "
+                  f"{exc}. Likely upstream llama.cpp Mac+vision crash, NOT an Unsloth "
                   f"regression. Unsloth successfully forwarded the request."
               )
 
@@ -1099,7 +1099,7 @@ jobs:
               print(
                   f"[image/anthropic] WARN anthropic image SDK call raised: "
                   f"{type(exc).__name__}: {exc}. Likely upstream llama.cpp Mac+vision "
-                  f"crash, NOT a Unsloth regression."
+                  f"crash, NOT an Unsloth regression."
               )
           PY
 

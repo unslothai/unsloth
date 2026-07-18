@@ -83,7 +83,7 @@ function Uninstall-UnslothStudio {
         }
     }
 
-    # A path is a Unsloth-owned root iff one of install.ps1's sentinels exists:
+    # A path is an Unsloth-owned root iff one of install.ps1's sentinels exists:
     #   <root>\share\studio.conf, <root>\unsloth_studio\.unsloth-studio-owned,
     #   or <root>\bin\unsloth.exe.
     function _IsStudioRoot {
@@ -223,7 +223,7 @@ function Uninstall-UnslothStudio {
         return $false
     }
 
-    # Stop a Unsloth backend whose port is recorded in <DataDir>\studio.port.
+    # Stop an Unsloth backend whose port is recorded in <DataDir>\studio.port.
     # Only kills if the listening PID's exe path is under a known Unsloth root.
     function _StopByPortFile {
         param([string]$PortFile, [string[]]$KnownRoots)
@@ -436,7 +436,7 @@ function Uninstall-UnslothStudio {
                     $entries = $rawPath -split ';'
                     $kept = New-Object System.Collections.ArrayList
                     $removedAny = $false
-                    # Only remove PATH entries that live inside a Unsloth root we
+                    # Only remove PATH entries that live inside an Unsloth root we
                     # actually own (default or env-mode). A literal substring
                     # match on `unsloth_studio` would clobber unrelated user
                     # virtualenvs that happen to share the name.

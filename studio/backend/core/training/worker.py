@@ -2780,7 +2780,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but
                 # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume a Unsloth bug. Say where the limit
+                # 96 GB machine and assume an Unsloth bug. Say where the limit
                 # comes from and how to raise it.
                 if _is_unified and sys.platform == "win32":
                     try:

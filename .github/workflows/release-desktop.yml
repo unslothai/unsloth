@@ -69,7 +69,7 @@ jobs:
           if not studio_version:
               sys.exit('studio_version is required, for example v0.1.39-beta')
           if re.fullmatch(r'v?20\d{2}\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', studio_version):
-              sys.exit(f'studio_version must be a Unsloth SemVer tag, not a date-style backend version: {studio_version}')
+              sys.exit(f'studio_version must be an Unsloth SemVer tag, not a date-style backend version: {studio_version}')
 
           semver_tag = re.compile(
               r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'

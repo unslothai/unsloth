@@ -2251,7 +2251,7 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete a Unsloth-trained or exported model from disk.
+    """Delete an Unsloth-trained or exported model from disk.
 
     Only paths under Unsloth's outputs/exports roots are accepted.
     Exported GGUF entries can delete one quant variant at a time.
@@ -3456,7 +3456,7 @@ _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
-    """True only for local paths under a Unsloth data root.
+    """True only for local paths under an Unsloth data root.
 
     Containment is decided lexically (no filesystem access) before the path is
     touched, then the path is symlink-resolved and re-checked so a symlink

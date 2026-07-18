@@ -573,7 +573,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": "Cannot install transformers "
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
-            "A Unsloth update is required first.",
+            "An Unsloth update is required first.",
         }
     if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
         return {

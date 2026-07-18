@@ -757,7 +757,7 @@ class TestChatCompletionRequestToolFields:
             return self._v1_client(monkeypatch, _GGUFBackend())
 
         # A process --enable-tools policy must not turn a client-tool passthrough
-        # into a Unsloth local loop, so a policy of None or True both keep the
+        # into an Unsloth local loop, so a policy of None or True both keep the
         # passthrough (the guard mirrors _explicit_studio_tool_loop_requested).
         for policy in (None, True):
             for mode in ("ask", "auto"):
@@ -863,7 +863,7 @@ class TestChatCompletionRequestToolFields:
     def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
         # DiffusionGemma forces supports_tools off while passthrough stays
         # available (#6851): enable_tools=True must not steal client tools
-        # from the passthrough into a Unsloth tool loop that cannot run.
+        # from the passthrough into an Unsloth tool loop that cannot run.
         import routes.inference as inference_route
 
         captured = {}

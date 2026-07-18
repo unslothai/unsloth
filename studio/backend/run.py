@@ -294,7 +294,7 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
 
     print(
         f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
-        f"Unsloth is listening on 127.0.0.1 only. Open {local_url} instead of "
+        f"Studio is listening on 127.0.0.1 only. Open {local_url} instead of "
         f"http://localhost:{port}.{reset}",
         flush = True,
     )
@@ -1222,7 +1222,7 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
     _auth_storage.ensure_default_admin()
     if not _auth_storage.requires_password_change(_admin):
         print(
-            "Error: a Unsloth admin password is already set; --password only sets "
+            "Error: an Unsloth admin password is already set; --password only sets "
             "the initial password. Run `unsloth studio reset-password` first.",
             file = sys.stderr,
             flush = True,
