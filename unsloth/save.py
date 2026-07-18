@@ -4627,7 +4627,8 @@ def _offload_model_for_quantize_subprocess(model):
     Quantized (bnb) models are never moved.
     """
     try:
-        if not (torch.cuda.is_available() and hasattr(model, "parameters")):
+        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
+        if not ((torch.cuda.is_available() or _has_xpu) and hasattr(model, "parameters")):
             return None
         if (
             getattr(model, "is_loaded_in_4bit", False)
@@ -4638,7 +4639,7 @@ def _offload_model_for_quantize_subprocess(model):
         device_map = getattr(model, "hf_device_map", None)
         if device_map:
             targets = {str(v) for v in device_map.values()}
-            if not all(t.isdigit() or t.startswith("cuda") for t in targets):
+            if not all(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
                 return None
             from accelerate.hooks import remove_hook_from_submodules
 
@@ -4653,7 +4654,7 @@ def _offload_model_for_quantize_subprocess(model):
                 return None
             return ("dispatch", dict(device_map))
         devices = {str(p.device) for p in model.parameters()}
-        if len(devices) == 1 and next(iter(devices)).startswith("cuda"):
+        if len(devices) == 1 and next(iter(devices)).startswith(("cuda", "xpu")):
             device = next(model.parameters()).device
             try:
                 model.to("cpu")
@@ -4679,8 +4680,8 @@ def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
             model.to(value)  # restore the model to its original device
     except Exception:
         logger.warning_once(
-            "Unsloth: could not restore the model to its original device(s) after compressed "
-            "export; it may remain on CPU."
+            "Unsloth: could not restore the model to its original device(s) after the "
+            "quantized export; it may remain on CPU."
         )
 
 
@@ -5037,7 +5038,7 @@ def _unsloth_save_torchao(
     # Always merge into an isolated temp staging dir (never save_directory itself), so a co-selected
     # 16-bit export written to save_directory is not overwritten or deleted; the torchao output is
     # the sibling "<save_directory>-<suffix>" (or the repo id on a hub push).
-    repo_id, work_tmp, model_dev = None, None, None
+    repo_id, work_tmp, model_restore = None, None, None
     work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
     if push_to_hub:
         repo_id = os.fspath(save_directory)
@@ -5118,22 +5119,12 @@ def _unsloth_save_torchao(
         # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from disk.
         #    Covers CUDA and XPU (torchao runs on Intel GPUs too), so the original doesn't sit
         #    resident alongside the reloaded copy and OOM a device that fit the model once.
+        #    Uses the shared offload helper so a MULTI-GPU accelerate-dispatched shard (the
+        #    Studio multi-GPU export load) is released too: a plain .to("cpu") is invalid on a
+        #    dispatched model, so handling only single-device models left every GPU holding a
+        #    full copy while device_map="auto" below loaded another.
         _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
-        try:
-            if (
-                (torch.cuda.is_available() or _has_xpu)
-                and hasattr(model, "parameters")
-                and not getattr(model, "is_loaded_in_4bit", False)
-                and not getattr(model, "is_loaded_in_8bit", False)
-                and not getattr(model, "is_quantized", False)
-            ):
-                _devs = {str(p.device) for p in model.parameters()}
-                if len(_devs) == 1 and next(iter(_devs)).startswith(("cuda", "xpu")):
-                    _dev = next(model.parameters()).device
-                    model.to("cpu")
-                    model_dev = _dev
-        except Exception:
-            model_dev = None
+        model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
             if torch.cuda.is_available():
@@ -5204,14 +5195,7 @@ def _unsloth_save_torchao(
         )
         return result
     finally:
-        if model_dev is not None:
-            try:
-                model.to(model_dev)
-            except Exception:
-                logger.warning_once(
-                    "Unsloth: could not restore the model to its original device after torchao "
-                    "export; it may remain on CPU."
-                )
+        _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):

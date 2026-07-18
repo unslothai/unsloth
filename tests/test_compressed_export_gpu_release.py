@@ -213,3 +213,55 @@ def test_lora_merge_budgets_per_device():
     assert "torch.cuda.memory_allocated(W.device)" in body
     assert "_device_vram_budget(W.device)" in body
     assert "get_device_properties(0).total_memory * maximum_memory_usage" not in body
+
+
+# ── the torchao ("portable" FP8/INT8) export shares the same release ──
+
+
+def _fake_torch_xpu():
+    t = types.ModuleType("torch")
+    t.cuda = types.SimpleNamespace(is_available = lambda: False)
+    t.xpu = types.SimpleNamespace(is_available = lambda: True)
+    return t
+
+
+def test_dispatched_xpu_model_is_released(_fake_accelerate):
+    # torchao runs on Intel GPUs too, so an XPU-dispatched shard must release
+    # exactly like a CUDA one -- otherwise every XPU holds a full copy while the
+    # torchao reload pulls another from disk.
+    ns = _load_helpers(_fake_torch_xpu(), _FakeLogger())
+    device_map = {"model.embed": "xpu:0", "model.layers.0": "xpu:1"}
+    model = _FakeModel(device_map = device_map, devices = ("xpu:0", "xpu:1"))
+
+    token = ns["_offload_model_for_quantize_subprocess"](model)
+
+    assert _fake_accelerate["removed"] == [model]
+    assert model.moved_to == ["cpu"]
+    assert token == ("dispatch", device_map)
+
+    ns["_restore_model_after_quantize_subprocess"](model, token)
+    assert _fake_accelerate["dispatched"] == [(model, device_map)]
+
+
+def test_single_device_xpu_model_is_released():
+    ns = _load_helpers(_fake_torch_xpu(), _FakeLogger())
+    model = _FakeModel(devices = ("xpu:0",))
+    token = ns["_offload_model_for_quantize_subprocess"](model)
+    assert token == ("device", "xpu:0")
+    assert model.moved_to == ["cpu"]
+
+
+def test_torchao_export_uses_the_shared_release():
+    """The torchao path must not re-inline a single-device-only ``.to("cpu")``.
+
+    A plain move is invalid on an accelerate-dispatched model, so handling only
+    single-device models left a multi-GPU shard resident on every GPU while
+    ``device_map="auto"`` loaded a second copy -- an OOM for any model large
+    enough to have needed the sharded load in the first place.
+    """
+    src = _SAVE_PY.read_text(encoding = "utf-8")
+    torchao = src.split("def _unsloth_save_torchao(", 1)[1].split("\ndef ", 1)[0]
+    assert "_offload_model_for_quantize_subprocess(model)" in torchao
+    assert "_restore_model_after_quantize_subprocess(model" in torchao
+    # No hand-rolled single-device gate left behind.
+    assert "len(_devs) == 1" not in torchao
