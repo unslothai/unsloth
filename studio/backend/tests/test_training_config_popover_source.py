@@ -41,12 +41,18 @@ def test_live_view_fetches_the_active_run_config():
     assert "configOverride={runConfigOverride}" in src
 
 
-def test_live_view_retries_after_first_step():
-    # The backend creates the run row on the first progress event, so the
-    # initial fetch can 404 during preparation; the effect must re-run once
-    # firstStepReceived flips or the popover never leaves the form store.
+def test_live_view_fetches_once_the_run_row_exists():
+    # The run row is created on the first progress event OR (for a zero-step
+    # failure/completion) the terminal event. Gating the fetch on both -- not
+    # firstStepReceived alone, which is set only when step > 0 -- keeps the
+    # popover from being stuck on the form store after a pre-step termination.
     src = _read("live-training-view.tsx")
-    assert "runtime.firstStepReceived, fetchedRunConfig]" in src
+    assert "const runRowReady =" in src
+    assert 'runtime.phase === "completed"' in src
+    assert 'runtime.phase === "error"' in src
+    assert 'runtime.phase === "stopped"' in src
+    assert "!(runtime.jobId && runRowReady)" in src
+    assert "[runtime.jobId, runRowReady, fetchedRunConfig]" in src
 
 
 def test_live_view_prefers_saved_training_method():

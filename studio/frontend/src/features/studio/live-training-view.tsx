@@ -73,19 +73,24 @@ export function LiveTrainingView(): ReactElement {
   // The Training Config popover must show the ACTIVE run's saved config, not
   // the editable form store, which the user may have changed since starting
   // the run (#6853). The backend creates the run record (with its config
-  // snapshot) only on the first progress event, so a fetch issued right after
-  // the job id appears can 404 during model/dataset preparation; keying the
-  // effect on firstStepReceived retries once the record is guaranteed to exist.
-  // Until it loads (or if the fetch fails) ProgressSection falls back to the
-  // form store. The fetched config is keyed by job id and filtered at render
-  // time, so no synchronous state reset is needed when the job changes.
+  // snapshot) on the first progress event, and -- for a run that fails or
+  // completes before step 1 -- from the terminal error/complete event. Fetch
+  // only once one of those has happened: this avoids 404s during preparation
+  // and still covers a zero-step termination, which firstStepReceived alone
+  // (set only when step > 0) would miss. Until it loads (or if the fetch fails)
+  // ProgressSection falls back to the form store. The fetched config is keyed by
+  // job id and filtered at render time, so no synchronous reset is needed.
+  const runRowReady =
+    runtime.firstStepReceived ||
+    runtime.phase === "completed" ||
+    runtime.phase === "error" ||
+    runtime.phase === "stopped";
   const [fetchedRunConfig, setFetchedRunConfig] = useState<{
     jobId: string;
     override: RunConfigOverride | undefined;
   } | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies(runtime.firstStepReceived): the backend creates the run row on the first progress event, so its flip must re-run the fetch that 404'd during preparation.
   useEffect(() => {
-    if (!runtime.jobId) {
+    if (!(runtime.jobId && runRowReady)) {
       return;
     }
     const jobId = runtime.jobId;
@@ -101,11 +106,11 @@ export function LiveTrainingView(): ReactElement {
         });
       })
       .catch(() => {
-        // Run record not available (yet): keep the form-store fallback; the
-        // firstStepReceived dependency re-runs this effect once it exists.
+        // Run record not available yet: keep the form-store fallback; a change
+        // to runRowReady / fetchedRunConfig re-runs this effect.
       });
     return () => controller.abort();
-  }, [runtime.jobId, runtime.firstStepReceived, fetchedRunConfig]);
+  }, [runtime.jobId, runRowReady, fetchedRunConfig]);
   const runConfigOverride = activeRunOverride(fetchedRunConfig, runtime.jobId);
 
   const activeProjectName =
