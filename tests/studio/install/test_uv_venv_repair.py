@@ -144,6 +144,7 @@ def _run_bootstrap(
     legacy_root_sentinel: str | None = None,
     redirect_mode: str = "env",
     powershell_exe: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
     powershell_exe = powershell_exe or PWSH
     if powershell_exe is None:
@@ -279,6 +280,7 @@ def _run_bootstrap(
         capture_output = True,
         text = True,
         env = env,
+        timeout = timeout_seconds,
     )
     return proc, venv_dir, log_file, venv_dir / "uv-partial.txt"
 
@@ -370,6 +372,7 @@ def test_install_ps1_rechecks_uv_success_before_continuing():
     assert "sys.prefix" in body
     assert "sys.base_prefix" in body
     assert "System.Diagnostics.ProcessStartInfo" in body
+    assert "ReadToEndAsync" in body
     assert "return ($proc.ExitCode -eq 0)" in body
     assert "Invoke-InstallCommand { & $PythonExe -c" not in body
     assert (
@@ -545,6 +548,29 @@ def test_uv_venv_probe_allows_python_startup_stderr_under_powershell_51(tmp_path
         _source(),
         extra_env = {"PYTHONPATH": str(sitecustomize_dir)},
         powershell_exe = POWERSHELL_51,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (venv_dir / "Scripts" / "python.exe").is_file()
+    assert not partial_marker.exists()
+    assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
+@pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+def test_uv_venv_probe_drains_large_startup_stderr(tmp_path):
+    sitecustomize_dir = tmp_path / "sitecustomize"
+    sitecustomize_dir.mkdir()
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        "import sys; sys.stderr.write('startup warning\\n' * 32768)\n",
+        encoding = "utf-8",
+    )
+
+    proc, venv_dir, log_file, partial_marker = _run_bootstrap(
+        tmp_path,
+        "healthy",
+        _source(),
+        extra_env = {"PYTHONPATH": str(sitecustomize_dir)},
+        timeout_seconds = 20,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (venv_dir / "Scripts" / "python.exe").is_file()

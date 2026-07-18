@@ -1662,9 +1662,11 @@ exit 0
                 $proc = [System.Diagnostics.Process]::Start($psi)
                 $proc.StandardInput.WriteLine($probe)
                 $proc.StandardInput.Close()
-                $null = $proc.StandardOutput.ReadToEnd()
-                $null = $proc.StandardError.ReadToEnd()
+                $outTask = $proc.StandardOutput.ReadToEndAsync()
+                $errTask = $proc.StandardError.ReadToEndAsync()
                 $proc.WaitForExit()
+                $null = $outTask.GetAwaiter().GetResult()
+                $null = $errTask.GetAwaiter().GetResult()
                 return ($proc.ExitCode -eq 0)
             } catch {
                 return $false
