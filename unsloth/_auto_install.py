@@ -42,7 +42,6 @@ else: raise RuntimeError(f"Torch = {v} too new!")
 if v > V('2.6.9') and cuda not in ("11.8", "12.6", "12.8", "13.0"): raise RuntimeError(f"CUDA = {cuda} not supported!")
 if v >= V('2.10.0') and cuda not in ("12.6", "12.8", "13.0"): raise RuntimeError(f"Torch = {v} requires CUDA 12.6, 12.8, or 13.0! Got CUDA = {cuda}")
 x = x.format(cuda.replace(".", ""), "-ampere" if False else "") # is_ampere is broken due to flash-attn
-# The torch2110 extras pin the trio to +cuNNN local builds, which only resolve
-# from the matching PyTorch CUDA index, so add that index for torch 2.11.
+# torch2110 extras pin +cuNNN local builds that only resolve from the matching index.
 extra_index = f' --extra-index-url https://download.pytorch.org/whl/cu{cuda.replace(".", "")}' if (x.endswith('-torch2110') and cuda in ("12.6", "12.8", "13.0")) else ''
 print(f'pip install --upgrade pip setuptools wheel && pip install --no-deps git+https://github.com/unslothai/unsloth-zoo.git && pip install "unsloth[{x}] @ git+https://github.com/unslothai/unsloth.git" --no-build-isolation{extra_index}')

@@ -44,7 +44,7 @@ def _extra(name: str) -> list[str]:
 
 
 def _reqs(specs: list[str]) -> dict[str, list[Requirement]]:
-    # name -> list: each extra has one Linux and one Windows xformers requirement.
+    # name -> reqs (one Linux + one Windows xformers per extra)
     out: dict[str, list[Requirement]] = {}
     for spec in specs:
         r = Requirement(spec)
@@ -54,7 +54,6 @@ def _reqs(specs: list[str]) -> dict[str, list[Requirement]]:
 
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
-    # Each trio member must pin the exact +cuXXX local build.
     reqs = _reqs(_extra(f"{cuda}onlytorch2110"))
     for pkg in _TORCH_TRIO:
         (req,) = reqs[pkg]
@@ -62,7 +61,6 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
         assert (
             spec == f"=={('2.11.0' if pkg != 'torchvision' else '0.26.0')}+{cuda}"
         ), f"{cuda}onlytorch2110: {pkg} pinned as '{spec}', expected the +{cuda} local build"
-    # Both xformers wheels (Linux and Windows) must come from the same CUDA index.
     xformers = reqs["xformers"]
     assert len(xformers) == 2, f"expected Linux + Windows xformers wheels, got {xformers}"
     linux = [r for r in xformers if r.url and r.url.endswith("manylinux_2_28_x86_64.whl")]
@@ -72,7 +70,7 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
         assert (
             f"/whl/{cuda}/xformers-0.0.35-" in r.url
         ), f"xformers not on the {cuda} index: {r.url}"
-        # x86-64-only wheels: markers must exclude aarch64 / ARM64.
+        # markers must exclude aarch64 / ARM64
         assert r.marker is not None
         assert not r.marker.evaluate({"sys_platform": "linux", "platform_machine": "aarch64"})
         assert not r.marker.evaluate({"sys_platform": "win32", "platform_machine": "ARM64"})
@@ -83,7 +81,6 @@ def test_cuda12_torch2110_pins_matching_local_build(cuda: str):
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 @pytest.mark.parametrize("variant", ["", "ampere-"])
 def test_torch2110_wrapper_references_matching_leaf(cuda: str, variant: str):
-    # Wrappers pull huggingface + bitsandbytes and the leaf of the same CUDA version.
     specs = _extra(f"{cuda}-{variant}torch2110")
     assert specs == [
         "unsloth[huggingface]",
@@ -94,8 +91,7 @@ def test_torch2110_wrapper_references_matching_leaf(cuda: str, variant: str):
 
 @pytest.mark.parametrize("cuda", ["cu126", "cu128", "cu130"])
 def test_cuda12_torch2100_keeps_torch_pinned_off_x86(cuda: str):
-    # Now the xformers wheels carry x86-64 markers, the leaf must pin torch
-    # explicitly so ARM64 installs stay on 2.10 instead of resolving newer.
+    # xformers wheels now carry x86-64 markers, so the leaf must pin torch for ARM64.
     reqs = _reqs(_extra(f"{cuda}onlytorch2100"))
     (torch_req,) = reqs["torch"]
     assert str(torch_req.specifier) == "==2.10.0", (

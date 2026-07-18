@@ -326,28 +326,26 @@ cu130onlytorch291 = [
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.33.post2-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu126onlytorch2100 = [
-    # Pin torch so ARM64 installs (x86-64-only xformers wheel and its transitive
-    # torch pin skipped) stay on 2.10 instead of resolving newer.
+    # Pin torch so ARM64 (x86-64-only xformers wheel skipped) stays on 2.10.
     "torch==2.10.0",
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch2100 = [
-    # Same explicit torch pin as cu126onlytorch2100 above.
+    # Same torch pin as cu126onlytorch2100.
     "torch==2.10.0",
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2100 = [
-    # Same explicit torch pin as cu126onlytorch2100 above.
+    # Same torch pin as cu126onlytorch2100.
     "torch==2.10.0",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu126onlytorch2110 = [
-    # xformers 0.0.35 does not pin torch, so pin the trio to the +cu126 local
-    # build: torch 2.11 defaults to a CUDA-13 PyPI wheel, and only the +cu126 tag
-    # resolves from the cu126 index alongside the cu126 xformers below.
+    # xformers 0.0.35 does not pin torch; pin the trio to +cu126 so it resolves
+    # from the cu126 index (torch 2.11 defaults to a CUDA-13 PyPI wheel).
     "torch==2.11.0+cu126",
     "torchvision==0.26.0+cu126",
     "torchaudio==2.11.0+cu126",
@@ -355,8 +353,7 @@ cu126onlytorch2110 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch2110 = [
-    # Same +cuNNN pin as cu126onlytorch2110: keeps the trio on the cu128 index
-    # instead of torch 2.11's CUDA-13 PyPI default.
+    # Same +cuNNN pin as cu126onlytorch2110, on the cu128 index.
     "torch==2.11.0+cu128",
     "torchvision==0.26.0+cu128",
     "torchaudio==2.11.0+cu128",
@@ -364,9 +361,8 @@ cu128onlytorch2110 = [
     "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2110 = [
-    # Same +cuNNN pin as the cu126/cu128 extras: a bare range lets a CUDA-12 index
-    # win (PEP 440 ranks +cu126 above unlabelled 2.11.0) and ===2.11.0 would
-    # force-replace official cu130-index installs. _auto_install.py adds the index.
+    # Same +cuNNN pin as cu126/cu128: a bare range lets +cu126 win (PEP 440) and
+    # ===2.11.0 would force-replace cu130-index installs. _auto_install.py adds the index.
     "torch==2.11.0+cu130",
     "torchvision==0.26.0+cu130",
     "torchaudio==2.11.0+cu130",
