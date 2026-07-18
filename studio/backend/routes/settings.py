@@ -387,7 +387,8 @@ def update_embedding_model(
     A repo flagged unsafe by HF's security scan returns 403 instead: a hard block
     that ``force`` cannot bypass, so the UI must not offer "save anyway".
     Documents indexed under the previous model must be re-uploaded."""
-    from utils.models import is_embedding_model, resolve_cached_repo_casing
+    from utils.models import is_embedding_model
+    from utils.paths import resolve_cached_repo_id_case
 
     try:
         model = validate_embedding_model(payload.embedding_model)
@@ -467,7 +468,11 @@ def update_embedding_model(
     # accepts a case-insensitive cache hit, but the offline SentenceTransformer
     # load resolves the cache by exact case, so store the cached spelling (a
     # no-op when nothing case-matching is cached) to keep the model loadable.
-    model = resolve_cached_repo_casing(model)
+    # Skip this for the default: rewriting its casing would make the exact-string
+    # default comparison in set_rag_embedding_model() treat it as a custom
+    # override, so later changes to the configured default would stop applying.
+    if model != default_embedding_model():
+        model = resolve_cached_repo_id_case(model)
     set_rag_embedding_model(model)
     logger.info(
         "settings.embedding_model_updated subject=%s model=%s forced=%s",

@@ -259,6 +259,37 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
     assert saved.get("model") == "acme/clean-embed"
 
 
+def test_custom_model_saved_in_cache_casing(client, monkeypatch):
+    # A custom repo is persisted in the casing its local HF cache dir uses, so an
+    # offline exact-case SentenceTransformer load still finds it (baai/bge-m3 ->
+    # BAAI/bge-m3). force=True bypasses the verification gate to isolate this.
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    import utils.paths as _paths
+
+    monkeypatch.setattr(_paths, "resolve_cached_repo_id_case", lambda m: "BAAI/bge-m3")
+    r = c.put("/embedding-model", json = {"embedding_model": "baai/bge-m3", "force": True})
+    assert r.status_code == 200
+    assert saved.get("model") == "BAAI/bge-m3"
+
+
+def test_default_model_is_not_casing_normalized(client, monkeypatch):
+    # Submitting the exact default must NOT be run through cache-casing
+    # normalization: rewriting it would make set_rag_embedding_model()'s exact
+    # default comparison treat it as a custom override, so later default changes
+    # would stop applying. resolve_cached_repo_id_case must not be consulted.
+    c, saved = client
+    import utils.paths as _paths
+
+    def _must_not_run(m):
+        raise AssertionError("the default must not be casing-normalized")
+
+    monkeypatch.setattr(_paths, "resolve_cached_repo_id_case", _must_not_run)
+    r = c.put("/embedding-model", json = {"embedding_model": "unsloth/default-embed"})
+    assert r.status_code == 200
+    assert saved.get("model") == "unsloth/default-embed"
+
+
 def test_load_sink_refuses_flagged_model(monkeypatch):
     monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = True))
     import core.rag.embeddings as embeddings

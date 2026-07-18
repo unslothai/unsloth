@@ -2062,38 +2062,6 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
         return None
 
 
-def resolve_cached_repo_casing(repo_id: str) -> str:
-    """Return *repo_id* in the exact casing of its local HF cache directory.
-
-    HF cache lookups here are case-insensitive (see _iter_hf_cache_snapshots), so
-    ``baai/bge-m3`` can validate against a ``models--BAAI--bge-m3`` cache dir. But
-    an offline SentenceTransformer load resolves the cache by EXACT case, so the
-    requested spelling must be normalized to the cached one before it is persisted
-    or the load fails on a case-sensitive filesystem even though validation
-    passed. Returns *repo_id* unchanged for a local path, a non-repo string, or
-    when nothing case-matching is cached (online the loader re-resolves casing via
-    the Hub, so leaving it as-is there is harmless)."""
-    if is_local_path(repo_id) or "/" not in repo_id:
-        return repo_id
-    try:
-        from huggingface_hub import constants as hf_constants
-
-        cache_dir = Path(hf_constants.HF_HUB_CACHE)
-        if not cache_dir.is_dir():
-            return repo_id
-        prefix = "models--"
-        target = f"{prefix}{repo_id.replace('/', '--')}".lower()
-        for entry in cache_dir.iterdir():
-            if entry.is_dir() and entry.name.lower() == target:
-                # HF encodes org/name as models--org--name; reverse it. The `--`
-                # separator only appears at path boundaries, so splitting on it
-                # recovers the Hub-canonical casing the cache dir was named with.
-                return entry.name[len(prefix) :].replace("--", "/")
-    except OSError:
-        return repo_id
-    return repo_id
-
-
 def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Detect embedding/sentence-transformer models via HF metadata.
 

@@ -276,37 +276,6 @@ def test_offline_retains_online_confirmed_positive(monkeypatch):
     assert mc.is_embedding_model("org/gte-modernbert") is True  # positive retained
 
 
-# ── resolve_cached_repo_casing ──
-
-
-def _fake_hf_constants(monkeypatch, cache_root):
-    fake = types.ModuleType("huggingface_hub")
-    fake.constants = types.SimpleNamespace(HF_HUB_CACHE = str(cache_root))
-    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
-    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake.constants)
-
-
-def test_resolve_cached_repo_casing_normalizes_to_cache_dir(tmp_path, monkeypatch):
-    # baai/bge-m3 requested, models--BAAI--bge-m3 cached: the persisted id must be
-    # normalized to the cached casing so an offline exact-case load still finds it.
-    (tmp_path / "models--BAAI--bge-m3").mkdir()
-    _fake_hf_constants(monkeypatch, tmp_path)
-    assert mc.resolve_cached_repo_casing("baai/bge-m3") == "BAAI/bge-m3"
-
-
-def test_resolve_cached_repo_casing_noop_when_uncached(tmp_path, monkeypatch):
-    _fake_hf_constants(monkeypatch, tmp_path)
-    assert mc.resolve_cached_repo_casing("org/not-cached") == "org/not-cached"
-
-
-def test_resolve_cached_repo_casing_ignores_local_and_non_repo(tmp_path, monkeypatch):
-    # A local dir and a bare (no-slash) name are returned unchanged without a
-    # cache lookup at all.
-    _fake_hf_constants(monkeypatch, tmp_path)
-    assert mc.resolve_cached_repo_casing(str(tmp_path)) == str(tmp_path)
-    assert mc.resolve_cached_repo_casing("bare-name") == "bare-name"
-
-
 def test_offline_cached_non_st_returns_false_without_network(tmp_path, monkeypatch):
     snaps = _repo(tmp_path, ("aaa", False))
     monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
