@@ -3073,7 +3073,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
             calls["device"] = device
             return self
 
-    def fake_loader(base, dtype, hf_token = None, transformer = None):
+    def fake_loader(base, dtype, hf_token = None, transformer = None, text_encoder = None):
         calls["base"] = base
         calls["transformer"] = transformer
         return Pipe()

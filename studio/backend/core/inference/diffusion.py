@@ -1425,8 +1425,22 @@ class DiffusionBackend:
                         # any embedded quantization_config (e.g. bnb-4bit).
                         if fam.name == KREA2_FAMILY_NAME:
                             # krea ships transformers-5.x configs the 4.x line can't parse; assemble
-                            # per-component (see diffusion_krea2.py).
-                            pipe = load_krea2_pipeline(repo_id, dtype, hf_token = hf_token)
+                            # per-component (see diffusion_krea2.py). The constructor path never
+                            # sees pipe_kwargs, so the pre-cast TE is handed in directly.
+                            pipe = load_krea2_pipeline(
+                                repo_id,
+                                dtype,
+                                hf_token = hf_token,
+                                text_encoder = te_prequant_pipe_kwargs(
+                                    fam,
+                                    repo_id,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                ).get("text_encoder"),
+                            )
                         elif fam.name == IDEOGRAM4_FAMILY_NAME:
                             # ideogram ships the same transformers-5.x Qwen stack as krea; assemble
                             # per-component too (see diffusion_ideogram4.py).
@@ -1495,7 +1509,20 @@ class DiffusionBackend:
 
                         if fam.name == KREA2_FAMILY_NAME:
                             pipe = load_krea2_pipeline(
-                                base, dtype, hf_token = hf_token, transformer = transformer
+                                base,
+                                dtype,
+                                hf_token = hf_token,
+                                transformer = transformer,
+                                # Same pre-cast TE hand-in as the full-pipeline branch.
+                                text_encoder = te_prequant_pipe_kwargs(
+                                    fam,
+                                    base,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                ).get("text_encoder"),
                             )
                         else:
                             pipe_kwargs = {"torch_dtype": dtype, "transformer": transformer}
@@ -1957,8 +1984,23 @@ class DiffusionBackend:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so
             # Pipeline.from_pretrained dies in the tokenizer (vocab_file = None); assemble
             # per-component like every other krea load path (see diffusion_krea2.py).
+            krea_te = None
+            if target is not None:
+                krea_te = te_prequant_pipe_kwargs(
+                    fam,
+                    base,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    logger = logger,
+                ).get("text_encoder")
             pipe = load_krea2_pipeline(
-                base_local_dir or base, dtype, hf_token = hf_token, transformer = transformer
+                base_local_dir or base,
+                dtype,
+                hf_token = hf_token,
+                transformer = transformer,
+                text_encoder = krea_te,
             )
             pipe.to(device)
             return pipe

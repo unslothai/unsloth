@@ -41,6 +41,46 @@ TE_PREQUANT_FORMAT = "unsloth_prequant_text_encoder_state_dict_v1"
 # The one scheme hosted in v1 (see module docstring).
 TE_PREQUANT_SCHEMES = ("fp8",)
 
+# Components the pipeline-assembly injection covers (the attrs quantize_text_encoders
+# casts; text_encoder_4 is family-assembled separately, see diffusion_hidream.py).
+TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
+
+# Bases whose text-encoder weights are VERIFIED byte-identical, so one hosted artifact
+# serves all of them. Verification: every safetensors shard's LFS sha256 compared across
+# repos on 2026-07-18 (huggingface_hub list_repo_tree; no local download needed). The
+# checkpoint validator accepts a base_model_id from the same group as the loading base;
+# everything else keeps the strict refusal. Ids are lowercased.
+_TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
+    # Qwen2.5-VL-7B text encoder: 4 shards, 16,584,414,544 bytes, identical sha256 set.
+    frozenset(
+        {
+            "qwen/qwen-image",
+            "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
+        }
+    ),
+    # T5-XXL (text_encoder_2): 2 shards, 9,524,648,584 bytes, identical sha256 set across
+    # every FLUX.1 release; HiDream-I1 ships the same bytes as text_encoder_3 (cross-
+    # component filename/metadata mapping is not wired yet, entry documents the identity).
+    frozenset(
+        {
+            "black-forest-labs/flux.1-schnell",
+            "black-forest-labs/flux.1-dev",
+            "black-forest-labs/flux.1-krea-dev",
+            "hidream-ai/hidream-i1-full",
+        }
+    ),
+)
+
+
+def te_base_equivalent(ckpt_base: str, base: str) -> bool:
+    """True when the checkpoint's baked base and the loading base carry byte-identical
+    weights for the component: the same repo (``_same_base_model``) or a verified
+    equivalence group above."""
+    if _same_base_model(ckpt_base, base):
+        return True
+    a, b = str(ckpt_base).strip().lower(), str(base).strip().lower()
+    return any(a in group and b in group for group in _TE_EQUIVALENT_BASES)
+
 
 @dataclass(frozen = True)
 class TePrequantSource:
@@ -174,6 +214,13 @@ def load_prequant_text_encoder(
         if subfolder:
             config_kwargs["subfolder"] = subfolder
         config = transformers.AutoConfig.from_pretrained(base, **config_kwargs)
+        # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters;
+        # the runtime component loader remaps it for a 4.x runtime, and the meta-init
+        # here must match or the rebuilt encoder forwards with a broken rope. No-op for
+        # every other family (and on a 5.x runtime).
+        from .diffusion_krea2 import remap_rope_parameters
+
+        remap_rope_parameters(getattr(config, "text_config", config))
         for key, value in (config_overrides or {}).items():
             setattr(config, key, value)
         from accelerate import init_empty_weights
@@ -188,6 +235,14 @@ def load_prequant_text_encoder(
             # meta. Rebuild on CPU so they hold real values, then re-assign the cast weights.
             encoder = encoder_cls(config)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
+        # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a
+        # copy per key), untying e.g. Qwen3's lm_head from embed_tokens. An untied head
+        # defeats _cast_fp8's tied-projection skip below (the head would get cast while the
+        # builder's did not, breaking bit-identity and duplicating the embedding). Re-tie to
+        # the builder-identical structure; a no-op for untied configs.
+        tie = getattr(encoder, "tie_weights", None)
+        if callable(tie):
+            tie()
         encoder.eval()
 
         # Install the SAME upcast hooks the runtime cast applies. The weight cast inside is
@@ -225,9 +280,10 @@ def te_prequant_pipe_kwargs(
     hf_token: Optional[str] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """Component overrides for pipeline assembly: ``{"text_encoder": <pre-cast encoder>}``
-    when the requested TE quant is layerwise fp8 and this family hosts a pre-cast
-    checkpoint for its primary encoder; ``{}`` otherwise (assembly loads dense as today).
+    """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
+    for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
+    (e.g. flux.1 hosts its T5-XXL as ``text_encoder_2``); ``{}`` when none resolve
+    (assembly loads dense as today).
 
     Gated exactly like the runtime cast (mode normalized, device-supported, family not
     denied), so injection can never engage where ``quantize_text_encoders`` would not.
@@ -252,21 +308,23 @@ def te_prequant_pipe_kwargs(
             return {}
         if not te_quant_supported(target, mode):
             return {}
-        source = resolve_te_prequant_source(fam, "text_encoder", mode)
-        if source is None:
-            return {}
-        encoder = load_prequant_text_encoder(
-            base,
-            "text_encoder",
-            source,
-            dtype = dtype,
-            hf_token = hf_token,
-            scheme = mode,
-            logger = logger,
-        )
-        if encoder is None:
-            return {}
-        return {"text_encoder": encoder}
+        injected: dict[str, Any] = {}
+        for component in TE_PREQUANT_COMPONENTS:
+            source = resolve_te_prequant_source(fam, component, mode)
+            if source is None:
+                continue
+            encoder = load_prequant_text_encoder(
+                base,
+                component,
+                source,
+                dtype = dtype,
+                hf_token = hf_token,
+                scheme = mode,
+                logger = logger,
+            )
+            if encoder is not None:
+                injected[component] = encoder
+        return injected
     except Exception as exc:  # noqa: BLE001 — injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
@@ -324,7 +382,7 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
                 ),
             )
             return False
-        if not _same_base_model(ckpt_base, base):
+        if not te_base_equivalent(ckpt_base, base):
             _warn(logger, scheme, ValueError(f"checkpoint base {ckpt_base!r} != {base!r}"))
             return False
     return True

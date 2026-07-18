@@ -104,13 +104,16 @@ def load_krea2_pipeline(
     hf_token: Optional[str] = None,
     transformer = None,
     with_transformer: bool = True,
+    text_encoder = None,
 ):
     """A ready ``Krea2Pipeline`` for ``repo_id`` (still on CPU; caller places it).
 
     ``transformer`` lets the single-file/quant paths hand in a prebuilt denoiser;
     ``with_transformer = False`` skips the (26 GB) denoiser entirely for a
-    conditioning-only pipeline (the trainer's phased load). The remaining components
-    (VAE, text encoder, tokenizer, scheduler) come from the repo.
+    conditioning-only pipeline (the trainer's phased load). ``text_encoder`` lets the
+    pre-cast TE path (diffusion_te_prequant) hand in an already-built encoder, skipping
+    the dense Qwen3-VL download. The remaining components (VAE, tokenizer, scheduler)
+    come from the repo.
     """
     import diffusers
 
@@ -125,7 +128,8 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token)
-    text_encoder = load_krea2_text_encoder(repo_id, dtype, hf_token = token)
+    if text_encoder is None:
+        text_encoder = load_krea2_text_encoder(repo_id, dtype, hf_token = token)
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
         repo_id, subfolder = "scheduler", token = token
     )
