@@ -724,17 +724,22 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
         return None, None
 
 
-def _rocm_linux_sysfs_vram_per_card_gb() -> list[tuple[float, float]]:
-    """Per-card system-wide AMD VRAM via Linux DRM sysfs, ordered by card number.
+def _rocm_linux_sysfs_vram_per_card_gb() -> dict[int, tuple[float, float]]:
+    """Per-card system-wide AMD VRAM via Linux DRM sysfs, keyed by DRM card
+    number.
 
     Reads /sys/class/drm/card<N>/device/mem_info_vram_{used,total} (amdgpu-only
     files, kernel-updated across all processes) so each GPU gets its own figure,
     unlike _rocm_linux_sysfs_vram_gb which sums the host. Returns
-    [(used_gb, total_gb), ...]; empty on failure or off Linux.
+    ``{card_number: (used_gb, total_gb)}``; empty on failure or off Linux.
+
+    Keyed by the real card number (not a compacted position) so dropping an
+    unreadable / zero-total card does not renumber the rest -- if card0 fails,
+    card1 stays at key 1 and its usage is not misattributed to physical GPU 0.
     """
     if platform.system() != "Linux":
-        return []
-    cards: list[tuple[int, float, float]] = []
+        return {}
+    cards: dict[int, tuple[float, float]] = {}
     try:
         for used_path in glob.glob("/sys/class/drm/card*/device/mem_info_vram_used"):
             m = re.search(r"card(\d+)", used_path)
@@ -748,17 +753,13 @@ def _rocm_linux_sysfs_vram_per_card_gb() -> list[tuple[float, float]]:
                 continue
             if total_bytes <= 0:
                 continue
-            cards.append(
-                (
-                    int(m.group(1)),
-                    round(used_bytes / (1024**3), 2),
-                    round(total_bytes / (1024**3), 2),
-                )
+            cards[int(m.group(1))] = (
+                round(used_bytes / (1024**3), 2),
+                round(total_bytes / (1024**3), 2),
             )
     except Exception:
-        return []
-    cards.sort(key = lambda c: c[0])
-    return [(used, total) for _n, used, total in cards]
+        return {}
+    return cards
 
 
 def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
@@ -1108,10 +1109,11 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     misattributing another adapter's usage."""
     if not devices or platform.system() != "Linux":
         return
-    # Cards sorted by DRM number, position-normalized: position N is the best
-    # available stand-in for physical device index N. Matching by the device's
-    # physical index (not zip order) keeps a reordering mask correct.
-    per_card = dict(enumerate(_rocm_linux_sysfs_vram_per_card_gb()))
+    # Keyed by the real DRM card number (amdgpu cards enumerate in the same order
+    # as ROCm devices), so a device is matched to ITS card, not a compacted
+    # position -- an earlier unreadable/zero-total card can't shift a later
+    # card's usage onto the wrong GPU, and a reordering mask stays correct.
+    per_card = _rocm_linux_sysfs_vram_per_card_gb()
     for dev in devices:
         entry = per_card.get(dev.get("index"))
         if entry is None:
