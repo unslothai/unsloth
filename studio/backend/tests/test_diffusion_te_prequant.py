@@ -263,6 +263,39 @@ def test_hosted_te_prequant_entries():
     ) == "LTX-2-text_encoder-FP8.pt"
 
 
+def test_assemble_pipe_injects_precast_te(monkeypatch):
+    """The dense transformer_quant fast path assembles companions through _assemble_pipe,
+    which must inject the hosted pre-cast TE like the full-pipeline and GGUF branches."""
+    import core.inference.diffusion as dif
+
+    seen: dict = {}
+
+    class FakePipe:
+        def to(self, device):
+            return self
+
+    class FakePipelineCls:
+        @staticmethod
+        def from_pretrained(base, **kw):
+            seen.update(kw)
+            return FakePipe()
+
+    monkeypatch.setattr(
+        dif, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": "PRECAST"}
+    )
+    dif.DiffusionBackend._assemble_pipe(
+        FakePipelineCls, "org/base", "TR", None, None, "cpu", None,
+        fam = None, te_quant_mode = "fp8", target = object(),
+    )
+    assert seen["text_encoder"] == "PRECAST"
+    seen.clear()
+    # No target (defensive default) keeps the assembly unchanged.
+    dif.DiffusionBackend._assemble_pipe(
+        FakePipelineCls, "org/base", "TR", None, None, "cpu", None, fam = None,
+    )
+    assert "text_encoder" not in seen
+
+
 def test_cast_fp8_is_idempotent_on_precast_encoder():
     """A pre-cast encoder arrives with the layerwise hooks installed; the runtime re-apply in
     quantize_text_encoders must be a no-op (re-registering the hook name raises, which made
@@ -275,8 +308,13 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
     enc = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.LayerNorm(64))
     _cast_fp8(enc, target)
     assert enc[0].weight.dtype == torch.float8_e4m3fn
+    # Module.dtype must report the COMPUTE dtype: pipelines derive tensor dtypes from it
+    # (Flux2 feeds it to randn_tensor, which has no fp8 kernel).
+    assert enc.dtype == torch.bfloat16
+    assert isinstance(enc, torch.nn.Sequential)
     _cast_fp8(enc, target)  # must not raise
     assert enc[0].weight.dtype == torch.float8_e4m3fn
+    assert enc.dtype == torch.bfloat16
 
 
 def test_builder_metadata_survives_weights_only_load(tmp_path):
