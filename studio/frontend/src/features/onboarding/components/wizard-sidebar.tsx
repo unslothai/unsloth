@@ -24,7 +24,7 @@ export function WizardSidebar({ returnTo }: { returnTo: string }) {
         />
         <div className="flex flex-col">
           <span className="font-semibold text-lg leading-tight">Unsloth</span>
-          <span className="text-xs text-muted-foreground">Studio</span>
+          <span className="text-xs text-muted-foreground">Unsloth</span>
         </div>
       </div>
       <div className="mt-3 md:mt-0">

@@ -148,7 +148,7 @@ async def authenticated_via_api_key(
 ) -> bool:
     """True when the caller used an sk-unsloth API key, not a UI session JWT.
 
-    Lets routes treat programmatic API callers differently from the Studio UI
+    Lets routes treat programmatic API callers differently from the Unsloth UI
     (e.g. refuse a teardown the UI would allow).
     """
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))

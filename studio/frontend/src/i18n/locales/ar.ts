@@ -113,7 +113,7 @@ export const ar = {
       showToken: "إظهار التوكن",
       tokenSaved: "تم حفظ التوكن",
       password: "كلمة المرور",
-      passwordDescription: "تغيير كلمة المرور لحساب Studio هذا.",
+      passwordDescription: "تغيير كلمة المرور لحساب Unsloth هذا.",
       passwordDialog: {
         trigger: "تغيير كلمة المرور",
         title: "تغيير كلمة المرور",
@@ -284,7 +284,7 @@ export const ar = {
     },
     resources: {
       title: "النظام",
-      description: "مراقبة أجهزة خادم Studio هذا وتخزينه.",
+      description: "مراقبة أجهزة خادم Unsloth هذا وتخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
       disableOverlay: "تعطيل التراكب",

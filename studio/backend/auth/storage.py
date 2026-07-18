@@ -146,7 +146,7 @@ def get_connection() -> sqlite3.Connection:
             pass
     conn.row_factory = sqlite3.Row
     # WAL lets token reads run concurrently with refresh-token writes;
-    # busy_timeout bounds lock waits. Matches the other Studio SQLite stores.
+    # busy_timeout bounds lock waits. Matches the other Unsloth SQLite stores.
     # Set busy_timeout first: switching journal_mode needs a lock, so if a
     # refresh-token write already holds one, journal_mode=WAL raises SQLITE_BUSY;
     # with busy_timeout already in effect it waits instead of failing and leaving
@@ -305,8 +305,8 @@ def get_or_create_identity_secret() -> bytes:
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof
-    relayed from a Studio on a different address/port (a squatter proxying to the
-    real one, e.g. localhost resolving to ::1 while Studio is on 127.0.0.1) was
+    relayed from a Unsloth on a different address/port (a squatter proxying to the
+    real one, e.g. localhost resolving to ::1 while Unsloth is on 127.0.0.1) was
     computed for that other endpoint and won't match the one the client dialed."""
     try:
         host = ipaddress.ip_address(host).compressed  # normalise 127.0.0.1 / ::1 forms

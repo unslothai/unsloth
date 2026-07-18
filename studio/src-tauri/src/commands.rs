@@ -25,12 +25,12 @@ fn should_emit_repair_failed(msg: &str) -> bool {
 fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflict) -> String {
     if conflict.reason == "desktop_owned_backend_active" {
         return format!(
-            "A desktop-owned Studio server for this install is already running on port {}. Quit the other desktop app instance, then try again.",
+            "A desktop-owned Unsloth server for this install is already running on port {}. Quit the other desktop app instance, then try again.",
             conflict.port
         );
     }
     format!(
-        "A Studio server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
+        "A Unsloth server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
         conflict.port
     )
 }
@@ -475,7 +475,7 @@ pub async fn start_backend_update(
         .map_err(|e| format!("Update task panicked: {e}"))?
 }
 
-/// Repair a stale managed Studio install.
+/// Repair a stale managed Unsloth install.
 #[tauri::command]
 pub async fn start_managed_repair(
     app: AppHandle,
@@ -522,7 +522,7 @@ pub async fn start_managed_repair(
     let repair_group_id = install::take_pending_repair_group_for_resume(&install_state)
         .unwrap_or_else(|| diagnostics::begin_repair_group(&diagnostics_state));
 
-    let _ = app.emit("repair-progress", "Updating existing Studio install...");
+    let _ = app.emit("repair-progress", "Updating existing Unsloth install...");
     let update_app = app.clone();
     let update_state = update_state.inner().clone();
     let update_diagnostics = diagnostics_state.clone();
@@ -549,7 +549,7 @@ pub async fn start_managed_repair(
             warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
             let _ = app.emit(
                 "repair-progress",
-                "Update finished, but Studio is still not ready. Running bundled installer...",
+                "Update finished, but Unsloth is still not ready. Running bundled installer...",
             );
         }
         Err(msg) => {
@@ -627,7 +627,7 @@ pub async fn start_managed_repair(
         return Ok(());
     }
 
-    let msg = "Repair finished, but Studio install is still not desktop-ready.".to_string();
+    let msg = "Repair finished, but Unsloth install is still not desktop-ready.".to_string();
     error!("{}", msg);
     diagnostics::finish_repair_group(
         &diagnostics_state,

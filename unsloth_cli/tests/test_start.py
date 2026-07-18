@@ -648,7 +648,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
 
 
 def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
-    # Against a remote Studio the local existence probe cannot see server-side paths,
+    # Against a remote Unsloth the local existence probe cannot see server-side paths,
     # so a case-variant loaded id must NOT attach without a load: it could be a distinct
     # server-side path on a case-sensitive host. The load endpoint resolves the request.
     calls = []
@@ -738,7 +738,7 @@ def test_no_launch_output_is_parseable(fake_studio):
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
     lines = [ln for ln in result.output.splitlines() if ln.strip()]
-    skip = ("export ", "unset ", "Studio ", "Updated ", "Disabled ", "Warning", "Loading")
+    skip = ("export ", "unset ", "Unsloth ", "Updated ", "Disabled ", "Warning", "Loading")
     body = [ln for ln in lines if not ln.startswith(skip)]
     assert "codex --oss --profile unsloth_api" in body[-1]
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
@@ -767,7 +767,7 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
 
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     # The unset vars must be neutralized inline too, or a partial copy would send the
-    # user's own ANTHROPIC_API_KEY to the Studio base.
+    # user's own ANTHROPIC_API_KEY to the Unsloth base.
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
@@ -814,7 +814,7 @@ def test_https_loopback_never_auto_serves(fake_studio, monkeypatch):
     )
     result = CliRunner().invoke(start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF"])
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -967,7 +967,7 @@ def test_connect_model_flag_forwards_load_options(fake_studio):
 
 
 def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
-    # Studio registers a loaded model under a canonical id (resolved identifier
+    # Unsloth registers a loaded model under a canonical id (resolved identifier
     # / casing) that can differ from the path we passed. The agent must connect
     # to that model, not silently fall through to the first loaded one.
     requested = "Unsloth/Qwen3.5-35B-A3B"
@@ -1024,7 +1024,7 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
 
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     # `--model repo:QUANT` splits into a VALID load payload (bare repo + gguf_variant),
-    # never the `:`-suffixed repo id Studio rejects. The variant knob defers to
+    # never the `:`-suffixed repo id Unsloth rejects. The variant knob defers to
     # /api/inference/load, whose already-loaded dedup answers without reloading when the
     # active variant+settings match -- so a second session running the same command
     # attaches without evicting the first, while a genuinely different quant reloads.
@@ -1116,7 +1116,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
 
 
 def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
-    # Studio never surfaces the requested model; fail loudly rather than
+    # Unsloth never surfaces the requested model; fail loudly rather than
     # silently connecting to whatever else happens to be loaded.
     inner = start._http_json
 
@@ -1187,7 +1187,7 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
 
 
 def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatch):
-    # A key saved for a remote (non-loopback) Studio is replayed on keyless runs;
+    # A key saved for a remote (non-loopback) Unsloth is replayed on keyless runs;
     # auto-minting stays blocked for non-loopback.
     remote = "http://studio.example:8888"
     monkeypatch.setattr(start, "find_studio_server", lambda: remote)
@@ -1201,7 +1201,7 @@ def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatc
 
 
 def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
-    # A user who pointed UNSLOTH_STUDIO_URL at a remote Studio should get an
+    # A user who pointed UNSLOTH_STUDIO_URL at a remote Unsloth should get an
     # error, not a silent local model load (which they did not ask for).
     import typer
 
@@ -1242,7 +1242,7 @@ def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
 
 
 def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path, monkeypatch):
-    # A "saved" key (e.g. for an SSH-tunnelled Studio the handshake can't match)
+    # A "saved" key (e.g. for an SSH-tunnelled Unsloth the handshake can't match)
     # replays on keyless runs without the handshake, scoped to its own base.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}}))
@@ -1358,7 +1358,7 @@ def _serve_redirect(target):
 
 
 def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
-    # A squatter could 302 /api/auth/identity to the real Studio and relay its
+    # A squatter could 302 /api/auth/identity to the real Unsloth and relay its
     # proof; redirects must be refused so the squatter's base isn't accepted.
     import unsloth_cli._inference as inference
 
@@ -1384,7 +1384,7 @@ def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
 
 
 def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
-    # A squatter that proxies the nonce to the real Studio on another port gets a
+    # A squatter that proxies the nonce to the real Unsloth on another port gets a
     # proof bound to *that* port; the client expects one bound to the port it
     # connected to, so the relayed proof is rejected.
     import unsloth_cli._inference as inference
@@ -1435,7 +1435,7 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
 
 
 @pytest.fixture(autouse = True)
@@ -1564,7 +1564,7 @@ def test_no_serve_preserves_error(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-serve"]
     )
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -1578,7 +1578,7 @@ def test_no_launch_never_serves(fake_studio, monkeypatch):
         start.start_app, ["claude", "--model", "unsloth/Qwen3-1.7B-GGUF", "--no-launch"]
     )
     assert result.exit_code == 1
-    assert "No running Studio server" in result.output
+    assert "No running Unsloth server" in result.output
     assert started["called"] is False
 
 
@@ -1871,7 +1871,7 @@ def _opencode_inline_config(output: str) -> dict:
 def test_opencode_inline_scopes_session_to_studio_provider(fake_studio):
     # opencode filters even config-defined providers through enabled/disabled_providers,
     # and a model pin does not bypass that gate. The inline overlay (session-only, highest
-    # layer, arrays replace) allowlists our provider and clears the denylist so the Studio
+    # layer, arrays replace) allowlists our provider and clears the denylist so the Unsloth
     # model always loads regardless of the user's config, without reading or editing it.
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -2657,7 +2657,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
 
 
 def test_agent_api_key_auto_started_accepted_key_is_honored(fake_studio, tmp_path):
-    # An explicit key the fresh server accepts (e.g. persisted in this Studio
+    # An explicit key the fresh server accepts (e.g. persisted in this Unsloth
     # home's auth db across restarts) keeps working exactly as before.
     key = start._agent_api_key(BASE, "sk-unsloth-deadbeefdeadbeef", auto_started = True)
     assert key == "sk-unsloth-deadbeefdeadbeef"
@@ -2937,11 +2937,11 @@ def test_hermes_resume_oneshot_rejects_usage_file(monkeypatch, usage_arg):
 def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     # The persistence flag is --persist, NOT --resume, so an agent's own
     # `--resume <id>` (e.g. `unsloth start claude --resume <guid>`) still flows
-    # through to the agent verbatim and is not swallowed as a Studio option.
+    # through to the agent verbatim and is not swallowed as a Unsloth option.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda: [])
     captured = _capture_launch(monkeypatch, ["claude", "--resume", "some-session-guid"])
     assert captured["command"][-2:] == ["--resume", "some-session-guid"]
-    # Studio never auto-appends its own resume token when the user drives resume.
+    # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]

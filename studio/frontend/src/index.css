@@ -2597,7 +2597,7 @@ html[data-chat-font] .aui-root {
  * the documented WCAG outcome (motion is "minimised, not removed").
  *
  * .animate-spin and generated image loading dots are the exceptions: loading
- * indicators across Studio (tool execution loaders, sonner toasts, Tauri
+ * indicators across Unsloth (tool execution loaders, sonner toasts, Tauri
  * startup / update screens, the <Spinner /> primitive, and image generation
  * cards). Freezing them removes the only visual signal that work is in flight,
  * so they keep animating.

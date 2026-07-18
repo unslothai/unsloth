@@ -375,7 +375,7 @@ export const zhCN = {
     },
     resources: {
       title: "系统",
-      description: "监控此 Studio 服务器的硬件和存储。",
+      description: "监控此 Unsloth 服务器的硬件和存储。",
       liveUpdates: "实时更新",
       floatingWindow: "悬浮窗口",
       disableOverlay: "禁用悬浮层",

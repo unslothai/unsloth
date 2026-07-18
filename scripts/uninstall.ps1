@@ -83,7 +83,7 @@ function Uninstall-UnslothStudio {
         }
     }
 
-    # A path is a Studio-owned root iff one of install.ps1's sentinels exists:
+    # A path is a Unsloth-owned root iff one of install.ps1's sentinels exists:
     #   <root>\share\studio.conf, <root>\unsloth_studio\.unsloth-studio-owned,
     #   or <root>\bin\unsloth.exe.
     function _IsStudioRoot {
@@ -164,7 +164,7 @@ function Uninstall-UnslothStudio {
         return $p
     }
 
-    # Discover non-default Studio roots from env vars + studio.conf files.
+    # Discover non-default Unsloth roots from env vars + studio.conf files.
     # Mirrors install.ps1's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME
     # is ignored when both are set, so uninstalling install A doesn't also
     # delete install B if the user has a stale STUDIO_HOME pointing at B.
@@ -207,7 +207,7 @@ function Uninstall-UnslothStudio {
 
     # Return $true iff the PID's image path lives under one of $KnownRoots.
     # Prevents killing an unrelated process that happens to listen on a stale
-    # Studio port.
+    # Unsloth port.
     function _PidUnderKnownRoot {
         param([int]$Pid_, [string[]]$KnownRoots)
         if (-not $KnownRoots -or $KnownRoots.Count -eq 0) { return $false }
@@ -223,8 +223,8 @@ function Uninstall-UnslothStudio {
         return $false
     }
 
-    # Stop a Studio backend whose port is recorded in <DataDir>\studio.port.
-    # Only kills if the listening PID's exe path is under a known Studio root.
+    # Stop a Unsloth backend whose port is recorded in <DataDir>\studio.port.
+    # Only kills if the listening PID's exe path is under a known Unsloth root.
     function _StopByPortFile {
         param([string]$PortFile, [string[]]$KnownRoots)
         if (-not (Test-Path -LiteralPath $PortFile -PathType Leaf)) { return }
@@ -372,7 +372,7 @@ function Uninstall-UnslothStudio {
             continue
         }
         if (-not (_IsStudioRoot $r)) {
-            _Substep "refusing to remove non-Studio path: $r" "Yellow"
+            _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
         _RemovePath $r
@@ -436,7 +436,7 @@ function Uninstall-UnslothStudio {
                     $entries = $rawPath -split ';'
                     $kept = New-Object System.Collections.ArrayList
                     $removedAny = $false
-                    # Only remove PATH entries that live inside a Studio root we
+                    # Only remove PATH entries that live inside a Unsloth root we
                     # actually own (default or env-mode). A literal substring
                     # match on `unsloth_studio` would clobber unrelated user
                     # virtualenvs that happen to share the name.

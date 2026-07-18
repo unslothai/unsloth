@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       studio_version:
-        description: 'Studio version tag to release (for example, v0.1.39-beta)'
+        description: 'Unsloth version tag to release (for example, v0.1.39-beta)'
         type: string
         required: true
       pypi_version:
@@ -69,7 +69,7 @@ jobs:
           if not studio_version:
               sys.exit('studio_version is required, for example v0.1.39-beta')
           if re.fullmatch(r'v?20\d{2}\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', studio_version):
-              sys.exit(f'studio_version must be a Studio SemVer tag, not a date-style backend version: {studio_version}')
+              sys.exit(f'studio_version must be a Unsloth SemVer tag, not a date-style backend version: {studio_version}')
 
           semver_tag = re.compile(
               r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
@@ -146,7 +146,7 @@ jobs:
               print(f'pypi_version={pypi_version}', file=output)
           PY
 
-      - name: Verify PyPI package and Studio stamp
+      - name: Verify PyPI package and Unsloth stamp
         shell: bash
         env:
           STUDIO_VERSION: ${{ steps.prepare.outputs.studio_version }}
@@ -211,7 +211,7 @@ jobs:
             fi
             python3 scripts/stamp_studio_release.py --verify-dist "$RUNNER_TEMP/pypi-unsloth-dist" --expected "$STUDIO_VERSION"
           else
-            echo "scripts/stamp_studio_release.py not found; release-desktop requires #5308 to verify the PyPI Studio stamp." >&2
+            echo "scripts/stamp_studio_release.py not found; release-desktop requires #5308 to verify the PyPI Unsloth stamp." >&2
             exit 1
           fi
 

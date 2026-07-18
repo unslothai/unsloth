@@ -1100,7 +1100,7 @@ _MLX_VLM_RESIZED_IMAGE_LAYOUT_CACHE = {}
 
 
 def _mlx_vlm_resized_image_layout(processor = None) -> str | None:
-    """Return the numpy image layout expected after Studio-side VLM resizing."""
+    """Return the numpy image layout expected after Unsloth-side VLM resizing."""
     image_processor = getattr(processor, "image_processor", None)
     if image_processor is None:
         return None
@@ -1257,7 +1257,7 @@ _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
 # Fallback alias map mirroring unsloth_zoo._normalize_mlx_optimizer_name, used
-# only when mlx (Apple Silicon) is not importable so Studio config validation
+# only when mlx (Apple Silicon) is not importable so Unsloth config validation
 # still works on non-MLX hosts. The zoo function stays the source of truth.
 _MLX_STUDIO_ADAMW_ALIASES = frozenset(
     (
@@ -1309,7 +1309,7 @@ def _normalize_mlx_studio_scheduler(value):
 
 
 def _resolve_mlx_local_dataset_files(file_paths: list) -> list[str]:
-    """Resolve CLI paths and Studio local dataset uploads without importing the GPU trainer."""
+    """Resolve CLI paths and Unsloth local dataset uploads without importing the GPU trainer."""
     from utils.paths import resolve_dataset_path
 
     all_files: list[str] = []
@@ -1912,7 +1912,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "append_eos" in _supported_fields:
-        # Studio SFT formatting owns rendered examples; raw/CPT text still
+        # Unsloth SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
@@ -2121,7 +2121,7 @@ def run_mlx_training_process(
     config: dict,
     transformers_activated: bool = False,
 ) -> None:
-    """MLX worker entrypoint shared by Studio subprocesses and the CLI adapter."""
+    """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
     model_name = config["model_name"]
 
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
@@ -2780,7 +2780,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but
                 # nothing on the box says so -- users see "48 GB VRAM" on a
-                # 96 GB machine and assume a Studio bug. Say where the limit
+                # 96 GB machine and assume a Unsloth bug. Say where the limit
                 # comes from and how to raise it.
                 if _is_unified and sys.platform == "win32":
                     try:

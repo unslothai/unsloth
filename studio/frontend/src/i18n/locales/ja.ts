@@ -360,7 +360,7 @@ export const ja = {
     },
     resources: {
       title: "システム",
-      description: "この Studio サーバーのハードウェアとストレージを監視します。",
+      description: "この Unsloth サーバーのハードウェアとストレージを監視します。",
       liveUpdates: "リアルタイム更新",
       floatingWindow: "フローティングウィンドウ",
       disableOverlay: "オーバーレイを無効化",

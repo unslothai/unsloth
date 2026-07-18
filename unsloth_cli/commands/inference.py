@@ -67,7 +67,7 @@ def inference(
     no_server: bool = typer.Option(
         False,
         "--no-server",
-        help = "Load the model in-process even if a Studio server is running.",
+        help = "Load the model in-process even if a Unsloth server is running.",
     ),
 ):
     """Run a single inference using the specified model."""
@@ -85,7 +85,7 @@ def inference(
             )
         raise typer.Exit(code = 1)
 
-    # A running Studio server keeps the model warm between runs. Under
+    # A running Unsloth server keeps the model warm between runs. Under
     # mlx.launch, every rank must enter the local MLX path instead of rank 0
     # alone talking to a server.
     load_opts = dict(

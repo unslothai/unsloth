@@ -1036,7 +1036,7 @@ def test_upgrade_check_mixed_pypi_main_reports_dev_only(monkeypatch):
 
 
 def test_install_endpoint_not_mounted_on_v1():
-    """The consented pip-install endpoint is a Studio admin action; it must live
+    """The consented pip-install endpoint is a Unsloth admin action; it must live
     on studio_router (kept off the OpenAI-compatible /v1 mount), not router."""
     from routes import inference as ri
 

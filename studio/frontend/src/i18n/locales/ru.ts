@@ -113,7 +113,7 @@ export const ru = {
       showToken: "Показать токен",
       tokenSaved: "Токен сохранён",
       password: "Пароль",
-      passwordDescription: "Изменить пароль для этого аккаунта Studio.",
+      passwordDescription: "Изменить пароль для этого аккаунта Unsloth.",
       passwordDialog: {
         trigger: "Изменить пароль",
         title: "Изменить пароль",
@@ -283,7 +283,7 @@ export const ru = {
     },
     resources: {
       title: "Система",
-      description: "Мониторинг оборудования и хранилища этого сервера Studio.",
+      description: "Мониторинг оборудования и хранилища этого сервера Unsloth.",
       liveUpdates: "Обновления в реальном времени",
       floatingWindow: "Плавающее окно",
       disableOverlay: "Отключить оверлей",

@@ -113,7 +113,7 @@ export const hi = {
       showToken: "token दिखाएं",
       tokenSaved: "Token सहेजा गया",
       password: "पासवर्ड",
-      passwordDescription: "इस Studio खाते के लिए पासवर्ड बदलें।",
+      passwordDescription: "इस Unsloth खाते के लिए पासवर्ड बदलें।",
       passwordDialog: {
         trigger: "पासवर्ड बदलें",
         title: "पासवर्ड बदलें",
@@ -283,7 +283,7 @@ export const hi = {
     },
     resources: {
       title: "सिस्टम",
-      description: "इस Studio सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
+      description: "इस Unsloth सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
       liveUpdates: "लाइव अपडेट",
       floatingWindow: "फ्लोटिंग विंडो",
       disableOverlay: "ओवरले अक्षम करें",

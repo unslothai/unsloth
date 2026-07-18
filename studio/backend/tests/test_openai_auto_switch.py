@@ -689,7 +689,7 @@ def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
 
 def test_index_excludes_hidden_models(tmp_path, monkeypatch):
     # The llama.cpp validation probe and RAG embedding weights are hidden from
-    # Studio's pickers; they must never become auto-switch targets.
+    # Unsloth's pickers; they must never become auto-switch targets.
     from types import SimpleNamespace
     import routes.models as models_route
 

@@ -138,7 +138,7 @@ def test_mlx_inference_vlm_lora_uses_unsloth_loader_without_native_adapter_rewri
     _install_fake_fast_mlx(monkeypatch, calls)
 
     def _native_vlm_load(*_args, **_kwargs):
-        raise AssertionError("Studio MLX VLM inference must use FastMLXModel")
+        raise AssertionError("Unsloth MLX VLM inference must use FastMLXModel")
 
     mlx_vlm = types.ModuleType("mlx_vlm")
     mlx_vlm.load = _native_vlm_load

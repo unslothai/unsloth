@@ -2083,7 +2083,7 @@ def _has_model_weight_files(model_dir: Path) -> bool:
 
 
 def _detect_training_output_type(model_dir: Path) -> Optional[str]:
-    """Classify a Studio training output as LoRA or full finetune."""
+    """Classify a Unsloth training output as LoRA or full finetune."""
     adapter_config = model_dir / "adapter_config.json"
     adapter_model = model_dir / "adapter_model.safetensors"
     if adapter_config.exists() or adapter_model.exists():
@@ -2105,7 +2105,7 @@ def _looks_like_lora_adapter(model_dir: Path) -> bool:
 
 
 def scan_trained_models(outputs_dir: str = str(outputs_root())) -> List[Tuple[str, str, str]]:
-    """Scan outputs folder for trained Studio models.
+    """Scan outputs folder for trained Unsloth models.
 
     Returns:
         List of (display_name, model_path, model_type), where model_type is
