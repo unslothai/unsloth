@@ -282,6 +282,21 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
+# fp8 weight dtypes. A `weight_scale` / `weight_scale_inv` should only be treated as a
+# quant state when the weight itself is still fp8. compressed-tensors layers expose an
+# already-dequantized bf16 weight at forward time while keeping a `weight_scale` around;
+# reading that as a quant state routes a bf16 weight into the bitsandbytes fast_gemv /
+# fast_dequantize path, which then reads a missing `absmax` and crashes.
+_FP8_WEIGHT_DTYPES = tuple(
+    dtype
+    for dtype in (
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e5m2", None),
+    )
+    if dtype is not None
+)
+
+
 def get_lora_parameters(proj):
     """Return (weight, weight quant_state, lora A, lora B, lora scale).
     With QAT enabled, also fake-quantizes the base layer and lora weights.
@@ -298,9 +313,11 @@ def get_lora_parameters(proj):
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
 
-    # Get quant state for 4bit or FP8
+    # Get quant state for 4bit or FP8. Only fall back to a weight_scale(_inv) when the
+    # weight is still fp8; a bf16 weight (e.g. a decompressed compressed-tensors layer)
+    # must not carry a scale as its quant state or fast_gemv will crash on it.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None:
+    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
         W_quant = getattr(base_layer, "weight_scale_inv", None)
         if W_quant is None:
             W_quant = getattr(base_layer, "weight_scale", None)
@@ -308,7 +325,10 @@ def get_lora_parameters(proj):
     if getattr(base_layer, "quant_method", None) == "fp8":
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, "block_size", [128, 128])
-        W_quant.block_size = W.block_size
+        # A decompressed compressed-tensors layer keeps quant_method == "fp8" while its
+        # weight is back to bf16, so it has no quant state to carry the block size.
+        if W_quant is not None:
+            W_quant.block_size = W.block_size
 
     # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
     if getattr(proj, "disable_adapters", True) or proj.merged:
@@ -349,21 +369,26 @@ def get_lora_parameters_bias(proj):
     )  # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
-    # Get quant state for 4bit or FP8
+    # Get quant state for 4bit or FP8. Only fall back to a weight_scale(_inv) when the
+    # weight is still fp8; a bf16 weight (e.g. a decompressed compressed-tensors layer)
+    # must not carry a scale as its quant state or fast_gemv will crash on it.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None:
+    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
         W_quant = getattr(base_layer, "weight_scale_inv", None)
         if W_quant is None:
             W_quant = getattr(base_layer, "weight_scale", None)
 
-    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
-    if getattr(proj, "disable_adapters", True) or proj.merged:
-        return W, W_quant, None, None, None, base_layer.bias
-
     if getattr(base_layer, "quant_method", None) == "fp8":
         # we need to somehow store and pass this information :)
         W.block_size = getattr(base_layer, "block_size", [128, 128])
-        W_quant.block_size = W.block_size
+        # A decompressed compressed-tensors layer keeps quant_method == "fp8" while its
+        # weight is back to bf16, so it has no quant state to carry the block size.
+        if W_quant is not None:
+            W_quant.block_size = W.block_size
+
+    # if not hasattr(proj, "disable_adapters") or proj.disable_adapters or proj.merged:
+    if getattr(proj, "disable_adapters", True) or proj.merged:
+        return W, W_quant, None, None, None, base_layer.bias
 
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:

@@ -124,3 +124,100 @@ def test_unstructured_upload_import_errors_stay_generic(monkeypatch, tmp_path, e
     assert result.status == "error"
     assert result.error == "Text extraction failed."
     assert _block_files(seed_route) == []
+
+
+_TEST_UPLOAD_UID = "0f" * 16
+
+
+def test_remove_unstructured_block_deletes_directory(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _run_upload(seed_route, "notes.txt", b"hello", block_id = _TEST_UPLOAD_UID)
+    assert _block_files(seed_route, _TEST_UPLOAD_UID) != []
+
+    result = asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
+
+    assert result == {"status": "ok", "deleted": True}
+    assert not (seed_route.UNSTRUCTURED_UPLOAD_ROOT / _TEST_UPLOAD_UID).exists()
+
+
+def test_remove_unstructured_block_missing_directory_is_ok(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+
+    result = asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
+
+    assert result == {"status": "ok", "deleted": False}
+
+
+def test_remove_unstructured_block_rejects_unsafe_ids(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.remove_unstructured_block("../escape"))
+
+    assert exc.value.status_code == 400
+
+
+def test_remove_unstructured_block_rejects_legacy_node_ids(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _run_upload(seed_route, "notes.txt", b"hello", block_id = "n1")
+    assert _block_files(seed_route, "n1") != []
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.remove_unstructured_block("n1"))
+
+    assert exc.value.status_code == 400
+    assert _block_files(seed_route, "n1") != []
+
+
+def test_remove_unstructured_block_rejects_symlink_escape(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim.txt").write_text("keep me")
+    root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
+    root.mkdir(parents = True)
+    (root / _TEST_UPLOAD_UID).symlink_to(outside)
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
+
+    assert exc.value.status_code == 400
+    assert (outside / "victim.txt").exists()
+
+
+def test_remove_unstructured_block_fails_if_directory_remains(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    root = seed_route.UNSTRUCTURED_UPLOAD_ROOT
+    block_dir = root / _TEST_UPLOAD_UID
+    block_dir.mkdir(parents = True)
+    (block_dir / "victim.txt").write_text("keep me")
+
+    calls = []
+
+    def noop_rmtree(path, *args, **kwargs):
+        calls.append((path, args, kwargs))
+
+    monkeypatch.setattr(seed_route.shutil, "rmtree", noop_rmtree)
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        asyncio.run(seed_route.remove_unstructured_block(_TEST_UPLOAD_UID))
+
+    assert calls
+    assert exc.value.status_code == 500
+    assert block_dir.exists()
+
+
+def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES", 10)
+
+    first = _run_upload(seed_route, "a.txt", b"123456789")
+    assert first.status == "ok"
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        _run_upload(seed_route, "b.txt", b"123")
+    assert exc.value.status_code == 413
+
+    # Another block starts with its own untouched budget.
+    other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
+    assert other.status == "ok"

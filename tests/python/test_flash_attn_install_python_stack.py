@@ -13,102 +13,35 @@ sys.path.insert(0, str(STUDIO_DIR))
 sys.path.insert(0, str(STUDIO_DIR / "backend"))
 
 import install_python_stack as ips
-from backend.utils import wheel_utils
+from utils import wheel_utils
 
 
-def _smi_result(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
-    return subprocess.CompletedProcess(["nvidia-smi"], returncode, stdout, "")
+class TestPrebuiltWheelTorchMapping:
+    def test_torch_211_maps_to_torch210(self):
+        assert wheel_utils.prebuilt_wheel_torch_mm("2.11") == "2.10"
 
+    def test_other_versions_pass_through(self):
+        for torch_mm in ("2.9", "2.10", "2.12"):
+            assert wheel_utils.prebuilt_wheel_torch_mm(torch_mm) == torch_mm
 
-class TestHasBlackwellGpu:
-    def setup_method(self):
-        wheel_utils.has_blackwell_gpu.cache_clear()
-
-    def teardown_method(self):
-        wheel_utils.has_blackwell_gpu.cache_clear()
-
-    def test_returns_false_when_nvidia_smi_missing(self):
-        with mock.patch.object(wheel_utils.shutil, "which", return_value = None):
-            assert wheel_utils.has_blackwell_gpu() is False
-
-    def test_returns_true_for_sm_100(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("10.0\n")),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is True
-
-    def test_returns_true_for_sm_120(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("12.0\n")),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is True
-
-    def test_returns_true_for_sm_121(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("12.1\n")),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is True
-
-    def test_returns_false_for_sm_90(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("9.0\n")),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is False
-
-    def test_returns_false_for_sm_89(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(wheel_utils.subprocess, "run", return_value = _smi_result("8.9\n")),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is False
-
-    def test_mixed_gpus_with_one_blackwell_returns_true(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(
-                wheel_utils.subprocess,
-                "run",
-                return_value = _smi_result("8.0\n10.0\n"),
-            ),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is True
-
-    def test_returns_false_when_nvidia_smi_fails(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(
-                wheel_utils.subprocess,
-                "run",
-                return_value = _smi_result("", returncode = 1),
-            ),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is False
-
-    def test_returns_false_on_subprocess_timeout(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(
-                wheel_utils.subprocess,
-                "run",
-                side_effect = subprocess.TimeoutExpired(cmd = "nvidia-smi", timeout = 10),
-            ),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is False
-
-    def test_returns_false_on_malformed_output(self):
-        with (
-            mock.patch.object(wheel_utils.shutil, "which", return_value = "/usr/bin/nvidia-smi"),
-            mock.patch.object(
-                wheel_utils.subprocess,
-                "run",
-                return_value = _smi_result("not-a-number\n\n"),
-            ),
-        ):
-            assert wheel_utils.has_blackwell_gpu() is False
+    def test_direct_wheel_url_reuses_torch210_on_211(self):
+        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the
+        # torch2.10 wheel filename just like flash-attn does.
+        url = wheel_utils.direct_wheel_url(
+            filename_prefix = "causal_conv1d",
+            package_version = "1.6.1",
+            release_tag = "v1.6.1.post4",
+            release_base_url = "https://example.test/download",
+            env = {
+                "python_tag": "cp313",
+                "torch_mm": "2.11",
+                "cuda_major": "13",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        )
+        assert url is not None
+        assert "causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
 
 
 class TestFlashAttnWheelSelection:
@@ -118,8 +51,23 @@ class TestFlashAttnWheelSelection:
     def test_torch_29_maps_to_v283(self):
         assert ips._select_flash_attn_version("2.9") == "2.8.3"
 
-    def test_unsupported_torch_has_no_wheel_mapping(self):
+    def test_torch_211_has_no_native_version_entry(self):
+        # The raw version table has no torch2.11-tagged wheel; the URL builder
+        # reuses the torch2.10 wheel instead (see test_torch_211_reuses_torch210_wheel).
         assert ips._select_flash_attn_version("2.11") is None
+
+    def test_torch_211_reuses_torch210_wheel(self):
+        url = ips._build_flash_attn_wheel_url(
+            {
+                "python_tag": "cp313",
+                "torch_mm": "2.11",
+                "cuda_major": "13",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            }
+        )
+        assert url is not None
+        assert "flash_attn-2.8.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl" in url
 
     def test_exact_wheel_url_uses_full_env_tuple(self):
         url = ips._build_flash_attn_wheel_url(
@@ -333,83 +281,22 @@ class TestEnsureFlashAttn:
         mock_probe.assert_not_called()
         mock_install_wheel.assert_not_called()
 
-    def test_blackwell_gpu_skips_install_with_warning(self):
-        step_messages: list[tuple[str, str]] = []
-
-        def fake_step(
-            label: str,
-            value: str,
-            color_fn = None,
-        ):
-            step_messages.append((label, value))
-
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
-        ):
-            ips._ensure_flash_attn()
-
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
-        assert any(label == "warning" and "Blackwell" in msg for label, msg in step_messages)
-
-    def test_blackwell_gpu_on_windows_emits_blackwell_warning(self):
-        step_messages: list[tuple[str, str]] = []
-
-        def fake_step(
-            label: str,
-            value: str,
-            color_fn = None,
-        ):
-            step_messages.append((label, value))
-
+    def test_windows_skips_install_without_probing(self):
+        # flash-attn is Linux-only: on Windows the installer returns before
+        # probing the torch env or resolving a wheel (no Windows wheels are
+        # published upstream).
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),
             mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = True),
             mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
             mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
             mock.patch("subprocess.run", return_value = self._import_check()),
         ):
             ips._ensure_flash_attn()
 
         mock_probe.assert_not_called()
         mock_install_wheel.assert_not_called()
-        assert any(label == "warning" and "Blackwell" in msg for label, msg in step_messages)
-
-    def test_non_blackwell_windows_does_not_emit_blackwell_warning(self):
-        step_messages: list[tuple[str, str]] = []
-
-        def fake_step(
-            label: str,
-            value: str,
-            color_fn = None,
-        ):
-            step_messages.append((label, value))
-
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", True),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(ips, "has_blackwell_gpu", return_value = False),
-            mock.patch.object(ips, "probe_torch_wheel_env") as mock_probe,
-            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
-            mock.patch.object(ips, "_step", side_effect = fake_step),
-            mock.patch("subprocess.run", return_value = self._import_check()),
-        ):
-            ips._ensure_flash_attn()
-
-        mock_probe.assert_not_called()
-        mock_install_wheel.assert_not_called()
-        assert not any("Blackwell" in msg for _, msg in step_messages)
 
 
 class TestInstallPythonStackFlashAttnIntegration:

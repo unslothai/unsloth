@@ -132,6 +132,11 @@ class ExportOrchestrator:
         """True while an export / load / cleanup command is running."""
         return self._export_active
 
+    def is_worker_alive(self) -> bool:
+        """True while the persistent export subprocess is running (op or idle)."""
+        proc = self._proc
+        return proc is not None and proc.is_alive()
+
     def was_cancelled(self) -> bool:
         """True if the in-flight (or most recent) run was cancelled by the user."""
         return self._cancel_requested
@@ -204,6 +209,23 @@ class ExportOrchestrator:
 
     def _spawn_subprocess(self, config: dict) -> None:
         """Spawn a new export subprocess."""
+        # Last-resort recheck for spawns outside an active op. Inside an op, _export_active is set and
+        # load_checkpoint already rechecked, so a reservation here is an install about to observe
+        # is_export_active() and abort; raising would kill this export for an install that never proceeds.
+        from utils.transformers_version import sidecar_swap_in_progress
+
+        from utils.transformers_version import sidecar_swap_kind
+
+        _swap_kind = sidecar_swap_kind()
+        # Inside an active op an INSTALL reservation is about to abort on the
+        # is_export_active check, but a lazy REPAIR has no such check and can be
+        # rebuilding the sidecar right now, so it must always refuse the spawn.
+        if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
+            from utils.transformers_version import SidecarSwapInProgress
+            raise SidecarSwapInProgress(
+                "A transformers installation is replacing the latest sidecar; "
+                "retry when it completes."
+            )
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
@@ -231,11 +253,17 @@ class ExportOrchestrator:
         adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
-    def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
-        """Gracefully shut down the export subprocess."""
+    def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
+        """Gracefully shut down the export subprocess.
+
+        Returns True only once the worker is confirmed dead. If it survives
+        terminate/kill (e.g. wedged in an uninterruptible CUDA syscall that outlives
+        SIGKILL) the live handle is KEPT, not nulled, so is_worker_alive() and the
+        pre-swap liveness guard can still observe the survivor instead of a cleared
+        handle and refuse the destructive sidecar swap."""
         if self._proc is None or not self._proc.is_alive():
             self._proc = None
-            return
+            return True
 
         self._drain_queue()
 
@@ -265,10 +293,20 @@ class ExportOrchestrator:
                 except Exception:
                     pass
 
+        if self._proc is not None and self._proc.is_alive():
+            # Survived SIGKILL (uninterruptible syscall): keep the handle so callers
+            # and the pre-swap guard see a live worker rather than a nulled one.
+            logger.error(
+                "Export subprocess still alive after terminate/kill; "
+                "preserving its handle for the pre-swap liveness check"
+            )
+            return False
+
         self._proc = None
         self._cmd_queue = None
         self._resp_queue = None
         logger.info("Export subprocess shut down")
+        return True
 
     def _cleanup(self):
         """atexit handler."""
@@ -339,9 +377,10 @@ class ExportOrchestrator:
 
             if rtype == "status":
                 message = resp.get("message", "")
-                logger.info("Export subprocess status: %s", message)
-                # Surface status in the live log panel for high-level progress.
+                # One structured export_progress line per phase (consolidated in the
+                # server log, like training/download progress); also shown live.
                 if message:
+                    logger.info("export_progress", phase = message)
                     self._append_log(
                         {
                             "stream": "status",
@@ -409,14 +448,44 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message = False, ""
             try:
+                # Handshake with the sidecar install route: _export_active is set above, so either this
+                # recheck refuses BEFORE tearing down the old worker (keeping the loaded checkpoint), or
+                # the install sees is_export_active() and 409s. The spawn-time recheck stays as a last resort.
+                from utils.transformers_version import sidecar_swap_in_progress
+
+                if sidecar_swap_in_progress():
+                    from utils.transformers_version import SidecarSwapInProgress
+                    op_message = (
+                        "A transformers installation is replacing the latest "
+                        "sidecar; retry when it completes."
+                    )
+                    raise SidecarSwapInProgress(op_message)
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
-                    self._shutdown_subprocess()
+                    if self._shutdown_subprocess() is False:
+                        # Survivor still holds GPU memory (a wedged CUDA syscall outliving
+                        # SIGKILL); its handle is kept so is_worker_alive() and the pre-swap
+                        # guard still see it. Do not spawn a second worker over it -- fail so
+                        # the load can retry once it exits.
+                        op_message = (
+                            "The current export worker did not exit and still holds GPU "
+                            "memory; not starting a new checkpoint load over it. Retry shortly."
+                        )
+                        return False, op_message
                 elif self._proc is not None:
                     self._shutdown_subprocess(timeout = 2)
 
                 logger.info("Spawning fresh export subprocess for '%s'", checkpoint_path)
-                self._spawn_subprocess(sub_config)
+                try:
+                    self._spawn_subprocess(sub_config)
+                except Exception:
+                    # The old worker is already gone; a stale current_checkpoint
+                    # would make the Export page claim a loaded checkpoint that
+                    # the next op then fails on with "no subprocess running".
+                    self.current_checkpoint = None
+                    self.is_vision = False
+                    self.is_peft = False
+                    raise
 
                 try:
                     resp = self._wait_response("loaded")
@@ -456,6 +525,7 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export merged PEFT model."""
         return self._run_export(
@@ -467,6 +537,7 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
+                "compressed_method": compressed_method,
             },
         )
 
@@ -495,13 +566,13 @@ class ExportOrchestrator:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export model in GGUF format."""
+        """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
             "gguf",
             {
@@ -521,8 +592,10 @@ class ExportOrchestrator:
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
         private: bool = False,
+        gguf: bool = False,
+        gguf_outtype: str = "q8_0",
     ) -> Tuple[bool, str, Optional[str]]:
-        """Export LoRA adapter only."""
+        """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
             "lora",
             {
@@ -531,6 +604,8 @@ class ExportOrchestrator:
                 "repo_id": repo_id,
                 "hf_token": hf_token,
                 "private": private,
+                "gguf": gguf,
+                "gguf_outtype": gguf_outtype,
             },
         )
 
@@ -554,12 +629,28 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
             try:
+                # Handshake with the sidecar install route (see load_checkpoint): _export_active is set
+                # above, so this recheck refuses before the command is sent, or the install sees the active
+                # op and 409s. Without it, an install would block in cleanup_memory behind a long export op.
+                from utils.transformers_version import sidecar_swap_in_progress
+
+                if sidecar_swap_in_progress():
+                    from utils.transformers_version import SidecarSwapInProgress
+                    op_message = (
+                        "A transformers installation is replacing the latest "
+                        "sidecar; retry when it completes."
+                    )
+                    raise SidecarSwapInProgress(op_message)
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
+                    # GGUF for 30B+ models can take 30+ min per quant; a multi-quant list runs them
+                    # all in one op off a single merge, so scale the timeout by the quant count.
+                    _qm = params.get("quantization_method")
+                    _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600,  # GGUF for 30B+ models can take 30+ min
+                        timeout = 3600 * max(1, _n),
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")
