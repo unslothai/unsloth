@@ -50,7 +50,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
                 className={cn(
                   "inline-flex size-6 items-center justify-center rounded-full transition-colors",
                   hasToken
-                    ? "bg-primary/15 text-primary"
+                    ? "bg-verified/15 text-verified"
                     : "bg-foreground/[0.07] text-muted-foreground dark:bg-white/[0.07]",
                 )}
               >
@@ -65,7 +65,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
             <span
               className={cn(
                 "shrink-0 text-[11px] font-normal tabular-nums",
-                hasToken ? "text-primary" : "text-muted-foreground/70",
+                hasToken ? "text-verified" : "text-muted-foreground/70",
               )}
             >
               {hasToken ? "Set" : "Add"}
@@ -89,7 +89,7 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
           className={cn(
             // Solid circle reads optically larger than the flat HTTP/Xet box, so
             // keep it 22px to sit within the row rather than bulging above it.
-            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
               : "bg-destructive text-destructive-foreground hover:bg-destructive/90",

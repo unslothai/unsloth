@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
+import functools
 import json
 import os
 import re
@@ -82,6 +83,7 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    append_deferred_nudges,
     tool_event_provenance,
 )
 from state.tool_approvals import (
@@ -299,6 +301,27 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
         if sig in text:
             return True
     return False
+
+
+_TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
+_TEXT_TOOL_GEMMA_RE = re.compile(r"\s*call:([\w.\-]+)")
+_TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
+
+
+def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
+    """Best-effort tool name from a partially drained TEXT tool call, gated on
+    enabled names so prose can never spawn a card. Used only to open the live
+    argument pane early; the authoritative parse still happens at stream end."""
+    m = _TEXT_TOOL_NAME_RE.search(text[:4096])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
+    if m and m.group(1) in enabled_names:
+        return m.group(1)
+    return ""
 
 
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
@@ -631,6 +654,10 @@ _TOOL_TEMPLATE_MARKERS = (
     "{%- if tools -%}",
     "{% if tools %}",
     "{% if tools -%}",
+    # Defensive templates guard with `tools is defined` before truth-testing
+    # (e.g. Inkling: `{%- if tools is defined and tools -%}`).
+    "{%- if tools is defined",
+    "{% if tools is defined",
     '"role" == "tool"',
     "'role' == 'tool'",
     'message.role == "tool"',
@@ -646,9 +673,10 @@ _TOOL_TEMPLATE_MARKERS = (
 
 
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
-# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max') so we
-# only ever offer levels the template actually understands.
-_REASONING_EFFORT_SCALE = ("minimal", "low", "medium", "high", "max")
+# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
+# uses the full 'none'..'max' ladder) so we only ever offer levels the template
+# actually understands.
+_REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _extract_reasoning_effort_levels(chat_template: str) -> list:
@@ -730,10 +758,22 @@ def detect_reasoning_flags(
         logger.info(f"{prefix}model supports reasoning (enable_thinking)")
     elif "reasoning_effort" in tpl:
         # gpt-oss / Harmony use reasoning_effort
-        # ("low" | "medium" | "high"), not a boolean.
+        # ("low" | "medium" | "high"), not a boolean. Inkling maps a wider
+        # named ladder ('none'..'max'); surface the levels the template
+        # actually branches on so the Think menu offers exactly those and
+        # nothing more ('none' renders as thinking off: effort 0). Guard:
+        # trust the scan only when it includes the core 'low' and 'high'
+        # literals, so a template that quotes e.g. 'none' for an unrelated
+        # comparison keeps the default low/medium/high set.
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
-        logger.info(f"{prefix}model supports reasoning (reasoning_effort)")
+        scanned = _extract_reasoning_effort_levels(tpl)
+        if "low" in scanned and "high" in scanned:
+            flags["reasoning_effort_levels"] = scanned
+        logger.info(
+            f"{prefix}model supports reasoning "
+            f"(reasoning_effort: {flags['reasoning_effort_levels'] or 'default levels'})"
+        )
     elif "thinking" in tpl:
         # DeepSeek uses 'thinking', not 'enable_thinking'
         normalized_id = (model_identifier or "").lower()
@@ -958,6 +998,283 @@ def _cached_colocated_split_main(
     except Exception as e:
         logger.debug("Co-located split snapshot lookup failed for %s: %s", repo_id, e)
     return None
+
+
+def _cached_variant_resolution(repo_id: str, hf_variant: str) -> tuple[Optional[str], list[str]]:
+    """Find a cached main GGUF and its shards for a variant."""
+    candidate = next(_cached_variant_candidates(repo_id, hf_variant), None)
+    if candidate is None:
+        return None, []
+    _, main, shards, _ = candidate
+    return main, shards
+
+
+def _cached_variant_candidates(
+    repo_id: str,
+    hf_variant: str,
+    *,
+    require_mmproj: bool = False,
+) -> Generator[tuple[str, str, list[str], Path], None, None]:
+    """Yield complete cached variant copies in snapshot preference order."""
+    try:
+        from utils.models.model_config import _iter_hf_cache_snapshots
+        for snap in _iter_hf_cache_snapshots(repo_id):
+            cached_files = _gguf_snapshot_files(snap)
+            matches = _gguf_files_for_variant(cached_files, hf_variant)
+            if not matches:
+                continue
+            main = matches[0]
+            shards = _gguf_extra_shards(matches, main)
+            split = _SHARD_FULL_RE.match(main)
+            if split:
+                numbers = {
+                    int(match.group(2))
+                    for path in [main, *shards]
+                    if (match := _SHARD_FULL_RE.match(path))
+                }
+                if numbers != set(range(1, int(split.group(3)) + 1)):
+                    continue
+            main_path = snap.joinpath(*main.replace("\\", "/").split("/"))
+            if not main_path.is_file() or not _snapshot_has_all_shards(
+                str(main_path), main, shards, {}
+            ):
+                continue
+            if require_mmproj and not _pick_mmproj(cached_files):
+                continue
+            yield str(main_path), main, shards, snap
+    except Exception as e:
+        logger.debug(f"Cache lookup for variant failed: {e}")
+
+
+def _cached_candidate_matches_revision_size(
+    repo_id: str, candidate: tuple[str, str, list[str], Path], hf_token: Optional[str]
+) -> bool:
+    """Check cached byte sizes against the snapshot's own Hub revision.
+
+    A snapshot pointer is normally published only after its blob is complete.
+    When the old revision is still queryable, also compare every weight file's
+    size so a manually truncated cache entry is not treated as reusable. If
+    metadata cannot be reached, retain the cache's normal offline semantics.
+    """
+    main_path, main, shards, snap = candidate
+    paths = [main, *shards]
+    try:
+        from huggingface_hub import get_paths_info
+        infos = list(
+            get_paths_info(
+                repo_id,
+                paths,
+                revision = snap.name,
+                token = hf_token,
+            )
+        )
+    except Exception as e:
+        logger.debug(
+            "Could not size-check cached GGUF %s at revision %s: %s",
+            repo_id,
+            snap.name,
+            e,
+        )
+        return True
+
+    if not infos:
+        # The Hub answers an unknown (e.g. force-pushed away) revision with an
+        # empty result, not an error; treat it like unreachable metadata.
+        return True
+    expected_sizes = {info.path: info.size for info in infos if info.size is not None}
+    if any(path not in expected_sizes for path in paths):
+        return False
+    try:
+        if os.path.getsize(main_path) < expected_sizes[main]:
+            return False
+    except OSError:
+        return False
+    return _snapshot_has_all_shards(main_path, main, shards, expected_sizes)
+
+
+def _cached_complete_candidate(
+    repo_id: str, gguf_filename: Optional[str], shards: list[str]
+) -> Optional[tuple[str, str, list[str], Path]]:
+    """Return one complete exact-filename cache candidate with snapshot context."""
+    if not gguf_filename:
+        return None
+    if shards:
+        main_path = _cached_colocated_split_main(repo_id, gguf_filename, shards, {})
+    else:
+        m = _SHARD_FULL_RE.match(gguf_filename)
+        if m and int(m.group(3)) > 1:
+            return None
+        main_path = _cached_hf_snapshot_file(repo_id, gguf_filename)
+    if main_path is None:
+        return None
+    snap = _snapshot_dir_of(main_path)
+    if snap is None:
+        return None
+    return main_path, gguf_filename, shards, snap
+
+
+def cached_gguf_for_load(
+    hf_repo: str,
+    hf_variant: Optional[str],
+    *,
+    require_mmproj: bool = False,
+    verify_sizes: bool = False,
+    hf_token: Optional[str] = None,
+) -> Optional[str]:
+    """Return a cached GGUF that can be loaded without downloading."""
+    if not hf_variant:
+        return None
+    hf_repo = _resolve_repo_id_casing(hf_repo)
+    for candidate in _cached_variant_candidates(
+        hf_repo,
+        hf_variant,
+        require_mmproj = require_mmproj,
+    ):
+        if verify_sizes and not _cached_candidate_matches_revision_size(
+            hf_repo, candidate, hf_token
+        ):
+            continue
+        return candidate[0]
+    return None
+
+
+def _snapshot_dir_of(path: str) -> Optional[Path]:
+    """Return the HF cache snapshot containing path, if any."""
+    try:
+        p = Path(os.path.abspath(path))
+    except OSError:
+        return None
+    for ancestor in p.parents:
+        if ancestor.parent.name == "snapshots":
+            return ancestor
+    return None
+
+
+def _companion_snapshot_sibling(
+    near_path: str, pick: Callable[[list[str]], Optional[str]]
+) -> Optional[str]:
+    """Find a companion in the same snapshot as near_path."""
+    snap = _snapshot_dir_of(near_path)
+    if snap is None:
+        return None
+    try:
+        sibling = pick(_gguf_snapshot_files(snap))
+    except Exception:
+        return None
+    if not sibling:
+        return None
+    candidate = snap / sibling
+    return str(candidate) if candidate.is_file() else None
+
+
+def _pick_mmproj(candidates: list[str]) -> Optional[str]:
+    mmproj_files = sorted(
+        f for f in candidates if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
+    )
+    if not mmproj_files:
+        return None
+    return next((f for f in mmproj_files if f.lower().endswith("-f16.gguf")), mmproj_files[0])
+
+
+def _hub_download_in_flight(hf_repo: str) -> bool:
+    try:
+        from hub.utils.download_registry import get_models_registry
+        return bool(get_models_registry().active_job_refs(hf_repo))
+    except Exception:
+        return False
+
+
+def _hub_download_blocks_gguf_load(
+    hf_repo: str,
+    hf_variant: Optional[str],
+    *,
+    require_mmproj: bool = False,
+    hf_token: Optional[str] = None,
+) -> bool:
+    """Whether an active Hub job makes this GGUF load unsafe.
+
+    Same-variant jobs can reclaim the stale snapshot a load would reuse, so
+    they always block. Other jobs block only when this load lacks a complete
+    cached copy and would write to the shared cache itself.
+    """
+    try:
+        from hub.utils.download_registry import get_models_registry
+
+        registry = get_models_registry()
+        if not registry.active_job_refs(hf_repo):
+            return False
+        if registry.has_active_variant(hf_repo, hf_variant):
+            return True
+    except Exception:
+        return False
+    return (
+        cached_gguf_for_load(
+            hf_repo,
+            hf_variant,
+            require_mmproj = require_mmproj,
+            verify_sizes = True,
+            hf_token = hf_token,
+        )
+        is None
+    )
+
+
+# Active GGUF loads by normalized repo ID.
+_LOADS_IN_FLIGHT: dict[str, int] = {}
+_LOADS_IN_FLIGHT_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def gguf_load_in_flight(hf_repo: Optional[str]):
+    """Track an HF GGUF load until the context exits."""
+    key = (hf_repo or "").strip().lower()
+    if not key:
+        yield
+        return
+    with _LOADS_IN_FLIGHT_LOCK:
+        _LOADS_IN_FLIGHT[key] = _LOADS_IN_FLIGHT.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _LOADS_IN_FLIGHT_LOCK:
+            remaining = _LOADS_IN_FLIGHT.get(key, 1) - 1
+            if remaining <= 0:
+                _LOADS_IN_FLIGHT.pop(key, None)
+            else:
+                _LOADS_IN_FLIGHT[key] = remaining
+
+
+def hf_gguf_load_in_flight(hf_repo: str) -> bool:
+    """Return whether a GGUF load is active for hf_repo."""
+    key = (hf_repo or "").strip().lower()
+    if not key:
+        return False
+    with _LOADS_IN_FLIGHT_LOCK:
+        return _LOADS_IN_FLIGHT.get(key, 0) > 0
+
+
+def _with_gguf_load_marker(load: Callable):
+    """Keep an HF repo marked for the full synchronous load call."""
+
+    @functools.wraps(load)
+    def wrapped(self, *args, **kwargs):
+        hf_repo = kwargs.get("hf_repo")
+        with gguf_load_in_flight(hf_repo):
+            if hf_repo and _hub_download_blocks_gguf_load(
+                hf_repo,
+                kwargs.get("hf_variant"),
+                require_mmproj = bool(
+                    kwargs.get("is_vision")
+                    and not extra_args_disable_mmproj(kwargs.get("extra_args"))
+                ),
+                hf_token = kwargs.get("hf_token"),
+            ):
+                raise RuntimeError(
+                    f"'{hf_repo}' is currently being downloaded by the download manager"
+                )
+            return load(self, *args, **kwargs)
+
+    return wrapped
 
 
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
@@ -1503,6 +1820,31 @@ def _is_external_link(path: Path) -> bool:
     return False
 
 
+# Inkling's template takes a numeric thinking-effort dial (0..0.99) and its
+# float() coercion turns unrecognized named levels into 0, i.e. no thinking.
+# Map OpenAI-style names to the values the model was trained on. Module-level
+# so duck-typed engine stand-ins in tests do not need the attribute.
+_INKLING_REASONING_EFFORT = {
+    "none": 0.0,
+    "minimal": 0.1,
+    "low": 0.2,
+    "medium": 0.7,
+    "high": 0.9,
+    "xhigh": 0.99,
+    "max": 0.99,
+}
+
+
+def _coerce_reasoning_effort(architecture, kwargs: dict) -> dict:
+    if architecture == "inkling":
+        effort = kwargs.get("reasoning_effort")
+        if isinstance(effort, str):
+            mapped = _INKLING_REASONING_EFFORT.get(effort.strip().lower())
+            if mapped is not None:
+                kwargs["reasoning_effort"] = mapped
+    return kwargs
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -1909,7 +2251,10 @@ class LlamaCppBackend:
             # the template's default effort (max) in place.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
-            return {"reasoning_effort": "high" if enable_thinking else "low"}
+            return _coerce_reasoning_effort(
+                getattr(self, "_architecture", None),
+                {"reasoning_effort": "high" if enable_thinking else "low"},
+            )
         return {"enable_thinking": enable_thinking}
 
     def _request_reasoning_kwargs(
@@ -1957,6 +2302,7 @@ class LlamaCppBackend:
                     kwargs["enable_thinking"] = enable_thinking
         if self._supports_preserve_thinking and preserve_thinking is not None:
             kwargs["preserve_thinking"] = preserve_thinking
+        _coerce_reasoning_effort(getattr(self, "_architecture", None), kwargs)
         return kwargs or None
 
     @property
@@ -3484,6 +3830,19 @@ class LlamaCppBackend:
     _DSV4_CTX_COMPUTE_FLAT_BYTES = 2 * 1024**3  # ctx-independent indexer scratch
     _DSV4_CTX_COMPUTE_BYTES_PER_TOK = 72000  # per token at ub=512 (~72 GiB at 1M)
 
+    # Inkling (inkling): with the reserve fix in the bundled llama.cpp (full-cache
+    # reserve context reports the whole cache as position-contiguous, so the
+    # worst-case graph is the banded flash path instead of the dense-bias
+    # fallback), the ctx-linear compute term is just the banded KQ-mask cont:
+    # measured on UD-IQ1_S (ub=512) 64K -> 1M total-VRAM slope of 50.6 KiB/tok,
+    # of which 45,056 B/tok is KV -> ~5.6 KiB/tok compute. 8192 adds ~1.5x
+    # headroom. (Pre-fix builds reserved the dense fallback at ~402 KiB/tok and
+    # could not load large contexts at all.)
+    _INKLING_CTX_COMPUTE_BYTES_PER_TOK = 8192  # per token at ub=512
+    # Dense relative-bias fallback rate (quantized KV cache disables the banded
+    # path): measured 402.5 GiB reserve at 1M ctx pre-fix, ~402 KiB per token.
+    _INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK = 402470  # per token at ub=512
+
     def _estimate_compute_buffer_bytes(
         self,
         *,
@@ -3540,6 +3899,17 @@ class LlamaCppBackend:
                 self._DSV4_CTX_COMPUTE_FLAT_BYTES
                 + self._DSV4_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale
             )
+        if getattr(self, "_architecture", None) == "inkling":
+            ub_scale = ub / self._DEFAULT_N_UBATCH
+            # The fused banded path requires an f32/f16/bf16 KV cache. A quantized
+            # cache forces the dense relative-bias fallback, whose compute buffer is
+            # [n_kv, ub, n_head] f32 (~402 KiB per context token at ub=512); size the
+            # fit for that so a q8_0 cache gets a small honest context instead of an
+            # unloadable one that crash-loops the server.
+            if cache_type_kv and _kv_bytes_per_elem(cache_type_kv) < 2.0:
+                return int(self._INKLING_CTX_COMPUTE_DENSE_BYTES_PER_TOK * n_ctx * ub_scale)
+            # Banded flash path (see constants): linear, ub-scaled.
+            return int(self._INKLING_CTX_COMPUTE_BYTES_PER_TOK * n_ctx * ub_scale)
         if _kv_bytes_per_elem(cache_type_kv) < 2.0:
             # Quantized cache: the dequant scratch dominates and scales with n_embd.
             # MLA (compressed KV) needs far less of it: measured 0.94 x n_embd on
@@ -3714,13 +4084,13 @@ class LlamaCppBackend:
         hf_repo: str,
         free_bytes: int,
         hf_token: Optional[str] = None,
-    ) -> Optional[tuple[str, int]]:
+    ) -> Optional[tuple[str, int, list[str]]]:
         """Find the smallest GGUF variant (including all shards) that fits.
 
         Groups split shards by variant prefix and sums their sizes (e.g.
         UD-Q4_K_XL with 9 shards of 50 GB each = 450 GB total).
 
-        Returns (first_shard_filename, total_size_bytes) or None.
+        Returns (first_shard_filename, total_size_bytes, extra_shards) or None.
         """
         try:
             from huggingface_hub import get_paths_info, list_repo_files
@@ -3756,9 +4126,13 @@ class LlamaCppBackend:
 
             # Smallest that fits
             variant_sizes.sort(key = lambda x: x[1])
-            for first_file, total_size, _ in variant_sizes:
+            for first_file, total_size, shard_files in variant_sizes:
                 if total_size > 0 and total_size <= free_bytes:
-                    return first_file, total_size
+                    return (
+                        first_file,
+                        total_size,
+                        [path for path in sorted(shard_files) if path != first_file],
+                    )
 
             return None
         except Exception:
@@ -4354,42 +4728,52 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
-            # Offline: resolve variant -> filename from the local HF cache.
-            # The heuristic below assumes filenames echo the repo name, which
-            # breaks for e.g. Qwen3.6-27B-MTP-GGUF (no "MTP" in file). Match
-            # against the rel path (not just basename) so subdir layouts like
-            # ``BF16/foo.gguf`` are findable.
+            # Fall back to the local cache when the repo listing is unavailable.
             if not gguf_filename:
-                try:
-                    from utils.models.model_config import _iter_hf_cache_snapshots
-                    for snap in _iter_hf_cache_snapshots(hf_repo):
-                        cached_files = _gguf_snapshot_files(snap)
-                        matches = _gguf_files_for_variant(cached_files, hf_variant)
-                        if not matches:
-                            continue
-                        gguf_filename = matches[0]
-                        gguf_extra_shards = _gguf_extra_shards(matches, gguf_filename)
-                        logger.info(
-                            "Resolved variant %s -> %s from local HF cache",
-                            hf_variant,
-                            gguf_filename,
-                        )
-                        break
-                except Exception as e:
-                    logger.debug(f"Offline cache lookup for variant failed: {e}")
+                cached_name, cached_shards = _cached_variant_resolution(hf_repo, hf_variant)
+                if cached_name:
+                    gguf_filename = cached_name
+                    gguf_extra_shards = cached_shards
+                    logger.info(
+                        "Resolved variant %s -> %s from local HF cache",
+                        hf_variant,
+                        gguf_filename,
+                    )
 
             if not gguf_filename:
                 repo_name = hf_repo.split("/")[-1].replace("-GGUF", "")
                 gguf_filename = f"{repo_name}-{hf_variant}.gguf"
 
+        # Prefer the existing model. Updates use force=True to fetch a new revision.
+        if not force:
+            if hf_variant:
+                # Resolve by variant so a newer revision's filename does not hide
+                # the complete older copy. Size-check against that older snapshot's
+                # own revision when its metadata remains available.
+                cached_main = cached_gguf_for_load(
+                    hf_repo,
+                    hf_variant,
+                    verify_sizes = True,
+                    hf_token = hf_token,
+                )
+            else:
+                candidate = _cached_complete_candidate(hf_repo, gguf_filename, gguf_extra_shards)
+                cached_main = (
+                    candidate[0]
+                    if candidate is not None
+                    and _cached_candidate_matches_revision_size(hf_repo, candidate, hf_token)
+                    else None
+                )
+            if cached_main is not None:
+                logger.info(f"Reusing cached GGUF: {cached_main}")
+                return cached_main
+
         # Check disk space; fall back to a smaller variant if needed
         all_gguf_files = [gguf_filename] + gguf_extra_shards
-        expected_sizes: dict[str, int] = {}
         try:
             from huggingface_hub import get_paths_info, try_to_load_from_cache
 
             path_infos = list(get_paths_info(hf_repo, all_gguf_files, token = hf_token))
-            expected_sizes = {p.path: p.size for p in path_infos if p.size}
             total_bytes = sum((p.size or 0) for p in path_infos)
 
             # Subtract bytes already in the HF cache so we only preflight
@@ -4398,25 +4782,10 @@ class LlamaCppBackend:
             # cold whenever free disk is below the full weight footprint,
             # even though nothing needs downloading.
             already_cached_bytes = 0
-            # Cross-snapshot / case-variant cache reuse is offline-only (see the download
-            # path below); online, hf_hub_download fetches the current revision and
-            # resumes partials, so an old snapshot must not be counted as cached here or
-            # the preflight would under-count the download and skip the disk fallback.
+            # Count only files that can resume this download.
             offline = _hf_env_offline()
-            # A split GGUF whose shards are not co-located in a single snapshot is
-            # refetched as a whole set later, so it must not be counted as cached here.
-            split_needs_refetch = False
-            if offline and not force and gguf_extra_shards:
-                # Scan all snapshots for one that holds the whole set co-located, so a
-                # newer snapshot with only the first shard does not mask an older
-                # complete one and needlessly trip the disk fallback.
-                if (
-                    _cached_colocated_split_main(
-                        hf_repo, gguf_filename, gguf_extra_shards, expected_sizes
-                    )
-                    is None
-                ):
-                    split_needs_refetch = True
+            # Offline split sets are reusable only when every shard shares a snapshot.
+            split_needs_refetch = bool(offline and not force and gguf_extra_shards)
             if not force and not split_needs_refetch:
                 for p in path_infos:
                     if not p.size:
@@ -4477,32 +4846,26 @@ class LlamaCppBackend:
                         hf_token,
                     )
                     if smaller:
-                        fallback_file, fallback_size = smaller
+                        fallback_file, fallback_size, fallback_shards = smaller
                         logger.info(
                             f"Selected variant too large ({total_gb:.1f} GB), "
                             f"falling back to {fallback_file} ({fallback_size / (1024**3):.1f} GB)"
                         )
                         gguf_filename = fallback_file
-                        _m = _SHARD_RE.match(gguf_filename)
-                        _prefix = _m.group(1) if _m else None
-                        if _prefix:
-                            prefix_lower = _prefix.lower()
-                            gguf_extra_shards = sorted(
-                                f
-                                for f in all_gguf_files
-                                if f.lower().startswith(prefix_lower)
-                                and f != gguf_filename
-                                and not _is_companion_gguf_path(f)
+                        gguf_extra_shards = fallback_shards
+
+                        # The selected fallback is a new load target. Apply the
+                        # same any-revision reuse policy before starting a fetch.
+                        fallback_candidate = _cached_complete_candidate(
+                            hf_repo, gguf_filename, gguf_extra_shards
+                        )
+                        if fallback_candidate is not None and (
+                            _cached_candidate_matches_revision_size(
+                                hf_repo, fallback_candidate, hf_token
                             )
-                        else:
-                            gguf_extra_shards = []
-                        # Record the fallback's size so the later cache-reuse probe can
-                        # size-verify it; only for a single-file fallback, since
-                        # _find_smallest_fitting_variant returns the whole-variant size
-                        # and using that as the first shard's expected size would reject
-                        # a valid cached first shard of a split fallback.
-                        if not gguf_extra_shards:
-                            expected_sizes[fallback_file] = fallback_size
+                        ):
+                            logger.info(f"Reusing cached fallback GGUF: {fallback_candidate[0]}")
+                            return fallback_candidate[0]
                     else:
                         raise RuntimeError(
                             f"Not enough disk space to download any variant. "
@@ -4522,45 +4885,25 @@ class LlamaCppBackend:
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
             # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
-            local_path = None
-            # Reuse a cached copy from another snapshot / case-variant repo dir only when
-            # offline. Online, fall through to hf_hub_download so its revision/etag check
-            # fetches the current file (and resumes a partial) instead of serving a stale
-            # same-name blob from an older revision.
-            if not force and _hf_env_offline():
-                if gguf_extra_shards:
-                    # A split GGUF must load every shard from one snapshot; reuse only a
-                    # snapshot that holds the whole set co-located, scanning past a newer
-                    # snapshot that has just the first shard while an older one is complete.
-                    local_path = _cached_colocated_split_main(
-                        hf_repo, gguf_filename, gguf_extra_shards, expected_sizes
-                    )
-                else:
-                    local_path = _cached_hf_snapshot_file(
-                        hf_repo,
-                        gguf_filename,
-                        expected_size = expected_sizes.get(gguf_filename),
-                    )
-            if local_path is None:
-                local_path = hf_hub_download_with_xet_fallback(
+            local_path = hf_hub_download_with_xet_fallback(
+                hf_repo,
+                gguf_filename,
+                hf_token,
+                cancel_event = cancel_event,
+                on_status = lambda m: logger.info(m),
+                force_download = force,
+            )
+            for shard in gguf_extra_shards:
+                if cancel_event.is_set():
+                    raise RuntimeError("Cancelled")
+                logger.info(f"Resolving GGUF shard: {shard}")
+                hf_hub_download_with_xet_fallback(
                     hf_repo,
-                    gguf_filename,
+                    shard,
                     hf_token,
                     cancel_event = cancel_event,
-                    on_status = lambda m: logger.info(m),
                     force_download = force,
                 )
-                for shard in gguf_extra_shards:
-                    if cancel_event.is_set():
-                        raise RuntimeError("Cancelled")
-                    logger.info(f"Resolving GGUF shard: {shard}")
-                    hf_hub_download_with_xet_fallback(
-                        hf_repo,
-                        shard,
-                        hf_token,
-                        cancel_event = cancel_event,
-                        force_download = force,
-                    )
         except Exception as e:
             if isinstance(e, RuntimeError) and "Cancelled" in str(e):
                 raise
@@ -4583,10 +4926,12 @@ class LlamaCppBackend:
         pick: Callable[[list[str]], Optional[str]],
         label: str,
         cancel_event: Optional[threading.Event] = None,
+        near_path: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
-        Tries the live repo file list, then the local HF cache snapshots
+        Prefers a companion co-located with ``near_path``'s cache snapshot,
+        then tries the live repo file list, then the local HF cache snapshots
         (offline, same fallback as _download_gguf), then hf_hub_download.
         Runs WITHOUT self._lock (like _download_gguf); honors _cancel_event so
         an /unload between the main download and here skips the fetch.
@@ -4594,6 +4939,17 @@ class LlamaCppBackend:
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
+            return None
+
+        # Keep companion files in the main GGUF's snapshot.
+        if near_path:
+            cached = _companion_snapshot_sibling(near_path, pick)
+            if cached:
+                logger.info("Reusing cached %s: %s", label, cached)
+                return cached
+
+        if _hub_download_in_flight(hf_repo):
+            logger.info("Skipping %s download while a hub download is active", label)
             return None
 
         target: Optional[str] = None
@@ -4668,26 +5024,15 @@ class LlamaCppBackend:
         hf_repo: str,
         hf_token: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
+        near_path: Optional[str] = None,
     ) -> Optional[str]:
         """Download the mmproj (vision projection) file from a GGUF repo.
 
         Prefers mmproj-F16.gguf, else any mmproj*.gguf. Returns the local
         path, or None if none exists. ``cancel_event`` overrides
-        ``self._cancel_event`` (defaults to it).
+        ``self._cancel_event`` (defaults to it). ``near_path`` prefers a
+        copy co-located with the main GGUF's cache snapshot.
         """
-
-        def _pick_mmproj(candidates: list[str]) -> Optional[str]:
-            mmproj_files = sorted(
-                f
-                for f in candidates
-                if f.lower().endswith(".gguf") and "mmproj" in Path(f).name.lower()
-            )
-            if not mmproj_files:
-                return None
-            for f in mmproj_files:
-                if f.lower().endswith("-f16.gguf"):
-                    return f
-            return mmproj_files[0]
 
         return self._download_companion_gguf(
             hf_repo = hf_repo,
@@ -4695,6 +5040,7 @@ class LlamaCppBackend:
             pick = _pick_mmproj,
             label = "mmproj",
             cancel_event = cancel_event,
+            near_path = near_path,
         )
 
     def _cached_repo_mtp_drafter(self, hf_repo: str) -> Optional[str]:
@@ -4725,6 +5071,7 @@ class LlamaCppBackend:
         *,
         hf_repo: str,
         hf_token: Optional[str] = None,
+        near_path: Optional[str] = None,
     ) -> Optional[str]:
         """Download the separate MTP drafter (speculative head) from a GGUF repo.
 
@@ -4735,16 +5082,6 @@ class LlamaCppBackend:
         higher-precision copies under ``MTP/`` are for explicit selection and
         are intentionally skipped. Returns the local path, or None.
         """
-
-        # Offline, reuse any drafter already on disk (a fresh copy can't be
-        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
-        # current cached file and refetch a changed one, so skip the probe here
-        # rather than pair new weights with a stale draft.
-        if _hf_env_offline():
-            cached = self._cached_repo_mtp_drafter(hf_repo)
-            if cached:
-                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
-                return cached
 
         def _pick_mtp(candidates: list[str]) -> Optional[str]:
             # Root-level only: MTP/ subdir copies now share the mtp- prefix but
@@ -4758,11 +5095,28 @@ class LlamaCppBackend:
             )
             return mtp_files[0] if mtp_files else None
 
+        if near_path:
+            cached = _companion_snapshot_sibling(near_path, _pick_mtp)
+            if cached:
+                logger.info("Reusing cached MTP drafter: %s", cached)
+                return cached
+
+        # Offline, reuse any drafter already on disk (a fresh copy can't be
+        # fetched). Online, _download_companion_gguf/hf_hub_download reuse the
+        # current cached file and refetch a changed one, so skip the probe here
+        # rather than pair new weights with a stale draft.
+        if _hf_env_offline():
+            cached = self._cached_repo_mtp_drafter(hf_repo)
+            if cached:
+                logger.info(f"Reusing cached MTP drafter (offline): {cached}")
+                return cached
+
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
             pick = _pick_mtp,
             label = "MTP drafter",
+            near_path = near_path,
         )
 
     def _resolve_launch_mmproj_path(
@@ -5344,6 +5698,7 @@ class LlamaCppBackend:
         )
         self._stdout_thread.start()
 
+    @_with_gguf_load_marker
     def load_model(
         self,
         *,
@@ -5489,6 +5844,7 @@ class LlamaCppBackend:
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            near_path = model_path,
                         )
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. Repos with the head
@@ -5506,6 +5862,7 @@ class LlamaCppBackend:
                         mtp_draft_path = self._download_mtp(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
+                            near_path = model_path,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
@@ -8140,6 +8497,11 @@ class LlamaCppBackend:
                         if not is_ours:
                             continue
 
+                        # A live parent means a running Studio (or the user's
+                        # shell) still owns it -- not an orphan.
+                        if LlamaCppBackend._pid_parent_is_alive(proc.info["pid"]):
+                            continue
+
                         proc.kill()
                         killed += 1
                         logger.info(
@@ -8190,6 +8552,9 @@ class LlamaCppBackend:
                         binary.is_relative_to(root) for root in resolved_roots
                     )
                     if not owned:
+                        continue
+
+                    if LlamaCppBackend._pid_parent_is_alive(pid):
                         continue
 
                     try:
@@ -8606,7 +8971,8 @@ class LlamaCppBackend:
 
     @staticmethod
     def _shutdown_active_httpx_sockets(client: "httpx.Client") -> None:
-        """Best-effort interrupt for a sync httpx request blocked before headers."""
+        """Best-effort interrupt for a sync httpx read blocked in recv(), whether
+        parked before headers (prefill) or mid-stream."""
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
             connections = list(getattr(pool, "_connections", []) or [])
@@ -8654,10 +9020,11 @@ class LlamaCppBackend:
                     while not _cancel_closed.is_set():
                         r = _response_ref[0]
                         try:
+                            # response.close() can't wake a read already blocked in
+                            # recv(); only a socket shutdown does, so shut down first.
+                            LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             if r is not None:
                                 r.close()
-                            else:
-                                LlamaCppBackend._shutdown_active_httpx_sockets(client)
                             return
                         except Exception as e:
                             logger.debug(f"Error closing request in cancel watcher: {e}")
@@ -8961,21 +9328,44 @@ class LlamaCppBackend:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
+        permission_mode: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
+
+        permission_mode: "ask" confirms every call (with confirm_tool_calls),
+        "auto" only pauses calls detected as potentially unsafe, "off" never
+        pauses (sandbox stays on), "full" is the same as bypass_permissions.
+        Unset/unknown behaves as "ask".
 
         Yields dicts:
           {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tools import build_rag_autoinject, execute_tool
+        from core.inference.tool_stream_exec import accepts_output_callback, stream_tool_execution
+        from core.inference.tools import (
+            build_rag_autoinject,
+            execute_tool,
+            is_always_safe_tool,
+            is_potentially_unsafe_tool_call,
+        )
+
+        # Normalize the mode: "full" and bypass_permissions are the same
+        # switch, whichever arrives first wins toward the permissive side.
+        # "off" keeps the sandbox but never prompts.
+        if permission_mode == "full":
+            bypass_permissions = True
+        elif bypass_permissions:
+            permission_mode = "full"
+        elif permission_mode not in ("ask", "auto", "off"):
+            permission_mode = "ask"
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
@@ -8983,8 +9373,14 @@ class LlamaCppBackend:
         conversation = list(messages)
 
         # Forced first-pass RAG so a doc question doesn't lose to web_search. Emits
-        # the same tool card + citations a real call would.
-        _auto = None if confirm_tool_calls else build_rag_autoinject(conversation, rag_scope)
+        # the same tool card + citations a real call would. Skip it only when a
+        # retrieval call would actually prompt (ask mode); auto never gates the
+        # safe search_knowledge_base tool, so retrieval must still run there.
+        # off never prompts either, so it also keeps first-pass retrieval.
+        _skip_autoinject = (
+            confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
+        )
+        _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
                 yield _ev
@@ -9238,6 +9634,17 @@ class LlamaCppBackend:
                 provisional_started_tool_calls: dict[str, str] = {}
                 resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
+                # Cards that already got their first tool_args event; later
+                # fragments stream individually so a big payload isn't a dead spinner.
+                arg_streamed_tool_call_ids: set[str] = set()
+                # TEXT tool-call path: a committed call's raw text streams to a
+                # provisional card under the parser's first-call id ("call_0"), so
+                # the final tool_start reconciles in place.
+                _text_args_call_start = -1
+                _text_args_streamed_upto = -1
+                _text_args_id = ""
+                _text_args_name = ""
+                _confirm_gated_iteration = bool(confirm_tool_calls) and not bypass_permissions
 
                 with self._open_stream(url, payload, cancel_event) as (
                     response,
@@ -9354,8 +9761,16 @@ class LlamaCppBackend:
                                             in provisional_started_tool_calls.values()
                                         )
                                         # Later parallel cards only reconcile when parallel use is enabled.
+                                        # In auto mode an always-safe tool (render_html) never
+                                        # prompts, so it must stream its early card too; mirror
+                                        # that here instead of gating on the raw confirm flag.
                                         _confirm_gated = (
-                                            confirm_tool_calls and not bypass_permissions
+                                            confirm_tool_calls
+                                            and not bypass_permissions
+                                            and not (
+                                                permission_mode == "auto"
+                                                and is_always_safe_tool(current_name)
+                                            )
                                         )
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(
@@ -9392,6 +9807,29 @@ class LlamaCppBackend:
                                                     provisional = True,
                                                 ),
                                             }
+                                        # Stream argument text so the UI shows the code being
+                                        # written: first event the backlog, later the fragment.
+                                        # Display only; accumulator untouched.
+                                        if current_id in provisional_started_tool_calls:
+                                            if current_id not in arg_streamed_tool_call_ids:
+                                                arg_streamed_tool_call_ids.add(current_id)
+                                                _args_backlog = tool_calls_acc[idx]["function"].get(
+                                                    "arguments", ""
+                                                )
+                                                if _args_backlog:
+                                                    yield {
+                                                        "type": "tool_args",
+                                                        "tool_call_id": current_id,
+                                                        "tool_name": current_name,
+                                                        "text": _args_backlog,
+                                                    }
+                                            elif func.get("arguments"):
+                                                yield {
+                                                    "type": "tool_args",
+                                                    "tool_call_id": current_id,
+                                                    "tool_name": current_name,
+                                                    "text": func["arguments"],
+                                                }
                                     continue
 
                                 # ── Reasoning tokens ──
@@ -9430,7 +9868,60 @@ class LlamaCppBackend:
                                     content_accum += token
 
                                     if detect_state == _S_DRAINING:
-                                        pass  # accumulate silently
+                                        # Accumulate silently for parsing, but stream the drained
+                                        # TEXT call to a provisional card. Gated on an enabled-name
+                                        # sniff + size floor so prose/small calls spawn no pane; id
+                                        # matches the first call so the final tool_start reconciles.
+                                        if (
+                                            not has_structured_tc
+                                            and not _confirm_gated_iteration
+                                            and _text_args_call_start >= 0
+                                        ):
+                                            if not _text_args_id:
+                                                _call_text = content_accum[_text_args_call_start:]
+                                                _sniffed = _sniff_text_tool_name(
+                                                    _call_text, _enabled_tool_names
+                                                )
+                                                if _sniffed and (
+                                                    _sniffed == "render_html"
+                                                    or len(_call_text)
+                                                    >= _PROVISIONAL_ARGS_MIN_CHARS
+                                                ):
+                                                    _text_args_id = "call_0"
+                                                    _text_args_name = _sniffed
+                                                    if (
+                                                        _text_args_id
+                                                        not in provisional_started_tool_calls
+                                                    ):
+                                                        provisional_started_tool_calls[
+                                                            _text_args_id
+                                                        ] = _sniffed
+                                                        yield {
+                                                            "type": "tool_start",
+                                                            "tool_name": _sniffed,
+                                                            "tool_call_id": _text_args_id,
+                                                            "arguments": {},
+                                                            "provenance": tool_event_provenance(
+                                                                provisional = True,
+                                                            ),
+                                                        }
+                                                    yield {
+                                                        "type": "tool_args",
+                                                        "tool_call_id": _text_args_id,
+                                                        "tool_name": _sniffed,
+                                                        "text": _call_text,
+                                                    }
+                                                    _text_args_streamed_upto = len(content_accum)
+                                            elif len(content_accum) > _text_args_streamed_upto:
+                                                yield {
+                                                    "type": "tool_args",
+                                                    "tool_call_id": _text_args_id,
+                                                    "tool_name": _text_args_name,
+                                                    "text": content_accum[
+                                                        _text_args_streamed_upto:
+                                                    ],
+                                                }
+                                                _text_args_streamed_upto = len(content_accum)
 
                                     elif detect_state == _S_STREAMING:
                                         if in_thinking:
@@ -9537,6 +10028,11 @@ class LlamaCppBackend:
                                             # without yielding. A live <think> prefix is
                                             # separate from it -- close that.
                                             detect_state = _S_DRAINING
+                                            # Call text begins at the held buffer
+                                            # (live arg display only; UI extracts the code).
+                                            _text_args_call_start = len(content_accum) - len(
+                                                content_buffer
+                                            )
                                             if _close_streamed_think():
                                                 yield {
                                                     "type": "content",
@@ -9564,6 +10060,11 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
+                                            # Live-arg display starts at the held buffer
+                                            # (visible prefix flushed above; UI extracts the code).
+                                            _text_args_call_start = len(content_accum) - len(
+                                                content_buffer
+                                            )
                                         elif _hold_buffer or (
                                             is_prefix
                                             and (
@@ -9811,9 +10312,20 @@ class LlamaCppBackend:
                             f"{'structured delta' if has_structured_tc else 'content text'}"
                         )
                     if not tool_calls:
-                        # DRAINING but no tool calls (false positive). Merge
-                        # accumulated metrics from prior tool iterations so
-                        # they aren't silently dropped.
+                        # DRAINING but no tool calls (false positive): close any
+                        # provisional cards (a sniff can open one whose call never
+                        # parses); without a tool_end the card spins forever.
+                        for _pid, _pname in provisional_started_tool_calls.items():
+                            if _pid not in resolved_provisional_tool_call_ids:
+                                resolved_provisional_tool_call_ids.add(_pid)
+                                yield {
+                                    "type": "tool_end",
+                                    "tool_name": _pname,
+                                    "tool_call_id": _pid,
+                                    "result": "",
+                                    "provenance": tool_event_provenance(provisional = True),
+                                }
+                        # Merge metrics from prior tool iterations so they aren't dropped.
                         yield {"type": "status", "text": ""}
                         if content_accum:
                             # Strip leaked tool-call XML before yielding.
@@ -9873,10 +10385,26 @@ class LlamaCppBackend:
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 assistant_appended = False
+                # Collect no-op nudges and flush them after the batch, so a no-op
+                # doesn't abort it and drop the parallel calls that follow.
+                deferred_noop_msgs: list = []
+
+                # The text-path provisional card uses the parser's default id ("call_0");
+                # a Mistral-style call carries its own id and would open a duplicate. Reuse
+                # the card's id for the first matching call (same tool name) to reconcile.
+                _text_provisional_id = _text_args_id if not has_structured_tc else ""
 
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
+                    if (
+                        _text_provisional_id
+                        and _text_provisional_id in provisional_started_tool_calls
+                        and _text_provisional_id not in resolved_provisional_tool_call_ids
+                        and tc.get("id") not in provisional_started_tool_calls
+                        and provisional_started_tool_calls[_text_provisional_id] == tool_name
+                    ):
+                        tc = {**tc, "id": _text_provisional_id}
                     provisional_match = tc.get("id") in provisional_started_tool_calls
                     decision = tool_controller.prepare_call(
                         tc,
@@ -9902,14 +10430,14 @@ class LlamaCppBackend:
                                 "provenance": decision.provenance,
                             }
                         completion = tool_controller.record_noop(decision)
-                        conversation.append(completion.model_message())
+                        deferred_noop_msgs.append(completion.model_message())
                         if _forced_tool_call_pending:
                             _forced_tool_call_pending = False
                         logger.info(
                             "Suppressed local GGUF tool call as internal no-op: "
                             f"action={decision.action} tool={decision.tool_name}"
                         )
-                        break
+                        continue
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
@@ -9922,7 +10450,18 @@ class LlamaCppBackend:
 
                     # Bypass wins over the confirm gate at the loop level too,
                     # so a direct internal caller with both flags never prompts.
-                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
+                    # In "auto" mode only calls detected as potentially unsafe
+                    # pause; read-only calls run straight through. "off" never
+                    # prompts (sandbox stays on).
+                    needs_confirm = (
+                        bool(confirm_tool_calls)
+                        and not bypass_permissions
+                        and permission_mode != "off"
+                    )
+                    if needs_confirm and permission_mode == "auto":
+                        needs_confirm = is_potentially_unsafe_tool_call(
+                            decision.tool_name, decision.arguments
+                        )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -9977,14 +10516,33 @@ class LlamaCppBackend:
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
                     else:
-                        result = execute_tool(
-                            decision.tool_name,
-                            decision.arguments,
+                        # Execute in a worker thread so live stdout chunks and heartbeats
+                        # stream while the tool blocks (the SSE route turns heartbeats into
+                        # keepalives). Result is byte-identical to a direct call.
+                        def _invoke_tool(_output_callback, _decision = decision):
+                            # execute_tool is injectable and may be monkey-patched with the
+                            # pre-PR signature; forward output_callback only if it's accepted.
+                            kwargs = dict(
+                                cancel_event = cancel_event,
+                                timeout = _effective_timeout,
+                                session_id = session_id,
+                                thread_id = thread_id,
+                                rag_scope = rag_scope,
+                                disable_sandbox = bypass_permissions,
+                            )
+                            if accepts_output_callback(execute_tool):
+                                kwargs["output_callback"] = _output_callback
+                            return execute_tool(
+                                _decision.tool_name,
+                                _decision.arguments,
+                                **kwargs,
+                            )
+
+                        result = yield from stream_tool_execution(
+                            _invoke_tool,
+                            tool_name = decision.tool_name,
+                            tool_call_id = decision.tool_call_id,
                             cancel_event = cancel_event,
-                            timeout = _effective_timeout,
-                            session_id = session_id,
-                            rag_scope = rag_scope,
-                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
@@ -9997,6 +10555,8 @@ class LlamaCppBackend:
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                append_deferred_nudges(conversation, deferred_noop_msgs)
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():

@@ -8,14 +8,12 @@ import type * as React from "react";
 import { createContext, useContext, useState } from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  ChevronDownStandardIcon,
+  ChevronUpStandardIcon,
+} from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
-import {
-  ArrowDown01Icon,
-  ArrowUp01Icon,
-  UnfoldMoreIcon,
-} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const SelectOpenContext = createContext(false);
@@ -70,7 +68,7 @@ function SelectTrigger({
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Trigger> & {
   size?: "sm" | "default";
-  icon?: typeof UnfoldMoreIcon;
+  icon?: typeof ChevronDownStandardIcon;
   iconClassName?: string;
   animateRadius?: boolean;
 }) {
@@ -91,7 +89,7 @@ function SelectTrigger({
           : undefined
       }
       className={cn(
-        "border-input data-[placeholder]:text-muted-foreground bg-input/30 dark:hover:bg-input/50 focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 gap-1.5 rounded-4xl border px-3 py-2 text-sm transition-colors focus-visible:ring-[3px] aria-invalid:ring-[3px] data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:flex *:data-[slot=select-value]:gap-1.5 [&_svg:not([class*='size-'])]:size-4 flex w-fit items-center justify-between whitespace-nowrap outline-none disabled:cursor-not-allowed disabled:opacity-50 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center [&_svg]:pointer-events-none [&_svg]:shrink-0 cursor-pointer",
+        "border-border data-[placeholder]:text-muted-foreground bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 gap-1.5 rounded-full border px-3.5 py-2 text-sm transition-colors aria-invalid:ring-[3px] data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:flex *:data-[slot=select-value]:gap-1.5 [&_svg:not([class*='size-'])]:size-4 flex w-fit items-center justify-between whitespace-nowrap outline-none disabled:cursor-not-allowed disabled:opacity-50 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center [&_svg]:pointer-events-none [&_svg]:shrink-0 cursor-pointer",
         className,
       )}
       {...props}
@@ -222,7 +220,7 @@ function SelectScrollUpButton({
       )}
       {...props}
     >
-      <HugeiconsIcon icon={ArrowUp01Icon} strokeWidth={2} />
+      <HugeiconsIcon icon={ChevronUpStandardIcon} strokeWidth={2} />
     </SelectPrimitive.ScrollUpButton>
   );
 }
@@ -240,7 +238,7 @@ function SelectScrollDownButton({
       )}
       {...props}
     >
-      <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} />
+      <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={2} />
     </SelectPrimitive.ScrollDownButton>
   );
 }

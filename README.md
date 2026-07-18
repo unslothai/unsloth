@@ -84,7 +84,7 @@ Use the same command to update.
 ```bash
 unsloth studio -p 8888
 ```
-For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
+For LAN or cloud access, add `-H 0.0.0.0` (raw port only; add `--cloudflare` for a public URL). By default, Unsloth is accessible only locally.
 
 To reach Studio over HTTPS, use `unsloth studio --secure`. Studio stays bound to localhost and is reached only through a free Cloudflare tunnel, which publishes it at a public `https://*.trycloudflare.com` URL (it fails closed if the tunnel can't start, so the raw port is never exposed). This makes Studio reachable from the internet, so anyone with the link and API key can use it and run code: keep your API key private (see Remote access below).
 
@@ -212,10 +212,23 @@ By default `unsloth studio` binds to `127.0.0.1` (this machine only). To reach i
 ```bash
 unsloth studio --secure -p 8888
 ```
-- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network. This also starts a public Cloudflare quick tunnel by default, which publishes an internet-reachable `https://*.trycloudflare.com` URL even behind a firewall. Both the raw port and the tunnel expose Studio beyond this machine, so only use this on a network you trust; pass `--no-cloudflare` to drop the public link while keeping the network bind.
+- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network (subject to your firewall). It does not create a public internet URL; add `--cloudflare` to also publish an internet-reachable `https://*.trycloudflare.com` link even behind a firewall. Only use this on a network you trust.
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
+The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port only, not a public internet URL. Pair the wildcard bind with `--cloudflare` (`unsloth studio -H 0.0.0.0 --cloudflare`) to also publish a public `https://*.trycloudflare.com` link, or prefer `--secure` (above), which keeps the raw port private. `--cloudflare` has no effect on a loopback bind.
+
+The first time Studio is published on a public URL (`--secure` or `--cloudflare`) with the auto-generated admin password still in place, it asks for a new admin password in the terminal (masked input with confirmation) before the public link goes up. Without an attached terminal it warns instead and keeps the bootstrap deadline: Studio shuts down after `UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT` (default 1 hour) unless the password is changed in the web UI.
+
+For headless setups that cannot answer that prompt, set the initial admin password non-interactively with `--password` (only takes effect when no password is set yet; if one already exists it is a hard error, so rotate later with `unsloth studio reset-password`):
+
+```bash
+unsloth studio --secure --password 'your-strong-password'        # visible in `ps`/history
+UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
+printf '%s\n' 'your-strong-password' | unsloth studio --secure --password -   # via stdin
+```
+
+A literal `--password VALUE` is visible in the process list and shell history, so prefer the `UNSLOTH_STUDIO_PASSWORD` env var or `--password -` (stdin) for automation. This applies to any launch (public or a headless `-H 0.0.0.0` bind), and the password is set in the parent before the server binds, so it never reaches a re-executed child process.
 
 Server-side tools (web search, Python and terminal code execution) run as your user and are on by default. Anyone who can reach the server with the API key can run code on this machine, so keep your API key private and pass `--disable-tools` when exposing Studio.
 
@@ -228,6 +241,14 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 ```powershell
 $env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
+```
+
+Skip the post-install prompt that starts Studio (useful for automated installs):
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
+```
+```powershell
+$env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
 Pin the Python version:

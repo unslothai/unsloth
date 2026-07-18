@@ -11,8 +11,10 @@ import os
 import sys
 import types
 
-# Prevent tokenizer parallelism deadlocks when datasets forks.
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Off on Linux so datasets' forked map() workers can't deadlock. On spawn platforms
+# (Windows/macOS) map() runs in-process, so keep the fast tokenizer's Rust threads on
+# (the only parallelism single-process tokenize gets; off makes prep run serially).
+os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
 
 # Make compiled cache modules importable by any subprocess. On spawn platforms
 # (Windows/macOS) spawned dataset.map() workers re-import top-level modules, and
@@ -931,7 +933,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = "unsloth"
                 elif use_gradient_checkpointing in ("true", "1", "yes"):
                     use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no"):
+                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
                     use_gradient_checkpointing = False
                 else:
                     # Invalid value -> "unsloth"

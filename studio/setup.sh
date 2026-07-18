@@ -74,6 +74,16 @@ verbose_substep() {
     return 0
 }
 
+_remove_agent_instruction_files() {
+    local _root
+    for _root in "$@"; do
+        [ -d "$_root" ] || continue
+        [ -L "$_root" ] && continue
+        find "$_root" \( -type f -o -type l \) \( -name 'AGENTS.md' -o -name 'CLAUDE.md' \) \
+            -exec rm -f {} + 2>/dev/null || true
+    done
+}
+
 # ── Corporate-mirror / proxy escape hatch for the frontend npm/bun install (#6491) ──
 # studio/frontend/.npmrc pins registry=https://registry.npmjs.org/ as a supply-chain
 # lock. A project-level pin overrides a corporate user's ~/.npmrc proxy, so the install
@@ -852,6 +862,10 @@ elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
     # the validator gracefully. Mirrors setup.ps1's elseif on this block.
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
+
+_remove_agent_instruction_files \
+    "$SCRIPT_DIR/frontend/node_modules" \
+    "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
@@ -2102,6 +2116,14 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] \
     fi
 fi
 
+if [ ! -L "$LLAMA_CPP_DIR" ] && {
+    [ "$_STUDIO_HOME_IS_CUSTOM" != true ] ||
+        [ -f "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" ] ||
+        _studio_owned_adoptable "$LLAMA_CPP_DIR"
+}; then
+    _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
@@ -2142,8 +2164,8 @@ else
     else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
-    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 fi
 echo ""
 

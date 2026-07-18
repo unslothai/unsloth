@@ -698,6 +698,25 @@ if backend_dir not in sys.path:
 try:
     from transformers import AutoConfig
 
+    # Union the ACTIVE sidecar's registry into the inlined parent-process sets
+    # so architectures only the sidecar knows still classify correctly.
+    try:
+        from transformers.models.auto import modeling_auto as _ma
+        for _attr in ("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES",
+                      "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES"):
+            _d = dict(getattr(_ma, _attr, None) or {})
+            _VLM_MODEL_TYPES |= set(_d)
+            _VLM_CLASS_NAMES |= set(_d.values())
+        for _attr in ("MODEL_FOR_CTC_MAPPING_NAMES",
+                      "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+                      "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+                      "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+                      "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+                      "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES"):
+            _AUDIO_ONLY_MODEL_TYPES |= set(dict(getattr(_ma, _attr, None) or {}))
+    except Exception:
+        pass
+
     # Capability detection never executes model repo code.
     kwargs = {"trust_remote_code": False}
     if token:
@@ -727,13 +746,23 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
     """
     token_arg = hf_token or ""
 
+    # Latest-only architectures need the latest sidecar for AutoConfig;
+    # other tiers keep the 5.5 sidecar.
+    sidecar_dir = _VENV_T5_DIR
+    try:
+        from utils.transformers_version import _VENV_T5_LATEST_DIR, get_transformers_tier
+        if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
+            sidecar_dir = _VENV_T5_LATEST_DIR
+    except Exception:
+        pass
+
     try:
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
                 _VISION_CHECK_SCRIPT,
-                _VENV_T5_DIR,
+                sidecar_dir,
                 _BACKEND_DIR,
                 model_name,
                 token_arg,
@@ -876,6 +905,17 @@ def _is_vision_model_uncached(
         model_name, hf_token = hf_token, local_files_only = local_files_only
     )
     if raw is not None:
+        if raw is False and not local_files_only:
+            # Raw heuristics predate latest-only architectures; on the latest tier,
+            # trust that sidecar's AutoConfig probe over the heuristic False. An
+            # inconclusive probe (sidecar mid-repair, timeout) is transient: return
+            # None so the heuristic False is not cached and the model is re-probed.
+            try:
+                from utils.transformers_version import get_transformers_tier
+                if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
+                    return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+            except Exception:
+                pass
         return raw
 
     # Raw read failed transiently: fall back to AutoConfig (remote code DISABLED), via a

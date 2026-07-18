@@ -8,8 +8,9 @@
 #
 # Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
 # makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh    # skip PyTorch (GGUF-only)
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh       # skip PyTorch (GGUF-only)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh # do not prompt to launch
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 # Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
 #
@@ -49,6 +50,7 @@ PACKAGE_NAME="unsloth"
 TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
+_SKIP_AUTOSTART=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -88,6 +90,7 @@ done
 
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
+case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -1634,6 +1637,7 @@ _maybe_reroute_strixhalo_to_2404() {
     # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
     # GPU instead of falling back to the desktop-app prompt path.
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
+    [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
@@ -2715,7 +2719,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2730,7 +2734,7 @@ if [ "$_MIGRATED" = true ]; then
         # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3" ${_MLX_LM_EXCLUDE_ARG:-}
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2934,7 +2938,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2952,7 +2956,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.7.2" "unsloth-zoo>=2026.7.2"
+            --upgrade-package unsloth "unsloth>=2026.7.3" "unsloth-zoo>=2026.7.3"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3006,7 +3010,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.2" "unsloth>=2026.7.2" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.3" "unsloth>=2026.7.3" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3248,9 +3252,10 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# In interactive terminals, ask the user before starting Studio.
+# In interactive terminals, ask the user before starting Studio unless the
+# caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 1 ]; then
+if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
@@ -3286,8 +3291,8 @@ if [ -t 1 ]; then
         *)
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
-            substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+            substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+            substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3308,7 +3313,7 @@ else
         substep "source $_li_act_q"
         substep "unsloth studio -p 8888"
     fi
-    substep "(add -H 0.0.0.0 to allow network / cloud access)"
-    substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
 fi

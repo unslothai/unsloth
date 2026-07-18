@@ -203,6 +203,31 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+function Remove-AgentInstructionFiles {
+    param([string[]]$Roots)
+
+    foreach ($root in $Roots) {
+        if (-not $root) { continue }
+        $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+        if (-not $item -or -not $item.PSIsContainer) { continue }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($item)
+        while ($pending.Count -gt 0) {
+            $current = $pending.Pop()
+            foreach ($child in @(Get-ChildItem -LiteralPath $current.FullName -Force -ErrorAction SilentlyContinue)) {
+                if ($child.PSIsContainer) {
+                    if (-not ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                        $pending.Push($child)
+                    }
+                } elseif ($child.Name -in @("AGENTS.md", "CLAUDE.md")) {
+                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -2314,6 +2339,11 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
+Remove-AgentInstructionFiles -Roots @(
+    (Join-Path $FrontendDir "node_modules"),
+    (Join-Path $OxcValidatorDir "node_modules")
+)
+
 # ==========================================================================
 #  PHASE 3: Python environment + dependencies
 # ==========================================================================
@@ -3259,6 +3289,7 @@ if ($LocalLlamaCppSrc) {
         if ($LASTEXITCODE -ne 0) {
             substep "Could not create directory junction; copying instead..." "Yellow"
             Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
         }
         Write-Host ""
         step "llama.cpp" "linked local directory: $ResolvedLocal"
@@ -4024,6 +4055,16 @@ if ($LocalLlamaCppLinked) {
     }
 }
 
+$llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+$llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+if (-not $llamaCppIsLink -and (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $LlamaCppDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-StudioOwnedAdoptable $LlamaCppDir)
+    )) {
+    Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
+}
+
 # ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
@@ -4045,7 +4086,9 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     }
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
-step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+step "launch" "unsloth studio -p 8888"
+substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 Write-Host ""
 
 # Match studio/setup.sh: exit non-zero for degraded llama.cpp when called

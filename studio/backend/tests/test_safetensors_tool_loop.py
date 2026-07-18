@@ -1179,6 +1179,7 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):
@@ -2591,6 +2592,50 @@ class TestLoopBasic:
         assert tool_starts[0]["arguments"] == {}
         assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
 
+    def test_render_html_auto_mode_static_runs_without_prompt(self):
+        """permission_mode="auto" ships confirm_tool_calls=true. render_html is no
+        longer unconditionally safe (a networked canvas must ask), so its early
+        provisional card is suppressed under the confirm gate; a static canvas is
+        still classified safe and runs without an approval prompt."""
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        # No early provisional card under the auto confirm gate; just the real call.
+        assert len(tool_starts) == 1
+        assert tool_starts[0]["tool_name"] == "render_html"
+        assert "<!doctype html>" in tool_starts[0]["arguments"]["code"]
+        # A static canvas is classified safe, so it runs without an approval gate.
+        assert tool_starts[0].get("awaiting_confirmation") in (False, None)
+
     def test_render_html_provisional_card_closed_on_generator_exception(self):
         """If the model generator raises mid-stream after a provisional render_html
         card was surfaced, the loop must close that card as errored before the
@@ -2797,6 +2842,61 @@ class TestLoopBehaviour:
             and "already completed successfully" in message.get("content", "")
         ]
         assert len(duplicate_nudges) == 1
+
+    def test_same_turn_duplicate_does_not_drop_later_parallel_call(self):
+        # Turn 1 runs search(x). Turn 2's batch is [search(x) duplicate, python]:
+        # the duplicate is a no-op, but python after it must still run, and the
+        # no-op nudge must land after python's result rather than splitting it.
+        captured_messages: list[list[dict]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_messages.append([dict(m) for m in messages])
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-x", "py-result"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+            )
+        )
+
+        # Turn-1 search and turn-2 python both ran; the turn-2 duplicate search did not.
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+
+        conv = captured_messages[-1]
+        turn2 = [m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+        assert [tc["function"]["name"] for tc in turn2["tool_calls"]] == ["python"]
+        after = conv[conv.index(turn2) + 1 :]
+        assert after[0]["role"] == "tool" and after[0]["content"] == "py-result"
+        assert after[1]["role"] == "user"  # deferred duplicate nudge, after the result
+        assert after[1]["content"].startswith(
+            "One earlier request to call tool 'web_search' in this batch was not executed"
+        )
+        assert "previous tool request" not in after[1]["content"].lower()
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
@@ -3104,6 +3204,196 @@ class TestLoopBehaviour:
 
 class TestLoopRePrompt:
     """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``MAX_ACT_REPROMPTS`` extra slots. Studio always nudges, so these drive the loop with ``nudge_tool_calls=True``."""
+
+    def test_reasoning_intent_does_not_reprompt_a_visible_answer(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "<think>Let me prepare the requested summary carefully.</think>"
+                "This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_intent_does_not_reprompt_a_visible_answer(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield "Let me prepare the requested summary carefully.</think>This is the final visible answer."
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_with_reemitted_think_does_not_reprompt(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "Let me prepare the requested summary carefully."
+                "<think>more private planning</think>This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_with_later_think_does_not_reprompt(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "private prefilled planning</think>"
+                "<think>Let me prepare the requested summary carefully.</think>"
+                "This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_reasoning_only_intent_still_reprompts_and_uses_a_tool(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["<think>Let me search for that.</think>"],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_prefilled_no_close_reasoning_intent_still_reprompts(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I need more context.<think>Let me search for that."],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me search for that.</think><think>checking details</think>"],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_reprompt_history_uses_visible_intent_text(self):
+        captured: list[list[dict]] = []
+
+        def _gen(messages, active_tools = None):
+            captured.append([dict(message) for message in messages])
+            if len(captured) == 1:
+                yield "<think>private planning details</think>Let me search for that."
+            elif len(captured) == 2:
+                yield '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+            else:
+                yield "Here is the answer."
+
+        exec_fn = FakeExecuteTool(["result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "find cats"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        assert captured[1][1] == {"role": "assistant", "content": "Let me search for that."}
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
 
     def test_intent_signal_triggers_reprompt(self):
         # Turn 1: intent signal, no tool call.
@@ -3672,6 +3962,26 @@ class TestGuardrails:
         events = _collect_events(loop)
         assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
         assert exec_fn.calls == []
+
+    def test_auto_mode_still_runs_rag_autoinject(self, monkeypatch):
+        # "auto" sends confirm_tool_calls=true so unsafe calls gate, but the
+        # safe search_knowledge_base retrieval never gates, so autoinject must
+        # still run (unlike ask mode above).
+        ran = {"called": False}
+
+        def fake_autoinject(*_args, **_kwargs):
+            ran["called"] = True
+            return None
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fake_autoinject)
+        loop, _exec_fn = _make_loop(
+            turns = [["plain answer"]],
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            rag_scope = {"thread_id": "t1"},
+        )
+        _collect_events(loop)
+        assert ran["called"] is True
 
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
