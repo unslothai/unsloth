@@ -53,7 +53,7 @@ def _build_where_clause(
 ) -> tuple[str, list]:
     conditions = []
     params = []
-    
+
     if start_ts is not None:
         conditions.append("ts >= ?")
         params.append(start_ts)
@@ -66,7 +66,7 @@ def _build_where_clause(
     if source is not None:
         conditions.append("source = ?")
         params.append(source)
-        
+
     where = " AND ".join(conditions) if conditions else "1=1"
     return f"WHERE {where}", params
 
@@ -99,7 +99,7 @@ def query_events(
 ) -> List[Dict[str, Any]]:
     """Query raw usage events."""
     where, params = _build_where_clause(start_ts, end_ts, model, source)
-    
+
     query = f"SELECT * FROM usage_events {where} ORDER BY ts DESC"
     if limit is not None:
         query += " LIMIT ?"
@@ -107,7 +107,7 @@ def query_events(
         if offset is not None:
             query += " OFFSET ?"
             params.append(offset)
-            
+
     conn = get_connection()
     try:
         rows = conn.execute(query, params).fetchall()
@@ -126,16 +126,16 @@ def aggregate_usage(
     """Aggregate usage by period, model, and source."""
     if granularity not in ("day", "week", "month", "year"):
         raise ValueError(f"Invalid granularity: {granularity}")
-        
+
     where, params = _build_where_clause(start_ts, end_ts, model, None)
-    
+
     time_expr = {
         "day": "strftime('%Y-%m-%d', ts / 1000, 'unixepoch')",
         "week": "strftime('%Y-%W', ts / 1000, 'unixepoch')",
         "month": "strftime('%Y-%m', ts / 1000, 'unixepoch')",
         "year": "strftime('%Y', ts / 1000, 'unixepoch')",
     }[granularity]
-    
+
     query = f"""
         SELECT 
             {time_expr} as period,
@@ -149,7 +149,7 @@ def aggregate_usage(
         GROUP BY period, model, source
         ORDER BY period DESC, model ASC, source ASC
     """
-    
+
     conn = get_connection()
     try:
         rows = conn.execute(query, params).fetchall()
@@ -168,7 +168,9 @@ def sum_tokens_in_window(
     where, params = _build_where_clause(since_ts, None, model, source)
     conn = get_connection()
     try:
-        row = conn.execute(f"SELECT SUM(total_tokens) as total FROM usage_events {where}", params).fetchone()
+        row = conn.execute(
+            f"SELECT SUM(total_tokens) as total FROM usage_events {where}", params
+        ).fetchone()
         return row["total"] or 0
     finally:
         conn.close()
@@ -179,10 +181,10 @@ def enforce_retention() -> None:
     policy = get_app_setting("usage_retention_policy", {"mode": "forever", "value": None})
     if policy.get("mode") != "months" or not policy.get("value"):
         return
-        
+
     months = policy["value"]
     cutoff_ts = int((time.time() - (months * 30 * 24 * 60 * 60)) * 1000)
-    
+
     conn = get_connection()
     try:
         cursor = conn.execute("DELETE FROM usage_events WHERE ts < ?", (cutoff_ts,))

@@ -20,7 +20,7 @@ from models.usage import (
 router = APIRouter()
 
 
-@router.get("/summary", response_model=UsageSummaryResponse)
+@router.get("/summary", response_model = UsageSummaryResponse)
 async def get_usage_summary(
     granularity: Literal["day", "week", "month", "year"] = Query("day"),
     start_ts: Optional[int] = Query(None),
@@ -29,14 +29,14 @@ async def get_usage_summary(
     current_subject: str = Depends(get_current_subject),
 ):
     rows = aggregate_usage(
-        granularity=granularity,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        model=model,
+        granularity = granularity,
+        start_ts = start_ts,
+        end_ts = end_ts,
+        model = model,
     )
     return UsageSummaryResponse(
-        granularity=granularity,
-        rows=[UsageSummaryRow(**row) for row in rows],
+        granularity = granularity,
+        rows = [UsageSummaryRow(**row) for row in rows],
     )
 
 
@@ -53,30 +53,32 @@ async def export_usage(
         limit = 1000
         while True:
             events = query_events(
-                start_ts=start_ts,
-                end_ts=end_ts,
-                limit=limit,
-                offset=offset,
+                start_ts = start_ts,
+                end_ts = end_ts,
+                limit = limit,
+                offset = offset,
             )
             if not events:
                 break
-            
+
             output = io.StringIO()
             writer = csv.writer(output)
             for event in events:
-                writer.writerow([
-                    event["id"],
-                    event["ts"],
-                    event["model"],
-                    event["source"],
-                    event.get("provider", ""),
-                    event["prompt_tokens"],
-                    event["completion_tokens"],
-                    event["total_tokens"],
-                    event.get("endpoint", ""),
-                    event["status"],
-                    event.get("session_id", ""),
-                ])
+                writer.writerow(
+                    [
+                        event["id"],
+                        event["ts"],
+                        event["model"],
+                        event["source"],
+                        event.get("provider", ""),
+                        event["prompt_tokens"],
+                        event["completion_tokens"],
+                        event["total_tokens"],
+                        event.get("endpoint", ""),
+                        event["status"],
+                        event.get("session_id", ""),
+                    ]
+                )
             yield output.getvalue()
             offset += limit
 
@@ -87,14 +89,14 @@ async def export_usage(
         yield "[\n"
         while True:
             events = query_events(
-                start_ts=start_ts,
-                end_ts=end_ts,
-                limit=limit,
-                offset=offset,
+                start_ts = start_ts,
+                end_ts = end_ts,
+                limit = limit,
+                offset = offset,
             )
             if not events:
                 break
-            
+
             for event in events:
                 if not first:
                     yield ",\n"
@@ -106,29 +108,26 @@ async def export_usage(
     if format == "csv":
         return StreamingResponse(
             iter_csv(),
-            media_type="text/csv",
-            headers={"Content-Disposition": 'attachment; filename="usage_export.csv"'},
+            media_type = "text/csv",
+            headers = {"Content-Disposition": 'attachment; filename="usage_export.csv"'},
         )
     else:
         return StreamingResponse(
             iter_json(),
-            media_type="application/json",
-            headers={"Content-Disposition": 'attachment; filename="usage_export.json"'},
+            media_type = "application/json",
+            headers = {"Content-Disposition": 'attachment; filename="usage_export.json"'},
         )
 
 
-@router.get("/settings", response_model=UsageRetentionSetting)
-async def get_usage_settings(
-    current_subject: str = Depends(get_current_subject),
-):
+@router.get("/settings", response_model = UsageRetentionSetting)
+async def get_usage_settings(current_subject: str = Depends(get_current_subject)):
     setting = get_app_setting("usage_retention_policy", {"mode": "forever", "value": None})
     return UsageRetentionSetting(**setting)
 
 
-@router.put("/settings", response_model=UsageRetentionSetting)
+@router.put("/settings", response_model = UsageRetentionSetting)
 async def update_usage_settings(
-    settings: UsageRetentionSetting,
-    current_subject: str = Depends(get_current_subject),
+    settings: UsageRetentionSetting, current_subject: str = Depends(get_current_subject)
 ):
     upsert_app_settings({"usage_retention_policy": settings.model_dump()})
     # Apply immediately
@@ -137,5 +136,5 @@ async def update_usage_settings(
         enforce_retention()
     except Exception as exc:
         import structlog
-        structlog.get_logger(__name__).warning("usage_retention.enforced_failed", error=str(exc))
+        structlog.get_logger(__name__).warning("usage_retention.enforced_failed", error = str(exc))
     return settings

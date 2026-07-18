@@ -411,7 +411,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_model_ts ON usage_events(model, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_source_ts ON usage_events(source, ts)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_usage_events_source_ts ON usage_events(source, ts)"
+    )
 
 
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:

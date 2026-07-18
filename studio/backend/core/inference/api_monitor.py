@@ -199,7 +199,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-            
+
         finished_entry = None
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -218,18 +218,20 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
             finished_entry = entry
-            
+
         if finished_entry is not None and self.on_finish is not None:
             try:
                 self.on_finish(finished_entry)
             except Exception as exc:
                 import structlog
-                structlog.get_logger(__name__).warning("api_monitor.on_finish_failed", error=str(exc))
+                structlog.get_logger(__name__).warning(
+                    "api_monitor.on_finish_failed", error = str(exc)
+                )
 
     def fail(self, entry_id: Optional[str], error: str) -> None:
         if not entry_id:
             return
-            
+
         failed_entry = None
         with self._lock:
             entry = self._find_locked(entry_id)
@@ -250,13 +252,15 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
             failed_entry = entry
-            
+
         if failed_entry is not None and self.on_finish is not None:
             try:
                 self.on_finish(failed_entry)
             except Exception as exc:
                 import structlog
-                structlog.get_logger(__name__).warning("api_monitor.on_finish_failed", error=str(exc))
+                structlog.get_logger(__name__).warning(
+                    "api_monitor.on_finish_failed", error = str(exc)
+                )
 
     def snapshot(
         self,

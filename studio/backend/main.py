@@ -528,6 +528,7 @@ async def lifespan(app: FastAPI):
     try:
         from storage.usage_log import enforce_retention, record_event
         from core.inference.api_monitor import api_monitor
+
         enforce_retention()
         api_monitor.on_finish = record_event
     except Exception as exc:
