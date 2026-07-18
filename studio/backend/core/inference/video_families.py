@@ -122,6 +122,21 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Pre-cast Gemma3-12B TE (hub store is fp32 ~49 GB, pre-cast ~13.2 GB): the biggest
         # download win of the hosted TE set.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
+        # Gate-validated hosted checkpoints for the LTX-2 BASE pipeline weights.
+        prequant_repos = (
+            ("int8", "unsloth/LTX-2-FP8"),
+            ("fp8", "unsloth/LTX-2-FP8"),
+        ),
+        # The 2.3 distilled checkpoints are baked from the Lightricks/LTX-2.3 single-file
+        # weights (different DiT than the base). The loader cannot consume them yet -- 2.3
+        # loads as single_file/GGUF kind, where the pipeline-kind prequant shortcut never
+        # runs -- but the table keeps resolution correct (family_prequant_repo with the 2.3
+        # base returns the 2.3 repo, whose base_model_id validation would refuse the base
+        # LTX-2 checkpoint) for when that path learns transformer_quant.
+        prequant_variant_repos = (
+            ("lightricks/ltx-2.3", "int8", "unsloth/LTX-2.3-FP8"),
+            ("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),
+        ),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream video DiT (UMT5
     # text encoder). No audio, no second expert (boundary_ratio null, transformer_2 null), so

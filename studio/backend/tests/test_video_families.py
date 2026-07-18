@@ -358,9 +358,17 @@ def test_video_prequant_repo_wiring():
     hv720 = detect_video_family("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v")
     assert family_prequant_repo(hv720, "int8") == "unsloth/HunyuanVideo-1.5-720p-FP8"
     assert family_prequant_repo(hv720, "int8") != family_prequant_repo(hv480, "int8")
-    # LTX has no measured quant recipe -> deliberately unwired.
-    ltx = detect_video_family("unsloth/LTX-2.3-GGUF")
-    assert family_prequant_repo(ltx, "int8") is None
+    # LTX-2 base carries int8 + fp8 (both gate-validated); the 2.3 distilled weights get
+    # their OWN repo via the variant table, keyed on the lowercased 2.3 base, because a
+    # checkpoint baked from the base LTX-2 DiT fails base_model_id validation against 2.3.
+    ltx = detect_video_family("Lightricks/LTX-2")
+    assert family_prequant_repo(ltx, "int8") == "unsloth/LTX-2-FP8"
+    assert family_prequant_repo(ltx, "fp8") == "unsloth/LTX-2-FP8"
+    assert family_prequant_repo(ltx, "fp8", "Lightricks/LTX-2.3") == "unsloth/LTX-2.3-FP8"
+    assert family_prequant_repo(ltx, "int8", "Lightricks/LTX-2.3") == "unsloth/LTX-2.3-FP8"
+    # An unknown LTX variant falls back to the family default (the loader's base_model_id
+    # check then refuses a mismatched checkpoint and dense-quantises).
+    assert family_prequant_repo(ltx, "fp8", "someone/ltx-finetune") == "unsloth/LTX-2-FP8"
 
 
 def test_video_prequant_dual_expert_resolution():
@@ -375,3 +383,17 @@ def test_video_prequant_dual_expert_resolution():
     assert first.filename == "Wan2.2-T2V-A14B-INT8.pt"
     assert second.filename == "Wan2.2-T2V-A14B-INT8-2.pt"
     assert second.fallback_filename == "transformer_2_int8.pt"
+
+
+def test_video_prequant_ltx_variant_resolution():
+    # The 2.3 base selects the 2.3 repo (its checkpoints stamp base_model_id
+    # Lightricks/LTX-2.3); without a base the family default (base LTX-2 weights) resolves.
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    fam = detect_video_family("Lightricks/LTX-2")
+    base = resolve_prequant_source(fam, "fp8")
+    assert base.location == "unsloth/LTX-2-FP8"
+    assert base.filename == "LTX-2-FP8.pt"
+    v23 = resolve_prequant_source(fam, "int8", base_repo = "Lightricks/LTX-2.3")
+    assert v23.location == "unsloth/LTX-2.3-FP8"
+    assert v23.filename == "LTX-2.3-INT8.pt"

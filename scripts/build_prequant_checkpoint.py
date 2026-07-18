@@ -46,6 +46,14 @@ def main(argv = None) -> int:
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
     p.add_argument(
+        "--ltx23-single-file",
+        default = None,
+        help = "repo_id:filename of an LTX-2.3 single-file checkpoint; the transformer is "
+        "assembled via the runtime's load_ltx23_transformer (2.3 key renames + config "
+        "overrides on the --base LTX-2 config) instead of from_pretrained, and "
+        "base_model_id records the single-file repo (the 2.3 weights identity).",
+    )
+    p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
     p.add_argument("--upload-revision", default = None)
@@ -89,11 +97,42 @@ def main(argv = None) -> int:
     transformer_cls = getattr(diffusers, fam.transformer_class)
 
     print(f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}) ==", flush = True)
-    print(f"  loading dense transformer from {args.base} (subfolder={args.subfolder}) ...", flush = True)
     t0 = time.time()
-    transformer = transformer_cls.from_pretrained(
-        args.base, subfolder = args.subfolder, torch_dtype = torch.bfloat16, token = args.hf_token
-    ).to("cuda")
+    base_model_id = args.base
+    if args.ltx23_single_file:
+        # LTX-2.3 ships one .safetensors carrying DiT + connectors + VAEs; the runtime
+        # assembles the transformer via load_ltx23_transformer (2.3-only key renames +
+        # config overrides merged into the LTX-2 base config). Reuse that EXACT path so
+        # offline == runtime, and stamp the single-file repo as the weights identity.
+        from huggingface_hub import hf_hub_download
+
+        from core.inference.video_ltx2 import _split_checkpoint, load_ltx23_transformer
+
+        sf_repo, sf_name = args.ltx23_single_file.split(":", 1)
+        print(f"  loading 2.3 single file {sf_repo}:{sf_name} ...", flush = True)
+        local = hf_hub_download(sf_repo, sf_name, token = args.hf_token)
+        from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+        state = load_single_file_checkpoint(str(local))
+        groups = _split_checkpoint(state)
+        del state
+        transformer = load_ltx23_transformer(
+            groups["dit"],
+            base_repo = args.base,
+            torch_dtype = torch.bfloat16,
+            is_gguf = False,
+            hf_token = args.hf_token,
+        ).to("cuda")
+        del groups
+        base_model_id = sf_repo
+    else:
+        print(
+            f"  loading dense transformer from {args.base} (subfolder={args.subfolder}) ...",
+            flush = True,
+        )
+        transformer = transformer_cls.from_pretrained(
+            args.base, subfolder = args.subfolder, torch_dtype = torch.bfloat16, token = args.hf_token
+        ).to("cuda")
     print(f"  quantising in place ({scheme}) ...", flush = True)
     # Mirror the runtime path EXACTLY (offline == runtime, LPIPS-0 invariant): int8 skips the
     # M=1 modulation / conditioning-embedder projections (else the checkpoint bakes them int8 and
@@ -123,7 +162,7 @@ def main(argv = None) -> int:
         for k, v in transformer.state_dict().items()
     }
     metadata = {
-        "base_model_id": args.base,
+        "base_model_id": base_model_id,
         "family": fam.name,
         "scheme": scheme,
         "min_features": args.min_features,
@@ -143,6 +182,11 @@ def main(argv = None) -> int:
     # (the runtime now requires per-row; see FP8_GRANULARITY).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
+    if args.ltx23_single_file:
+        # The 2.3 transformer config is the LTX-2 base config plus the 2.3 overrides; no
+        # diffusers repo carries it as a subfolder, so bake the merged dict for a future
+        # meta-init (the current loader path receives the module via transformer_override).
+        metadata["transformer_config"] = dict(transformer.config)
     ckpt = {
         "format": PREQUANT_FORMAT,
         "metadata": metadata,

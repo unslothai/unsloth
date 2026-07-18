@@ -485,10 +485,15 @@ def load_ltx23_pipeline(
     torch_dtype: Any,
     is_gguf: bool,
     hf_token: Optional[str] = None,
+    transformer_override: Any = None,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
-    needs LTX2VocoderWithBWE, which the type gate would reject."""
+    needs LTX2VocoderWithBWE, which the type gate would reject.
+
+    ``transformer_override`` supplies a pre-built DiT (e.g. a pre-quantized checkpoint); the
+    single file then contributes only the connectors / VAEs / vocoder groups and its DiT
+    tensors are dropped unread."""
     import transformers
     from diffusers import LTX2Pipeline
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
@@ -514,13 +519,17 @@ def load_ltx23_pipeline(
             "instead (Q8_0 for the highest fidelity) or the official bf16 checkpoint."
         )
 
-    transformer = load_ltx23_transformer(
-        groups["dit"],
-        base_repo = base_repo,
-        torch_dtype = torch_dtype,
-        is_gguf = is_gguf,
-        hf_token = hf_token,
-    )
+    if transformer_override is not None:
+        transformer = transformer_override
+        groups.pop("dit", None)
+    else:
+        transformer = load_ltx23_transformer(
+            groups["dit"],
+            base_repo = base_repo,
+            torch_dtype = torch_dtype,
+            is_gguf = is_gguf,
+            hf_token = hf_token,
+        )
     connectors = load_ltx23_connectors(
         groups["connectors"],
         variant = variant,
