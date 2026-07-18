@@ -129,11 +129,19 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         return ()
 
 
-def _guard_model_security(name: str) -> None:
+def _guard_model_security(name: str, local_only_load: bool) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable
     scans fail open inside evaluate_file_security. Never bricks the embedder on a gate error.
+
+    ``local_only_load`` MUST be the same value the caller passes to
+    SentenceTransformer as ``local_files_only`` -- it is what licenses skipping the
+    Hub scan, so it is taken as an argument rather than re-read from the
+    environment here. ``_hf_offline_if_dns_dead()`` mutates the process-wide
+    offline vars and restores them, so two separate reads can disagree: this
+    could skip the scan while the constructor then loaded with
+    ``local_files_only=False`` and fetched the unscanned repo.
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
@@ -145,16 +153,11 @@ def _guard_model_security(name: str) -> None:
         load_subdirs = tuple(
             dict.fromkeys((*security_load_subdirs(name, token), *_st_module_subdirs(name, token)))
         )
-        from utils.utils import hf_env_offline
-
-        # local_only_load: _get() pins SentenceTransformer to the local cache with
-        # the same predicate, so offline nothing can be fetched and the Hub scan
-        # would only stall on timeouts before failing open anyway.
         blocked = evaluate_file_security(
             name,
             hf_token = token,
             load_subdirs = load_subdirs,
-            local_only_load = hf_env_offline(),
+            local_only_load = local_only_load,
         ).blocked
     except Exception:
         return
@@ -179,7 +182,14 @@ def _get(model_name: str | None = None):
 
             device = _device()
             logger.info("loading embedding model %s on %s", name, device)
-            _guard_model_security(name)
+            # Read the offline state ONCE and use that single value for both the
+            # security gate and the loader. _hf_offline_if_dns_dead() mutates the
+            # process-wide offline vars and restores them on exit, so re-reading
+            # for the constructor could yield False after the guard had already
+            # skipped the Hub scan on True -- and the load would then fetch and
+            # deserialize the unscanned repo.
+            local_only = hf_env_offline()
+            _guard_model_security(name, local_only)
             # Propagate the user's offline intent into the loader: SentenceTransformer
             # performs its own Hub operations, and huggingface_hub honors only
             # HF_HUB_OFFLINE, so a TRANSFORMERS_OFFLINE-only session would otherwise
@@ -188,7 +198,7 @@ def _get(model_name: str | None = None):
                 name,
                 device = device,
                 model_kwargs = dtype_kwargs("float16"),
-                local_files_only = hf_env_offline(),
+                local_files_only = local_only,
             )
             _name = name
         return _model

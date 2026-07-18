@@ -145,17 +145,29 @@ def test_embedding_loader_forces_local_only_when_offline():
     """The invariant the RAG opt-in rests on.
 
     core/rag/embeddings.py is allowed to pass local_only_load because its loader
-    is pinned to the local cache by the SAME predicate. If that pin is removed
-    the opt-in silently becomes a hole -- an unscanned repo's pickle could be
-    fetched and deserialized -- so it is enforced here rather than by comment.
-    Checked at source level because importing the loader drags in
-    sentence_transformers/torch.
+    is pinned to the local cache by the SAME value. It must be read ONCE and
+    shared: _hf_offline_if_dns_dead() mutates the process-wide offline vars and
+    restores them, so two separate hf_env_offline() reads can disagree and the
+    guard could skip the scan on True while the constructor then fetched the
+    unscanned repo with local_files_only=False. Checked at source level because
+    importing the loader drags in sentence_transformers/torch.
     """
     src = _read_backend("core/rag/embeddings.py")
-    assert "local_files_only = hf_env_offline()" in src, (
-        "core/rag/embeddings.py must pin SentenceTransformer to local files when "
-        "hf_env_offline(); without it passing local_only_load to "
-        "evaluate_file_security is unsafe"
+    assert "local_only = hf_env_offline()" in src, (
+        "core/rag/embeddings.py must capture the offline state once in _get()"
+    )
+    assert "_guard_model_security(name, local_only)" in src, (
+        "the security guard must receive the captured value, not re-read the env"
+    )
+    assert "local_files_only = local_only" in src, (
+        "SentenceTransformer must be pinned with the SAME captured value; a second "
+        "hf_env_offline() read can flip to False and fetch the unscanned repo"
+    )
+    # And the guard must not re-derive it internally.
+    guard = src.split("def _guard_model_security", 1)[1].split("\ndef ", 1)[0]
+    assert "hf_env_offline()" not in guard, (
+        "_guard_model_security must take local_only_load as an argument so it "
+        "cannot observe a different offline state than the loader"
     )
 
 

@@ -168,6 +168,39 @@ def test_marker_empty_ref_is_cache_miss(tmp_path, monkeypatch):
     assert mc._embedding_marker_in_hf_cache("org/empty-ref") is None
 
 
+def test_snapshots_found_in_sentence_transformers_home(tmp_path, monkeypatch):
+    # SentenceTransformer downloads into SENTENCE_TRANSFORMERS_HOME when set,
+    # using the same models--org--name layout under a different root. Searching
+    # only HF_HUB_CACHE would report a model that is fully present there as
+    # uncached -- offline that is a 409 for a model the local-only loader can load.
+    hf_root = tmp_path / "hf"
+    st_root = tmp_path / "st"
+    hf_root.mkdir()
+    snap = st_root / "models--org--model" / "snapshots" / "aaa"
+    snap.mkdir(parents = True)
+    (snap / "modules.json").write_text("[]")
+
+    fake = types.ModuleType("huggingface_hub")
+    fake.constants = types.SimpleNamespace(HF_HUB_CACHE = str(hf_root))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake.constants)
+    monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_root))
+
+    assert [p.name for p in mc._iter_hf_cache_snapshots("org/model")] == ["aaa"]
+    assert mc._embedding_marker_in_hf_cache("org/model") is True
+
+
+def test_sentence_transformers_home_unset_keeps_hf_cache_only(tmp_path, monkeypatch):
+    hf_root = tmp_path / "hf"
+    hf_root.mkdir()
+    fake = types.ModuleType("huggingface_hub")
+    fake.constants = types.SimpleNamespace(HF_HUB_CACHE = str(hf_root))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", fake.constants)
+    monkeypatch.delenv("SENTENCE_TRANSFORMERS_HOME", raising = False)
+    assert mc._hf_cache_roots() == [Path(str(hf_root))]
+
+
 def test_marker_never_raises_when_cache_mutates(monkeypatch):
     # A snapshot vanishing mid-iteration (concurrent cached-model deletion)
     # must read as not-cached, not propagate a 500 out of the routes.

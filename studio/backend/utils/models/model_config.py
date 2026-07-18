@@ -1643,29 +1643,51 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
-def _iter_hf_cache_snapshots(repo_id: str):
-    """Yield HF cache snapshot dirs for *repo_id*, newest first.
+def _hf_cache_roots() -> list[Path]:
+    """Cache roots a model may have been downloaded into, HF_HUB_CACHE first.
 
-    Empty if HF_HUB_CACHE is missing, the repo isn't cached, or has no
-    snapshots. Repo name match is case-insensitive to handle casing drift
-    between download time and lookup.
+    SentenceTransformer downloads into SENTENCE_TRANSFORMERS_HOME when that is
+    set, using the same ``models--org--name/snapshots/<commit>`` layout but under
+    a different root. Ignoring it makes a model that is fully present there look
+    uncached -- which offline means a 409 for a model the local-only loader could
+    actually load.
     """
+    roots: list[Path] = []
     try:
         from huggingface_hub import constants as hf_constants
+        roots.append(Path(hf_constants.HF_HUB_CACHE))
     except Exception:
-        return
+        pass
+    st_home = (os.environ.get("SENTENCE_TRANSFORMERS_HOME") or "").strip()
+    if st_home:
+        try:
+            st_root = Path(st_home).expanduser()
+            if not any(st_root == root for root in roots):
+                roots.append(st_root)
+        except Exception:
+            pass
+    return roots
 
-    cache_dir = Path(hf_constants.HF_HUB_CACHE)
+
+def _iter_hf_cache_snapshots(repo_id: str):
+    """Yield cache snapshot dirs for *repo_id*, newest first.
+
+    Searches every root in :func:`_hf_cache_roots` (HF_HUB_CACHE plus a distinct
+    SENTENCE_TRANSFORMERS_HOME). Empty if no root exists, the repo isn't cached,
+    or it has no snapshots. Repo name match is case-insensitive to handle casing
+    drift between download time and lookup.
+    """
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dirs: list[Path] = []
-    try:
-        if not cache_dir.is_dir():
-            return
-        for entry in cache_dir.iterdir():
-            if entry.is_dir() and entry.name.lower() == target:
-                repo_dirs.append(entry)
-    except OSError:
-        return
+    for cache_dir in _hf_cache_roots():
+        try:
+            if not cache_dir.is_dir():
+                continue
+            for entry in cache_dir.iterdir():
+                if entry.is_dir() and entry.name.lower() == target:
+                    repo_dirs.append(entry)
+        except OSError:
+            continue
     if not repo_dirs:
         return
 
