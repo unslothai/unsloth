@@ -40,14 +40,37 @@ def _reset_module_state():
     pl._initialized = False
 
 
+def _is_zombie(pid: int) -> bool:
+    """True when *pid* has exited but has not been reaped yet (Linux ``Z`` state).
+
+    Always False where /proc is unavailable (macOS/Windows), which leaves the
+    plain existence probe as the answer there.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            data = f.read()
+    except OSError:
+        return False
+    # Format is "pid (comm) state ...", and comm may itself contain spaces and
+    # parentheses, so the state field is the first token after the LAST ')'.
+    try:
+        return data[data.rindex(")") + 1 :].split()[0] == "Z"
+    except (ValueError, IndexError):
+        return False
+
+
 def _alive(pid: int) -> bool:
     if sys.platform == "win32":
         return _win_alive(pid)
     try:
         os.kill(pid, 0)  # POSIX existence probe (on Windows this would terminate it)
-        return True
     except OSError:
         return False
+    # os.kill(pid, 0) still succeeds for a zombie, which has already exited and
+    # only lingers holding an exit status. In a container whose PID 1 does not
+    # reap adopted children it lingers indefinitely, so counting it as alive
+    # would fail these "did the watcher kill it" assertions spuriously.
+    return not _is_zombie(pid)
 
 
 def _win_alive(pid: int) -> bool:
@@ -478,3 +501,29 @@ def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
     pl._install_windows_job()
     assert pl._win_job_handle is None  # not retained when assignment fails
     assert "close" in log  # the orphaned job handle is closed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX zombie semantics")
+def test_zombie_child_counts_as_dead():
+    """An exited-but-unreaped child must read as dead.
+
+    os.kill(pid, 0) succeeds for a zombie, so without the /proc state check a
+    container whose PID 1 does not reap adopted children would report a killed
+    worker as "survived" and fail the lifetime assertions spuriously.
+    """
+    pid = os.fork()
+    if pid == 0:  # child: exit immediately, parent deliberately does not reap yet
+        os._exit(0)
+    try:
+        end = time.time() + 5.0
+        while time.time() < end and not _is_zombie(pid):
+            time.sleep(0.01)
+        if not _is_zombie(pid):
+            pytest.skip("no /proc zombie state available on this platform")
+        assert not _alive(pid)
+        assert _wait_dead(pid, 1.0)
+    finally:
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
