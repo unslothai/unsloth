@@ -37,7 +37,7 @@ def record_event(entry: ApiMonitorEntry) -> None:
                 entry.total_tokens or 0,
                 entry.endpoint,
                 entry.status or "unknown",
-                entry.session_id,
+                entry.subject,
             ),
         )
         conn.commit()
