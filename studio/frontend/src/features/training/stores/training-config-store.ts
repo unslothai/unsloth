@@ -1056,6 +1056,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             s.contextLength !== DEFAULT_HYPERPARAMS.contextLength;
         }
         if (version < 13) {
+          if (typeof s.contextLengthManuallySet !== "boolean") {
+            s.contextLengthManuallySet =
+              typeof s.contextLength === "number" &&
+              Number.isFinite(s.contextLength) &&
+              s.contextLength !== DEFAULT_HYPERPARAMS.contextLength;
+          }
           s.trainOnCompletionsManuallySet = false;
           s.learningRateManuallySet = false;
         }
