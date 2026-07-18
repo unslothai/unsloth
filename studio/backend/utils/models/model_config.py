@@ -1643,43 +1643,40 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(gguf_dir)
 
 
-def _hf_cache_roots() -> list[Path]:
-    """Cache roots a model may have been downloaded into, HF_HUB_CACHE first.
-
-    SentenceTransformer downloads into SENTENCE_TRANSFORMERS_HOME when that is
-    set, using the same ``models--org--name/snapshots/<commit>`` layout but under
-    a different root. Ignoring it makes a model that is fully present there look
-    uncached -- which offline means a 409 for a model the local-only loader could
-    actually load.
-    """
-    roots: list[Path] = []
+def _hf_hub_cache_root() -> list[Path]:
+    """The Hub cache root, i.e. what ``hf_hub_download`` uses with no ``cache_dir``."""
     try:
         from huggingface_hub import constants as hf_constants
-        roots.append(Path(hf_constants.HF_HUB_CACHE))
+        return [Path(hf_constants.HF_HUB_CACHE)]
     except Exception:
-        pass
+        return []
+
+
+def _st_cache_roots() -> list[Path]:
+    """The cache root a SentenceTransformer load will ACTUALLY search.
+
+    ``_get()`` constructs SentenceTransformer without ``cache_folder``, so it uses
+    SENTENCE_TRANSFORMERS_HOME when that is set and the Hub cache otherwise --
+    one or the other, never both. Probing the union would let offline validation
+    pass on a repo cached only in the Hub cache while the loader then searched
+    ST_HOME and failed. Kept separate from the Hub-cache probe because the GGUF
+    path downloads with ``hf_hub_download`` and no ``cache_dir``, so it really
+    does use the Hub cache and must not be told about ST_HOME.
+    """
     st_home = (os.environ.get("SENTENCE_TRANSFORMERS_HOME") or "").strip()
     if st_home:
         try:
-            st_root = Path(st_home).expanduser()
-            if not any(st_root == root for root in roots):
-                roots.append(st_root)
+            return [Path(st_home).expanduser()]
         except Exception:
-            pass
-    return roots
+            return []
+    return _hf_hub_cache_root()
 
 
-def _iter_hf_cache_snapshots(repo_id: str):
-    """Yield cache snapshot dirs for *repo_id*, newest first.
-
-    Searches every root in :func:`_hf_cache_roots` (HF_HUB_CACHE plus a distinct
-    SENTENCE_TRANSFORMERS_HOME). Empty if no root exists, the repo isn't cached,
-    or it has no snapshots. Repo name match is case-insensitive to handle casing
-    drift between download time and lookup.
-    """
+def _iter_cache_snapshots_in(repo_id: str, roots: list[Path]):
+    """Snapshot dirs for *repo_id* under *roots*, newest first (shared machinery)."""
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dirs: list[Path] = []
-    for cache_dir in _hf_cache_roots():
+    for cache_dir in roots:
         try:
             if not cache_dir.is_dir():
                 continue
@@ -1688,9 +1685,50 @@ def _iter_hf_cache_snapshots(repo_id: str):
                     repo_dirs.append(entry)
         except OSError:
             continue
-    if not repo_dirs:
-        return
+    yield from _iter_snapshots_of(repo_dirs)
 
+
+def resolve_st_cached_repo_id_case(repo_id: str) -> str:
+    """*repo_id* in the casing of its dir in the cache the ST loader will search.
+
+    ``resolve_cached_repo_id_case`` scans only the Hub cache, so with
+    SENTENCE_TRANSFORMERS_HOME set it would leave the requested spelling
+    unchanged -- and the offline ``local_files_only`` load, which is exact-case on
+    a case-sensitive filesystem, would then miss the differently cased dir that
+    detection had just accepted. Normalizes against the same roots detection uses.
+    Returns *repo_id* unchanged for a local path, a non-repo string, or when
+    nothing case-matching is cached; prefers an exact match before any variant and
+    tie-breaks variants deterministically.
+    """
+    if is_local_path(repo_id) or "/" not in repo_id:
+        return repo_id
+    prefix = "models--"
+    expected = f"{prefix}{repo_id.replace('/', '--')}"
+    target = expected.lower()
+    variants: list[str] = []
+    for cache_dir in _st_cache_roots():
+        try:
+            if not cache_dir.is_dir():
+                continue
+            if (cache_dir / expected).is_dir():
+                return repo_id  # exact case already cached: keep the request
+            for entry in cache_dir.iterdir():
+                if entry.is_dir() and entry.name.lower() == target:
+                    variants.append(entry.name)
+        except OSError:
+            continue
+    if variants:
+        return sorted(variants)[0][len(prefix) :].replace("--", "/")
+    return repo_id
+
+
+def _iter_st_cache_snapshots(repo_id: str):
+    """Snapshot dirs for *repo_id* in the cache the ST loader will search."""
+    yield from _iter_cache_snapshots_in(repo_id, _st_cache_roots())
+
+
+def _iter_snapshots_of(repo_dirs: list[Path]):
+    """Snapshot dirs across *repo_dirs*, newest first."""
     snap_dirs: list[Path] = []
     for repo_dir in repo_dirs:
         snapshots = repo_dir / "snapshots"
@@ -1704,8 +1742,6 @@ def _iter_hf_cache_snapshots(repo_id: str):
                         continue
         except OSError:
             continue
-    if not snap_dirs:
-        return
     snap_dirs_with_mtime = []
     for snap_dir in snap_dirs:
         try:
@@ -1714,6 +1750,22 @@ def _iter_hf_cache_snapshots(repo_id: str):
             continue
     snap_dirs_with_mtime.sort(key = lambda item: item[0], reverse = True)
     yield from (snap_dir for _, snap_dir in snap_dirs_with_mtime)
+
+
+def _iter_hf_cache_snapshots(repo_id: str):
+    """Yield HUB cache snapshot dirs for *repo_id*, newest first.
+
+    Deliberately the Hub cache ONLY. Its callers (the GGUF detectors) later
+    download with ``hf_hub_download`` and no ``cache_dir``, so that is the cache
+    their load actually uses; adding SENTENCE_TRANSFORMERS_HOME here would let
+    detection pick a file the GGUF loader cannot find. The Sentence-Transformers
+    probe is :func:`_iter_st_cache_snapshots`.
+
+    Empty if the root does not exist, the repo isn't cached, or it has no
+    snapshots. Repo name match is case-insensitive to handle casing drift between
+    download time and lookup.
+    """
+    yield from _iter_cache_snapshots_in(repo_id, _hf_hub_cache_root())
 
 
 def _list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -2027,13 +2079,46 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
-def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
-    """Sentence-transformers detection from the local HF cache, no network call.
+_ST_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".onnx")
 
-    True/False when the ACTIVE cached revision carries / lacks the
-    ``modules.json`` marker (the same signal ``is_embedding_model`` uses for
-    local paths), None when the repo is not in the cache (or the cache is
-    unreadable). The revision ``refs/main`` resolves to is authoritative when
+
+def _snapshot_is_loadable_st_model(snap: Path) -> bool:
+    """True when *snap* holds a sentence-transformers model that can actually load.
+
+    ``modules.json`` alone is not enough: the online security preflight downloads
+    exactly that one file via ``hf_hub_download``, and a partial download can
+    leave it behind too, so a snapshot can carry the marker while the weights and
+    config SentenceTransformer needs are absent. Accepting that offline would
+    pass validation and then fail on the first RAG load. Requires the marker plus
+    a config and at least one weight file somewhere in the snapshot.
+    """
+    try:
+        if not (snap / "modules.json").is_file():
+            return False
+        if not any(
+            (snap / name).is_file() for name in ("config.json", "config_sentence_transformers.json")
+        ):
+            return False
+        for path in snap.rglob("*"):
+            try:
+                if path.is_file() and path.suffix.lower() in _ST_WEIGHT_SUFFIXES:
+                    return True
+            except OSError:
+                continue
+        return False
+    except OSError:
+        return False
+
+
+def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
+    """Sentence-transformers detection from the local cache, no network call.
+
+    Probes the cache the ST loader will actually search (see
+    :func:`_st_cache_roots`), so a hit here means the load can find it too.
+    True/False when the ACTIVE cached revision is / is not a LOADABLE
+    sentence-transformers snapshot -- marker plus config plus weights, not the
+    bare ``modules.json`` the security preflight may have fetched on its own --
+    and None when the repo is not in that cache (or the cache is unreadable). The revision ``refs/main`` resolves to is authoritative when
     recorded: the cache keeps snapshots of older revisions, and a repo that
     later stopped (or started) being a sentence-transformers model must be
     judged by its current revision, not any historical one. Snapshots are only
@@ -2041,7 +2126,7 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
     underneath (concurrent model deletion) reads as not-cached so callers keep
     their normal fallback."""
     try:
-        snapshots = list(_iter_hf_cache_snapshots(repo_id))
+        snapshots = list(_iter_st_cache_snapshots(repo_id))
         if not snapshots:
             return None
         # Prefer the snapshot refs/main points at (the active revision).
@@ -2072,10 +2157,10 @@ def _embedding_marker_in_hf_cache(repo_id: str) -> Optional[bool]:
             preferred = snapshots_dir / commit
             if not preferred.is_dir():
                 return None
-            return (preferred / "modules.json").is_file()
+            return _snapshot_is_loadable_st_model(preferred)
         for snap in snapshots:
             try:
-                if (snap / "modules.json").is_file():
+                if _snapshot_is_loadable_st_model(snap):
                     return True
             except OSError:
                 continue
