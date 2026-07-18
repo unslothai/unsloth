@@ -1142,6 +1142,21 @@ def _reconcile_primary_rocm_unified_memory(
     _apply_unified_memory_correction(utilization, torch_devices[0])
 
 
+def _rocm_visibility_mask_active() -> bool:
+    """True when any ROCm/CUDA visibility variable filters the device set, so the
+    reported devices are a SUBSET of the host's GPUs rather than all of them."""
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        value = os.environ.get(var)
+        if value and value.strip():
+            return True
+    return False
+
+
 def _rocm_device_index_unreliable() -> bool:
     """True when the reported device ``index`` cannot be trusted as a physical
     GPU id, so it must not be matched to a DRM card.
@@ -1196,15 +1211,26 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     misattributing another adapter's usage."""
     if not devices or platform.system() != "Linux":
         return
-    # The amdgpu card list is only a SUPERSET of the ROCm-visible devices: an
+    # The amdgpu card list is only a SUPERSET of the ROCm device set: an
     # amdgpu-bound adapter HIP cannot enumerate (an unsupported older AMD GPU
     # beside a supported one) still appears there and would take an ordinal,
-    # shifting every real compute device onto the wrong card. There is no
-    # torch-side PCI identity to match against, so require the counts to agree --
-    # that is exactly the condition under which position-in-PCI-order is a sound
-    # 1:1 mapping. Any disagreement means an unenumerable card is present, so keep
-    # torch's process-local figures (less informative, never misattributed).
-    if len(_rocm_linux_amdgpu_cards()) != len(devices):
+    # shifting every real compute device onto the wrong card.
+    #
+    # With NO visibility mask the reported devices ARE the host's GPUs, so the
+    # counts must agree; a mismatch means such an unenumerable card is present
+    # and position-in-PCI-order is not a sound mapping -- keep torch's figures.
+    #
+    # Under a mask the devices are deliberately a subset (HIP_VISIBLE_DEVICES=1,3
+    # on a 4-GPU host gives 2 devices against 4 cards), so requiring equality
+    # would disable the overlay for exactly the masked GPUs that most need it --
+    # leaving placement checks to overestimate free VRAM. There, each device's
+    # physical index is validated against the card list individually instead
+    # (the per_card lookup below bounds-checks it, and the total-size guard
+    # rejects a card whose capacity does not match the device's).
+    amd_cards = _rocm_linux_amdgpu_cards()
+    if not amd_cards:
+        return
+    if not _rocm_visibility_mask_active() and len(amd_cards) != len(devices):
         return
     # Keyed by ROCm physical device ordinal (amdgpu cards in PCI order), so a
     # device is matched to ITS GPU by physical index -- a non-amdgpu adapter on an

@@ -161,8 +161,18 @@ def test_linux_per_card_reserves_ordinal_for_amd_without_vram_files(monkeypatch,
 
 
 def _patch_card_count(monkeypatch, n):
-    """The overlay only maps 1:1 when the amdgpu card count equals the device
-    count, so every overlay test must declare how many AMD cards the host has."""
+    """Declare how many amdgpu cards the host has.
+
+    Also clears the visibility masks, so these stay UNMASKED-host cases -- the
+    only ones where the overlay requires the card count to equal the device count.
+    """
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(hw, "_rocm_linux_amdgpu_cards", lambda: [("", i, "") for i in range(n)])
 
 
@@ -263,6 +273,25 @@ def test_overlay_skips_when_amdgpu_card_count_exceeds_devices(monkeypatch):
     devices = [_device(0, used = 0.02, total = 45.0)]
     hw._overlay_system_wide_vram(devices)
     assert devices[0]["vram_used_gb"] == 0.02  # untouched
+
+
+def test_overlay_applies_to_a_masked_gpu_subset(monkeypatch):
+    # HIP_VISIBLE_DEVICES=1,3 on a 4-GPU host: 2 devices against 4 amdgpu cards.
+    # Requiring count equality would disable the overlay for exactly the masked
+    # GPUs that need it, leaving placement checks to overestimate free VRAM on
+    # memory llama-server holds. Each physical index maps into the card list.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1,3")
+    monkeypatch.setattr(hw, "_rocm_linux_amdgpu_cards", lambda: [("", i, "") for i in range(4)])
+    monkeypatch.setattr(
+        hw,
+        "_rocm_linux_sysfs_vram_per_card_gb",
+        lambda: {0: (5.0, 48.0), 1: (30.0, 48.0), 2: (7.0, 48.0), 3: (12.0, 48.0)},
+    )
+    devices = [_device(1, used = 0.02, total = 48.0), _device(3, used = 0.01, total = 48.0)]
+    hw._overlay_system_wide_vram(devices)
+    assert devices[0]["vram_used_gb"] == 30.0  # physical 1 -> card 1
+    assert devices[1]["vram_used_gb"] == 12.0  # physical 3 -> card 3
 
 
 def test_gpu_device_ordinal_makes_index_unreliable(monkeypatch):
