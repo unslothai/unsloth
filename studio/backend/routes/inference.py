@@ -4050,6 +4050,7 @@ async def load_model(
         inference_lifecycle_gate,
         release_inference_lifecycle_gate,
     )
+
     global _active_async_load_task, _accepted_async_load_model, _async_load_generation
     global _last_async_load_error, _sync_load_admission_count
 
