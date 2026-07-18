@@ -492,6 +492,22 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         skip_modules_classes = (torch.nn.Embedding,),
     )
 
+    # Module.dtype reports the first floating parameter, which is now fp8 STORAGE; pipelines
+    # derive tensor dtypes from encoder.dtype (Flux2 casts prompt embeds to it and feeds the
+    # result to randn_tensor, which has no fp8 kernel; VLM pipelines cast pixel_values to it,
+    # racing the upcast hooks). The encoder computes in target.dtype, so report that.
+    compute_dtype = getattr(target, "dtype", None)
+    if compute_dtype is not None and not getattr(encoder, "_unsloth_te_dtype_override", False):
+        cls = type(encoder)
+        encoder.__class__ = type(
+            cls.__name__,
+            (cls,),
+            {
+                "dtype": property(lambda self, _d = compute_dtype: _d),
+                "_unsloth_te_dtype_override": True,
+            },
+        )
+
 
 def _has_layerwise_hooks(encoder: Any) -> bool:
     """True when any submodule already carries the diffusers layerwise-casting hook."""

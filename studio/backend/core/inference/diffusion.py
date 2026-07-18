@@ -1405,6 +1405,7 @@ class DiffusionBackend:
                             prequant_path = transformer_prequant_path,
                             allow_dense_fallback = dense_fallback_allowed,
                             lora_specs = loras,
+                            text_encoder_quant = text_encoder_quant,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -1868,6 +1869,7 @@ class DiffusionBackend:
         base_local_dir: Optional[str] = None,
         allow_dense_fallback: bool = True,
         lora_specs: Optional[list[tuple[str, float]]] = None,
+        text_encoder_quant: Optional[str] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -1923,7 +1925,7 @@ class DiffusionBackend:
                 if transformer is not None:
                     pipe = self._assemble_pipe(
                         pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir,
-                        fam = fam,
+                        fam = fam, te_quant_mode = text_encoder_quant, target = target,
                     )
                     return pipe, scheme
 
@@ -1938,7 +1940,8 @@ class DiffusionBackend:
             base, subfolder = "transformer", torch_dtype = dtype, token = hf_token
         )
         pipe = self._assemble_pipe(
-            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir, fam = fam
+            pipeline_cls, base, transformer, dtype, hf_token, device, base_local_dir,
+            fam = fam, te_quant_mode = text_encoder_quant, target = target,
         )
         if lora_specs:
             # Bake the adapters BEFORE quantize_: peft injects its wrappers on the dense
@@ -1985,6 +1988,8 @@ class DiffusionBackend:
         device: str,
         base_local_dir: Optional[str] = None,
         fam: Optional[DiffusionFamily] = None,
+        te_quant_mode: Optional[str] = None,
+        target: Any = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
@@ -2004,6 +2009,20 @@ class DiffusionBackend:
             # The repo ships no Llama text_encoder_4; assemble it from the open mirror
             # (diffusion_hidream.py) exactly like the full-pipeline load branch.
             pipe_kwargs.update(hidream_te4_kwargs(dtype, hf_token))
+        # Same pre-cast TE injection as the full-pipeline and GGUF branches: the dense
+        # fast path supplies only the transformer, so the companion TE is the big download.
+        if target is not None:
+            pipe_kwargs.update(
+                te_prequant_pipe_kwargs(
+                    fam,
+                    base,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    logger = logger,
+                )
+            )
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
