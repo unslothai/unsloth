@@ -34,10 +34,11 @@ def test_model_selector_trigger_label_uses_leading_tight():
 
 def test_sidebar_account_block_uses_leading_tight():
     src = _read(APP_SIDEBAR)
-    # Match the account-block parent div regardless of its gap utility; this
-    # guard is about the leading-* class, not the spacing.
+    # Match the account-block parent div regardless of its gap utility or any
+    # sizing classes between flex and flex-col (min-w-0 flex-1 arrived with the
+    # long-name truncation work); this guard is about the leading-* class only.
     pattern = re.compile(
-        r'<div\s+className="flex\s+flex-col\s+gap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
+        r'<div\s+className="flex\s+(?:\S+\s+)*?flex-col\s+gap-\S+\s+(\S+)\s+group-data-\[collapsible=icon\]:hidden">',
     )
     matches = pattern.findall(src)
     assert matches, "could not find sidebar account-block parent div"
