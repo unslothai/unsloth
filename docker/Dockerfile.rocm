@@ -4,9 +4,7 @@ FROM $BASE_DOCKER
 # ARG GPU_ARCH=gfx942
 WORKDIR /unsloth-workspace
 
-# Single layer: apt-get update + install must share a RUN (a cached standalone
-# update layer goes stale and later installs hit dead package indexes), and the
-# list cleanup keeps the layer small. --no-install-recommends trims the image.
+# update + install share one RUN so the cached index can't go stale; cleanup keeps the layer small.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends zip unzip wget build-essential cmake \
     && rm -rf /var/lib/apt/lists/*
@@ -16,9 +14,7 @@ ARG BNB_ROCM_ARCHS="gfx942"
 ARG BNB_COMMIT="4b0257482bef447106fcaada67d1c6d081fdc82f"
 ARG BNB_REPO="https://github.com/bitsandbytes-foundation/bitsandbytes.git"
 
-# Fetch ONLY the pinned commit (no default-branch clone first): GitHub allows
-# fetching an arbitrary SHA, so init + fetch --depth 1 <commit> downloads the
-# minimum needed for a reproducible build.
+# Fetch only the pinned commit via init + shallow fetch: minimal, reproducible.
 RUN mkdir bitsandbytes \
     && cd bitsandbytes \
     && git init \
@@ -52,7 +48,7 @@ RUN git clone --branch ${UNSLOTH_ZOO_BRANCH} --depth 1 ${UNSLOTH_ZOO_REPO} unslo
     && pip install -e .
 
 
-# Verify the stack landed -- one layer for all three probes.
+# Verify all three installed.
 RUN for pkg in bitsandbytes unsloth unsloth-zoo; do \
         pip show "$pkg" >/dev/null || { echo "$pkg not installed!"; exit 1; }; \
     done
