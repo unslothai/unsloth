@@ -1501,10 +1501,12 @@ exit 0
 
     function Start-StudioVenvRollback {
         param([Parameter(Mandatory = $true)][string]$ExistingDir)
-        Assert-StudioVenvMutationPath $ExistingDir | Out-Null
+        $state = Assert-StudioVenvMutationPath $ExistingDir
         $candidate = New-StudioVenvSiblingPath "unsloth_studio.rollback"
+        $marker = Join-Path $state.Path ".unsloth-studio-owned"
+        [System.IO.File]::WriteAllText($marker, "")
         [System.IO.Directory]::Move(
-            [System.IO.Path]::GetFullPath($ExistingDir),
+            [System.IO.Path]::GetFullPath($state.Path),
             [System.IO.Path]::GetFullPath($candidate)
         )
         $script:StudioVenvRollbackDir = $candidate
@@ -1664,7 +1666,15 @@ exit 0
                 $proc.StandardInput.Close()
                 $outTask = $proc.StandardOutput.ReadToEndAsync()
                 $errTask = $proc.StandardError.ReadToEndAsync()
-                $proc.WaitForExit()
+                if (-not $proc.WaitForExit(15000)) {
+                    try {
+                        $proc.Kill()
+                    } catch {}
+                    $proc.WaitForExit()
+                    $null = $outTask.GetAwaiter().GetResult()
+                    $null = $errTask.GetAwaiter().GetResult()
+                    return $false
+                }
                 $null = $outTask.GetAwaiter().GetResult()
                 $null = $errTask.GetAwaiter().GetResult()
                 return ($proc.ExitCode -eq 0)
@@ -2853,7 +2863,13 @@ exit 0
 }
 
 $installExitCode = @(Install-UnslothStudio @args)
-if ($installExitCode.Count -eq 0) {
-    exit 0
+$finalInstallExit = if ($installExitCode.Count -eq 0) {
+    0
+} else {
+    [int]$installExitCode[-1]
 }
-exit ([int]$installExitCode[-1])
+if ($PSCommandPath) {
+    exit $finalInstallExit
+}
+$global:LASTEXITCODE = $finalInstallExit
+return $finalInstallExit

@@ -361,6 +361,28 @@ def test_install_ps1_guard_accepts_venv_marker():
     assert "Equals($fullPath, [System.IO.Path]::GetFullPath($VenvDir))" in block
 
 
+def test_install_ps1_rollback_marks_legacy_target_before_move():
+    src = INSTALL_PS1.read_text()
+    block_start = src.index("function Start-StudioVenvRollback {")
+    block_end = src.index("function Restore-StudioVenvRollback {", block_start)
+    block = src[block_start:block_end]
+
+    assert '$marker = Join-Path $state.Path ".unsloth-studio-owned"' in block
+    assert '[System.IO.File]::WriteAllText($marker, "")' in block
+    assert block.index('WriteAllText($marker, "")') < block.index("[System.IO.Directory]::Move(")
+
+
+def test_install_ps1_entrypoint_returns_for_iex_and_exits_for_file():
+    src = INSTALL_PS1.read_text()
+    tail = src[src.index("$installExitCode = @(Install-UnslothStudio @args)") :]
+
+    assert "$finalInstallExit = if ($installExitCode.Count -eq 0)" in tail
+    assert "if ($PSCommandPath) {" in tail
+    assert "exit $finalInstallExit" in tail
+    assert "$global:LASTEXITCODE = $finalInstallExit" in tail
+    assert "return $finalInstallExit" in tail
+
+
 def test_install_ps1_publish_and_migrations_use_exclusive_guarded_move():
     src = INSTALL_PS1.read_text()
     publish_start = src.index("function Publish-StudioVenvCandidate")

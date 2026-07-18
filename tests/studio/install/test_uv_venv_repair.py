@@ -578,6 +578,18 @@ def test_uv_venv_probe_drains_large_startup_stderr(tmp_path):
     assert log_file.read_text(encoding = "utf-8").strip(), "uv stub did not run"
 
 
+def test_uv_venv_probe_bounds_hung_python_readiness_check():
+    source = _source()
+    anchor = "if (-not (Test-Path -LiteralPath $VenvPython)) {"
+    block_start = source.index(anchor)
+    block_end = source.index("        $needsVenvFallback = $false", block_start)
+    block = source[block_start:block_end]
+
+    assert "$proc.WaitForExit(15000)" in block
+    assert "$proc.Kill()" in block
+    assert "return $false" in block
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows installer test")
 @pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
 def test_uv_venv_healthy_skips_fallback(tmp_path):
