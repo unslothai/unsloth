@@ -589,6 +589,14 @@ RUN set -eux; \
         apt-get install -y --no-install-recommends \
             cuda-nvrtc-13-0 \
             cuda-nvcc-13-0; \
+        # cu13's config-common postinst flips the /usr/local/cuda alternative to
+        # cuda-13.0 (priority 130 beats 12.8's 128). Pin it back: TileLang JIT
+        # and torch.utils.cpp_extension resolve /usr/local/cuda/bin/nvcc, and
+        # cu13-emitted cubins need driver >= 580 while this image supports 570+.
+        # The cu13 tools stay reachable by absolute path (how the entrypoint
+        # activates them on sm_103/sm_121), and --set switches the alternative
+        # to manual mode so later apt operations cannot flip it again.
+        update-alternatives --set cuda /usr/local/cuda-12.8; \
         rm -rf /var/lib/apt/lists/*; \
         # (1) NVRTC staging: keep the wheel's real cu12.8 lib as .cu128.orig,
         #     point libnvrtc.so.12 at it (relative symlink), and stage

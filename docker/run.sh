@@ -58,9 +58,11 @@ GPUS="${UNSLOTH_GPUS:-all}"
 # "none" omits --gpus entirely (CPU mode; pair with UNSLOTH_ALLOW_CPU=1).
 GPU_FLAG=(--gpus "$GPUS")
 case "$GPUS" in
-    none)     GPU_FLAG=()                ;;
+    none)       GPU_FLAG=()              ;;
     all|"")                              ;;
-    \"device=*|device=*)                 ;;
+    \"device=*)                          ;;
+    device=*,*) GPU_FLAG=(--gpus "\"${GPUS}\"") ;;  # native comma list: docker needs the quotes
+    device=*)                            ;;  # single device, fine unquoted
     *[!0-9]*) GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # comma list / UUID
     *)        GPU_FLAG=(--gpus "\"device=${GPUS}\"") ;;  # bare integer index
 esac
