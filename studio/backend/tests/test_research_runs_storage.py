@@ -784,7 +784,31 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
     from core import research_runs as worker
 
     rag_scope = {"kb_id": "kb-1", "default_top_k": 4}
-    _create(assistant_message_id = None, rag_scope = rag_scope)
+    studio_db.upsert_chat_message(
+        {
+            "id": "assistant-1",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "We were discussing OpenAI."}],
+            "createdAt": 3,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-2",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "Compare that with Anthropic."}],
+            "createdAt": 4,
+        }
+    )
+    _create(
+        assistant_message_id = None,
+        user_message_id = "user-2",
+        rag_scope = rag_scope,
+    )
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     report_response = "# Final report\n\nGrounded result [source](https://example.com)."
     decisions = iter(
@@ -817,6 +841,9 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         **kwargs,
     ):
         system = messages[0]["content"]
+        prompt = messages[1]["content"]
+        assert "We were discussing OpenAI." in prompt
+        assert "Compare that with Anthropic." in prompt
         if "rigorous web research plan" in system:
             return json.dumps(_plan()), "Planned several lines of inquiry.", "stop"
         if "iterative research process" in system:

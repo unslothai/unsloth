@@ -633,12 +633,22 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
-@app.middleware("http")
-async def capture_research_server_port(request: Request, call_next):
-    supervisor = getattr(request.app.state, "research_supervisor", None)
-    if supervisor is not None:
-        supervisor.note_request_port(request)
-    return await call_next(request)
+class ResearchPortMiddleware:
+    """Capture the bound port without replacing the ASGI receive channel."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            request_app = scope.get("app")
+            supervisor = getattr(getattr(request_app, "state", None), "research_supervisor", None)
+            if supervisor is not None:
+                supervisor.note_server_port(scope.get("server"))
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(ResearchPortMiddleware)
 
 
 # img/media-src allow any https origin so HF model-card assets render (mirrors

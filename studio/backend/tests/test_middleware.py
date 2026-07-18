@@ -471,6 +471,49 @@ class TestSecurityHeadersMiddleware:
         assert b"server" in names
 
 
+class TestResearchPortMiddleware:
+    def test_is_pure_asgi_and_forwards_receive_unchanged(self, main_module):
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        cls = main_module.ResearchPortMiddleware
+        assert not issubclass(cls, BaseHTTPMiddleware)
+        assert not hasattr(cls, "dispatch")
+
+        seen = {}
+
+        class Supervisor:
+            def note_server_port(self, server):
+                seen["server"] = server
+
+        async def inner_app(scope, receive, send):
+            seen["receive"] = receive
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+        request_app = type("App", (), {})()
+        request_app.state = type("State", (), {"research_supervisor": Supervisor()})()
+        sentinel_receive = object()
+
+        async def send(_message):
+            return None
+
+        asyncio.run(
+            cls(inner_app)(
+                {
+                    "type": "http",
+                    "path": "/api/research/runs/run-1/events",
+                    "app": request_app,
+                    "server": ("127.0.0.1", 4321),
+                },
+                sentinel_receive,
+                send,
+            )
+        )
+
+        assert seen["receive"] is sentinel_receive
+        assert seen["server"] == ("127.0.0.1", 4321)
+
+
 # /api/health auth gate
 
 

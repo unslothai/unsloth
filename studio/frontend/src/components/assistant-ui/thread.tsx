@@ -4071,8 +4071,18 @@ const CopyButton: FC = () => {
 
 const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
+  const isResearchMessage = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { researchRunId?: unknown } }
+        | undefined
+    )?.custom;
+    return typeof custom?.researchRunId === "string";
+  });
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+
+  if (isResearchMessage) return null;
 
   return (
     <TooltipIconButton

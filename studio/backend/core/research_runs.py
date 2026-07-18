@@ -22,7 +22,7 @@ from core.inference.tools import RAG_SOURCES_SENTINEL, execute_tool
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
 from loggers import get_logger
 from storage import research_runs_db as db
-from storage.studio_db import get_chat_message, upsert_chat_message
+from storage.studio_db import get_chat_message, list_chat_messages, upsert_chat_message
 
 logger = get_logger(__name__)
 _URL_BLOCK = re.compile(
@@ -40,6 +40,8 @@ _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
 _MAX_ERROR_CHARS = 500
+_MAX_CONTEXT_CHARS = 24_000
+_MAX_CONTEXT_MESSAGE_CHARS = 6_000
 
 _REPORT_SYSTEM_PROMPT = """You are writing a rigorous, self-contained research report.
 
@@ -155,6 +157,46 @@ def _extract_text(message: dict) -> str:
             if isinstance(part, dict) and part.get("type") == "text"
         ).strip()
     return ""
+
+
+def _research_question_context(thread_id: str, user_message_id: str) -> tuple[str, str]:
+    messages = list_chat_messages(thread_id)
+    by_id = {str(message["id"]): message for message in messages}
+    user = by_id.get(user_message_id)
+    question = _extract_text(user or {})
+    if not user:
+        return question, "[]"
+
+    ancestors: list[dict] = []
+    seen = {user_message_id}
+    parent_id = user.get("parentId")
+    while isinstance(parent_id, str) and parent_id and parent_id not in seen:
+        seen.add(parent_id)
+        parent = by_id.get(parent_id)
+        if parent is None:
+            break
+        ancestors.append(parent)
+        parent_id = parent.get("parentId")
+    ancestors.reverse()
+
+    remaining = _MAX_CONTEXT_CHARS
+    turns: list[dict[str, str]] = []
+    for message in reversed(ancestors):
+        text = _extract_text(message).strip()
+        role = str(message.get("role") or "").strip()
+        if not text or role not in {"user", "assistant"}:
+            continue
+        text = text[:_MAX_CONTEXT_MESSAGE_CHARS]
+        if len(text) > remaining:
+            text = text[:remaining]
+        if not text:
+            break
+        turns.append({"role": role, "content": text})
+        remaining -= len(text)
+        if remaining <= 0:
+            break
+    turns.reverse()
+    return question, json.dumps(turns, ensure_ascii = False)
 
 
 def _parse_json_object(text: str) -> dict:
@@ -446,10 +488,9 @@ class ResearchSupervisor:
                 )
                 await asyncio.sleep(1)
 
-    def note_request_port(self, request: Any) -> None:
+    def note_server_port(self, server: Any) -> None:
         if isinstance(getattr(self.app.state, "server_port", None), int):
             return
-        server = getattr(request, "scope", {}).get("server")
         if (
             isinstance(server, tuple)
             and len(server) >= 2
@@ -457,6 +498,9 @@ class ResearchSupervisor:
             and server[1] > 0
         ):
             self.app.state.research_request_port = server[1]
+
+    def note_request_port(self, request: Any) -> None:
+        self.note_server_port(getattr(request, "scope", {}).get("server"))
 
     async def _loop(self) -> None:
         while not self._stopping.is_set():
@@ -890,8 +934,9 @@ class ResearchSupervisor:
                 return
 
     async def _plan(self, run: dict) -> None:
-        user = await asyncio.to_thread(get_chat_message, run["threadId"], run["userMessageId"])
-        question = _extract_text(user or {})
+        question, conversation_context = await asyncio.to_thread(
+            _research_question_context, run["threadId"], run["userMessageId"]
+        )
         if not question:
             raise ValueError("User message has no text to research")
         max_steps = int(run["config"]["budgets"]["maxSteps"])
@@ -905,7 +950,14 @@ class ResearchSupervisor:
                         run["config"].get("websitePolicy"),
                     ),
                 },
-                {"role": "user", "content": question},
+                {
+                    "role": "user",
+                    "content": (
+                        "Prior conversation context as JSON (oldest to newest; use it only to "
+                        f"resolve references in the latest request):\n{conversation_context}\n\n"
+                        f"Latest research request:\n{question}"
+                    ),
+                },
             ],
             json_mode = True,
             report_progress = False,
@@ -946,10 +998,9 @@ class ResearchSupervisor:
         sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
-        question_message = await asyncio.to_thread(
-            get_chat_message, run["threadId"], run["userMessageId"]
+        question, conversation_context = await asyncio.to_thread(
+            _research_question_context, run["threadId"], run["userMessageId"]
         )
-        question = _extract_text(question_message or {})
         reset = db.prepare_execution_resume if resuming else db.reset_execution_steps
         written = await asyncio.to_thread(reset, run["id"], self.worker_id)
         await self._check_worker_write(run["id"], written)
@@ -1021,6 +1072,7 @@ class ResearchSupervisor:
                     {
                         "role": "user",
                         "content": (
+                            f"Conversation context JSON:\n{conversation_context}\n\n"
                             f"Question:\n{question}\n\n"
                             f"Approved plan (guidance only):\n"
                             f"{json.dumps(run['plan'], ensure_ascii = False)}\n\n"
@@ -1222,7 +1274,9 @@ class ResearchSupervisor:
                 {
                     "role": "user",
                     "content": (
-                        f"<research_question>\n{_extract_text(question_message or {})}\n"
+                        f"<conversation_context_json>\n{conversation_context}\n"
+                        f"</conversation_context_json>\n\n"
+                        f"<research_question>\n{question}\n"
                         f"</research_question>\n\n"
                         f"<approved_plan>\n{json.dumps(run['plan'], ensure_ascii = False)}\n"
                         f"</approved_plan>\n\n"
