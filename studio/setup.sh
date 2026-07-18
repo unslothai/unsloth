@@ -36,6 +36,10 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
+#
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default) or "cpu". When "cpu", forces
+#                               the CPU-only prebuilt bundle on GPU hosts.
+#                               Fixes Intel iGPU Vulkan crashes (#7213).
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -1358,6 +1362,12 @@ else
         # AMD was detected but gfx resolution failed; tell the installer ROCm is
         # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
         _PREBUILT_CMD+=(--has-rocm)
+    fi
+    # UNSLOTH_LLAMA_CPP_BACKEND: "auto" (default) or "cpu" -- forces the CPU-only
+    # prebuilt, bypassing Vulkan/CUDA/ROCm selection. Fixes Intel iGPU Vulkan
+    # crashes (#7213). Matches install_llama_prebuilt.py --cpu-fallback.
+    if [ "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" = "cpu" ]; then
+        _PREBUILT_CMD+=(--cpu-fallback)
     fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
