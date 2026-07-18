@@ -1153,9 +1153,10 @@ def unsloth_save_model(
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
 
             _dev_budget = _device_vram_budget(W.device)
-            if _dev_budget is not None and (
-                torch.cuda.memory_allocated(W.device) + W.nbytes
-            ) < _dev_budget:
+            if (
+                _dev_budget is not None
+                and (torch.cuda.memory_allocated(W.device) + W.nbytes) < _dev_budget
+            ):
                 # Fits on W's own GPU -> keep it there.
                 state_dict[name] = W
             elif W.device.type != "cuda":
