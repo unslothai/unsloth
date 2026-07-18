@@ -495,6 +495,22 @@ def test_fp8_config_uses_per_row_granularity():
     assert grans and all(isinstance(g, per_row) for g in grans), f"expected all PerRow, got {gran}"
 
 
+def test_fp8_config_pins_torch_kernel_preference():
+    """FP8 must pin KernelPreference.TORCH. The AUTO default silently switches the weight
+    quantize to the MSLK kernel whenever an mslk package is importable, which changes fp8
+    scale rounding bitwise (measured 8/8 FLUX matrices differ) and would break the hosted
+    prequant bit-identity invariant; the mslk path is also slower under torch.compile."""
+    pytest.importorskip("torchao.quantization")
+    try:
+        from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
+    except Exception:
+        pytest.skip("torchao build without KernelPreference")
+    cfg = tq._make_quant_config(TQ_FP8)
+    if not hasattr(cfg, "kernel_preference"):
+        pytest.skip("torchao config without kernel_preference")
+    assert cfg.kernel_preference == KernelPreference.TORCH
+
+
 def test_quantize_transformer_applies_and_marks(monkeypatch):
     monkeypatch.setattr(
         tq, "select_transformer_quant_scheme", lambda target, mode, family = None: TQ_FP8

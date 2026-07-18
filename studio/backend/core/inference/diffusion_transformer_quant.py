@@ -364,10 +364,24 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         import inspect
         from torchao.quantization import PerRow
         fp8_kwargs: dict = {"granularity": PerRow()}
-        if "activation_value_lb" in inspect.signature(
-            Float8DynamicActivationFloat8WeightConfig
-        ).parameters:
+        config_params = inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
+        if "activation_value_lb" in config_params:
             fp8_kwargs["activation_value_lb"] = 1e-12
+        # Pin the plain-torch quantize kernel. The default AUTO silently switches to the MSLK
+        # kernel whenever an mslk package is importable (sm90+), which changes fp8 scale
+        # rounding BITWISE (measured: 8/8 FLUX matrices differ, scales ~55% of bytes) -- so a
+        # box that merely gains mslk would break the hosted-prequant bit-identity invariant.
+        # Measured on B200 the mslk path is also SLOWER compiled (opaque extern call blocks
+        # inductor's quantize fusion: FLUX.1 fp8 e2e 1.149 -> 1.624 s), so the pin costs nothing.
+        if "kernel_preference" in config_params:
+            try:
+                from torchao.quantization.quantize_.common.kernel_preference import (
+                    KernelPreference,
+                )
+
+                fp8_kwargs["kernel_preference"] = KernelPreference.TORCH
+            except Exception:  # noqa: BLE001 — enum moved: keep the library default
+                pass
         try:
             from torchao.float8 import Float8MMConfig
             return Float8DynamicActivationFloat8WeightConfig(
