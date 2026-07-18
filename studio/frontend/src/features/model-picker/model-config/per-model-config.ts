@@ -272,6 +272,10 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
+    // Snapshot the user's existing entries before merging so eviction can
+    // protect them: importing old load settings must never discard a newer
+    // per-model config the user already has.
+    const existingKeys = new Set(Object.keys(map));
     const migratedKeys = mergeLegacyEntries(
       map,
       legacy as Record<string, unknown>,
@@ -280,11 +284,10 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    // Protect the just-migrated entries during eviction. If the budget cannot
-    // fit them (e.g. storage is full of future-schema records an older client
-    // cannot evict), leave the flag unset so migration retries once space frees
-    // up rather than marking it complete and dropping the migrated config.
-    if (!enforceStorageBudget(map, new Set(migratedKeys))) {
+    // Protect the pre-existing entries during eviction so only just-migrated
+    // legacy entries are dropped when over budget; a stale import can never
+    // evict a config the user already had.
+    if (!enforceStorageBudget(map, existingKeys)) {
       return;
     }
     if (writeMap(map)) {
