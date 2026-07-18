@@ -124,15 +124,30 @@ def test_compose_preexec_passes_real_parent_pid(monkeypatch):
 
 
 def test_spawn_parent_pid_prefers_multiprocessing(monkeypatch):
-    # multiprocessing captures the spawning parent's pid at spawn; it stays put
-    # even after that parent dies, so an orphaned worker (getppid() now 1) still
-    # compares against the real original parent rather than looking like a
-    # healthy PID-1 child.
+    # spawn/fork: multiprocessing captures the spawning parent's pid (== our OS
+    # parent) at spawn; it stays put even after that parent dies, so an orphaned
+    # worker (getppid() now 1) still compares against the real original parent
+    # rather than looking like a healthy PID-1 child.
     import multiprocessing
 
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: "spawn")
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242))
     monkeypatch.setattr(pl.os, "getppid", lambda: 1)  # pretend we were reparented
     assert pl._spawn_parent_pid() == 4242
+
+
+def test_spawn_parent_pid_forkserver_uses_getppid(monkeypatch):
+    # forkserver: parent_process().pid is the LOGICAL requester, but our OS
+    # parent is the forkserver. Using the logical pid would make the guard kill a
+    # healthy worker, so the real (forkserver) getppid() must win.
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: "forkserver")
+    monkeypatch.setattr(
+        multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242)
+    )
+    monkeypatch.setattr(pl.os, "getppid", lambda: 6080)  # the forkserver
+    assert pl._spawn_parent_pid() == 6080
 
 
 def test_spawn_parent_pid_falls_back_to_getppid(monkeypatch):
@@ -140,6 +155,7 @@ def test_spawn_parent_pid_falls_back_to_getppid(monkeypatch):
     # parent, so use the live getppid().
     import multiprocessing
 
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: "fork")
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
     monkeypatch.setattr(pl.os, "getppid", lambda: 777)
     assert pl._spawn_parent_pid() == 777
@@ -321,6 +337,42 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
         proc.kill()
         proc.wait(timeout = 5)
         assert _wait_dead(child_pid, 5.0), "mp child orphaned after parent SIGKILL"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "forkserver PDEATHSIG is Linux-only")
+def test_bind_does_not_kill_forkserver_worker(tmp_path):
+    # A forkserver worker's OS parent is the forkserver, not the logical process
+    # that requested it; binding must not mistake that for a reparent and exit(1)
+    # before the target runs. The child writes a marker so we can prove it ran.
+    marker = tmp_path / "ran.txt"
+    mid = tmp_path / "mid_fs.py"
+    mid.write_text(
+        "import sys, time, multiprocessing as mp\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "from utils.process_lifetime import bind_current_process_to_parent_lifetime\n"
+        "def _child(path):\n"
+        "    bind_current_process_to_parent_lifetime()\n"
+        f"    open(path, 'w').write('ran')\n"
+        "    time.sleep(300)\n"
+        "if __name__ == '__main__':\n"
+        "    p = mp.get_context('forkserver').Process(target = _child, "
+        f"args = ({str(marker)!r},), daemon = True)\n"
+        "    p.start()\n"
+        "    print(p.pid, flush = True)\n"
+        "    time.sleep(300)\n"
+    )
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    try:
+        child_pid = int(proc.stdout.readline().strip())
+        # The child must survive bind and reach its target (write the marker),
+        # not exit(1) immediately as it did when expected==logical parent pid.
+        deadline = time.time() + 5
+        while time.time() < deadline and not marker.exists():
+            time.sleep(0.05)
+        assert marker.exists(), "forkserver worker exited before running its target"
+        assert _alive(child_pid)
     finally:
         proc.kill()
 

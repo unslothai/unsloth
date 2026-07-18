@@ -175,17 +175,25 @@ def _pdeathsig_preexec(expected_parent_pid: int) -> None:
 
 
 def _spawn_parent_pid() -> int:
-    """The pid of the process that started us, captured at spawn and stable even
-    after that parent dies. multiprocessing records it at fork/spawn, so it
-    survives reparenting to init -- unlike getppid(), which returns 1 once the
-    child is orphaned and would make an already-dead parent look like a healthy
-    PID-1 one. Fall back to the live getppid() when we were not started via
-    multiprocessing (or the lookup fails)."""
+    """The pid to compare our live getppid() against -- our real OS parent.
+
+    For a spawn/fork multiprocessing worker, multiprocessing records the
+    spawning parent's pid, which is also our OS parent and stays put after it
+    dies, so it survives reparenting to init -- unlike getppid(), which returns 1
+    once orphaned and would make an already-dead parent look like a healthy PID-1
+    one. For a forkserver worker, though, parent_process().pid is the LOGICAL
+    process that requested us while our OS parent is the forkserver, so using it
+    would make _pdeathsig_preexec kill a healthy child immediately; there we use
+    the live getppid() (the forkserver). Also getppid() when not started via
+    multiprocessing, or on any lookup failure."""
     try:
         import multiprocessing
-        parent = multiprocessing.parent_process()
-        if parent is not None and parent.pid is not None:
-            return parent.pid
+        # forkserver: OS parent (getppid) != recorded logical parent, so the
+        # recorded pid is not a valid reparent baseline -- trust getppid().
+        if multiprocessing.get_start_method(allow_none = True) != "forkserver":
+            parent = multiprocessing.parent_process()
+            if parent is not None and parent.pid is not None:
+                return parent.pid
     except Exception:
         pass
     return os.getppid()
