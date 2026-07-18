@@ -2091,7 +2091,7 @@ exit 0
             # a native win_arm64 CUDA wheel exists on the index.
             $global:LASTEXITCODE = -1
             try {
-                & uv pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --index-url $TorchIndexUrl *> $null
+                & uv pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --default-index $TorchIndexUrl *> $null
                 $_nativeCudaTorchOk = ($LASTEXITCODE -eq 0)
             } catch { $_nativeCudaTorchOk = $false } finally { $ErrorActionPreference = $prevEapProbe }
             if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
