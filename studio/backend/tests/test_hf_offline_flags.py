@@ -153,12 +153,12 @@ def test_embedding_loader_forces_local_only_when_offline():
     importing the loader drags in sentence_transformers/torch.
     """
     src = _read_backend("core/rag/embeddings.py")
-    assert "local_only = hf_env_offline()" in src, (
-        "core/rag/embeddings.py must capture the offline state once in _get()"
-    )
-    assert "_guard_model_security(name, local_only)" in src, (
-        "the security guard must receive the captured value, not re-read the env"
-    )
+    assert (
+        "local_only = hf_env_offline()" in src
+    ), "core/rag/embeddings.py must capture the offline state once in _get()"
+    assert (
+        "_guard_model_security(name, local_only)" in src
+    ), "the security guard must receive the captured value, not re-read the env"
     assert "local_files_only = local_only" in src, (
         "SentenceTransformer must be pinned with the SAME captured value; a second "
         "hf_env_offline() read can flip to False and fetch the unscanned repo"
