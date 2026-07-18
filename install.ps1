@@ -2238,11 +2238,17 @@ exit 0
         # against ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ at parse time, so splicing is safe);
         # previously it was silently dropped and the user got stock unsloth.
         $_shArgs = ''
-        if ($PackageName -ne 'unsloth') { $_shArgs = ' -s -- --package ' + $PackageName }
+        if ($PackageName -ne 'unsloth') { $_shArgs = ' --package ' + $PackageName }
+        # Download to a file instead of `curl | sh`: a failed download feeds sh an
+        # empty stdin (exit 0), and on a rerun the stale venv then passes the torch
+        # probe below, reporting success without the installer ever running. Exit 86
+        # is the "download failed, installer never ran" sentinel checked after the
+        # run. /root/.unsloth already exists (skip-marker mkdir above) and the file
+        # is removed with it on uninstall.
         if ($_instRef -eq 'main') {
-            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh | sh' + $_shArgs
+            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://unsloth.ai/install.sh -o /root/.unsloth/unsloth-install.sh || exit 86; sh /root/.unsloth/unsloth-install.sh' + $_shArgs
         } else {
-            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh | sh' + $_shArgs
+            $wslInstall = $_fwdEnv + 'export DEBIAN_FRONTEND=noninteractive UNSLOTH_WSL_LLAMA_DEFERRED=1; export UNSLOTH_INSTALL_REF=' + $_instRef + '; apt-get update -y >/dev/null; apt-get install -y build-essential cmake git curl pciutils libcurl4-openssl-dev >/dev/null; curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/' + $_instRef + '/install.sh -o /root/.unsloth/unsloth-install.sh || exit 86; sh /root/.unsloth/unsloth-install.sh' + $_shArgs
         }
         # install.sh may exit non-zero on the optional llama.cpp prebuilt step (no aarch64 prebuilt)
         # even though torch + unsloth + Studio install; lower EAP so it doesn't abort under Stop.
@@ -2256,6 +2262,15 @@ exit 0
             $ErrorActionPreference = $prevEapWsl
         }
         Write-Host ""
+        # Sentinel from the download step above: the installer never ran, so the
+        # probes below would only re-validate a stale venv from a previous install.
+        if ($wslRc -eq 86) {
+            step "wsl" "could not download install.sh inside WSL (network or bad ref) -- the installer never ran." "Yellow"
+            Restore-StudioVenvRollback
+            $global:LASTEXITCODE = 1
+            if ($PSCommandPath) { exit 1 }
+            return
+        }
         # $wslRc can be non-zero from the llama.cpp prebuilt step even on success, so verify torch.cuda directly.
         $torchOk = $false
         $prevEapChk = $ErrorActionPreference
@@ -2306,7 +2321,14 @@ exit 0
                     $_serverOk = ($LASTEXITCODE -eq 0)
                 } catch {} finally { $ErrorActionPreference = $prevEapS2 }
                 if ($_serverOk) { substep "Studio web-server deps installed." "Green" }
-                else { substep "(could not auto-install Studio server deps; 'unsloth studio' may fail to start)" "Yellow" }
+                else {
+                    # The missing set includes typer, so even the plain unsloth CLI
+                    # dies; creating shims and reporting success over that state
+                    # advertises commands that cannot run. Route to the failure
+                    # path (rollback + non-zero), like the CLI-missing case above.
+                    substep "Studio server deps missing and the repair failed -- not reporting success over a broken install." "Yellow"
+                    $torchOk = $false
+                }
             }
             # The uv-managed venv ships no `pip`, but unsloth-zoo's check_pip() finds `uv pip` only
             # when uv is on PATH. Seed pip so `save_pretrained_gguf` works regardless.

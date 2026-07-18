@@ -2060,6 +2060,13 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
             # and the failure exit fire instead of reporting a working install.
             _LLAMA_CPP_DEGRADED=true
         fi
+    else
+        # Provisioner unreachable (not packaged and the GitHub fetch failed). The
+        # native deferral above may have skipped the CPU source build expecting
+        # this block to build; without a server that must surface as degraded so
+        # the CPU-prebuilt last resort fires instead of reporting success.
+        substep "CUDA provision script unavailable (offline?); cannot build CUDA llama.cpp" "$C_WARN"
+        [ -f "$LLAMA_SERVER_BIN" ] || _LLAMA_CPP_DEGRADED=true
     fi
 fi
 

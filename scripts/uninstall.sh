@@ -216,8 +216,13 @@ _remove_path "$HOME/.unsloth/studio"
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
-# provision_llama_cuda.sh fetched by the WoA/Spark CUDA-build path. No-op when absent.
+# WoA/Spark CUDA-build path artifacts (provision script fetched by setup.sh,
+# install.ps1's background-build runner + log, and the persisted shortcut-skip
+# marker). No-ops when absent.
 _remove_path "$HOME/.unsloth/provision_llama_cuda.sh"
+_remove_path "$HOME/.unsloth/run_llama_build.sh"
+_remove_path "$HOME/.unsloth/llama_cuda_build.log"
+_remove_path "$HOME/.unsloth/.skip-wsl-windows-shortcut"
 _remove_path "$HOME/.unsloth/.cache"
 # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
 # default mode. No-op in env/custom mode (nested under the custom root) and absent.

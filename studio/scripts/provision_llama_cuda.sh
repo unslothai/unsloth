@@ -91,22 +91,37 @@ find_nvcc() {
     if [ -n "$_v" ]; then printf '%s\n' "$_v"; return 0; fi
     command -v nvcc 2>/dev/null || ls /usr/local/cuda*/bin/nvcc 2>/dev/null | sort -V | tail -1
 }
+# The driver caps which CUDA major can RUN: cu13 binaries need a 580+ driver,
+# and minor-version compatibility never crosses majors, so a server built with
+# a toolkit newer than the driver loads nothing. Read the driver's supported
+# major (all recent drivers print "CUDA Version: X.Y"); unparseable stays empty
+# and keeps the previous install-13.3 behavior (Spark-class drivers all parse).
+_DRV_CUDA_MAJOR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\)\..*/\1/p' | head -1)"
+case "$_DRV_CUDA_MAJOR" in *[!0-9]*) _DRV_CUDA_MAJOR="" ;; esac
+_nvcc_major_of() { "$1" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p' | head -1; }
+
 NVCC="$(find_nvcc)"
 # A CUDA < 13 toolkit cannot build for the sm_121 Spark class (and CUDA < 13.3
 # hits the glibc >= 2.41 rsqrt clash from the header) -- keeping it made every
 # rerun fail configure/build and exit with the CPU server forever. When apt can
-# provide 13.3, upgrade past a stale toolkit; find_nvcc's sort -V then prefers
-# the new install, and if the install fails the old toolkit remains the last
-# resort (previous behavior, still fine on non-Spark hosts like GH200 + cu12x).
+# provide 13.3 AND the driver can run cu13, upgrade past a stale toolkit;
+# find_nvcc's sort -V then prefers the new install, and if the install fails
+# the old toolkit remains the last resort (previous behavior, still fine on
+# non-Spark hosts like GH200 + cu12x, which the driver gate now protects).
 _nvcc_stale=0
 if [ -n "$NVCC" ]; then
-    _nvcc_major="$("$NVCC" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p' | head -1)"
-    if [ -n "$_nvcc_major" ] && [ "$_nvcc_major" -lt 13 ] 2>/dev/null; then
+    _nvcc_major="$(_nvcc_major_of "$NVCC")"
+    if [ -n "$_nvcc_major" ] && [ "$_nvcc_major" -lt 13 ] 2>/dev/null \
+            && [ -n "$_DRV_CUDA_MAJOR" ] && [ "$_DRV_CUDA_MAJOR" -ge 13 ]; then
         log "existing CUDA $_nvcc_major toolkit ($NVCC) predates this machine class; provisioning CUDA 13.3 alongside it"
         _nvcc_stale=1
     fi
 fi
-if { [ -z "$NVCC" ] || [ "$_nvcc_stale" -eq 1 ]; } && [ "$HAVE_APT" -eq 1 ]; then
+if [ -z "$NVCC" ] && [ -n "$_DRV_CUDA_MAJOR" ] && [ "$_DRV_CUDA_MAJOR" -lt 13 ]; then
+    # No toolkit and the driver cannot run cu13: installing 13.3 would build an
+    # unloadable server. Bail to the no-toolkit message (CPU fallback stands).
+    log "driver supports CUDA ${_DRV_CUDA_MAJOR}.x only; not installing CUDA 13.3 (its binaries need a 580+ driver)"
+elif { [ -z "$NVCC" ] || [ "$_nvcc_stale" -eq 1 ]; } && [ "$HAVE_APT" -eq 1 ]; then
     [ -z "$NVCC" ] && log "CUDA toolkit (nvcc) not found - installing CUDA 13.3 (matches torch cu13x; avoids glibc>=2.41 rsqrt clash)"
     # shellcheck disable=SC1091
     . /etc/os-release 2>/dev/null || true
@@ -131,6 +146,25 @@ if { [ -z "$NVCC" ] || [ "$_nvcc_stale" -eq 1 ]; } && [ "$HAVE_APT" -eq 1 ]; the
         fi
     fi
     NVCC="$(find_nvcc)"
+fi
+
+# Final sanity: never build with a toolkit whose major the driver cannot run
+# (find_nvcc prefers the highest install, which may be a manually added 13.x on
+# an older-driver host). Prefer the newest toolkit at or below the driver's
+# major; with none, fall through to the no-toolkit exit.
+if [ -n "$NVCC" ] && [ -n "$_DRV_CUDA_MAJOR" ]; then
+    _nvcc_major="$(_nvcc_major_of "$NVCC")"
+    if [ -n "$_nvcc_major" ] && [ "$_nvcc_major" -gt "$_DRV_CUDA_MAJOR" ] 2>/dev/null; then
+        _alt="$(ls -d /usr/local/cuda-[0-9]*/bin/nvcc 2>/dev/null | sort -V \
+            | awk -F'cuda-' -v m="$_DRV_CUDA_MAJOR" '{ split($2, v, /[./]/); if (v[1] + 0 <= m + 0) print }' | tail -1)"
+        if [ -n "$_alt" ]; then
+            log "CUDA $_nvcc_major toolkit exceeds the driver's supported major ($_DRV_CUDA_MAJOR); using $_alt instead"
+            NVCC="$_alt"
+        else
+            log "the only CUDA toolkit ($_nvcc_major.x) is newer than the driver supports (CUDA $_DRV_CUDA_MAJOR.x); a build would not load"
+            NVCC=""
+        fi
+    fi
 fi
 
 if [ -z "$NVCC" ]; then
