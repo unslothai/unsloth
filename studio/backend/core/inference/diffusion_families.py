@@ -196,6 +196,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/FLUX.2-dev-FP8"),
             ("fp8", "unsloth/FLUX.2-dev-FP8"),
         ),
+        # Pre-cast Mistral-Small-24B conditioner (bf16 ~48 GB dense, ~24.7 GB pre-cast).
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/FLUX.2-dev-FP8"),),
         aliases = ("flux2-dev", "flux2dev"),
         # LoRA training via the DiT trainer (QLoRA nf4 by default); the base repo is gated, so
         # training requires an HF token with the FLUX.2-dev license accepted.
@@ -247,6 +249,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image",
         # int8 only: fp8 is family-denied (_FAMILY_SCHEME_DENY) so a repo entry would be dead.
         prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
+        # Pre-cast Qwen2.5-VL-7B (bf16 ~16.6 GB dense, ~8.8 GB pre-cast). The DiT fp8 denial
+        # is a transformer-scheme rule; the layerwise TE cast is unaffected.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
         # LoRA training via the DiT trainer, defaulting to the prequant nf4 repo (QLoRA).
