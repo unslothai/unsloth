@@ -1008,6 +1008,22 @@ class VideoBackend:
             pipe_kwargs["torch_dtype"] = {"vae": torch.float32, "default": dtype}
         if hf_token:
             pipe_kwargs["token"] = hf_token
+        # A hosted pre-cast fp8 text encoder (when the family ships one and the runtime cast
+        # would engage) skips the dense TE download -- for LTX's Gemma3-27B that is the ~50 GB
+        # heavyweight of the load. quantize_text_encoders below re-applies the cast idempotently.
+        from .diffusion_te_prequant import te_prequant_pipe_kwargs
+
+        pipe_kwargs.update(
+            te_prequant_pipe_kwargs(
+                fam,
+                repo_id if kind == "pipeline" else base,
+                te_quant_mode = text_encoder_quant,
+                target = target,
+                dtype = dtype,
+                hf_token = hf_token,
+                logger = logger,
+            )
+        )
         if kind == "pipeline":
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub (its sweep would
             # also pull root checkpoints + duplicate shards); hub id when pre-download was skipped.
