@@ -450,6 +450,12 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
+    # Idempotent: a pre-cast encoder (diffusion_te_prequant) arrives with the layerwise hooks
+    # already installed, and re-registering the same hook name raises -- which would make
+    # quantize_text_encoders report the (actually engaged) cast as failed.
+    if _has_layerwise_hooks(encoder):
+        return
+
     # Layerwise casting stores each leaf's weights in fp8 and upcasts per forward. Two things on a
     # transformers encoder push an fp8 weight/activation into an op that can't handle it, both
     # crashing only at generation, so skip the offending modules:
@@ -485,6 +491,16 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         # fp8 grid, hurting fidelity.
         skip_modules_classes = (torch.nn.Embedding,),
     )
+
+
+def _has_layerwise_hooks(encoder: Any) -> bool:
+    """True when any submodule already carries the diffusers layerwise-casting hook."""
+    for module in encoder.modules():
+        registry = getattr(module, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        if callable(get_hook) and get_hook("layerwise_casting") is not None:
+            return True
+    return False
 
 
 def _cast_nvfp4(encoder: Any, target: Any) -> None:

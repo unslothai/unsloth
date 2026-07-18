@@ -95,8 +95,10 @@ def main(argv = None) -> int:
         "te_class": encoder_cls_name,
         "torch_dtype": args.dtype,
         "cast_backend": "diffusers_layerwise",
-        "torch_version": torch.__version__,
-        "transformers_version": transformers.__version__,
+        # str(): torch.__version__ is a TorchVersion object; pickling it into the
+        # checkpoint makes torch.load(weights_only=True) reject the whole artifact.
+        "torch_version": str(torch.__version__),
+        "transformers_version": str(transformers.__version__),
     }
     ckpt = {
         "format": TE_PREQUANT_FORMAT,

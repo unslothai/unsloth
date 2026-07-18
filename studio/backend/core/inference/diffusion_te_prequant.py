@@ -5,7 +5,7 @@
 
 The runtime ``text_encoder_quant=fp8`` path (``diffusion_precision._cast_fp8``) downloads
 the full bf16 text encoder and layerwise-casts it in place on every load. For the
-heavyweight encoders (LTX's Gemma3-27B ~50 GB, FLUX.2-dev's Mistral-24B ~48 GB,
+heavyweight encoders (LTX's Gemma3-12B ~49 GB fp32, FLUX.2-dev's Mistral-24B ~48 GB,
 Qwen-Image's Qwen2.5-VL ~16.6 GB) that download dominates a fresh machine's load. When the
 encoder was already cast and saved (``scripts/build_te_prequant_checkpoint.py``), this loads
 the ~half-size fp8-storage state dict directly: meta-init the encoder skeleton,
