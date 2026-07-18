@@ -336,10 +336,12 @@ jobs:
             # full Studio image (build-studio/merge-studio below) owns
             # :latest, matching what the previous production image shipped.
             # Only tag :core when the workflow ran on the default branch
-            # AND the operator did NOT override unsloth_ref on dispatch.
-            # Without the second condition a maintainer testing a feature
-            # SHA from main could overwrite :core with non-main source.
-            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            # AND the operator did NOT override ANY baked input on dispatch
+            # (unsloth_ref, unsloth_zoo_ref, notebooks_ref, llama_prebuilt_tag;
+            # push/schedule leave inputs null == '', and the 'main' defaults
+            # are accepted explicitly). Without these conditions a maintainer
+            # testing a feature ref could overwrite :core with non-main bits.
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
             type=schedule,pattern=core-nightly
             type=sha,prefix=core-sha-,format=short
@@ -499,8 +501,8 @@ jobs:
             # The full Studio image owns the unprefixed namespace, headed by
             # :latest plus a stable :studio alias (default branch only). Tag
             # pushes publish the version tag. Same gating rationale as the core job.
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
-            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short
@@ -551,7 +553,7 @@ jobs:
           # tag list the merge step pushed, so the smoke test pulls the right ref).
           flavor: latest=false
           tags: |
-            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
             type=schedule,pattern=core-nightly
             type=sha,prefix=core-sha-,format=short
@@ -580,8 +582,8 @@ jobs:
           # pulls the tag just published, not an implicit latest=auto :latest.
           flavor: latest=false
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
-            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
+            type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag
             type=schedule,pattern=nightly
             type=sha,prefix=sha-,format=short
