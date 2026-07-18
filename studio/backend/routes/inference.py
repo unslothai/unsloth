@@ -6474,6 +6474,7 @@ async def _proxy_to_external_provider(
             prompt = _monitor_prompt_from_messages(payload.messages),
             context_length = None,
             subject = current_subject,
+            provider_type = provider_type,
         )
 
     client = ExternalProviderClient(
