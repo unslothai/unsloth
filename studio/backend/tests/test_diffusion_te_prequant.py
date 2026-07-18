@@ -441,7 +441,13 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
     # Module.dtype must report the COMPUTE dtype: pipelines derive tensor dtypes from it
     # (Flux2 feeds it to randn_tensor, which has no fp8 kernel).
     assert enc.dtype == torch.bfloat16
-    assert isinstance(enc, torch.nn.Sequential)
+    # EXACT class identity: a dynamic-subclass swap here broke transformers' kwargs-based
+    # output recording (Qwen3VLModel returned hidden_states=None; krea-2 crashed at encode).
+    assert type(enc) is torch.nn.Sequential
+    # An uncast sibling of the same (now property-patched) class keeps original behaviour.
+    sibling = torch.nn.Sequential(torch.nn.Linear(8, 8))
+    with pytest.raises(AttributeError):
+        sibling.dtype
     _cast_fp8(enc, target)  # must not raise
     assert enc[0].weight.dtype == torch.float8_e4m3fn
     assert enc.dtype == torch.bfloat16
