@@ -6652,8 +6652,7 @@ class LlamaCppBackend:
 
                         slot_dir = llama_slot_cache_root()
                         slot_dir.mkdir(parents = True, exist_ok = True)
-                        # Saved KV encodes chat content; keep it out of reach of
-                        # other local users.
+                        # Saved KV encodes chat content; keep it from other local users.
                         with contextlib.suppress(OSError):
                             os.chmod(slot_dir, 0o700)
                         cmd.extend(["--slot-save-path", str(slot_dir)])
@@ -8384,11 +8383,7 @@ class LlamaCppBackend:
         return True
 
     def _slot_launch_fingerprint(self) -> tuple:
-        # Launch config that saved KV validity depends on beyond the file itself:
-        # e.g. rope-scaling extra args change KV numerics without changing the
-        # state-file structure, so the server would restore them undetected.
-        # Sidecar weight files (LoRA, control vector) are stat'd, not just named:
-        # a re-exported adapter at the same path also invalidates saved KV.
+        # KV validity keys on extra args, stat'd sidecar weights, effective ctx.
         sidecars = []
         for path in self._sidecar_weight_files():
             try:
@@ -8400,13 +8395,13 @@ class LlamaCppBackend:
             tuple(self._extra_args or ()),
             tuple(sidecars),
             self._requested_n_ctx,
+            self._effective_context_length,
             getattr(self, "_cache_type_kv", None),
             self.effective_parallel_slots,
         )
 
     def _gguf_file_identity(self, path) -> Optional[tuple]:
-        # (size, mtime_ns) per shard, primary first: a split GGUF is all of its
-        # sibling shards, so KV validity keys on every file, not just the first.
+        # (size, mtime_ns) per shard: a split GGUF keys KV validity on every sibling.
         p = Path(path)
         paths = [p]
         m = _SHARD_FULL_RE.match(p.name)
@@ -8429,11 +8424,7 @@ class LlamaCppBackend:
     )
 
     def _sidecar_weight_files(self) -> list[str]:
-        # Operands of weight-modifying sidecar flags; their contents key KV
-        # validity like the GGUF itself. llama.cpp accepts comma-separated
-        # paths, and FNAME:SCALE items on the -scaled variants (older builds
-        # took FNAME SCALE as two argv entries), so expand every plausible
-        # reading and let stat() in the fingerprint decide which paths exist.
+        # llama.cpp: comma-separated paths, FNAME:SCALE on -scaled (older builds: FNAME SCALE).
         args = [str(a).strip() for a in (self._extra_args or ())]
         files: list[str] = []
         for i, arg in enumerate(args):
@@ -8449,8 +8440,7 @@ class LlamaCppBackend:
                 candidates.extend(pieces)
             if flag.endswith("-scaled"):
                 for item in list(candidates):
-                    # A ":<number>" tail is a scale, not part of the path;
-                    # rpartition keeps Windows drive prefixes intact.
+                    # ":<number>" tail is a scale; rpartition spares drive letters.
                     head, colon, tail = item.rpartition(":")
                     if not (colon and head):
                         continue
@@ -8465,10 +8455,7 @@ class LlamaCppBackend:
         return files
 
     def _prompt_cache_off(self) -> bool:
-        # Prompt caching off makes a restored slot unusable (no prompt reuse), so
-        # slot saves would be pure wasted I/O. Mirror llama.cpp's arg parser on
-        # the final argv: user extras are appended after Studio's own flags, so
-        # the last prompt-cache flag wins; env applies only when no flag is set.
+        # Caching off makes restores useless; last prompt-cache flag wins, env only when unset.
         last = None
         for arg in self._extra_args or ():
             flag = arg.strip().split("=", 1)[0]
@@ -8512,8 +8499,7 @@ class LlamaCppBackend:
         entries: list[dict] = []
         total_bytes = 0
         for slot in range(self.effective_parallel_slots):
-            # A request that went pending mid-save is waiting on the gate; stop
-            # burning its time on the remaining slots.
+            # A request pending mid-save waits on the gate; stop wasting its time.
             if should_abort is not None and should_abort():
                 break
             filename = f"resume-{token}-slot{slot}.bin"

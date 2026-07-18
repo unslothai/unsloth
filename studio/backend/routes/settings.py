@@ -90,8 +90,7 @@ class HelperPrecacheResponse(BaseModel):
 
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
-    # None = leave the stored value untouched, so a partial update (e.g. the
-    # keep-KV toggle) can't overwrite it or materialize the env-derived TTL.
+    # None leaves the stored value untouched (partial updates can't clobber it).
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
 
@@ -222,15 +221,15 @@ def update_openai_auto_switch(
             event = "settings.update_openai_auto_switch_failed",
             log = logger,
         ) from exc
-    if not keep_kv:
-        # Turning keep-KV off must also drop chat context already saved to disk
-        # by a previous idle unload, not just stop future saves.
+    idle_unload_active = get_auto_unload_idle_seconds() > 0
+    if not keep_kv or not idle_unload_active:
+        # Keep-KV off or idle unload disabled: drop already-saved chat context too.
         from core.inference.llama_keepwarm import purge_kv_resume
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,
-        idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        idle_unload_active = idle_unload_active,
         auto_unload_keep_kv = keep_kv,
     )
 

@@ -139,9 +139,7 @@ def set_openai_auto_switch(
     idle_seconds: Any,
     keep_kv: Any = None,
 ) -> tuple[bool, int, bool]:
-    """Set the auto-switch flags in one transaction so a settings PUT can't leave
-    one key updated and another stale. ``idle_seconds``/``keep_kv`` of ``None``
-    leave the stored value untouched."""
+    """One-transaction write; ``None`` leaves a stored value untouched."""
     parsed_enabled = _coerce_bool(enabled)
     if parsed_enabled is None:
         raise ValueError("OpenAI auto-switch must be true or false.")

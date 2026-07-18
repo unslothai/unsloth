@@ -79,8 +79,7 @@ export async function updateOpenAIAutoSwitchSettings(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       enabled,
-      // Omitted fields keep their stored value, so a keep-KV-only update can't
-      // persist an env-derived idle TTL under a disabled auto-switch gate.
+      // Omitted fields keep their stored value.
       ...(autoUnloadIdleSeconds === undefined
         ? {}
         : // biome-ignore lint/style/useNamingConvention: API schema

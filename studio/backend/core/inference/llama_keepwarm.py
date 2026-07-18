@@ -165,8 +165,7 @@ def inference_lifecycle_gate():
 
 
 def note_model_loaded(backend = None) -> None:
-    """Record a successful load: stamp activity and drop any reload stash so a
-    manual load clears it synchronously, not only on the next idle poll."""
+    """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
     resume = take_kv_resume()
     _set_last_unloaded(None)
@@ -243,13 +242,11 @@ def restore_kv_resume(backend, manifest) -> None:
         current = getattr(backend, "_gguf_path", None)
         same_gguf = bool(gguf and current) and Path(current).resolve() == Path(gguf).resolve()
         if same_gguf:
-            # Same path is not enough: any shard may have been overwritten with
-            # different weights between the unload and this reload.
+            # Same path is not enough: shards may have been rewritten meanwhile.
             identity = getattr(backend, "_gguf_file_identity", None)
             same_gguf = callable(identity) and identity(current) == manifest.get("gguf_stat")
         if same_gguf:
-            # Nor is the same file: a launch-override change (e.g. rope scaling)
-            # can invalidate KV numerics without tripping server-side checks.
+            # Nor the same file: launch overrides can invalidate KV numerics.
             fingerprint = getattr(backend, "_slot_launch_fingerprint", None)
             same_gguf = callable(fingerprint) and manifest.get("launch") == fingerprint()
         if same_gguf and binary and binary == getattr(backend, "_slot_save_binary", None):
@@ -369,10 +366,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             # at a different quant -- counts as activity so it survives one TTL
             # before its first request (loads bypass the activity middleware).
             async with _unload_gate():
-                # Under the gate: a mid-reload backend can report loaded before
-                # note_model_loaded() has consumed the saved-KV manifest, and
-                # purging the "stale" stash here would delete it out from under
-                # the restore.
+                # Purging the stash mid-reload would race the restore.
                 current = _loaded_identity(backend)
                 if current != seen_model:
                     seen_model = current
@@ -390,8 +384,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             )
                         except Exception as exc:
                             logger.debug("slot save before idle unload failed: %s", exc)
-                    # Re-read settings after the save: it can run long enough for
-                    # the user to disable idle unload or keep-KV meanwhile.
+                    # Re-read settings: the save can outlive a settings change.
                     ttl = get_auto_unload_idle_seconds()
                     if ttl <= 0 or not _is_idle(ttl):
                         if manifest:
@@ -400,11 +393,19 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     if manifest and not get_auto_unload_keep_kv():
                         _delete_resume_files(manifest)
                         manifest = None
-                    await asyncio.to_thread(backend.unload_model)
+                    try:
+                        await asyncio.to_thread(backend.unload_model)
+                    except Exception:
+                        # Failed unload means nothing will stash the manifest.
+                        if manifest:
+                            _delete_resume_files(manifest)
+                        raise
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
+                    elif manifest:
+                        _delete_resume_files(manifest)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
                     seen_model = None
         except Exception as exc:

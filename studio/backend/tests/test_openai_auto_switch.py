@@ -472,6 +472,77 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
     assert stash is not None and stash[0] == "unsloth/Idle-GGUF" and stash[1] == "Q4_K_M"
 
 
+def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    backend = _FakeBackend("unsloth/Idle-GGUF")
+    manifests = []
+
+    def _save(should_abort = None):
+        if manifests:
+            return None
+        saved.write_bytes(b"kv")
+        manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": saved.name}]}
+        manifests.append(manifest)
+        return manifest
+
+    def _unload():
+        raise RuntimeError("cuda teardown failed")
+
+    backend.save_slots_for_resume = _save
+    backend.unload_model = _unload
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if manifests and not saved.exists():
+                break
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert manifests and not saved.exists()
+    assert kw._kv_resume is None
+
+
+def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
+    # PUT leaves keep-KV on but makes idle unload inactive: saved KV must go too.
+    import routes.settings as settings_route
+    from core.inference import llama_keepwarm as kw
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    saved.write_bytes(b"kv")
+    kw._kv_resume = {
+        "identity": ("m", None, "m"),
+        "dir": str(tmp_path),
+        "slots": [{"id": 0, "filename": saved.name}],
+    }
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True)
+    )
+    monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = False)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    assert resp.idle_unload_active is False and resp.auto_unload_keep_kv is True
+    assert kw._kv_resume is None and not saved.exists()
+
+
 def test_audio_generate_is_tracked_as_inference_path():
     # Direct GGUF TTS uses the llama backend and can outlive the idle TTL, so
     # the keep-warm middleware must count it as in-flight inference.
@@ -3521,9 +3592,7 @@ def test_keep_kv_setting_roundtrip_and_default(monkeypatch):
 
 
 def test_stale_stash_cleanup_waits_for_lifecycle_gate(monkeypatch, tmp_path):
-    # A mid-reload backend reports loaded before note_model_loaded() restores the
-    # saved KV; the loop's stale-stash purge must wait on the lifecycle gate the
-    # reload holds instead of deleting the manifest out from under it.
+    # The loop's stale-stash purge must wait on the gate a mid-reload holds.
     import time
     from core.inference import llama_keepwarm as kw
 
@@ -3568,9 +3637,7 @@ def test_put_route_disabling_keep_kv_purges_saved_state(monkeypatch, tmp_path):
 
 
 def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
-    # Flipping the keep-KV toggle while idle unload runs purely off
-    # UNSLOTH_MODEL_IDLE_TTL must not materialize the env TTL as a stored value,
-    # which would gate it on the (off) auto-switch toggle and disable it.
+    # A keep-KV-only update must not materialize the env TTL as a stored value.
     import routes.settings as settings_route
     import storage.studio_db as db
 

@@ -212,6 +212,15 @@ def test_fingerprint_tracks_colon_scaled_adapter_rewrite(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_effective_context_length(tmp_path):
+    backend = _resume_backend(tmp_path)
+    backend._effective_context_length = 8192
+
+    before = backend._slot_launch_fingerprint()
+    backend._effective_context_length = 4096  # auto-fit landed smaller on reload
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
@@ -274,8 +283,7 @@ def test_explicit_cache_prompt_flag_overrides_env(monkeypatch, tmp_path):
 
 
 def test_user_cache_prompt_overrides_studio_no_cache_flag(monkeypatch, tmp_path):
-    # Windows full-offload sets --no-cache-prompt, but user extras are appended
-    # later in the argv, so an explicit --cache-prompt re-enables caching.
+    # User extras follow Studio's flags, so an explicit --cache-prompt wins.
     backend = _resume_backend(tmp_path)
     backend._prompt_cache_disabled = True
     backend._extra_args = ["--cache-prompt"]
