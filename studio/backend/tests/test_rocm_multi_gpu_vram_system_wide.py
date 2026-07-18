@@ -76,23 +76,35 @@ def _device(
 # ── Linux per-card sysfs ──
 
 
-def test_linux_per_card_keyed_by_card_number(monkeypatch, tmp_path):
+def test_linux_per_card_keyed_by_rocm_ordinal_via_pci(monkeypatch, tmp_path):
+    # A non-amdgpu adapter (Intel) owns card0; the AMD GPUs are card1/card2 and
+    # lack mem_info_vram_* files, so ROCm sees them as devices 0/1. The helper
+    # must key by ROCm ordinal (amdgpu cards in PCI order), NOT the DRM card
+    # number -- else device 1 would get card1 (AMD device 0) and device 0 nothing.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    files = {}
-    for card, used, total in ((10, 1, 8), (2, 40, 48)):
-        d = tmp_path / f"card{card}" / "device"
-        d.mkdir(parents = True)
-        (d / "mem_info_vram_used").write_text(str(used * 1024**3))
-        (d / "mem_info_vram_total").write_text(str(total * 1024**3))
-        files[card] = str(d / "mem_info_vram_used")
-    monkeypatch.setattr(hw.glob, "glob", lambda pattern: [files[10], files[2]])
-    assert hw._rocm_linux_sysfs_vram_per_card_gb() == {10: (1.0, 8.0), 2: (40.0, 48.0)}
+    # card1 -> PCI 0000:03:00.0 (AMD dev 0), card2 -> PCI 0000:41:00.0 (AMD dev 1).
+    # The `device` entry is a symlink to the PCI dir, as in real sysfs.
+    pci = {1: "0000:03:00.0", 2: "0000:41:00.0"}
+    used_files = []
+    for card, (used, total) in ((1, (40, 48)), (2, (1, 8))):
+        pci_dir = tmp_path / "pci" / pci[card]
+        pci_dir.mkdir(parents = True)
+        (pci_dir / "mem_info_vram_used").write_text(str(used * 1024**3))
+        (pci_dir / "mem_info_vram_total").write_text(str(total * 1024**3))
+        card_dir = tmp_path / "drm" / f"card{card}"
+        card_dir.mkdir(parents = True)
+        (card_dir / "device").symlink_to(pci_dir)
+        used_files.append(str(card_dir / "device" / "mem_info_vram_used"))
+    # glob returns them in arbitrary order; the PCI sort must decide the ordinals.
+    monkeypatch.setattr(hw.glob, "glob", lambda pattern: list(reversed(used_files)))
+    # card1 (PCI 03) -> ROCm ordinal 0 (48 GB), card2 (PCI 41) -> ordinal 1 (8 GB)
+    assert hw._rocm_linux_sysfs_vram_per_card_gb() == {0: (40.0, 48.0), 1: (1.0, 8.0)}
 
 
 def test_linux_per_card_keeps_holes_from_bad_cards(monkeypatch, tmp_path):
-    # card0 has a zero total (headless iGPU node) and is dropped; card1 must
-    # keep its OWN key (1), never be compacted to 0 -- else its usage would be
-    # misattributed to physical GPU 0.
+    # An amdgpu card with a zero total (transient / headless) is dropped from the
+    # overlay but must still CONSUME its ROCm ordinal: the good card keeps ordinal
+    # 1, never compacted to 0 -- else its usage would be misattributed to device 0.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     zero = tmp_path / "card0" / "device"
     good = tmp_path / "card1" / "device"
@@ -131,32 +143,32 @@ def test_overlay_windows_is_noop_keeps_torch(monkeypatch):
     assert devices[0]["vram_used_gb"] == 0.02  # untouched
 
 
-def test_overlay_linux_matches_by_card_number(monkeypatch):
+def test_overlay_linux_matches_by_device_ordinal(monkeypatch):
     # HIP_VISIBLE_DEVICES=1,0: devices arrive as [index 1, index 0]. Each must
-    # get ITS OWN card's figures by card number, not the other's.
+    # get ITS OWN GPU's figures by ROCm device ordinal, not the other's.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         hw,
         "_rocm_linux_sysfs_vram_per_card_gb",
-        lambda: {0: (30.0, 45.0), 1: (0.5, 8.0)},  # card0 big, card1 small
+        lambda: {0: (30.0, 45.0), 1: (0.5, 8.0)},  # device 0 big, device 1 small
     )
     devices = [_device(1, used = 0.01, total = 8.0), _device(0, used = 0.02, total = 45.0)]
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.5  # index 1 -> card 1 (small)
+    assert devices[0]["vram_used_gb"] == 0.5  # index 1 -> device 1 (small)
     assert devices[0]["vram_total_gb"] == 8.0
-    assert devices[1]["vram_used_gb"] == 30.0  # index 0 -> card 0 (big)
+    assert devices[1]["vram_used_gb"] == 30.0  # index 0 -> device 0 (big)
     assert devices[1]["vram_total_gb"] == 45.0
 
 
-def test_overlay_linux_card_hole_does_not_shift(monkeypatch):
-    # card0 dropped (bad/zero): device index 0 has no card and keeps torch;
-    # device index 1 still gets card 1, not card1-compacted-to-0.
+def test_overlay_linux_ordinal_hole_does_not_shift(monkeypatch):
+    # Device 0's card is unreadable (dropped): device index 0 has no entry and
+    # keeps torch; device index 1 still gets ordinal 1, not ordinal-1-compacted-to-0.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
     monkeypatch.setattr(hw, "_rocm_linux_sysfs_vram_per_card_gb", lambda: {1: (0.5, 8.0)})
     devices = [_device(0, used = 0.02, total = 45.0), _device(1, used = 0.01, total = 8.0)]
     hw._overlay_system_wide_vram(devices)
-    assert devices[0]["vram_used_gb"] == 0.02  # no card0 -> torch kept
-    assert devices[1]["vram_used_gb"] == 0.5  # card1 -> device 1, not device 0
+    assert devices[0]["vram_used_gb"] == 0.02  # no ordinal 0 -> torch kept
+    assert devices[1]["vram_used_gb"] == 0.5  # ordinal 1 -> device 1, not device 0
 
 
 def test_overlay_linux_skips_unified_memory_card(monkeypatch):

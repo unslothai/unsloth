@@ -725,41 +725,64 @@ def _rocm_linux_sysfs_vram_gb() -> tuple[Optional[float], Optional[float]]:
 
 
 def _rocm_linux_sysfs_vram_per_card_gb() -> dict[int, tuple[float, float]]:
-    """Per-card system-wide AMD VRAM via Linux DRM sysfs, keyed by DRM card
-    number.
+    """Per-device system-wide AMD VRAM via Linux DRM sysfs, keyed by ROCm
+    physical device ordinal.
 
     Reads /sys/class/drm/card<N>/device/mem_info_vram_{used,total} (amdgpu-only
     files, kernel-updated across all processes) so each GPU gets its own figure,
     unlike _rocm_linux_sysfs_vram_gb which sums the host. Returns
-    ``{card_number: (used_gb, total_gb)}``; empty on failure or off Linux.
+    ``{rocm_ordinal: (used_gb, total_gb)}``; empty on failure or off Linux.
 
-    Keyed by the real card number (not a compacted position) so dropping an
-    unreadable / zero-total card does not renumber the rest -- if card0 fails,
-    card1 stays at key 1 and its usage is not misattributed to physical GPU 0.
+    Keyed by ROCm device ordinal, NOT the raw DRM card number: those two diverge
+    whenever a non-amdgpu adapter (Intel iGPU, a display-only card) owns an
+    earlier DRM slot -- e.g. Intel card0 + AMD card1/card2 gives ROCm devices
+    0/1, so keying by card number would hand ROCm device 1 card1's data (AMD
+    device 0) and leave device 0 unmatched. Only amdgpu cards carry these files,
+    so the glob already excludes foreign adapters; the surviving cards are ordered
+    by their PCI address (the card's ``device`` symlink resolves to the PCI BDF),
+    which is ROCm/HIP's default device order, and the position in that order is
+    the ROCm ordinal. An amdgpu card that is present but momentarily unreadable /
+    zero-total still consumes its ordinal (ROCm counts it as a device), so a later
+    card is never renumbered onto its slot.
     """
     if platform.system() != "Linux":
         return {}
-    cards: dict[int, tuple[float, float]] = {}
+
+    def _pci_sort_key(used_path: str) -> tuple:
+        # Order by the card's PCI address so the position matches ROCm's default
+        # (PCI-bus-ordered) device enumeration. The DRM card number is a stable
+        # tiebreak -- the kernel assigns it in PCI-probe order too -- for when the
+        # ``device`` symlink can't be resolved to a BDF.
+        dev_dir = used_path[: -len("/mem_info_vram_used")]
+        try:
+            bdf = os.path.basename(os.path.realpath(dev_dir))
+        except OSError:
+            bdf = ""
+        m = re.search(r"card(\d+)", used_path)
+        return (bdf, int(m.group(1)) if m else 1 << 30)
+
     try:
-        for used_path in glob.glob("/sys/class/drm/card*/device/mem_info_vram_used"):
-            m = re.search(r"card(\d+)", used_path)
-            if m is None:
-                continue
+        used_paths = sorted(
+            glob.glob("/sys/class/drm/card*/device/mem_info_vram_used"),
+            key = _pci_sort_key,
+        )
+        cards: dict[int, tuple[float, float]] = {}
+        for ordinal, used_path in enumerate(used_paths):
             total_path = used_path.replace("mem_info_vram_used", "mem_info_vram_total")
             try:
                 used_bytes = int(open(used_path).read().strip())
                 total_bytes = int(open(total_path).read().strip())
             except (OSError, ValueError):
-                continue
+                continue  # unreadable amdgpu card: keep its ordinal reserved
             if total_bytes <= 0:
                 continue
-            cards[int(m.group(1))] = (
+            cards[ordinal] = (
                 round(used_bytes / (1024**3), 2),
                 round(total_bytes / (1024**3), 2),
             )
+        return cards
     except Exception:
         return {}
-    return cards
 
 
 def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[float]]:
@@ -1109,10 +1132,11 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     misattributing another adapter's usage."""
     if not devices or platform.system() != "Linux":
         return
-    # Keyed by the real DRM card number (amdgpu cards enumerate in the same order
-    # as ROCm devices), so a device is matched to ITS card, not a compacted
-    # position -- an earlier unreadable/zero-total card can't shift a later
-    # card's usage onto the wrong GPU, and a reordering mask stays correct.
+    # Keyed by ROCm physical device ordinal (amdgpu cards in PCI order), so a
+    # device is matched to ITS GPU by physical index -- a non-amdgpu adapter on an
+    # earlier DRM slot can't shift a card's usage onto the wrong GPU, an
+    # unreadable card keeps its ordinal reserved, and a reordering mask stays
+    # correct because ``index`` here is the physical id, not a list position.
     per_card = _rocm_linux_sysfs_vram_per_card_gb()
     for dev in devices:
         entry = per_card.get(dev.get("index"))
