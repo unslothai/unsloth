@@ -134,6 +134,44 @@ def _validate_agent_action(
     raise ValueError("Research agent returned an unsupported action")
 
 
+def _parse_and_validate_action(
+    response: str,
+    reasoning: str,
+    allowed_urls: set[str],
+    website_policy: dict | None = None,
+) -> dict[str, str]:
+    last_error: Exception | None = None
+    decoder = json.JSONDecoder()
+    for candidate in (response, reasoning):
+        valid_actions = []
+        for match in re.finditer(r"\{", candidate):
+            try:
+                value, _end = decoder.raw_decode(candidate[match.start() :])
+                if isinstance(value, dict):
+                    valid_actions.append(
+                        _validate_agent_action(value, allowed_urls, website_policy)
+                    )
+            except (ValueError, json.JSONDecodeError) as exc:
+                last_error = exc
+        if valid_actions:
+            return valid_actions[-1]
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Research agent did not return a JSON action")
+
+
+def _system_prompt_with_instructions(base: str, config: dict) -> str:
+    instructions = str(config.get("instructions") or "").strip()
+    if not instructions:
+        return base
+    return (
+        "Chat-specific instructions follow. Apply them only when compatible with the "
+        "non-overridable research, citation, output-format, and security rules that follow.\n"
+        f"<chat_instructions>\n{instructions}\n</chat_instructions>\n\n"
+        f"Non-overridable rules:\n{base}"
+    )
+
+
 class RunCancelled(Exception):
     pass
 
@@ -971,9 +1009,12 @@ class ResearchSupervisor:
             [
                 {
                     "role": "system",
-                    "content": _planner_system_prompt(
-                        max_steps,
-                        run["config"].get("websitePolicy"),
+                    "content": _system_prompt_with_instructions(
+                        _planner_system_prompt(
+                            max_steps,
+                            run["config"].get("websitePolicy"),
+                        ),
+                        run["config"],
                     ),
                 },
                 {
@@ -1115,13 +1156,17 @@ class ResearchSupervisor:
                 for source in sources
             )
             evidence = "\n\n".join(decision_notes)
-            decision, _decision_reasoning, _finish_reason = await self._stream_completion(
+            decision, decision_reasoning, _finish_reason = await self._stream_completion(
                 run,
                 [
                     {
                         "role": "system",
                         "content": (
-                            _AGENT_SYSTEM_PROMPT + (f"\n\n{policy_prompt}" if policy_prompt else "")
+                            _system_prompt_with_instructions(
+                                _AGENT_SYSTEM_PROMPT
+                                + (f"\n\n{policy_prompt}" if policy_prompt else ""),
+                                run["config"],
+                            )
                         ),
                     },
                     {
@@ -1145,8 +1190,9 @@ class ResearchSupervisor:
                 step_position = position,
             )
             try:
-                action = _validate_agent_action(
-                    _parse_json_object(decision),
+                action = _parse_and_validate_action(
+                    decision,
+                    decision_reasoning,
                     {source["url"] for source in sources},
                     website_policy,
                 )
@@ -1177,10 +1223,26 @@ class ResearchSupervisor:
                     "query": str(seed.get("query") or question)[:500],
                 }
             argument = action.get("query") or action.get("url") or ""
-            if action["action"] == "search" and argument in used_queries:
-                continue
-            if action["action"] == "fetch" and argument in fetched_urls:
-                continue
+            duplicate = (action["action"] == "search" and argument in used_queries) or (
+                action["action"] == "fetch" and argument in fetched_urls
+            )
+            if duplicate:
+                seed = next(
+                    (
+                        step
+                        for step in run["plan"].get("steps") or []
+                        if str(step.get("query") or "").strip() not in used_queries
+                    ),
+                    None,
+                )
+                if seed is None:
+                    break
+                action = {
+                    "action": "search",
+                    "title": str(seed.get("title") or "Plan follow-up")[:200],
+                    "query": str(seed.get("query") or seed.get("title") or "")[:500],
+                }
+                argument = action["query"]
             written = await asyncio.to_thread(
                 db.upsert_execution_step,
                 run["id"],
@@ -1365,7 +1427,13 @@ class ResearchSupervisor:
         report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
             run,
             [
-                {"role": "system", "content": _REPORT_SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": _system_prompt_with_instructions(
+                        _REPORT_SYSTEM_PROMPT,
+                        run["config"],
+                    ),
+                },
                 {
                     "role": "user",
                     "content": (

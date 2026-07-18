@@ -97,6 +97,7 @@ export interface CreateResearchRunInput {
   ragScope?: Record<string, unknown>;
   budgets?: Partial<ResearchBudgets>;
   websitePolicy?: ResearchWebsitePolicy;
+  instructions?: string;
 }
 
 export interface ResearchRun {
@@ -117,6 +118,7 @@ export interface ResearchRun {
     ragScope?: Record<string, unknown> | null;
     budgets?: ResearchBudgets;
     websitePolicy?: ResearchWebsitePolicy;
+    instructions?: string;
   };
   cancelRequested?: boolean;
   retryCount?: number;

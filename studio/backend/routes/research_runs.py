@@ -38,6 +38,7 @@ class CreateResearchRun(BaseModel):
     ragScope: dict[str, Any] | None = None
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
+    instructions: str | None = Field(default = None, max_length = 32_000)
 
 
 class ResearchPlanStep(BaseModel):
@@ -223,6 +224,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "ragScope": rag_scope,
         "budgets": budgets,
         "websitePolicy": website_policy,
+        "instructions": (payload.instructions or "").strip(),
     }
 
 

@@ -1361,6 +1361,29 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
+async function resolveChatInstructions(
+  threadId: string | undefined,
+  systemPrompt: unknown,
+  systemVariables: unknown,
+): Promise<string> {
+  const safeSystemPrompt =
+    typeof systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          systemPrompt,
+          typeof systemVariables === "string" ? systemVariables : "",
+        )
+      : "";
+  const projectInstructions = await resolveProjectInstructions(threadId);
+  return [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    safeSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function resolveProjectId(
   threadId: string | undefined,
 ): Promise<string | null> {
@@ -2025,6 +2048,11 @@ export function createOpenAIStreamAdapter(
           inferenceRequest.reasoningEffort = runtime.reasoningEffort;
         }
         const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const researchInstructions = await resolveChatInstructions(
+          resolvedThreadId,
+          params.systemPrompt,
+          params.systemVariables,
+        );
         const ragScope =
           runtime.ragEnabled || researchProjectId
             ? runtime.ragEnabled && runtime.ragSource.type === "kb"
@@ -2083,6 +2111,7 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
+            ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
             websitePolicy: {
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
@@ -2423,25 +2452,11 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      const safeSystemPrompt =
-        typeof params.systemPrompt === "string"
-          ? resolveSystemPromptVariables(
-              params.systemPrompt,
-              typeof params.systemVariables === "string"
-                ? params.systemVariables
-                : "",
-            )
-          : "";
-      const projectInstructions =
-        await resolveProjectInstructions(resolvedThreadId);
-      const combinedSystemPrompt = [
-        projectInstructions
-          ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-          : "",
-        safeSystemPrompt.trim(),
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const combinedSystemPrompt = await resolveChatInstructions(
+        resolvedThreadId,
+        params.systemPrompt,
+        params.systemVariables,
+      );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",

@@ -63,6 +63,8 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     create_block = adapter.split("createdRun = await createResearchRun({", 1)[1].split("});", 1)[0]
     assert "modelId:" not in create_block
     assert "prompt," not in create_block
+    assert "instructions: researchInstructions" in create_block
+    assert "resolveChatInstructions" in adapter
 
 
 def test_research_metadata_and_server_merge_are_persisted() -> None:
