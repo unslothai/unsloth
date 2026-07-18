@@ -2135,8 +2135,22 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     except Exception as e:
-        # Hub unreachable: fall back to the local marker, uncached -- it is a
-        # degraded signal a later successful Hub call must be able to override.
+        # A permanent Hub error (deleted / gated / bad revision / typo matching
+        # stale cache casing) is authoritative: the repo is not a usable
+        # embedding model, so return False and let the settings route surface its
+        # documented 409. Falling back to a cached modules.json here would wrongly
+        # pass validation for a repo the loader can no longer fetch. Matches the
+        # permanent-vs-transient split the nearby GGUF/vision detectors use.
+        if type(e).__name__ in (
+            "RepositoryNotFoundError",
+            "GatedRepoError",
+            "RevisionNotFoundError",
+            "EntryNotFoundError",
+        ):
+            logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
+            return False
+        # Transient / connectivity / 5xx failure: fall back to the local marker,
+        # uncached -- a degraded signal a later successful Hub call can override.
         marker = _embedding_marker_in_hf_cache(model_name)
         if marker is True:
             logger.info(

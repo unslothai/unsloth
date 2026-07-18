@@ -226,6 +226,24 @@ def test_online_defers_to_hub_over_stale_marker(tmp_path, monkeypatch):
     assert calls == ["org/was-embedder"]  # Hub consulted, not skipped
 
 
+def test_online_permanent_hub_error_ignores_stale_marker(tmp_path, monkeypatch):
+    # A permanent Hub error (deleted / gated / typo'd repo) is authoritative:
+    # even with a cached modules.json, validation must NOT pass on the stale
+    # marker -- return False so the settings route surfaces its 409, and the
+    # persisted model can't fail later when the loader refreshes from the Hub.
+    snaps = _repo(tmp_path, ("aaa", True))
+    monkeypatch.setattr(mc, "_iter_hf_cache_snapshots", lambda repo: iter(snaps))
+
+    class RepositoryNotFoundError(Exception):
+        pass
+
+    def _info(model_name, token = None):
+        raise RepositoryNotFoundError("404 not found")
+
+    _fake_hf_model_info(monkeypatch, _info)
+    assert mc.is_embedding_model("org/deleted-or-typo") is False
+
+
 def test_online_hub_failure_falls_back_to_marker_uncached(tmp_path, monkeypatch):
     # A transient model_info() failure falls back to the local marker WITHOUT
     # caching: the degraded result must not become sticky, so a later successful
