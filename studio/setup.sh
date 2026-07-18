@@ -1979,7 +1979,14 @@ fi  # end _SKIP_GGUF_BUILD check
 _have_cuda_llama_server() {
     [ -x "$LLAMA_SERVER_BIN" ] || return 1
     ldd "$LLAMA_SERVER_BIN" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
-    for _so in "$(dirname "$LLAMA_SERVER_BIN")"/libggml-cuda.so*; do [ -e "$_so" ] && return 0; done
+    # Split-.so builds on this path come from provision_llama_cuda.sh, which stamps
+    # .unsloth-cuda-ok only after its final CUDA check. Requiring the stamp keeps
+    # the interrupted-relink state (new .so + old CPU server) provisioning instead
+    # of being reported as ready.
+    _stamp="$(dirname "$LLAMA_SERVER_BIN")/.unsloth-cuda-ok"
+    for _so in "$(dirname "$LLAMA_SERVER_BIN")"/libggml-cuda.so*; do
+        [ -e "$_so" ] && [ -e "$_stamp" ] && return 0
+    done
     return 1
 }
 if [ "$_HOST_SYSTEM" = "Linux" ] \

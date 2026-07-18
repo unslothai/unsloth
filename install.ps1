@@ -2070,17 +2070,25 @@ exit 0
     }
     $_nativeCudaTorchOk = $false
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $SkipTorch)) {
-        # Probe the SAME spec as the real install ("torch>=2.4,<2.11.0"); a bare `torch` probe could
-        # match an out-of-range wheel, skipping WSL only to fail the real pinned install.
-        $prevEapProbe = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-        # --reinstall: an installed (e.g. CPU-only) torch mustn't satisfy the probe -- it must prove
-        # a native win_arm64 CUDA wheel exists on the index.
-        $global:LASTEXITCODE = -1
-        try {
-            & uv pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --index-url $TorchIndexUrl *> $null
-            $_nativeCudaTorchOk = ($LASTEXITCODE -eq 0)
-        } catch { $_nativeCudaTorchOk = $false } finally { $ErrorActionPreference = $prevEapProbe }
-        if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
+        # uv resolves for the interpreter's platform tags, so an x64-emulated venv
+        # python resolves the existing win_amd64 CUDA wheels and would "prove" a
+        # native wheel WoA can't actually use. Only a real win_arm64 interpreter
+        # can prove a win_arm64 CUDA wheel; anything else keeps the WSL fallback.
+        $_pyArch = ""
+        try { $_pyArch = (& $VenvPython -c "import platform; print(platform.machine())" 2>$null | Select-Object -First 1) } catch {}
+        if ("$_pyArch" -imatch 'ARM64') {
+            # Probe the SAME spec as the real install ("torch>=2.4,<2.11.0"); a bare `torch` probe could
+            # match an out-of-range wheel, skipping WSL only to fail the real pinned install.
+            $prevEapProbe = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            # --reinstall: an installed (e.g. CPU-only) torch mustn't satisfy the probe -- it must prove
+            # a native win_arm64 CUDA wheel exists on the index.
+            $global:LASTEXITCODE = -1
+            try {
+                & uv pip install --python $VenvPython --dry-run --reinstall "torch>=2.4,<2.11.0" --index-url $TorchIndexUrl *> $null
+                $_nativeCudaTorchOk = ($LASTEXITCODE -eq 0)
+            } catch { $_nativeCudaTorchOk = $false } finally { $ErrorActionPreference = $prevEapProbe }
+            if ($_nativeCudaTorchOk) { step "gpu" "native CUDA PyTorch now available for win_arm64 -- keeping native install" "Green" }
+        }
     }
     if ($_winArm64 -and $HasNvidiaSmi -and (-not $_nativeCudaTorchOk) -and (-not $SkipTorch) -and ($env:UNSLOTH_NO_WSL_FALLBACK -ne '1')) {
         step "wsl" "Windows on ARM + NVIDIA, native CUDA unavailable -- routing GPU setup through WSL2"

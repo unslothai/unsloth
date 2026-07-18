@@ -2294,6 +2294,44 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     from utils.hardware import hardware as _hw
 
+    # Set PYTORCH_CUDA_ALLOC_CONF before the first CUDA touch: detect_hardware()
+    # below calls get_device_properties, which latches the allocator config for
+    # this process (verified: expandable_segments set after init is a no-op).
+    # CUDA-free nvidia-smi sniff (mirrors _is_dgx_spark_no_cuda_init) honoring
+    # UNSLOTH_FORCE_DGX_SPARK, same append-don't-override behavior and
+    # UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out.
+    try:
+        import platform as _plat
+        import re as _re
+
+        _force_spark = os.environ.get("UNSLOTH_FORCE_DGX_SPARK")
+        if _force_spark == "1":
+            _spark_smi = True
+        elif _force_spark == "0":
+            _spark_smi = False
+        else:
+            _spark_smi = False
+            if _plat.machine().lower() in ("aarch64", "arm64"):
+                _smi = _sp.run(
+                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 5,
+                )
+                _names_u = (_smi.stdout or "").upper()
+                _spark_smi = any(
+                    _re.search(r"(?<![A-Z0-9])" + _re.escape(t) + r"(?![A-Z0-9])", _names_u)
+                    for t in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK")
+                )
+        if _spark_smi and os.environ.get("UNSLOTH_NO_EXPANDABLE_SEGMENTS") != "1":
+            _conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+            if "expandable_segments" not in _conf:
+                os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+                    _conf + "," if _conf else ""
+                ) + "expandable_segments:True"
+    except Exception:
+        pass
+
     _hw.detect_hardware()
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
         run_mlx_training_process(
@@ -2824,36 +2862,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Discrete NVIDIA GPUs untouched.
     else:
         try:
-            # Set PYTORCH_CUDA_ALLOC_CONF before get_device_properties below inits
-            # the allocator -- the later `import unsloth` patch is too late for THIS
-            # worker. CUDA-free nvidia-smi sniff (mirrors _is_dgx_spark_no_cuda_init),
-            # same append-don't-override and UNSLOTH_NO_EXPANDABLE_SEGMENTS opt-out.
-            try:
-                import platform as _plat
-
-                _spark_smi = False
-                if _plat.machine().lower() in ("aarch64", "arm64"):
-                    _smi = _sp.run(
-                        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                        capture_output = True,
-                        text = True,
-                        timeout = 5,
-                    )
-                    _names_u = (_smi.stdout or "").upper()
-                    import re as _re
-
-                    _spark_smi = any(
-                        _re.search(r"(?<![A-Z0-9])" + _re.escape(t) + r"(?![A-Z0-9])", _names_u)
-                        for t in ("GB10", "GB110", "JMJWOA", "N1X", "DGX SPARK")
-                    )
-                if _spark_smi and os.environ.get("UNSLOTH_NO_EXPANDABLE_SEGMENTS") != "1":
-                    _conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-                    if "expandable_segments" not in _conf:
-                        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
-                            _conf + "," if _conf else ""
-                        ) + "expandable_segments:True"
-            except Exception:
-                pass
+            # PYTORCH_CUDA_ALLOC_CONF is appended before detect_hardware() near the
+            # top of run_training_process: by here CUDA has long been initialized
+            # and the allocator config is latched, so only the runtime-adjustable
+            # memory fraction is set at this point.
             import torch as _torch_mem
             if _torch_mem.cuda.is_available():
                 _props = _torch_mem.cuda.get_device_properties(0)

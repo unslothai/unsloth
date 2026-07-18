@@ -346,6 +346,15 @@ case "$_os" in
                         $ico = Join-Path $iconDir "unsloth.ico";
                         if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
                         if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }
+                    }
+                    # install.sh also writes the WSL shortcut icon to the Windows
+                    # profile (%USERPROFILE%\.unsloth\unsloth.ico) because the WoA
+                    # icon broker cannot read AppData\Local; clean it the same way.
+                    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+                        $pIconDir = Join-Path $env:USERPROFILE ".unsloth";
+                        $pIco = Join-Path $pIconDir "unsloth.ico";
+                        if ((-not $iconInUse) -and (Test-Path -LiteralPath $pIco)) { Remove-Item -LiteralPath $pIco -Force -ErrorAction SilentlyContinue }
+                        if ((Test-Path -LiteralPath $pIconDir) -and -not (Get-ChildItem -LiteralPath $pIconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $pIconDir -Recurse -Force -ErrorAction SilentlyContinue }
                     }' >/dev/null 2>&1 || true
             fi
             # Remove $1's shared unsloth.ico only if no Unsloth shortcut (native install
@@ -369,6 +378,10 @@ case "$_os" in
                 done
                 if [ "$_icon_in_use" = "0" ]; then
                     [ -f "$_icodir/unsloth.ico" ] && rm -f "$_icodir/unsloth.ico" 2>/dev/null || true
+                    # install.sh also writes the icon to the Windows profile
+                    # (%USERPROFILE%\.unsloth) for the WoA icon broker.
+                    [ -f "$_du/.unsloth/unsloth.ico" ] && rm -f "$_du/.unsloth/unsloth.ico" 2>/dev/null || true
+                    [ -d "$_du/.unsloth" ] && rmdir "$_du/.unsloth" 2>/dev/null || true
                 fi
                 [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
             }

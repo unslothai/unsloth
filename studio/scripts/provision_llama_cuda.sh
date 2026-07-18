@@ -139,11 +139,12 @@ export CC="$HCC" CXX="$HCXX" CUDAHOSTCXX="$HCXX"
 
 # 5. CUDA arch from the GPU's compute capability (e.g. "12.1" -> 121). Fallback: native.
 # Only a purely-numeric capability is a valid CMAKE_CUDA_ARCHITECTURES; some WSL
-# GPU-PV / driver combos report "N/A", which CMake would reject (aborting an
-# otherwise-usable build) instead of letting "native" autodetect.
+# GPU-PV / driver combos report "N/A". "native" needs CMake >= 3.24 (Ubuntu
+# 22.04 apt ships 3.22), so the fallback omits the flag entirely and lets
+# ggml's version-guarded CMake defaults pick the arches instead.
 CC_CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
 case "$CC_CAP" in
-    ''|*[!0-9]*) CUDA_ARCH="native" ;;
+    ''|*[!0-9]*) CUDA_ARCH="" ;;
     *)           CUDA_ARCH="$CC_CAP" ;;
 esac
 
@@ -151,6 +152,15 @@ esac
 # (same var setup.sh uses) instead of always tracking ggml-org main.
 mkdir -p "$(dirname "$LLAMA_DIR")"
 _LLAMA_REF="${UNSLOTH_LLAMA_TAG:-}"
+# setup.sh's install policy pins source builds to the newest RELEASE ("latest"
+# resolved to a tag; master bypasses the pin). Mirror it: unset or literal
+# "latest" resolves via the GitHub API; on API failure the empty ref keeps the
+# existing default-branch clone fallback (best effort, as before).
+if [ -z "$_LLAMA_REF" ] || [ "$_LLAMA_REF" = "latest" ]; then
+    _LLAMA_REF="$(curl -fsSL --max-time 15 https://api.github.com/repos/ggml-org/llama.cpp/releases/latest 2>/dev/null \
+        | grep -om1 '"tag_name": *"[^"]*"' | cut -d'"' -f4)"
+    [ -n "$_LLAMA_REF" ] && log "pinning llama.cpp to release $_LLAMA_REF"
+fi
 # Back up any existing (e.g. CPU-only) llama.cpp: restored on any failure exit,
 # dropped only once the fresh build yields a server -- never leave NO server.
 _LLAMA_BAK=""
@@ -218,11 +228,13 @@ _restore_build() {
     _BUILD_BAK=""
 }
 
-log "building CUDA llama.cpp (arch=$CUDA_ARCH, host=$HCXX) - this takes a few minutes..."
+log "building CUDA llama.cpp (arch=${CUDA_ARCH:-cmake-default}, host=$HCXX) - this takes a few minutes..."
 _cmake_configure() {
+    # Empty CUDA_ARCH (unreadable compute_cap): omit the flag so ggml's own
+    # CMake defaults apply -- "native" would need CMake >= 3.24.
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
         -DGGML_CUDA=ON -DGGML_CUDA_F16=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
+        ${CUDA_ARCH:+-DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH"} \
         -DCMAKE_CUDA_HOST_COMPILER="$HCXX" \
         -DLLAMA_CURL=ON >/dev/null 2>&1
 }
@@ -282,6 +294,11 @@ _restore_build
 
 if is_cuda_server "$SERVER"; then
     : > "$_CUDA_STAMP" 2>/dev/null || true
+    # unsloth_zoo's check_llama_cpp only searches the repo root, so mirror
+    # setup.sh's root shim for the GGUF exporter's quantize binary.
+    if [ -x "$LLAMA_DIR/build/bin/llama-quantize" ] && [ ! -e "$LLAMA_DIR/llama-quantize" ]; then
+        ln -sf build/bin/llama-quantize "$LLAMA_DIR/llama-quantize" 2>/dev/null || true
+    fi
     log "CUDA llama-server ready: $SERVER"
     [ -n "$_LLAMA_BAK" ] && rm -rf "$_LLAMA_BAK" 2>/dev/null
 elif [ -x "$SERVER" ]; then
