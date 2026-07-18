@@ -1110,6 +1110,22 @@ def _reconcile_primary_rocm_unified_memory(
     _apply_unified_memory_correction(utilization, torch_devices[0])
 
 
+def _rocm_visibility_masks_layered() -> bool:
+    """True when the HIP and ROCR device masks are BOTH active, so a HIP ordinal
+    indexes into the ROCR-filtered set rather than the physical devices.
+
+    ROCR_VISIBLE_DEVICES filters physical GPUs at the HSA/ROCr layer; a
+    HIP_VISIBLE_DEVICES set on top then selects WITHIN that already-filtered set
+    (apply_gpu_ids relies on this -- it sets HIP while leaving an inherited ROCR
+    mask in place). _get_parent_visible_gpu_spec() prefers the HIP value, so when
+    both are present the reported ``index`` is a ROCR-relative ordinal, NOT a
+    physical GPU id, and cannot be matched to a DRM card by physical index. Only
+    one mask being set keeps ``index`` physical (each filters the physical set)."""
+    hip = os.environ.get("HIP_VISIBLE_DEVICES")
+    rocr = os.environ.get("ROCR_VISIBLE_DEVICES")
+    return bool(hip and hip.strip()) and bool(rocr and rocr.strip())
+
+
 def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     """Replace process-local torch VRAM figures with system-wide ones on Linux
     ROCm.
@@ -1205,7 +1221,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                         "power_utilization_pct": None,
                     }
                 )
-            if IS_ROCM and index_kind == "physical":
+            if IS_ROCM and index_kind == "physical" and not _rocm_visibility_masks_layered():
                 # Torch VRAM here is process-local; swap in system-wide readings
                 # (Windows perf counters / Linux sysfs) so a model held by the
                 # separate llama-server process shows up (#7072). Mirrors the
@@ -1214,6 +1230,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                 # GPU id, but under a UUID/MIG mask ``index`` is a visible ordinal
                 # (index_kind == "relative"), so card/adapter 0 could overwrite a
                 # process that actually exposes physical GPU 1 -- keep torch there.
+                # Layered HIP-over-ROCR masks are skipped too: ``index`` is then a
+                # ROCR-relative ordinal, not a physical id, so it would map to the
+                # wrong DRM card -- keep torch's process-local figures there.
                 _overlay_system_wide_vram(devices)
             return {
                 "available": True,

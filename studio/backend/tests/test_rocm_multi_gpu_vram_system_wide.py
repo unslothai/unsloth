@@ -203,6 +203,8 @@ def test_overlay_empty_devices_is_noop(monkeypatch):
 
 
 def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)  # amd-smi unavailable
@@ -275,3 +277,46 @@ def test_visible_utilization_nvidia_fallback_skips_overlay(monkeypatch):
     result = hw.get_visible_gpu_utilization()
     assert result["available"] is True
     assert called == []  # NVIDIA keeps the plain torch fallback
+
+
+def test_masks_layered_only_when_both_active(monkeypatch):
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    assert hw._rocm_visibility_masks_layered() is False
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    assert hw._rocm_visibility_masks_layered() is False  # HIP alone -> physical
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+    assert hw._rocm_visibility_masks_layered() is True  # both -> layered
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    assert hw._rocm_visibility_masks_layered() is False  # ROCR alone -> physical
+    # An empty value is not an active filter, so it does not layer.
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "  ")
+    assert hw._rocm_visibility_masks_layered() is False
+
+
+def test_visible_utilization_layered_masks_skip_overlay(monkeypatch):
+    # ROCR_VISIBLE_DEVICES exposes physical 2,3; HIP_VISIBLE_DEVICES=1 selects
+    # WITHIN that set (physical GPU 3). The reported index is then a ROCR-relative
+    # ordinal, not a physical id, so the overlay must be skipped -- else it would
+    # pull sysfs data from physical GPU 1.
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": "1", "numeric_ids": [1], "supports_explicit_gpu_ids": True},
+    )
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [1])
+    monkeypatch.setattr(
+        hw,
+        "_torch_get_per_device_info",
+        lambda ids: [{"index": 1, "visible_ordinal": 0, "used_gb": 0.02, "total_gb": 8.0}],
+    )
+    called = []
+    monkeypatch.setattr(hw, "_overlay_system_wide_vram", lambda devices: called.append(1))
+    result = hw.get_visible_gpu_utilization()
+    assert result["index_kind"] == "physical"
+    assert called == []  # layered masks -> overlay skipped
