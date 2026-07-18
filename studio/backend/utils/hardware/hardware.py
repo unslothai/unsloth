@@ -1118,11 +1118,15 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                         "power_utilization_pct": None,
                     }
                 )
-            if IS_ROCM:
+            if IS_ROCM and index_kind == "physical":
                 # Torch VRAM here is process-local; swap in system-wide readings
                 # (Windows perf counters / Linux sysfs) so a model held by the
                 # separate llama-server process shows up (#7072). Mirrors the
                 # fallbacks get_gpu_utilization already applies to the primary GPU.
+                # Physical-index only: the overlay matches sources by physical
+                # GPU id, but under a UUID/MIG mask ``index`` is a visible ordinal
+                # (index_kind == "relative"), so card/adapter 0 could overwrite a
+                # process that actually exposes physical GPU 1 -- keep torch there.
                 _overlay_system_wide_vram(devices)
             return {
                 "available": True,

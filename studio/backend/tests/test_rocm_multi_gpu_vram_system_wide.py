@@ -269,6 +269,32 @@ def test_visible_utilization_rocm_fallback_overlays(monkeypatch):
     assert overlaid == [2]  # overlay ran over both devices
 
 
+def test_visible_utilization_relative_index_skips_overlay(monkeypatch):
+    # UUID/MIG mask -> no numeric ids -> torch ordinals with index_kind
+    # "relative". The overlay matches by PHYSICAL index, so it must not run here
+    # (relative 0 is not physical card/adapter 0).
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "_smi_query", lambda *a, **k: None)
+    monkeypatch.setattr(
+        hw,
+        "_get_parent_visible_gpu_spec",
+        lambda: {"raw": "GPU-uuid-a", "numeric_ids": None, "supports_explicit_gpu_ids": False},
+    )
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [])  # UUID mask
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
+    monkeypatch.setattr(
+        hw,
+        "_torch_get_per_device_info",
+        lambda ids: [{"index": 0, "visible_ordinal": 0, "used_gb": 0.02, "total_gb": 8.0}],
+    )
+    called = []
+    monkeypatch.setattr(hw, "_overlay_system_wide_vram", lambda devices: called.append(1))
+    result = hw.get_visible_gpu_utilization()
+    assert result["index_kind"] == "relative"
+    assert called == []  # overlay skipped for relative indices
+
+
 def test_visible_utilization_nvidia_fallback_skips_overlay(monkeypatch):
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
