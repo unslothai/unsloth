@@ -261,9 +261,12 @@ def test_family_size_table_present():
     fam = detect_video_family("unsloth/LTX-2.3-GGUF")
     assert fam.bf16_components_gb is not None
     transformer_gb, text_encoder_gb, companions_gb = fam.bf16_components_gb
-    # The Gemma3-27B text encoder outweighs the DiT itself; a table that lost
-    # that would let auto planning under-reserve by ~50 GB.
-    assert text_encoder_gb > transformer_gb > 20.0
+    # RESIDENT bf16 figures: the 37.8 GB DiT and the Gemma3-12B TE at ~24.4 GB once cast
+    # to bf16 (the fp32 hub store is ~49 GB but never sits on device). A table that
+    # regressed to the fp32 download size would push auto planning to offload on cards
+    # that fit the real footprint.
+    assert transformer_gb > text_encoder_gb > 20.0
+    assert text_encoder_gb < 30.0
     assert companions_gb > 0.0
 
 
