@@ -32,6 +32,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 # (no matching GitHub release), forces a source build, and causes HTTP 422
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
+#
+# UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default) or "cpu". When "cpu", forces
+# the CPU-only prebuilt bundle on GPU hosts. Fixes Intel iGPU Vulkan
+# crashes (#7213).
 $DefaultLlamaPrForce = ""
 $DefaultLlamaSource = "https://github.com/ggml-org/llama.cpp"
 $DefaultLlamaTag = "latest"
@@ -3366,6 +3370,12 @@ if ($LocalLlamaCppLinked) {
         }
         if ($env:UNSLOTH_LLAMA_RELEASE_TAG) {
             $prebuiltArgs += @("--published-release-tag", $env:UNSLOTH_LLAMA_RELEASE_TAG)
+        }
+        # UNSLOTH_LLAMA_CPP_BACKEND: "auto" (default) or "cpu" -- forces the CPU-only
+        # prebuilt, bypassing Vulkan/CUDA/ROCm selection. Fixes Intel iGPU Vulkan
+        # crashes (#7213).
+        if ($env:UNSLOTH_LLAMA_CPP_BACKEND -eq "cpu") {
+            $prebuiltArgs += "--cpu-fallback"
         }
         $prevEAPPrebuilt = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
