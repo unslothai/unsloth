@@ -1063,8 +1063,47 @@ def test_generate_without_load_raises(fake_runtime):
 
 def test_generate_progress_and_cancel_idle(fake_runtime):
     backend = VideoBackend()
-    assert backend.generate_progress() == {"active": False}
+    # Idle shape carries the image-endpoint-compatible aliases (total_steps / fraction)
+    # so one poller works against both generate-progress APIs.
+    assert backend.generate_progress() == {
+        "active": False,
+        "total_steps": 0,
+        "fraction": 0.0,
+    }
     assert backend.cancel_generate() is False
+
+
+def test_generate_progress_derives_total_steps_and_fraction(fake_runtime):
+    # A mid-denoise poll must report fraction = step / total under BOTH field names:
+    # a client polling the image API's shape against video used to read
+    # total_steps=null / fraction=0 while step advanced.
+    backend = VideoBackend()
+    backend._gen = {"active": True, "phase": "denoise", "step": 5, "total": 20}
+    gen = backend.generate_progress()
+    assert gen["total"] == 20 and gen["total_steps"] == 20
+    assert gen["step"] == 5 and gen["fraction"] == 0.25
+
+
+def test_cache_bytes_counts_incomplete_blobs(fake_runtime, tmp_path, monkeypatch):
+    # scan_cache_dir skips in-flight *.incomplete blobs, so the old counter froze at the
+    # last completed blob for the whole multi-GB shard pull. The walk must count both,
+    # without double-counting snapshot symlinks.
+    import huggingface_hub.constants as hub_constants
+
+    repo_dir = tmp_path / "models--Wan-AI--Wan2.2-TI2V-5B-Diffusers"
+    blobs = repo_dir / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / "aa11").write_bytes(b"x" * 1000)  # completed blob
+    (blobs / "bb22.incomplete").write_bytes(b"y" * 500)  # in-flight shard
+    snap = repo_dir / "snapshots" / "deadbeef"
+    snap.mkdir(parents = True)
+    (snap / "model_index.json").symlink_to(blobs / "aa11")  # must not double-count
+    monkeypatch.setattr(hub_constants, "HF_HUB_CACHE", str(tmp_path))
+
+    backend = VideoBackend()
+    assert backend._cache_bytes("Wan-AI/Wan2.2-TI2V-5B-Diffusers") == 1500
+    assert backend._cache_bytes("Wan-AI/absent-repo") == 0
+    assert backend._cache_bytes(None) == 0
 
 
 def test_hv15_guider_and_scheduler_progress(fake_runtime):
