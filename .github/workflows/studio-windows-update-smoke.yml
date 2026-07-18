@@ -6,9 +6,9 @@
 # windows-latest runner:
 #
 #   1. install.ps1 --local --no-torch installs Studio AND auto-fetches
-#      the prebuilt llama.cpp Windows binary (llama-bNNNN-bin-win-cpu-
-#      x64 from ggml-org/llama.cpp). Hitting the source-build fallback
-#      is treated as an Unsloth bug -- Studio must always pick the
+#      the prebuilt llama.cpp Windows binary (app-<tag>-windows-x64-cpu
+#      from unslothai/llama.cpp). Hitting the source-build fallback is
+#      treated as an Unsloth bug -- Studio must always pick the
 #      prebuilt on Windows.
 #   2. unsloth studio update --local is idempotent. Two consecutive
 #      runs both report "prebuilt up to date and validated", no

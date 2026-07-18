@@ -158,6 +158,11 @@ if not UNSLOTH_ENABLE_LOGGING:
     logging.getLogger("torchao").addFilter(
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
+    # torch >= 2.11 path: torchao dlopens each prebuilt _C*.so and logs "Failed to load
+    # .../_C*.so" when one can't (ABI tag mismatch in the wheel, e.g. a cp310 .so under a
+    # cp312 runtime on Colab, or an arch-specific kernel the GPU lacks). It falls back to
+    # non-cpp paths and Unsloth doesn't use these kernels, so drop the cosmetic record.
+    logging.getLogger("torchao").addFilter(HideLoggingMessage("Failed to load "))
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
@@ -167,6 +172,10 @@ if not UNSLOTH_ENABLE_LOGGING:
     # Deprecation warnings from torchao
     warnings.filterwarnings("ignore", message = "`int4_weight_only` is deprecated")
     warnings.filterwarnings("ignore", message = "`int8_weight_only` is deprecated")
+    # torch._check_is_size FutureWarning (called by bitsandbytes 4-bit dequant)
+    warnings.filterwarnings(
+        "ignore", message = r"_check_is_size will be removed", category = FutureWarning
+    )
 
     # TorchAO deprecated import paths (https://github.com/pytorch/ao/issues/2752)
     warnings.filterwarnings(
@@ -246,6 +255,30 @@ if not UNSLOTH_ENABLE_LOGGING:
         category = UserWarning,
         module = r"^apex\.transformer\.functional\.fused_rope$",
     )
+
+
+def fix_torch_check_is_size():
+    """Shim torch._check_is_size if a future torch removes it (bitsandbytes 4-bit
+    dequant calls it). The FutureWarning is silenced in suppress_cuda_printf."""
+    try:
+        import torch
+
+        if hasattr(torch, "_check_is_size"):
+            return
+
+        def _check_is_size(
+            i,
+            message = None,
+            *,
+            max = None,
+        ):
+            torch._check(i >= 0, message)
+            if max is not None:
+                torch._check(i <= max, message)
+
+        torch._check_is_size = _check_is_size
+    except Exception:
+        return
 
 
 # Fix up AttributeError: 'MessageFactory' object has no attribute 'GetPrototype'
@@ -1059,6 +1092,135 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def fix_dynamo_config_thread_visibility():
+    """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
+    (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
+    invisible to the autograd worker threads that run backward. Gradient
+    checkpointing recompiles fullgraph gpt-oss kernels there against the default
+    limit of 8, raising FailOnRecompileLimitHit at step 0. Mirror direct config
+    assignments into the process-global entry default (torch <= 2.11 semantics).
+    config.patch(...) and config.load_config(...) also assign via __setattr__ but
+    are thread-local by design, so skip mirroring while inside one (tracked per
+    thread). No-op below torch 2.12 and on any torch without this internal layout.
+    """
+    try:
+        import torch
+
+        if Version(torch.__version__) < Version("2.12.0"):
+            return
+        import torch._dynamo.config as _dynamo_config
+        from torch.utils._config_module import ConfigModule
+        from contextvars import ContextVar
+    except Exception:
+        return
+
+    try:
+        probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
+        if probe is None or not isinstance(getattr(probe, "user_override", None), ContextVar):
+            # Overrides are not context-local on this torch; nothing to fix.
+            return
+        original_setattr = ConfigModule.__setattr__
+        if getattr(original_setattr, "__unsloth_patched__", False):
+            return
+    except Exception:
+        return
+
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+
+    # config.patch(...) and config.load_config(...) also assign via __setattr__, but
+    # their writes are thread-local by design; a per-thread depth counter marks them
+    # so they are not mirrored into the process-global default.
+    import threading
+
+    _scoped_depth = threading.local()
+
+    def _in_scoped_write():
+        return getattr(_scoped_depth, "n", 0) > 0
+
+    def _bump(delta):
+        _scoped_depth.n = getattr(_scoped_depth, "n", 0) + delta
+
+    original_patch = ConfigModule.patch
+    if not getattr(original_patch, "__unsloth_patched__", False):
+
+        @functools.wraps(original_patch)
+        def _patched_patch(self, *args, **kwargs):
+            ctx = original_patch(self, *args, **kwargs)
+            try:
+                cls = type(ctx)  # patch() builds a fresh ConfigPatch class each call
+                if not getattr(cls, "__unsloth_patch_wrapped__", False):
+                    _enter0, _exit0 = cls.__enter__, cls.__exit__
+
+                    def _enter(s, _e = _enter0):
+                        _bump(1)
+                        try:
+                            return _e(s)
+                        finally:
+                            _bump(-1)
+
+                    def _exit(
+                        s,
+                        *a,
+                        _x = _exit0,
+                    ):
+                        _bump(1)
+                        try:
+                            return _x(s, *a)
+                        finally:
+                            _bump(-1)
+
+                    cls.__enter__, cls.__exit__ = _enter, _exit
+                    cls.__unsloth_patch_wrapped__ = True
+            except Exception:
+                pass
+            return ctx
+
+        _patched_patch.__unsloth_patched__ = True
+        ConfigModule.patch = _patched_patch
+
+    # load_config restores a saved config by calling setattr per key (thread-local).
+    original_load_config = getattr(ConfigModule, "load_config", None)
+    if callable(original_load_config) and not getattr(
+        original_load_config, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_load_config)
+        def _patched_load_config(self, *args, **kwargs):
+            _bump(1)
+            try:
+                return original_load_config(self, *args, **kwargs)
+            finally:
+                _bump(-1)
+
+        _patched_load_config.__unsloth_patched__ = True
+        ConfigModule.load_config = _patched_load_config
+
+    @functools.wraps(original_setattr)
+    def _patched_setattr(self, name, value):
+        original_setattr(self, name, value)
+        if _in_scoped_write():
+            return  # transient patch / load_config write: keep it thread-local
+        # Aliases (cache_size_limit -> recompile_limit) re-enter with the real name.
+        if self.__dict__.get("__name__", None) in mirrored_modules:
+            try:
+                entry = self.__dict__["_config"].get(name, None)
+                if entry is not None and entry.alias is None:
+                    entry.default = value
+            except Exception:
+                pass
+
+    _patched_setattr.__unsloth_patched__ = True
+    ConfigModule.__setattr__ = _patched_setattr
+
+    # No replay of existing overrides: unsloth installs this before it sets any
+    # dynamo/inductor config, so the wrapper mirrors every later assignment. Replaying
+    # would also bake a still-active config.patch override into the global default.
+    logger.info(
+        "Unsloth: Patched torch config modules so dynamo/inductor settings "
+        "(e.g. recompile_limit) apply across threads on torch >= 2.12."
+    )
+
+
 def patch_trunc_normal_precision_issue():
     """
     Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
@@ -1318,8 +1480,7 @@ def fix_vllm_pdl_blackwell():
 
     if patched:
         logger.info(
-            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - "
-            f"patched: {', '.join(patched)}"
+            f"Unsloth: Applied PDL fix for SM100 ({sm100_gpu_name}) - patched: {', '.join(patched)}"
         )
     else:
         # Just set the env var - vLLM might be an older version without supports_pdl
@@ -1487,6 +1648,143 @@ def disable_broken_wandb():
 # Stamped on stub modules so a second call is a strict no-op and so third
 # parties can introspect ``__unsloth_stub__`` to detect our patch.
 _UNSLOTH_STUB_SENTINEL = "__unsloth_stub__"
+_PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS = (
+    "ALL_PARALLEL_STYLES",
+    "ColwiseParallel",
+    "EmbeddingParallel",
+    "RowwiseParallel",
+)
+
+
+def _extract_peft_tensor_parallel_imported_symbols():
+    """Return names PEFT imports from ``transformers.integrations.tensor_parallel``.
+
+    Parsed from ``peft.utils.save_and_load._maybe_shard_state_dict_for_tp`` to
+    avoid a stale hard-coded symbol list.
+    """
+    try:
+        import peft.utils.save_and_load as _save_and_load
+    except Exception:
+        return ()
+    try:
+        sharding_fn = _save_and_load._maybe_shard_state_dict_for_tp
+    except AttributeError:
+        return ()
+
+    try:
+        source = inspect.getsource(sharding_fn)
+    except Exception as exc:
+        logger.debug("Failed to inspect PEFT tensor-parallel imports: %r", exc)
+        return _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+    import_pattern = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s*\((.*?)\)",
+        re.S,
+    )
+    import_pattern_single = re.compile(
+        r"from\s+transformers\.integrations\.tensor_parallel\s+import\s+([A-Za-z_][A-Za-z0-9_\s,]*)",
+        re.S,
+    )
+    matches = import_pattern.findall(source)
+    if not matches:
+        matches = import_pattern_single.findall(source)
+
+    symbols = []
+    seen = set()
+    for match in matches:
+        pieces = re.split(r"[,\n]", match)
+        for piece in pieces:
+            candidate = piece.strip()
+            if not candidate:
+                continue
+            if candidate.endswith(")"):
+                candidate = candidate[:-1].strip()
+            if not candidate.isidentifier():
+                continue
+            if candidate in seen:
+                continue
+            symbols.append(candidate)
+            seen.add(candidate)
+    return tuple(symbols) or _PEFT_TENSOR_PARALLEL_FALLBACK_SYMBOLS
+
+
+def _raise_on_peft_tensor_parallel_symbol_use(symbol_name):
+    raise NotImplementedError(
+        f"Unsloth: cannot use unsupported "
+        f"`transformers.integrations.tensor_parallel.{symbol_name}` on this "
+        f"transformers installation. Please upgrade transformers before "
+        f"using PEFT tensor-parallel adapter sharding features."
+    )
+
+
+def fix_peft_transformers_tensor_parallel_import_compat():
+    """Add placeholders to ``transformers.integrations.tensor_parallel`` for symbols
+    PEFT expects but this transformers build omits, keeping existing objects.
+
+    Returns ``True`` when patched, ``False`` when no patch is needed, ``None``
+    when transformers / PEFT context is absent.
+    """
+    try:
+        tensor_parallel_spec = importlib.util.find_spec("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError:
+        return None
+    if tensor_parallel_spec is None:
+        return None
+
+    required_symbols = _extract_peft_tensor_parallel_imported_symbols()
+    if not required_symbols:
+        return None
+
+    try:
+        tp_mod = importlib.import_module("transformers.integrations.tensor_parallel")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {
+            "transformers",
+            "transformers.integrations",
+            "transformers.integrations.tensor_parallel",
+        }:
+            raise
+        return None
+    missing = [symbol for symbol in required_symbols if not hasattr(tp_mod, symbol)]
+    if not missing:
+        return False
+
+    def _install_symbol_placeholder(symbol_name):
+        if symbol_name == "ALL_PARALLEL_STYLES":
+
+            class _UnslothTensorParallelStyles(dict):
+                def __getitem__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def get(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __contains__(self, key):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __iter__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+                def __len__(self):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelStyles()
+        else:
+
+            class _UnslothTensorParallelPlaceholder:
+                def __init__(self, *args, **kwargs):
+                    _raise_on_peft_tensor_parallel_symbol_use(symbol_name)
+
+            value = _UnslothTensorParallelPlaceholder
+            value.__name__ = f"UnslothTensorParallelPlaceholder{symbol_name}"
+
+        setattr(value, _UNSLOTH_STUB_SENTINEL, True)
+        setattr(tp_mod, symbol_name, value)
+
+    for symbol in missing:
+        _install_symbol_placeholder(symbol)
+
+    return True
 
 
 def _peft_stub_module_importable(name):
@@ -2349,11 +2647,9 @@ def _is_broken_vllm_error(error) -> bool:
             )
         ) or ("vllm" in message and "undefined symbol" in message):
             return True
-        # Also catch CUDA shared library mismatches during vllm import
-        # e.g. "libcudart.so.12: cannot open shared object file"
-        if (
-            "libcudart" in message or "libcublas" in message or "libnvrtc" in message
-        ) and "cannot open shared object file" in message:
+        # Forced extension load raises the bare loader error (no "vllm._C"
+        # wrapper); match any .so failure as callers feed only vLLM imports.
+        if "cannot open shared object file" in message:
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
@@ -2545,6 +2841,16 @@ def _clear_vllm_modules():
             sys.modules.pop(module_name, None)
 
 
+# vLLM's compiled extensions. A CUDA-major ABI break hits all of them, so
+# probing the eagerly-loaded _C and its siblings reliably trips it.
+_VLLM_COMPILED_EXTENSIONS = (
+    "vllm._C",
+    "vllm._C_stable_libtorch",
+    "vllm._moe_C",
+    "vllm._rocm_C",
+)
+
+
 def disable_broken_vllm(error = None):
     """Disable vLLM dynamically when its shared library is ABI-broken."""
     global VLLM_BROKEN
@@ -2562,6 +2868,15 @@ def disable_broken_vllm(error = None):
 
         try:
             import vllm  # noqa: F401
+
+            # Lazy vLLM lets a bare `import vllm` succeed even when an extension
+            # is ABI-broken; force-load each to surface the .so failure here.
+            # A missing one raises ModuleNotFoundError (skipped below).
+            for _ext in _VLLM_COMPILED_EXTENSIONS:
+                try:
+                    importlib.import_module(_ext)
+                except ModuleNotFoundError:
+                    pass
             return False
         except Exception as import_error:
             failure = import_error

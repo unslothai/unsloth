@@ -390,7 +390,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       onOpenChange={handleOpenChange}
       variant={variant}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <ReasoningTrigger
           className="min-w-0 flex-1"
           active={isReasoningStreaming}

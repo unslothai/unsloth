@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -34,13 +35,56 @@ if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
 
-# xformers kernels (FA3, FA2, cutlass) only support compute capability <= 9.0.
-# Disable xformers on newer GPUs (e.g. RTX 5070 Ti / sm_120) and fall back to SDPA.
-if HAS_XFORMERS and torch.cuda.is_available():
-    _cc = torch.cuda.get_device_capability()
-    if _cc[0] >= 12:
+
+def _xformers_runs_on_device() -> bool:
+    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    try:
+        # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
+        # but run xformers fine in float16, so pick the dtype the device supports.
+        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
+        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+        xformers_attention(q, q, q, attn_bias = attn_bias)
+        # Launches are async; synchronize so a deferred kernel failure fails the probe here.
+        torch.cuda.synchronize()
+        return True
+    except Exception:
+        return False
+
+
+def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+    # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (caps at
+    # sm_90) and its flash-2 op runs only if the build ships an sm_120 kernel, so run
+    # one real forward to decide. Below sm_120 xformers always works; skip the probe.
+    if capability[0] < 12:
+        return False
+    return not probe()
+
+
+# FlashAttention always wins in select_attention_backend and nothing downgrades
+# flash -> xformers, so when it's installed xformers is never selected: skip the probe.
+if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
+    if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
         HAS_XFORMERS = False
+
+# On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
+# only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
+# below sm_100 cutlass handles fp32 natively. Read once from device 0, like the probe gate.
+_XFORMERS_FP32_UNSUPPORTED = (
+    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
+)
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
+
+# PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
+# torch flex_attention.
+_flex_shared_prefix_attention = None
+if os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER", "1").lower() not in ("0", "false", "no", "off"):
+    try:
+        from .prefix_grouper_kernel import (
+            flex_shared_prefix_attention as _flex_shared_prefix_attention,
+        )
+    except Exception:
+        _flex_shared_prefix_attention = None
 
 FLASH_VARLEN = "flash_varlen"
 FLASH_DENSE = "flash_dense"
@@ -84,6 +128,9 @@ class AttentionContext:
     attention_mask: Optional[Tensor]
     causal_mask: Optional[Any]
     sliding_window: Optional[int] = None
+    # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel;
+    # None leaves every existing construction/behavior unchanged.
+    prefix_seg_info: Optional[Any] = None
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -99,6 +146,33 @@ def select_attention_backend(use_varlen: bool = False) -> str:
     return SDPA
 
 
+def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
+    """PrefixGrouper shared-prefix segment table resolver for the arch attention forwards.
+
+    The GRPO PrefixGrouper packed path rides a ``PrefixSegInfo`` in through ``**kwargs``
+    (same route as ``packed_seq_lengths``). When present, the forward must route Q/K/V
+    through the FlexAttention shared-prefix kernel via ``AttentionContext.prefix_seg_info``.
+
+    Returns the seg table (or ``None`` when PrefixGrouper did not group this batch -- the
+    unchanged path). Hardened: the shared-prefix stream is NOT a plain causal sequence, so running
+    it under a KV cache or an explicit padding mask would silently produce wrong logprobs.
+    That combination can only arise from misuse (PrefixGrouper only rides in via the GRPO
+    logprob forward, which is mask-free prefill), so we RAISE loudly instead of degrading
+    to a wrong result.
+
+    Factored here so every arch (llama/mistral/qwen3/gemma2/cohere/granite/falcon_h1)
+    shares one implementation and cannot drift.
+    """
+    seg = kwargs.get("prefix_seg_info", None)
+    if seg is not None and (past_key_value is not None or attention_mask is not None):
+        raise RuntimeError(
+            "PrefixGrouper: prefix_seg_info requires prefill with no KV cache and no "
+            f"attention_mask (got past_key_value={past_key_value is not None}, "
+            f"attention_mask={attention_mask is not None})."
+        )
+    return seg
+
+
 def run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
@@ -110,6 +184,28 @@ def run_attention(
     Varlen flash is preferred for packed batches as it avoids padding; xFormers
     and SDPA handle packing via a block-diagonal mask.
     """
+
+    # PrefixGrouper shared-prefix attention (GRPO dedup). Q/K/V here are [bsz, H, T, D];
+    # the kernel takes/returns [1, T, H, D], matching the other backends. The field is
+    # only set when the env gate is on and grouping succeeded; None keeps every backend
+    # byte-identical.
+    if context.prefix_seg_info is not None:
+        flex_shared_prefix_attention = _flex_shared_prefix_attention
+        if flex_shared_prefix_attention is None:
+            # gate flipped on after import (or one-time load failed): resolve lazily.
+            from ..utils.prefix_grouper_kernel import flex_shared_prefix_attention
+
+        scale = None
+        if config.flash_varlen_kwargs:
+            scale = config.flash_varlen_kwargs.get("softmax_scale")
+        A = flex_shared_prefix_attention(
+            Q.transpose(1, 2),
+            K.transpose(1, 2),
+            V.transpose(1, 2),
+            context.prefix_seg_info,
+            scale = scale,
+        )
+        return A  # [1, T, n_heads, head_dim]
 
     backend = config.backend
     if backend == FLASH_VARLEN and context.seq_info is None:
@@ -137,9 +233,13 @@ def run_attention(
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
 
-    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects, so
-    # downcast any fp32 Q/K/V to a flash-supported dtype (#1013).
-    if backend in (FLASH_DENSE, FLASH_VARLEN) and torch.float32 in (
+    # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
+    # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any
+    # fp32 Q/K/V to a supported dtype (#1013).
+    if (
+        backend in (FLASH_DENSE, FLASH_VARLEN)
+        or (backend == XFORMERS and _XFORMERS_FP32_UNSUPPORTED)
+    ) and torch.float32 in (
         Q.dtype,
         K.dtype,
         V.dtype,
@@ -147,14 +247,16 @@ def run_attention(
         # Prefer the autocast dtype, else a non-fp32 input's dtype, then clamp.
         if torch.is_autocast_enabled():
             try:
-                flash_dtype = torch.get_autocast_dtype("cuda")
+                downcast_dtype = torch.get_autocast_dtype("cuda")
             except (AttributeError, TypeError):
-                flash_dtype = torch.get_autocast_gpu_dtype()
+                downcast_dtype = torch.get_autocast_gpu_dtype()
         else:
-            flash_dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
-        if flash_dtype not in (torch.float16, torch.bfloat16):
-            flash_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        Q, K, V = Q.to(flash_dtype), K.to(flash_dtype), V.to(flash_dtype)
+            downcast_dtype = next(
+                (d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None
+            )
+        if downcast_dtype not in (torch.float16, torch.bfloat16):
+            downcast_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        Q, K, V = Q.to(downcast_dtype), K.to(downcast_dtype), V.to(downcast_dtype)
 
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
@@ -337,5 +439,6 @@ __all__ = [
     "AttentionConfig",
     "AttentionContext",
     "select_attention_backend",
+    "resolve_prefix_seg_info",
     "run_attention",
 ]

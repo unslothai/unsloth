@@ -37,6 +37,7 @@ try:
         FalconH1DecoderLayer,
         FalconH1Model,
         FalconH1ForCausalLM,
+        FalconH1RMSNorm,
         FalconHybridMambaAttentionDynamicCache,
     )
 except:
@@ -677,6 +678,18 @@ def fix_prepare_inputs_for_generation(module):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
 
 
+class Unsloth_FalconH1RMSNorm(FalconH1RMSNorm):
+    """fast_rms_layernorm (compiler-disabled, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
+
+    def forward(self, hidden_states):
+        return fast_rms_layernorm(self, hidden_states, gemma = False)
+
+
+def patch_falcon_h1_rms_layernorm():
+    import transformers.models.falcon_h1.modeling_falcon_h1
+    transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RMSNorm = Unsloth_FalconH1RMSNorm
+
+
 class FastFalconH1Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
@@ -708,6 +721,8 @@ class FastFalconH1Model(FastLlamaModel):
         transformers.models.falcon_h1.modeling_falcon_h1.FalconH1RotaryEmbedding = (
             LlamaRotaryEmbedding
         )
+        # Avoids the float64 RMSNorm compile kernel that fails on Intel Arc DG2 (issue #6555).
+        patch_falcon_h1_rms_layernorm()
         return
 
     @staticmethod

@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
-import { cancelStagedModelDownload } from "@/features/hub";
+import {
+  cancelStagedModelDownload,
+  mirrorHfTokenInto,
+  useHfTokenStore,
+} from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
@@ -23,14 +27,15 @@ import {
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
 import { useExternalProvidersStore } from "./external-providers-store";
+import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
-const HF_TOKEN_KEY = "unsloth_hf_token";
-const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
 export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
 export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
 export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
 export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
+  "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -42,7 +47,22 @@ export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
   "unsloth_chat_show_all_quantizations";
+export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
+  "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
+export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
+
+/**
+ * Permission level for local tool calls:
+ * - "ask": always ask before every tool call runs.
+ * - "auto" ("Approve for me"): only ask for calls the backend detects as
+ *   potentially unsafe; read-only calls run immediately. Sandbox stays on.
+ * - "off": never ask; tool calls run automatically inside the sandbox
+ *   (the original default before permission levels existed).
+ * - "full" ("Full access"): no confirmations and the python/terminal sandbox
+ *   is disabled. Session-only; never restored from storage.
+ */
+export type PermissionMode = "ask" | "auto" | "off" | "full";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -51,6 +71,8 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
+export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 
 // Persist only the model-agnostic intents (auto/ngram/off). MTP modes
@@ -69,6 +91,12 @@ export const DEFAULT_RAG_TOP_K = 5;
 export type RagAutoInject = "auto" | "on" | "off";
 export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
 export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+// OCR scanned/image-only PDF pages at ingest time. On by default; off skips the
+// extra vision pass (only matters when the loaded chat model has vision).
+export const DEFAULT_RAG_OCR = true;
+// Describe figures/charts in PDFs at ingest time so they become searchable. On by
+// default (no-op without a vision model); off skips the per-figure vision calls.
+export const DEFAULT_RAG_CAPTION = true;
 
 function loadRagSource(): RagSource {
   if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
@@ -309,8 +337,10 @@ export function loadOptionalBool(key: string): boolean | null {
 /**
  * Resolve the web-search / code-execution pill state to apply when a model
  * loads. Honors the user's persisted preference so a tool-capable model never
- * re-enables a pill the user turned off; falls back to the model's capability
- * only when no preference has been expressed.
+ * re-enables a pill the user turned off, and never re-disables one they turned
+ * on. When no preference has been expressed the pills stay off: tool execution
+ * is opt-in, so the person enables it with a click rather than a tool-capable
+ * model turning it on for them.
  */
 export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   toolsEnabled: boolean;
@@ -318,8 +348,8 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 } {
   if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
   return {
-    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? true,
-    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? true,
+    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? false,
+    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? false,
   };
 }
 
@@ -331,6 +361,55 @@ function saveBool(key: string, value: boolean): void {
     // ignore
   }
 }
+
+// The visibility flag shipped after the menu pins, so when it is absent,
+// profiles that had explicitly pinned Canvas keep it visible.
+function loadShowCanvasMenuItem(): boolean {
+  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
+  if (stored !== null) return stored;
+  if (!canUseStorage()) return false;
+  try {
+    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
+    if (raw === null) return false;
+    const parsed = JSON.parse(raw) as {
+      state?: { pins?: { canvas?: boolean } };
+    };
+    return parsed.state?.pins?.canvas === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * "full" is intentionally not restorable: it disables the sandbox and every
+ * confirmation gate, so it must be re-enabled (through the warning dialog)
+ * each session. First run falls back to the legacy "Confirm tool calls"
+ * toggle so existing users keep their behavior (on -> ask, explicitly
+ * off -> "off", i.e. no prompts); fresh installs default to "auto".
+ */
+function loadPermissionMode(): PermissionMode {
+  if (!canUseStorage()) return "auto";
+  try {
+    const raw = localStorage.getItem(CHAT_PERMISSION_MODE_KEY);
+    if (raw === "ask" || raw === "auto" || raw === "off") return raw;
+  } catch {
+    // ignore
+  }
+  const legacyConfirm = loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY);
+  if (legacyConfirm === null) return "auto";
+  return legacyConfirm ? "ask" : "off";
+}
+
+function savePermissionMode(mode: PermissionMode): void {
+  if (!canUseStorage() || mode === "full") return;
+  try {
+    localStorage.setItem(CHAT_PERMISSION_MODE_KEY, mode);
+  } catch {
+    // ignore
+  }
+}
+
+const INITIAL_PERMISSION_MODE: PermissionMode = loadPermissionMode();
 
 function loadString(key: string, fallback: string): string {
   if (!canUseStorage()) return fallback;
@@ -418,17 +497,6 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
-function notifyHfTokenChanged(value: string): void {
-  if (!canUseStorage()) return;
-  try {
-    window.dispatchEvent(
-      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
-    );
-  } catch {
-    // ignore
-  }
-}
-
 /** A local model staged for a deferred load (see `pendingSelection`). Shape is
  *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
 export type PendingModelSelection = {
@@ -504,7 +572,11 @@ export function isPendingGguf(pending: PendingModelSelection | null): boolean {
  *  wrong file. */
 export function pendingSelectionMatches(
   pending: PendingModelSelection | null,
-  pick: { id: string; ggufVariant?: string | null; nativePathToken?: string | null },
+  pick: {
+    id: string;
+    ggufVariant?: string | null;
+    nativePathToken?: string | null;
+  },
 ): boolean {
   return (
     pending != null &&
@@ -582,6 +654,8 @@ type ChatRuntimeStore = {
   codeToolsEnabled: boolean;
   imageToolsEnabled: boolean;
   artifactsEnabled: boolean;
+  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   mcpEnabledForChat: boolean;
@@ -592,6 +666,10 @@ type ChatRuntimeStore = {
   // autoInject = forced first-pass retrieval before answering.
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
+  // OCR scanned/image-only PDF pages at ingest time (vision model required).
+  ragOcrScanned: boolean;
+  // Describe figures/charts at ingest time (vision model required).
+  ragCaptionFigures: boolean;
   /**
    * When on, local Studio tool calls pause for an explicit allow/deny in the
    * chat before they run.
@@ -601,8 +679,15 @@ type ChatRuntimeStore = {
    * Bypass Permissions: when on, tool calls run with no confirmation gate
    * AND the python/terminal execution sandbox is disabled on the backend
    * (secrets are still stripped). Takes precedence over confirmToolCalls.
+   * Kept in sync with permissionMode ("full" <=> true).
    */
   bypassPermissions: boolean;
+  /**
+   * Permission level. Single source of truth for the bypass dropdowns;
+   * bypassPermissions and confirmToolCalls mirror it so legacy call sites
+   * keep working. "full" is session-only (never persisted).
+   */
+  permissionMode: PermissionMode;
   /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
    *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -630,8 +715,16 @@ type ChatRuntimeStore = {
    */
   webFetchToolsEnabled: boolean;
   toolStatus: string | null;
+  /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
+   *  appended by tool_output, cleared on tool_end or run end. */
+  toolLiveOutput: Record<string, string>;
+  /** Full live output of finished tools whose result was truncated for the
+   *  model, keyed by toolCallId. Set from tool_end; finished cards prefer it
+   *  over the truncated result. Session-transient. */
+  toolFullOutput: Record<string, string>;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
+  nudgeToolCalls: boolean;
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
@@ -659,6 +752,9 @@ type ChatRuntimeStore = {
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
+  /** Persisted, shared by the chat model selector and the Hub page: list only
+   *  models whose size fits this device's memory budget. */
+  fitOnDeviceOnly: boolean;
   /** A local model picked while `loadOnSelection` is off: staged, not loaded.
    *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
@@ -736,11 +832,13 @@ type ChatRuntimeStore = {
     enabled: boolean,
     options?: { persist?: boolean },
   ) => void;
+  setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
+  setPermissionMode: (mode: PermissionMode) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
@@ -757,10 +855,20 @@ type ChatRuntimeStore = {
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
   setRagAutoInjectMinScore: (score: number) => void;
+  setRagOcrScanned: (enabled: boolean) => void;
+  setRagCaptionFigures: (enabled: boolean) => void;
   setToolStatus: (status: string | null) => void;
+  appendToolLiveOutput: (toolCallId: string, text: string) => void;
+  /** Clear one tool's live output, or all when no id is given. */
+  clearToolLiveOutput: (toolCallId?: string) => void;
+  /** Preserve a finished tool's full live-streamed output for display. */
+  setToolFullOutput: (toolCallId: string, text: string) => void;
+  /** Drop a stale preserved full output (a new run is reusing the id). */
+  clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
   setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
+  setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
@@ -779,6 +887,7 @@ type ChatRuntimeStore = {
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
+  setFitOnDeviceOnly: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
@@ -812,6 +921,7 @@ type ScalarSettingKey =
   | "collapseHtmlArtifacts"
   | "allowArtifactNetworkAccess"
   | "autoHealToolCalls"
+  | "nudgeToolCalls"
   | "maxToolCallsPerMessage"
   | "toolCallTimeout";
 
@@ -849,6 +959,7 @@ const SCALAR_SETTING_KEYS = [
   "collapseHtmlArtifacts",
   "allowArtifactNetworkAccess",
   "autoHealToolCalls",
+  "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
 ] as const satisfies readonly ScalarSettingKey[];
@@ -1024,7 +1135,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   runningByThreadId: {},
   cancelByThreadId: {},
   autoTitle: false,
-  hfToken: loadString(HF_TOKEN_KEY, ""),
+  hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
@@ -1051,17 +1162,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
     false,
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
-  confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  // Mirrors permissionMode (gate requested for ask/auto) so both controls
+  // agree on load.
+  confirmToolCalls:
+    INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
   // Never restore Bypass Permissions from storage: it disables the sandbox and
   // the confirmation gate, so it must be re-enabled (through the warning
   // dialog) each session rather than silently reactivating on reload.
   bypassPermissions: false,
+  permissionMode: INITIAL_PERMISSION_MODE,
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -1077,10 +1193,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
     { min: 0, max: 1 },
   ),
+  ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
+  ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
   toolStatus: null,
+  toolLiveOutput: {},
+  toolFullOutput: {},
   generatingStatus: null,
   activeDiffusionCanvas: null,
   autoHealToolCalls: true,
+  nudgeToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
@@ -1095,6 +1216,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1218,11 +1340,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) => {
-    saveString(HF_TOKEN_KEY, hfToken);
-    set({ hfToken });
-    notifyHfTokenChanged(hfToken);
-  },
+  setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
@@ -1325,6 +1443,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      toolLiveOutput: {},
+      toolFullOutput: {},
       activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
@@ -1396,6 +1516,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { artifactsEnabled };
     }),
+  setShowCanvasMenuItem: (showCanvasMenuItem) =>
+    set(() => {
+      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
+      return { showCanvasMenuItem };
+    }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set((state) => {
       saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
@@ -1425,14 +1550,53 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { mcpEnabledForChat };
     }),
   setConfirmToolCalls: (confirmToolCalls) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
-      return { confirmToolCalls };
+      // The legacy toggle is a view over the permission level: on -> "ask",
+      // off -> "off" (no prompts). While "full" is active the level is left
+      // alone (the toggle is disabled in the UI anyway).
+      if (state.permissionMode === "full") return { confirmToolCalls };
+      const permissionMode: PermissionMode = confirmToolCalls ? "ask" : "off";
+      savePermissionMode(permissionMode);
+      return { confirmToolCalls, permissionMode };
+    }),
+  setPermissionMode: (permissionMode) =>
+    set(() => {
+      // "full" is session-only (never persisted, see init); ask/auto/off
+      // persist and keep the legacy confirm toggle in sync (the gate is
+      // requested for both ask and auto).
+      savePermissionMode(permissionMode);
+      if (permissionMode === "full") {
+        // Full access sends confirm_tool_calls=false; keep the store flag in
+        // sync so response metadata does not report confirmations as enabled.
+        return { permissionMode, bypassPermissions: true, confirmToolCalls: false };
+      }
+      const confirmToolCalls =
+        permissionMode === "ask" || permissionMode === "auto";
+      saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      return { permissionMode, bypassPermissions: false, confirmToolCalls };
     }),
   setBypassPermissions: (bypassPermissions) =>
     // Deliberately not persisted (see init): a reload must not silently keep
     // the sandbox/confirmation bypass active without re-accepting the warning.
-    set(() => ({ bypassPermissions })),
+    // Turning bypass off returns to the last persisted ask/auto level.
+    set(() => {
+      if (bypassPermissions) {
+        // Full access never prompts; mirror confirm_tool_calls=false in the
+        // store so metadata does not report confirmations as enabled.
+        return {
+          bypassPermissions,
+          permissionMode: "full" as PermissionMode,
+          confirmToolCalls: false,
+        };
+      }
+      const permissionMode = loadPermissionMode();
+      return {
+        bypassPermissions,
+        permissionMode,
+        confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+      };
+    }),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
     set(() => ({ bypassConfirmOpen })),
   allowToolAlways: (sessionId, toolName) =>
@@ -1498,7 +1662,54 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       );
       return { ragAutoInjectMinScore };
     }),
+  setRagOcrScanned: (ragOcrScanned) =>
+    set(() => {
+      saveBool(CHAT_RAG_OCR_KEY, ragOcrScanned);
+      return { ragOcrScanned };
+    }),
+  setRagCaptionFigures: (ragCaptionFigures) =>
+    set(() => {
+      saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
+      return { ragCaptionFigures };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  appendToolLiveOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolLiveOutput: {
+        ...state.toolLiveOutput,
+        [toolCallId]: (state.toolLiveOutput[toolCallId] ?? "") + text,
+      },
+    })),
+  setToolFullOutput: (toolCallId, text) =>
+    set((state) => ({
+      toolFullOutput: {
+        ...state.toolFullOutput,
+        [toolCallId]: text,
+      },
+    })),
+  clearToolFullOutput: (toolCallId) =>
+    set((state) => {
+      if (!(toolCallId in state.toolFullOutput)) {
+        return {};
+      }
+      const next = { ...state.toolFullOutput };
+      delete next[toolCallId];
+      return { toolFullOutput: next };
+    }),
+  clearToolLiveOutput: (toolCallId) =>
+    set((state) => {
+      if (toolCallId === undefined) {
+        return Object.keys(state.toolLiveOutput).length
+          ? { toolLiveOutput: {} }
+          : {};
+      }
+      if (!(toolCallId in state.toolLiveOutput)) {
+        return {};
+      }
+      const next = { ...state.toolLiveOutput };
+      delete next[toolCallId];
+      return { toolLiveOutput: next };
+    }),
   setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
     set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
@@ -1510,6 +1721,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.autoHealToolCalls,
       );
       return { autoHealToolCalls };
+    }),
+  setNudgeToolCalls: (nudgeToolCalls) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "nudgeToolCalls",
+        nudgeToolCalls,
+        state.nudgeToolCalls,
+      );
+      return { nudgeToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -1556,6 +1776,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
     set({ showAllQuantizations });
   },
+  setFitOnDeviceOnly: (fitOnDeviceOnly) => {
+    saveBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, fitOnDeviceOnly);
+    set({ fitOnDeviceOnly });
+  },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
   stageModel: (selection) => {
     // Refuse staging mid-load: post-load cleanup would silently drop the queued
@@ -1599,6 +1823,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+// Mirror token edits made through the shared store (e.g. Studio's field).
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
 
 export function resolveSpeculativeSettingsForLoad({
   usePersistedPreference = false,

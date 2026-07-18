@@ -163,7 +163,7 @@ jobs:
             'pytest==9.0.3' \
             'pytest-asyncio==1.3.0' \
             'httpx==0.28.1'
-          pip install --index-url https://download.pytorch.org/whl/cpu \
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch==2.10.0'
           # github.com occasionally 500s on the git fetch; retry the
           # zoo install so a single upstream blip does not fail CI.
@@ -231,99 +231,6 @@ jobs:
             tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_mlx_training_worker_behaviors.py
 
-      # Studio prebuilt llama.cpp install + GGUF inference. Mirrors the
-      # path Studio's setup.sh takes on macOS since #5963: plan against
-      # the unslothai/llama.cpp fork's latest release, which ships the
-      # bin-macos-arm64 bundle plus the llama-prebuilt-manifest.json the
-      # default policy reads. After install, downloads a small published
-      # GGUF (unsloth/gemma-3-270m-it-GGUF, Q4_K_M) and validates
-      # llama-server /completion end to end. An install failure or a
-      # non-zero binary exit is an Unsloth/Studio bug.
-      - name: Studio prebuilt llama.cpp install + GGUF inference (Mac M1)
-        env:
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-          # install_llama_prebuilt.py hits the GitHub releases API to
-          # resolve the asset URL. Anonymous calls share the runner-IP
-          # rate-limit bucket and 403 quickly -- pass the workflow's
-          # automatic GITHUB_TOKEN to bump us to the 5000/hr authenticated
-          # bucket.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
-          rm -rf "$INSTALL_DIR"
-          # Mirror studio/setup.sh on macOS (the install.sh user path):
-          # it plans against the unslothai/llama.cpp fork's latest
-          # release with no policy or tag flags.
-          python studio/install_llama_prebuilt.py \
-            --install-dir "$INSTALL_DIR" \
-            --published-repo unslothai/llama.cpp
-
-          # Studio bundles only llama-server + llama-quantize from the
-          # prebuilt (not llama-cli) -- inference goes through
-          # llama-server's HTTP /completion endpoint. Validate both:
-          # llama-quantize --help proves the dynamic libs link, then
-          # spin up llama-server and POST a /completion request on a
-          # tiny published GGUF.
-          LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
-          LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
-          [ -x "$LLAMA_SERVER" ] || { echo "::error::llama-server missing at $LLAMA_SERVER"; find "$INSTALL_DIR/build" -type f | head -40; exit 1; }
-          [ -x "$LLAMA_QUANT" ]  || { echo "::error::llama-quantize missing at $LLAMA_QUANT"; exit 1; }
-          echo "llama-server : $LLAMA_SERVER"
-          echo "llama-quantize: $LLAMA_QUANT"
-          "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
-
-          mkdir -p /tmp/ggufs
-          bash .github/scripts/hf-download-with-retry.sh \
-            'unsloth/gemma-3-270m-it-GGUF' \
-            'gemma-3-270m-it-Q4_K_M.gguf' \
-            /tmp/ggufs
-
-          PORT=18080
-          echo "=== starting llama-server on 127.0.0.1:$PORT ==="
-          "$LLAMA_SERVER" \
-            -m /tmp/ggufs/gemma-3-270m-it-Q4_K_M.gguf \
-            --host 127.0.0.1 \
-            --port "$PORT" \
-            -c 256 \
-            -n 16 \
-            --no-warmup \
-            > /tmp/llama-server.log 2>&1 &
-          SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
-
-          # Wait for /health to come up
-          for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-              echo "  server up after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-            echo "::error::llama-server never became healthy"
-            tail -40 /tmp/llama-server.log
-            exit 1
-          fi
-
-          PROMPT="Hello, my name is"
-          echo "=== POST /completion ==="
-          RESP=$(curl -sf -X POST "http://127.0.0.1:$PORT/completion" \
-            -H 'Content-Type: application/json' \
-            -d "{\"prompt\":\"$PROMPT\",\"n_predict\":16,\"temperature\":0,\"seed\":3407}")
-          echo "raw response (head): $(echo "$RESP" | head -c 600)"
-          CONTENT=$(echo "$RESP" | python -c "import json,sys; print(json.loads(sys.stdin.read()).get('content',''))")
-          echo "completion content: $CONTENT"
-
-          if [ -z "$CONTENT" ]; then
-            echo "::error::llama-server /completion returned empty content"
-            tail -40 /tmp/llama-server.log
-            exit 1
-          fi
-          echo "OK: Studio prebuilt llama.cpp on Mac M1 + GGUF /completion works"
-
       # Real MLX training + inference smoke test. Trains
       # unsloth/gemma-3-270m-it for 7 deterministic LoRA steps
       # (batch_size=2, gradient_accumulation_steps=3) on a single
@@ -338,6 +245,9 @@ jobs:
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           mkdir -p mlx_workdir
+          # Authenticate llama.cpp's release-API lookup (anonymous 403s on rate-limit);
+          # read-only GITHUB_TOKEN scoped here only, never to steps that run binaries.
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
           python tests/studio/run_real_mlx_smoke.py train \
             --workdir "$PWD/mlx_workdir"
 
@@ -406,3 +316,88 @@ jobs:
             cat "$f" 2>/dev/null || echo "(missing)"
             echo
           done
+
+      # Validates the macOS prebuilt path Studio's setup.sh uses (#5963): install the
+      # unslothai/llama.cpp fork's latest release, download a small public GGUF, and
+      # check llama-server /completion end to end. Split and placed last so the
+      # untrusted binary runs only in the final smoke step, after every HF_TOKEN step,
+      # leaving no token-bearing step or shared workspace for a tampered prebuilt to
+      # corrupt. GH_TOKEN: releases API; HF_TOKEN (withheld on PR): probe + GGUF fetch.
+      - name: Studio prebuilt llama.cpp install + GGUF download (Mac M1)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
+          rm -rf "$INSTALL_DIR"
+          # Download only -- no llama-quantize / llama-server launch in this step.
+          python studio/install_llama_prebuilt.py \
+            --install-dir "$INSTALL_DIR" \
+            --published-repo unslothai/llama.cpp
+          mkdir -p /tmp/ggufs
+          bash .github/scripts/hf-download-with-retry.sh \
+            'unsloth/gemma-3-270m-it-GGUF' \
+            'gemma-3-270m-it-Q4_K_M.gguf' \
+            /tmp/ggufs
+
+      # Final step: runs the downloaded binaries with no secrets present, and clears
+      # the GitHub Actions command files so a tampered prebuilt cannot influence the job.
+      - name: Studio prebuilt llama.cpp GGUF inference smoke (Mac M1)
+        run: |
+          set -euo pipefail
+          unset GITHUB_ENV GITHUB_PATH GITHUB_OUTPUT GITHUB_STEP_SUMMARY
+          INSTALL_DIR="$HOME/.unsloth-studio-prebuilt-test/llama.cpp"
+          # Studio bundles only llama-server + llama-quantize (not llama-cli);
+          # inference goes through llama-server's HTTP /completion endpoint.
+          LLAMA_SERVER="$INSTALL_DIR/build/bin/llama-server"
+          LLAMA_QUANT="$INSTALL_DIR/build/bin/llama-quantize"
+          [ -x "$LLAMA_SERVER" ] || { echo "::error::llama-server missing at $LLAMA_SERVER"; find "$INSTALL_DIR/build" -type f | head -40; exit 1; }
+          [ -x "$LLAMA_QUANT" ]  || { echo "::error::llama-quantize missing at $LLAMA_QUANT"; exit 1; }
+          echo "llama-server : $LLAMA_SERVER"
+          echo "llama-quantize: $LLAMA_QUANT"
+          "$LLAMA_QUANT" --help >/dev/null && echo "  llama-quantize loads OK"
+
+          PORT=18080
+          echo "=== starting llama-server on 127.0.0.1:$PORT ==="
+          "$LLAMA_SERVER" \
+            -m /tmp/ggufs/gemma-3-270m-it-Q4_K_M.gguf \
+            --host 127.0.0.1 \
+            --port "$PORT" \
+            -c 256 \
+            -n 16 \
+            --no-warmup \
+            > /tmp/llama-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          # Wait for /health to come up
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+              echo "  server up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          if ! curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+            echo "::error::llama-server never became healthy"
+            tail -40 /tmp/llama-server.log
+            exit 1
+          fi
+
+          PROMPT="Hello, my name is"
+          echo "=== POST /completion ==="
+          RESP=$(curl -sf -X POST "http://127.0.0.1:$PORT/completion" \
+            -H 'Content-Type: application/json' \
+            -d "{\"prompt\":\"$PROMPT\",\"n_predict\":16,\"temperature\":0,\"seed\":3407}")
+          echo "raw response (head): $(echo "$RESP" | head -c 600)"
+          CONTENT=$(echo "$RESP" | python -c "import json,sys; print(json.loads(sys.stdin.read()).get('content',''))")
+          echo "completion content: $CONTENT"
+
+          if [ -z "$CONTENT" ]; then
+            echo "::error::llama-server /completion returned empty content"
+            tail -40 /tmp/llama-server.log
+            exit 1
+          fi
+          echo "OK: Studio prebuilt llama.cpp on Mac M1 + GGUF /completion works"

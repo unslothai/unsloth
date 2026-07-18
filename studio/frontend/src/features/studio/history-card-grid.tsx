@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import type { TrainingRunSummary } from "@/features/training";
 import {
   deleteTrainingRun,
+  getTrainingRunDisplayTitle,
+  getTrainingRunModelSubtitle,
   emitTrainingRunDeleted,
   listTrainingRuns,
   onTrainingRunDeleted,
@@ -387,6 +389,12 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
+
+          const title = getTrainingRunDisplayTitle(run);
+          const modelSubtitle = getTrainingRunModelSubtitle(run);
+
+          const projectSubtitle =
+            run.project_name && title !== run.project_name ? run.project_name : null;
           // Backend /p ref + its capability token. Both are required: the link
           // is useless (404s) without the signature, so don't offer to copy it.
           const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
@@ -476,16 +484,16 @@ export function HistoryCardGrid({
               <div className="min-w-0">
                 <p
                   className="truncate text-sm font-medium"
-                  title={run.display_name ?? run.model_name}
+                  title={title}
                 >
-                  {run.display_name ?? run.model_name}
+                  {title}
                 </p>
-                {run.display_name && (
+                {modelSubtitle && (
                   <p
                     className="truncate text-xs text-muted-foreground"
-                    title={run.model_name}
+                    title={modelSubtitle}
                   >
-                    {run.model_name}
+                    {modelSubtitle}
                   </p>
                 )}
                 <p
@@ -494,6 +502,14 @@ export function HistoryCardGrid({
                 >
                   {run.dataset_name}
                 </p>
+                {projectSubtitle && (
+                  <p
+                    className="truncate text-xs text-muted-foreground/80"
+                    title={projectSubtitle}
+                  >
+                    {projectSubtitle}
+                  </p>
+                )}
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
                 <div className={cn((canResume || canCopyPreview) && "h-7 overflow-hidden")}>

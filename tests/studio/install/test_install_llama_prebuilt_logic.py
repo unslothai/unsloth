@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -22,11 +24,15 @@ SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 extract_archive = INSTALL_LLAMA_PREBUILT.extract_archive
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
+is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
+scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
+isolated_runtime_home = INSTALL_LLAMA_PREBUILT.isolated_runtime_home
 HostInfo = INSTALL_LLAMA_PREBUILT.HostInfo
 AssetChoice = INSTALL_LLAMA_PREBUILT.AssetChoice
 ApprovedArtifactHash = INSTALL_LLAMA_PREBUILT.ApprovedArtifactHash
 ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 hydrate_source_tree = INSTALL_LLAMA_PREBUILT.hydrate_source_tree
+remove_agent_instruction_files = INSTALL_LLAMA_PREBUILT.remove_agent_instruction_files
 validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
@@ -200,6 +206,178 @@ def test_extract_archive_rejects_zip_symlink_entry(tmp_path: Path):
         extract_archive(archive_path, tmp_path / "extract")
 
 
+def test_remove_agent_instruction_files_does_not_follow_links(tmp_path: Path):
+    managed = tmp_path / "managed"
+    nested = managed / "nested"
+    external = tmp_path / "external"
+    nested.mkdir(parents = True)
+    external.mkdir()
+    (managed / "AGENTS.md").write_text("managed root", encoding = "utf-8")
+    (nested / "AGENTS.md").write_text("managed nested", encoding = "utf-8")
+    (managed / "CLAUDE.md").write_text("managed Claude root", encoding = "utf-8")
+    (nested / "CLAUDE.md").write_text("managed Claude nested", encoding = "utf-8")
+    (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
+    (external / "CLAUDE.md").write_text("user-owned Claude", encoding = "utf-8")
+    try:
+        (managed / "external-link").symlink_to(external, target_is_directory = True)
+        linked_root = tmp_path / "linked-root"
+        linked_root.symlink_to(external, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    assert remove_agent_instruction_files(managed) == 4
+    assert not list(managed.rglob("AGENTS.md"))
+    assert not list(managed.rglob("CLAUDE.md"))
+    assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
+    assert (external / "CLAUDE.md").read_text(encoding = "utf-8") == "user-owned Claude"
+
+    assert remove_agent_instruction_files(linked_root) == 0
+    assert (external / "AGENTS.md").exists()
+    assert (external / "CLAUDE.md").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows junction behavior")
+def test_remove_agent_instruction_files_does_not_follow_windows_junctions(tmp_path: Path):
+    managed = tmp_path / "managed"
+    external = tmp_path / "external"
+    managed.mkdir()
+    external.mkdir()
+    (external / "AGENTS.md").write_text("user owned", encoding = "utf-8")
+    (external / "CLAUDE.md").write_text("user-owned Claude", encoding = "utf-8")
+
+    nested_junction = managed / "external-junction"
+    root_junction = tmp_path / "linked-root"
+    for junction in (nested_junction, root_junction):
+        result = subprocess.run(
+            ["cmd", "/d", "/c", "mklink", "/J", str(junction), str(external)],
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"directory junctions unavailable: {result.stderr or result.stdout}")
+
+    assert remove_agent_instruction_files(managed) == 0
+    assert remove_agent_instruction_files(root_junction) == 0
+    assert (external / "AGENTS.md").read_text(encoding = "utf-8") == "user owned"
+    assert (external / "CLAUDE.md").read_text(encoding = "utf-8") == "user-owned Claude"
+
+
+def test_remove_agent_instruction_files_prunes_linklike_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    managed = tmp_path / "managed"
+    simulated_junction = managed / "simulated-junction"
+    simulated_junction.mkdir(parents = True)
+    agents = simulated_junction / "AGENTS.md"
+    claude = simulated_junction / "CLAUDE.md"
+    agents.write_text("external instructions", encoding = "utf-8")
+    claude.write_text("external Claude instructions", encoding = "utf-8")
+    real_is_link_or_junction = INSTALL_LLAMA_PREBUILT._is_link_or_junction
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_is_link_or_junction",
+        lambda path: path == simulated_junction or real_is_link_or_junction(path),
+    )
+
+    assert remove_agent_instruction_files(managed) == 0
+    assert agents.exists()
+    assert claude.exists()
+
+
+def test_remove_agent_instruction_files_continues_after_unlink_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    blocked = managed / "AGENTS.md"
+    removable = managed / "CLAUDE.md"
+    blocked.write_text("blocked", encoding = "utf-8")
+    removable.write_text("remove me", encoding = "utf-8")
+    real_unlink = Path.unlink
+
+    def selective_unlink(path: Path, *args, **kwargs):
+        if path == blocked:
+            raise PermissionError(errno.EACCES, "Access is denied", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+
+    assert remove_agent_instruction_files(managed) == 1
+    assert blocked.exists()
+    assert not removable.exists()
+    captured = capsys.readouterr()
+    assert "could not remove contributor-only instruction" in captured.out + captured.err
+
+
+def test_main_resolves_linked_install_path_and_preserves_cleanup_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "target"
+    linked_root = tmp_path / "linked-root"
+    target.mkdir()
+    try:
+        linked_root.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    received = {}
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["install_llama_prebuilt.py", "--install-dir", str(linked_root)],
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "install_prebuilt",
+        lambda **kwargs: received.update(kwargs),
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_LOG_TO_STDOUT", False)
+
+    assert INSTALL_LLAMA_PREBUILT.main() == 0
+    assert received["install_dir"] == target.resolve()
+    assert received["instruction_cleanup_root"] == linked_root.absolute()
+    assert received["instruction_cleanup_root"].is_symlink()
+
+
+def test_install_prebuilt_uses_explicit_instruction_cleanup_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "target"
+    linked_root = tmp_path / "linked-root"
+    install_dir.mkdir()
+    (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_text("{}", encoding = "utf-8")
+    try:
+        linked_root.symlink_to(install_dir, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    cleanup_roots = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "remove_agent_instruction_files",
+        lambda root: cleanup_roots.append(root) or 0,
+    )
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "resolve_simple_install_release_plans",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop after cleanup")),
+    )
+
+    with pytest.raises(RuntimeError, match = "stop after cleanup"):
+        install_prebuilt(
+            install_dir.resolve(),
+            "latest",
+            "unslothai/llama.cpp",
+            "",
+            instruction_cleanup_root = linked_root.absolute(),
+        )
+
+    assert cleanup_roots == [linked_root.absolute()]
+
+
 def test_hydrate_source_tree_extracts_upstream_archive_contents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -221,6 +399,26 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
             f"llama.cpp-{upstream_tag}/gguf-py/gguf/__init__.py",
             b"__all__ = []\n",
         )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/AGENTS.md",
+            b"upstream contributor instructions\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/examples/AGENTS.md",
+            b"nested contributor instructions\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/CLAUDE.md",
+            b"Claude contributor instructions\n",
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{upstream_tag}/examples/CLAUDE.md",
+            b"nested Claude contributor instructions\n",
+        )
 
     source_urls = set(INSTALL_LLAMA_PREBUILT.upstream_source_archive_urls(upstream_tag))
 
@@ -241,6 +439,8 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert (install_dir / "convert_hf_to_gguf.py").exists()
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
+    assert not list(install_dir.rglob("AGENTS.md"))
+    assert not list(install_dir.rglob("CLAUDE.md"))
 
 
 def test_release_asset_download_url():
@@ -641,6 +841,29 @@ def test_activate_install_tree_restores_existing_install_after_activation_failur
     assert "restored previous install from rollback path" in output
 
 
+def test_activate_install_tree_preserves_symlink_to_resolved_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "target"
+    linked_root = tmp_path / "linked-root"
+    staging_dir = tmp_path / "staging"
+    install_dir.mkdir()
+    staging_dir.mkdir()
+    (install_dir / "old.txt").write_text("old", encoding = "utf-8")
+    (staging_dir / "new.txt").write_text("new", encoding = "utf-8")
+    try:
+        linked_root.symlink_to(install_dir, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "confirm_install_tree", lambda *_args: None)
+
+    activate_install_tree(staging_dir, linked_root.resolve(), linux_host())
+
+    assert linked_root.is_symlink()
+    assert (linked_root / "new.txt").read_text(encoding = "utf-8") == "new"
+    assert not (linked_root / "old.txt").exists()
+
+
 def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
@@ -777,6 +1000,259 @@ def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
         str(bin_dir) in ld_dirs
     ), f"binary_path.parent ({bin_dir}) must be in LD_LIBRARY_PATH, got: {ld_dirs}"
     assert str(install_dir) in ld_dirs
+
+
+def test_scrub_env_drops_secrets_and_keeps_runtime_vars():
+    raw = {
+        # secrets
+        "HF_TOKEN": "hf_x",
+        "HUGGING_FACE_HUB_TOKEN": "hf_y",
+        "GH_TOKEN": "gh_x",
+        "GITHUB_TOKEN": "gh_y",
+        "WANDB_API_KEY": "wandb_x",
+        "AWS_SECRET_ACCESS_KEY": "aws_x",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "oidc_x",
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://oidc",
+        "SOME_VENDOR_API_KEY": "vendor_x",
+        "DB_PASSWORD": "pw",
+        "MY_PRIVATE_KEY": "pk",
+        "KUBECONFIG": "/home/runner/.kube/config",
+        "SSH_AUTH_SOCK": "/tmp/ssh-agent.sock",
+        "SSH_PASSPHRASE": "ssh_pass",
+        # runtime vars to keep
+        "PATH": "/usr/bin",
+        "LD_LIBRARY_PATH": "/opt/lib",
+        "DYLD_LIBRARY_PATH": "/opt/dyld",
+        "HOME": "/home/runner",
+        "TMPDIR": "/tmp",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+    }
+
+    cleaned = scrub_env(raw)
+
+    for secret in (
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "WANDB_API_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "SOME_VENDOR_API_KEY",
+        "DB_PASSWORD",
+        "MY_PRIVATE_KEY",
+        "KUBECONFIG",
+        "SSH_AUTH_SOCK",
+        "SSH_PASSPHRASE",
+    ):
+        assert secret not in cleaned, f"{secret} must be stripped from binary env"
+
+    for keep in (
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "HOME",
+        "TMPDIR",
+        "CUDA_VISIBLE_DEVICES",
+        "HSA_OVERRIDE_GFX_VERSION",
+    ):
+        assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
+
+    # no bare "KEY" marker: benign KEY-containing names survive
+    assert is_secret_env_name("API_KEY") is True
+    assert is_secret_env_name("SSH_KEYFILE_PATH") is False
+    assert is_secret_env_name("PATH") is False
+
+
+def test_scrub_env_drops_proxy_index_and_embedded_url_credentials():
+    raw = {
+        # proxy / package-index URLs whose values commonly embed credentials
+        "HTTPS_PROXY": "https://user:secret@proxy:8080",
+        "https_proxy": "https://user:secret@proxy:8080",  # lower-case variant
+        "ALL_PROXY": "socks5://user:secret@proxy:1080",
+        "PIP_INDEX_URL": "https://u:p@pypi.internal/simple",
+        "UV_INDEX_URL": "https://u:p@index.internal/simple",
+        # credentials embedded in an otherwise benign-named variable's value
+        "MY_DB_DSN": "postgres://admin:secret@db:5432/app",
+        # benign vars the binary needs, including a URL with no userinfo
+        "PATH": "/usr/bin",
+        "CUDA_VISIBLE_DEVICES": "0",
+        "NO_PROXY": "localhost,127.0.0.1",
+        "SOME_ENDPOINT": "https://example.com:8080/v1",
+    }
+
+    cleaned = scrub_env(raw)
+
+    for secret in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "PIP_INDEX_URL",
+        "UV_INDEX_URL",
+        "MY_DB_DSN",
+    ):
+        assert secret not in cleaned, f"{secret} must be stripped from binary env"
+    for keep in ("PATH", "CUDA_VISIBLE_DEVICES", "NO_PROXY", "SOME_ENDPOINT"):
+        assert cleaned[keep] == raw[keep], f"{keep} must be preserved for the binary"
+
+    assert is_secret_env_name("HTTPS_PROXY") is True
+    assert is_secret_env_name("https_proxy") is True
+    assert is_secret_env_name("NO_PROXY") is False
+
+
+def test_binary_env_strips_secrets_from_downloaded_binary_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+
+    monkeypatch.setenv("HF_TOKEN", "hf_secret_from_ci")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh_secret_from_ci")
+    monkeypatch.setenv("GH_TOKEN", "gh_secret_from_ci")
+    monkeypatch.setenv("WANDB_API_KEY", "wandb_secret_from_ci")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+
+    env = binary_env(binary_path, install_dir, host)
+
+    assert "HF_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "GH_TOKEN" not in env
+    assert "WANDB_API_KEY" not in env
+    # library/runtime resolution unaffected
+    assert str(bin_dir) in env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_binary_env_redirects_home_away_from_real_credential_stores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+
+    real_home = str(tmp_path / "real_home")
+    monkeypatch.setenv("HOME", real_home)
+    monkeypatch.setenv("HF_HOME", real_home + "/.cache/huggingface")
+
+    env = binary_env(binary_path, install_dir, host)
+
+    # HOME and the cache pointers are redirected to a single empty, existing dir.
+    assert env["HOME"] != real_home
+    assert env["HF_HOME"] == env["HOME"]
+    assert env["HOME"] == isolated_runtime_home()
+    assert os.path.isdir(env["HOME"])
+    assert os.listdir(env["HOME"]) == []
+    # Windows reconstructs the profile from HOMEDRIVE + HOMEPATH.
+    assert env["HOMEDRIVE"] + env["HOMEPATH"] == env["HOME"]
+
+
+def test_scrub_env_drops_token_only_url_userinfo():
+    raw = {
+        "GENERIC_REPO": "https://ghp_tokenonly@github.com/org/repo",
+        "GENERIC_OK": "https://example.com:8080/v1",
+    }
+    cleaned = scrub_env(raw)
+    assert "GENERIC_REPO" not in cleaned
+    assert cleaned["GENERIC_OK"] == raw["GENERIC_OK"]
+
+
+def test_binary_env_drops_explicit_credential_file_pointers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+    dropped = (
+        "NETRC",
+        "PIP_CONFIG_FILE",
+        "DOCKER_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GITHUB_ENV",
+        "GITHUB_PATH",
+        "GITHUB_OUTPUT",
+        "GITHUB_STEP_SUMMARY",
+        "BASH_ENV",
+    )
+    for var in dropped:
+        monkeypatch.setenv(var, "/home/realuser/secret")
+
+    env = binary_env(tmp_path / "llama-server", tmp_path, host)
+
+    for var in dropped:
+        assert var not in env
+
+
+def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+
+    def fake_missing(binary_path, *, env = None):
+        captured["env"] = env
+        return []
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_missing_libraries", fake_missing)
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "gh_secret")
+
+    INSTALL_LLAMA_PREBUILT.linux_runtime_dirs(Path("/fake/llama-server"))
+
+    probe_env = captured["env"]
+    assert probe_env is not None
+    assert "HF_TOKEN" not in probe_env
+    assert "GITHUB_TOKEN" not in probe_env
 
 
 def test_install_prebuilt_falls_back_to_older_release_plan(
@@ -1751,6 +2227,14 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
         approved_checksums = checksums,
         prebuilt_fallback_used = False,
     )
+    (install_dir / "AGENTS.md").write_text("old root instructions", encoding = "utf-8")
+    nested_agents = install_dir / "examples" / "AGENTS.md"
+    nested_agents.parent.mkdir()
+    nested_agents.write_text("old nested instructions", encoding = "utf-8")
+    (install_dir / "CLAUDE.md").write_text("old Claude instructions", encoding = "utf-8")
+    (nested_agents.parent / "CLAUDE.md").write_text(
+        "old nested Claude instructions", encoding = "utf-8"
+    )
 
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", lambda: host)
     monkeypatch.setattr(
@@ -1770,6 +2254,73 @@ def test_install_prebuilt_skips_download_when_existing_install_matches(
     )
 
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+    assert not list(install_dir.rglob("AGENTS.md"))
+    assert not list(install_dir.rglob("CLAUDE.md"))
+
+
+def test_setup_scripts_prune_agent_files_without_shipping_a_repo_copy():
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
+
+    assert (
+        "_remove_agent_instruction_files \\\n"
+        '    "$SCRIPT_DIR/frontend/node_modules" \\\n'
+        '    "$_OXC_DIR/node_modules"'
+    ) in setup_sh
+    assert '_remove_agent_instruction_files "$SCRIPT_DIR/frontend" "$_OXC_DIR"' not in setup_sh
+    assert '_remove_agent_instruction_files "$LLAMA_CPP_DIR"' in setup_sh
+    assert "-name 'CLAUDE.md'" in setup_sh
+    assert 'if [ ! -L "$LLAMA_CPP_DIR" ] && {' in setup_sh
+    assert '${_LOCAL_LLAMA_CPP_LINKED:-false}" != true' not in setup_sh
+    assert "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" in setup_sh
+    assert '_studio_owned_adoptable "$LLAMA_CPP_DIR"' in setup_sh
+    assert (
+        "Remove-AgentInstructionFiles -Roots @(\n"
+        '    (Join-Path $FrontendDir "node_modules"),\n'
+        '    (Join-Path $OxcValidatorDir "node_modules")\n'
+        ")"
+    ) in setup_ps1
+    assert "Remove-AgentInstructionFiles -Roots @($FrontendDir, $OxcValidatorDir)" not in setup_ps1
+    assert '"CLAUDE.md"' in setup_ps1
+    assert '-Include "AGENTS.md", "CLAUDE.md"' not in setup_ps1
+    assert '$child.Name -in @("AGENTS.md", "CLAUDE.md")' in setup_ps1
+    assert "$llamaCppIsLink" in setup_ps1
+    assert "if (-not $LocalLlamaCppLinked)" not in setup_ps1
+    assert "Join-Path $LlamaCppDir $StudioOwnedMarker" in setup_ps1
+    assert "Test-StudioOwnedAdoptable $LlamaCppDir" in setup_ps1
+    assert (
+        "Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir\n"
+        "            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)"
+    ) in setup_ps1
+    assert not (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "AGENTS.md").exists()
+    assert (PACKAGE_ROOT / "studio" / "frontend" / "src" / "i18n" / "README.md").is_file()
+
+
+def test_setup_sh_cleanup_unlinks_instruction_symlink_only(tmp_path: Path):
+    if shutil.which("bash") is None:
+        pytest.skip("bash is not available")
+
+    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
+    start = setup_sh.index("_remove_agent_instruction_files() {")
+    end = setup_sh.index("\n}\n", start) + 2
+    function = setup_sh[start:end]
+    managed = tmp_path / "managed"
+    external = tmp_path / "external.md"
+    managed.mkdir()
+    external.write_text("external", encoding = "utf-8")
+    instruction = managed / "AGENTS.md"
+    try:
+        instruction.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    subprocess.run(
+        ["bash", "-c", function + '\n_remove_agent_instruction_files "$1"', "bash", str(managed)],
+        check = True,
+    )
+
+    assert not os.path.lexists(instruction)
+    assert external.read_text(encoding = "utf-8") == "external"
 
 
 def test_install_prebuilt_does_not_skip_unhealthy_existing_install(

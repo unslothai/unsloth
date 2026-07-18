@@ -16,6 +16,7 @@ import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { useChatRuntimeStore } from "@/features/chat";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -25,52 +26,79 @@ import {
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
+import { loadCodingAgents } from "../api/coding-agents";
+import {
+  type OpenAIAutoSwitchSettings,
+  loadOpenAIAutoSwitchSettings,
+  updateOpenAIAutoSwitchSettings,
+} from "../api/openai-auto-switch";
+import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
-// API call type; OS axis applies to curl only (Python is OS-identical).
 type ExampleType =
   | "curl"
   | "python"
+  | "javascript"
   | "curlTools"
   | "pythonTools"
+  | "javascriptTools"
   | "curlAdvanced"
-  | "pythonAdvanced";
+  | "pythonAdvanced"
+  | "javascriptAdvanced";
 type Os = "unix" | "windows";
-// plain = bare call; tools = server-side tools; advanced = sampling + thinking + tools.
 type Variant = "plain" | "tools" | "advanced";
 
 const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "curl", label: "curl" },
   { id: "python", label: "Python" },
+  { id: "javascript", label: "JavaScript" },
   { id: "curlTools", label: "curl + tools" },
   { id: "pythonTools", label: "Python + tools" },
+  { id: "javascriptTools", label: "JavaScript + tools" },
   { id: "curlAdvanced", label: "curl + advanced" },
   { id: "pythonAdvanced", label: "Python + advanced" },
+  { id: "javascriptAdvanced", label: "JavaScript + advanced" },
 ];
 
 const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlTools: "settings.apiKeys.exampleCurlTools",
   pythonTools: "settings.apiKeys.examplePythonTools",
+  javascriptTools: "settings.apiKeys.exampleJavaScriptTools",
   curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
   pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
+  javascriptAdvanced: "settings.apiKeys.exampleJavaScriptAdvanced",
 };
 
 const OS_AWARE: Record<ExampleType, boolean> = {
   curl: true,
   python: false,
+  javascript: false,
   curlTools: true,
   pythonTools: false,
+  javascriptTools: false,
   curlAdvanced: true,
   pythonAdvanced: false,
+  javascriptAdvanced: false,
 };
 
 const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
+const JAVASCRIPT_TYPES = new Set<ExampleType>([
+  "javascript",
+  "javascriptTools",
+  "javascriptAdvanced",
+]);
 
 const PROMPT = "Can Unsloth Studio do API calling?";
+// Auto-switch demo: a second call naming a different downloaded GGUF so the
+// example shows that the model field selects which model serves.
+// A placeholder the user replaces with one of their downloaded GGUFs. A fixed
+// repo is usually not one they have, so the resolver would fall through and the
+// demo would keep serving the current model instead of switching.
+const SWITCH_MODEL = "your-other-downloaded-GGUF";
+const SWITCH_PROMPT = "Now answer as a different model.";
 // web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
-// Sampling/thinking knobs for the "+ advanced" examples.
 const ADV = {
   temperature: 0.7,
   top_p: 0.8,
@@ -81,37 +109,42 @@ const ADV = {
 } as const;
 
 const DOC_LINKS = [
-  {
-    label: "Claude Code",
-    href: "https://unsloth.ai/docs/basics/claude-code",
-  },
-  {
-    label: "Codex",
-    href: "https://unsloth.ai/docs/basics/codex",
-  },
-  {
-    label: "OpenClaw",
-    href: "https://unsloth.ai/docs/integrations/openclaw",
-  },
-  {
-    label: "OpenCode",
-    href: "https://unsloth.ai/docs/integrations/opencode",
-  },
-  {
-    label: "Hermes Agent",
-    href: "https://unsloth.ai/docs/integrations/hermes-agent",
-  },
+  { label: "Claude Code", href: "https://unsloth.ai/docs/basics/claude-code" },
+  { label: "Codex", href: "https://unsloth.ai/docs/basics/codex" },
+  { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
+  { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
+  { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
 
-// JSON-encode; also a valid Python literal, so odd model names never break output.
+// Falls back to this list until the backend's installed-CLI check resolves;
+// kept in sync with the `unsloth start <agent>` subcommands and with
+// CODING_AGENTS in studio/backend/utils/coding_agents.py.
+const DEFAULT_AGENTS = [
+  "claude",
+  "codex",
+  "openclaw",
+  "opencode",
+  "hermes",
+  "pi",
+];
+// The agent selection resets to this whenever an auto-pick is no longer
+// trustworthy (leaving loopback, or the only compatible detected agent
+// stops being compatible) rather than lingering on a stale choice.
+const DEFAULT_AGENT = "claude";
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  openclaw: "OpenClaw",
+  opencode: "OpenCode",
+  hermes: "Hermes",
+  pi: "Pi",
+};
+
 const j = (s: string): string => JSON.stringify(s);
-// Embed in a POSIX single-quoted string: close, escaped quote, reopen.
 const shSingle = (s: string): string => s.replace(/'/g, "'\\''");
-// Embed in a PowerShell single-quoted string: '' is a literal quote.
 const psSingle = (s: string): string => s.replace(/'/g, "''");
 const toolsJson = TOOLS.map(j).join(", ");
 
-// Shared body fields (after model/messages, before stream) per variant.
 function bodyExtraLines(variant: Variant, indent: string): string[] {
   const lines: string[] = [];
   if (variant === "advanced") {
@@ -140,7 +173,6 @@ function curlBodyPretty(model: string, variant: Variant): string {
   return `{\n${lines.join("\n")}\n  }`;
 }
 
-// One-line JSON for the Windows body file (PowerShell mangles inline quotes to curl.exe).
 function winBody(model: string, variant: Variant): string {
   const body: Record<string, unknown> = {
     model,
@@ -160,29 +192,35 @@ function winBody(model: string, variant: Variant): string {
     body.enabled_tools = TOOLS;
   }
   body.stream = true;
-  return JSON.stringify(body);
+  return JSON.stringify(body, null, 2);
 }
+
+// A leading comment (valid in both bash and PowerShell) noting the model field
+// selects the served model when auto-switch is on.
+const SWITCH_NOTE =
+  '# "Switch model by request" is on: set "model" to any downloaded GGUF to switch.\n';
 
 function curlUnix(
   base: string,
   key: string,
   model: string,
   variant: Variant,
+  autoSwitch: boolean,
 ): string {
-  return `curl ${base}/v1/chat/completions \\
+  return `${autoSwitch ? SWITCH_NOTE : ""}curl ${base}/v1/chat/completions \\
   -H "Authorization: Bearer ${key}" \\
   -H "Content-Type: application/json" \\
   -d '${shSingle(curlBodyPretty(model, variant))}'`;
 }
 
-// Windows PowerShell: curl aliases to Invoke-WebRequest, so use curl.exe + body file.
 function curlWindows(
   base: string,
   key: string,
   model: string,
   variant: Variant,
+  autoSwitch: boolean,
 ): string {
-  return `$body = '${psSingle(winBody(model, variant))}'
+  return `${autoSwitch ? SWITCH_NOTE : ""}$body = '${psSingle(winBody(model, variant))}'
 Set-Content -Path body.json -Value $body -Encoding ascii
 curl.exe ${base}/v1/chat/completions \`
   -H "Authorization: Bearer ${key}" \`
@@ -190,13 +228,30 @@ curl.exe ${base}/v1/chat/completions \`
   -d "@body.json"`;
 }
 
+// A second OpenAI call naming a different downloaded GGUF: with auto-switch on,
+// Studio loads it before serving, so the model field selects the served model.
+function pythonSwitchDemo(): string {
+  return `
+
+# "Switch model by request" is on: replace the model below with another GGUF you
+# have downloaded and Studio loads it before serving. Unknown names keep serving
+# the current model.
+response = client.chat.completions.create(
+    model=${j(SWITCH_MODEL)},
+    messages=[{"role": "user", "content": ${j(SWITCH_PROMPT)}}],
+    stream=True,
+)
+for chunk in response:
+    print(chunk.choices[0].delta.content or "", end="")`;
+}
+
 function pythonSnippet(
   base: string,
   key: string,
   model: string,
   variant: Variant,
+  autoSwitch: boolean,
 ): string {
-  // Standard OpenAI args are named; Unsloth extensions go through extra_body.
   const named =
     variant === "advanced"
       ? `
@@ -221,7 +276,6 @@ function pythonSnippet(
 ${extra.join("\n")}
     },`
     : "";
-  // With tools, some chunks are tool-lifecycle events with no choices; guard it.
   const loop =
     variant !== "plain"
       ? `for chunk in response:
@@ -241,7 +295,71 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": ${j(PROMPT)}}],${named}${extraBody}
     stream=True,
 )
-${loop}`;
+${loop}${autoSwitch ? pythonSwitchDemo() : ""}`;
+}
+
+function javascriptSnippet(
+  base: string,
+  key: string,
+  model: string,
+  variant: Variant,
+  autoSwitch: boolean,
+): string {
+  const options: string[] = [];
+  if (variant === "advanced") {
+    options.push(`  temperature: ${ADV.temperature},`);
+    options.push(`  top_p: ${ADV.top_p},`);
+    options.push(`  max_tokens: ${ADV.max_tokens},`);
+  }
+
+  // The JS SDK forwards unknown options into the request body, so these go at the
+  // top level (the Python SDK needs them under extra_body instead).
+  if (variant === "advanced") {
+    options.push(`  top_k: ${ADV.top_k},`);
+    options.push(`  min_p: ${ADV.min_p},`);
+    options.push(`  repetition_penalty: ${ADV.repetition_penalty},`);
+    options.push(`  enable_thinking: true,`);
+  }
+  if (variant !== "plain") {
+    options.push(`  enable_tools: true,`);
+    options.push(`  enabled_tools: [${toolsJson}],`);
+  }
+
+  const trailingOptions = options.length ? `\n${options.join("\n")}` : "";
+
+  return `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: ${j(`${base}/v1`)},
+  apiKey: ${j(key)},
+});
+
+const response = await client.chat.completions.create({
+  model: ${j(model)},
+  messages: [{ role: "user", content: ${j(PROMPT)} }],${trailingOptions}
+  stream: true,
+});
+
+for await (const chunk of response) {
+  process.stdout.write(chunk.choices?.[0]?.delta?.content || "");
+}${autoSwitch ? javascriptSwitchDemo() : ""}`;
+}
+
+function javascriptSwitchDemo(): string {
+  return `
+
+// "Switch model by request" is on: replace the model below with another GGUF you
+// have downloaded and Studio loads it before serving. Unknown names keep serving
+// the current model.
+const switchResponse = await client.chat.completions.create({
+  model: ${j(SWITCH_MODEL)},
+  messages: [{ role: "user", content: ${j(SWITCH_PROMPT)} }],
+  stream: true,
+});
+
+for await (const chunk of switchResponse) {
+  process.stdout.write(chunk.choices?.[0]?.delta?.content || "");
+}`;
 }
 
 function buildSnippets(
@@ -249,22 +367,30 @@ function buildSnippets(
   key: string,
   model: string,
   os: Os,
+  autoSwitch: boolean,
 ): Record<ExampleType, string> {
   const curl = os === "windows" ? curlWindows : curlUnix;
   return {
-    curl: curl(base, key, model, "plain"),
-    python: pythonSnippet(base, key, model, "plain"),
-    curlTools: curl(base, key, model, "tools"),
-    pythonTools: pythonSnippet(base, key, model, "tools"),
-    curlAdvanced: curl(base, key, model, "advanced"),
-    pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
+    curl: curl(base, key, model, "plain", autoSwitch),
+    python: pythonSnippet(base, key, model, "plain", autoSwitch),
+    javascript: javascriptSnippet(base, key, model, "plain", autoSwitch),
+    curlTools: curl(base, key, model, "tools", autoSwitch),
+    pythonTools: pythonSnippet(base, key, model, "tools", autoSwitch),
+    javascriptTools: javascriptSnippet(base, key, model, "tools", autoSwitch),
+    curlAdvanced: curl(base, key, model, "advanced", autoSwitch),
+    pythonAdvanced: pythonSnippet(base, key, model, "advanced", autoSwitch),
+    javascriptAdvanced: javascriptSnippet(
+      base,
+      key,
+      model,
+      "advanced",
+      autoSwitch,
+    ),
   };
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const MODEL_FALLBACK = "unsloth/gemma-4-E4B-it-GGUF:UD-Q5_K_XL";
-
-// Default ON: when a tunnel exists, examples should show the public base_url.
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 
 function readUseTunnelPref(): boolean {
@@ -281,11 +407,10 @@ function writeUseTunnelPref(value: boolean): void {
   try {
     window.localStorage.setItem(USE_TUNNEL_KEY, value ? "true" : "false");
   } catch {
-    // Non-fatal: the toggle still applies for this session.
+    // Non-fatal
   }
 }
 
-// Active local checkpoint as repo[:variant]; external/none falls back to a default.
 function useLoadedModelName(): string {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -300,7 +425,17 @@ function useLoadedModelName(): string {
   }, [checkpoint, ggufVariant]);
 }
 
-// shiki highlighting via the app's shared code plugin + themes (same as chat).
+// Backend PATH detection is only safe in the desktop app, where the UI owns
+// the local backend. A browser loopback URL may be an SSH/local port forward.
+function canUseLocalAgentDetection(base: string): boolean {
+  if (!isTauri) return false;
+  try {
+    return isLoopbackHost(normalizeHost(new URL(base).hostname));
+  } catch {
+    return false;
+  }
+}
+
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
@@ -314,7 +449,6 @@ function HighlightedCode({
   code: string;
   language: string;
 }) {
-  // Fence so Streamdown's shiki plugin highlights it (no markdown inside a fence).
   const markdown = useMemo(
     () => `\`\`\`${language}\n${code}\n\`\`\``,
     [code, language],
@@ -345,25 +479,127 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   );
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedAgent, setCopiedAgent] = useState(false);
+  const [agent, setAgent] = useState<string>(DEFAULT_AGENT);
+  const [availableAgents, setAvailableAgents] =
+    useState<string[]>(DEFAULT_AGENTS);
+  const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
+  // True once the user has picked an agent themselves; guards the detection
+  // effect below from clobbering that choice if it resolves afterward.
+  const agentPickedByUserRef = useRef(false);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const base =
+    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+  const localAgentDetection = canUseLocalAgentDetection(base);
+  // null while loading; the same setting the General tab exposes (shared cache).
+  const [autoSwitch, setAutoSwitch] = useState<OpenAIAutoSwitchSettings | null>(
+    null,
+  );
+  const [savingAutoSwitch, setSavingAutoSwitch] = useState(false);
 
-  // Tunnel may start after the first /api/health read; refresh so it surfaces here.
   useEffect(() => {
     void fetchDeviceType({ force: true });
   }, []);
 
-  const model = useLoadedModelName();
-  // Real key while revealed (before "Done"); otherwise a placeholder.
-  const key = apiKey || KEY_PLACEHOLDER;
-  // Toggle on + tunnel up: public tunnel URL. Off: backend direct host:port
-  // (origin is only a last-resort fallback).
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+  // Fetching is the only job of this effect: populate availableAgents/
+  // detectedAgents (or clear them). Which agent gets auto-picked from that
+  // list is derived separately below, so it can react to the loaded model
+  // changing too, not just a fresh fetch.
+  useEffect(() => {
+    // Browser loopback URLs can be SSH/local forwards, so only the desktop app
+    // may use backend PATH checks to mark or auto-pick local agents.
+    if (!localAgentDetection) {
+      setDetectedAgents([]);
+      // A previously auto-picked agent was only ever verified against the
+      // Studio backend's PATH, which is meaningless now that this panel no
+      // longer targets a loopback base -- don't leave it selected, but
+      // never touch a choice the user made by hand.
+      if (!agentPickedByUserRef.current) {
+        setAgent(DEFAULT_AGENT);
+      }
+      return;
+    }
 
+    let cancelled = false;
+    void loadCodingAgents()
+      .then((info) => {
+        if (cancelled) return;
+        setAvailableAgents(info.agents);
+        setDetectedAgents(info.detected);
+      })
+      .catch(() => {
+        // Best-effort: keep the default agent list and let the user pick manually.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [localAgentDetection]);
+
+  // Single source of truth for the auto-picked agent, re-derived whenever
+  // the detected list or the loaded model's GGUF-ness changes -- in either
+  // direction. `codex` needs a GGUF model (unsloth_cli's
+  // _require_gguf_for_codex exits otherwise), so it's only preferred once
+  // the loaded model actually qualifies; loading a GGUF model *after* a
+  // non-GGUF-gated fallback picked something else re-steers back to codex
+  // just as loading a non-GGUF model steers away from it. Never overrides a
+  // choice the user made by hand.
+  // activeGgufVariant alone only covers an HF-repo GGUF pick (a specific
+  // quant variant string) -- a direct local .gguf file (custom folder /
+  // LM Studio / drag-drop) is just as much a GGUF the codex preflight would
+  // accept, but never has a "variant" to report, and would otherwise read as
+  // non-GGUF here. activeNativePathToken covers the drag-drop/picked-file
+  // case; ggufContextLength is only ever populated when the backend's
+  // /api/inference/status last reported is_gguf: true for the active model
+  // (see applyActiveModelStatusToStore), so together these three cover every
+  // path a model can be GGUF through, matching the same is_gguf-or-equivalent
+  // check hasGgufSource applies to a staged pick.
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeNativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  useEffect(() => {
+    if (agentPickedByUserRef.current) return;
+    if (detectedAgents.length === 0) return;
+    const isGguf =
+      activeGgufVariant != null || activeNativePathToken != null || ggufContextLength != null;
+    const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
+    if (preferred) {
+      setAgent(preferred);
+    } else if (agent === "codex" && !isGguf) {
+      // codex was auto-picked while a GGUF model was active and it's the
+      // only detected agent; now that the model isn't GGUF anymore, nothing
+      // detected is actually runnable, so fall back to the default instead
+      // of leaving a codex command unsloth_cli will reject.
+      setAgent(DEFAULT_AGENT);
+    }
+  }, [agent, detectedAgents, activeGgufVariant, activeNativePathToken, ggufContextLength]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadOpenAIAutoSwitchSettings()
+      .then((s) => {
+        if (!cancelled) setAutoSwitch(s);
+      })
+      .catch(() => {
+        // Best-effort: leave the toggle off if the setting can't be read.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const model = useLoadedModelName();
+  const key = apiKey || KEY_PLACEHOLDER;
+
+  const autoSwitchOn = autoSwitch?.enabled ?? false;
   const snippets = useMemo(
-    () => buildSnippets(base, key, model, os),
-    [base, key, model, os],
+    () => buildSnippets(base, key, model, os, autoSwitchOn),
+    [base, key, model, os, autoSwitchOn],
+  );
+  // Agent command must target the server the panel shows, not the :8888 default.
+  const agentCommand = useMemo(
+    () => buildAgentCommand(base, key, os, agent),
+    [base, key, os, agent],
   );
 
   const osAware = OS_AWARE[lang];
@@ -371,7 +607,9 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     ? os === "windows"
       ? "powershell"
       : "bash"
-    : "python";
+    : JAVASCRIPT_TYPES.has(lang)
+      ? "javascript"
+      : "python";
 
   const handleCopy = async () => {
     if (await copyToClipboard(snippets[lang])) {
@@ -385,10 +623,31 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
     writeUseTunnelPref(next);
   };
 
+  // Same setting as the General tab; persist optimistically and revert on failure
+  // so the examples reflect the live model-switch behavior.
+  const handleToggleAutoSwitch = (next: boolean) => {
+    const idle = autoSwitch?.autoUnloadIdleSeconds ?? 0;
+    setAutoSwitch((prev) => (prev ? { ...prev, enabled: next } : prev));
+    setSavingAutoSwitch(true);
+    void updateOpenAIAutoSwitchSettings(next, idle)
+      .then(setAutoSwitch)
+      .catch(() => {
+        setAutoSwitch((prev) => (prev ? { ...prev, enabled: !next } : prev));
+      })
+      .finally(() => setSavingAutoSwitch(false));
+  };
+
   const handleCopyUrl = async () => {
     if (cloudflareUrl && (await copyToClipboard(cloudflareUrl))) {
       setCopiedUrl(true);
       setTimeout(() => setCopiedUrl(false), 1800);
+    }
+  };
+
+  const handleCopyAgent = async () => {
+    if (await copyToClipboard(agentCommand)) {
+      setCopiedAgent(true);
+      setTimeout(() => setCopiedAgent(false), 1800);
     }
   };
 
@@ -398,6 +657,41 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
         {t("settings.apiKeys.usageExamples")}
       </h2>
       <div className="min-w-0 max-w-full overflow-hidden rounded-lg border border-border bg-muted/20">
+        {/* Same setting as the General tab; surfaced here so the request `model`
+            actually switches the served model, which the examples below show. */}
+        <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Switch
+              size="sm"
+              checked={autoSwitchOn}
+              disabled={autoSwitch === null || savingAutoSwitch}
+              onCheckedChange={handleToggleAutoSwitch}
+              aria-label={t("settings.general.modelAutoSwitch.enable")}
+            />
+            <span className="text-[11px] font-medium text-foreground">
+              {t("settings.general.modelAutoSwitch.enable")}
+            </span>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-label={t(
+                    "settings.general.modelAutoSwitch.enableDescription",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3.5"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[260px] text-[11px] leading-snug">
+                {t("settings.general.modelAutoSwitch.enableDescription")}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
         {cloudflareUrl ? (
           <div className="flex min-w-0 items-center justify-between gap-2 border-b border-border px-2 py-1.5">
             <div className="flex shrink-0 items-center gap-1.5">
@@ -412,12 +706,12 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               </span>
               {/* Only when not launched with --secure: the raw 0.0.0.0 port is
                   still globally reachable, so point the user at --secure. */}
-              {!secure ? (
+              {secure ? null : (
                 <Tooltip>
-                  <TooltipTrigger asChild>
+                  <TooltipTrigger asChild={true}>
                     <button
                       type="button"
-                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("settings.apiKeys.secureHttpsHint")}
                     >
                       <HugeiconsIcon
@@ -430,15 +724,13 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                     {t("settings.apiKeys.secureHttpsHint")}
                   </TooltipContent>
                 </Tooltip>
-              ) : null}
+              )}
             </div>
-            {/* Always rendered (dimmed when off) so toggling never changes the
-                row height and shifts the code block below. */}
             <button
               type="button"
               onClick={handleCopyUrl}
               className={cn(
-                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex min-w-0 items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 !useTunnel && "opacity-50",
               )}
               title={cloudflareUrl}
@@ -467,7 +759,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   onClick={() => setLang(tab.id)}
                   aria-pressed={active}
                   className={cn(
-                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                     active
                       ? "hub-tab-toggle-pill text-foreground"
                       : "text-muted-foreground hover:text-foreground",
@@ -486,7 +778,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onClick={() => setOs("unix")}
               aria-pressed={os === "unix"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "unix"
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -499,7 +791,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               onClick={() => setOs("windows")}
               aria-pressed={os === "windows"}
               className={cn(
-                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 os === "windows"
                   ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
@@ -513,7 +805,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <button
             type="button"
             onClick={handleCopy}
-            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-1 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             aria-label={t("settings.apiKeys.copySnippet")}
           >
             <HugeiconsIcon
@@ -522,14 +814,80 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             />
             {copied ? t("settings.apiKeys.copied") : t("settings.apiKeys.copy")}
           </button>
-          {/* key on the snippet so Streamdown remounts and re-highlights when
-              only a substring (e.g. the base URL) changes; its block memo
-              otherwise keeps the stale render. */}
           <HighlightedCode
             key={snippets[lang]}
             code={snippets[lang]}
             language={shikiLang}
           />
+        </div>
+        <div className="flex min-w-0 flex-col gap-1.5 border-t border-border px-3 py-2.5">
+          <span className="text-[11px] font-semibold text-foreground">
+            {t("settings.apiKeys.codingAgents")}
+          </span>
+          <span className="text-[11px] leading-snug text-muted-foreground">
+            {t("settings.apiKeys.codingAgentsHint")}
+          </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {availableAgents.map((id) => {
+              const installed = detectedAgents.includes(id);
+              const active = agent === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    agentPickedByUserRef.current = true;
+                    setAgent(id);
+                  }}
+                  aria-pressed={active}
+                  title={
+                    installed
+                      ? t("settings.apiKeys.codingAgentDetected")
+                      : undefined
+                  }
+                  className={cn(
+                    "flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    active
+                      ? "hub-tab-toggle-pill text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {AGENT_LABELS[id] ?? id}
+                  {installed ? (
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full bg-emerald-500"
+                    />
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+          <div className="relative mt-0.5 min-w-0">
+            <code className="block min-w-0 overflow-x-auto rounded border border-border bg-muted/30 px-2 py-1.5 pr-14 font-mono text-[11px] text-foreground">
+              {agentCommand}
+            </code>
+            <button
+              type="button"
+              onClick={handleCopyAgent}
+              className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border bg-background/80 px-1.5 py-0.5 text-[11px] text-muted-foreground backdrop-blur transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              aria-label={t("settings.apiKeys.copySnippet")}
+            >
+              <HugeiconsIcon
+                icon={copiedAgent ? Tick02Icon : Copy01Icon}
+                className={cn("size-3.5", copiedAgent && "text-emerald-600")}
+              />
+            </button>
+          </div>
+          <span className="text-[11px] leading-snug text-muted-foreground">
+            {detectedAgents.length > 0
+              ? t("settings.apiKeys.codingAgentsDetectedHint", {
+                  agents: detectedAgents
+                    .map((id) => AGENT_LABELS[id] ?? id)
+                    .join(", "),
+                })
+              : t("settings.apiKeys.codingAgentsSwap")}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
           <span>{t("settings.apiKeys.setupDocs")}</span>
@@ -539,7 +897,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
               href={link.href}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-0.5 rounded font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex items-center gap-0.5 rounded font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {link.label}
               <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />

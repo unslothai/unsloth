@@ -55,15 +55,20 @@ class LlamaServerBackend:
         self._port: int | None = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: threading.Thread | None = None
+        # No lock: probes are idempotent (a duplicate 1-text encode is benign)
+        # and dim() -> encode() -> _ensure_ready() -> _resolve_model_path() can
+        # re-enter on a mid-probe model change, which would self-deadlock a
+        # non-reentrant lock held across the probe.
         self._dim: int | None = None
-        self._dim_lock = threading.Lock()
         self._model_path: str | None = None
+        # Effective GGUF repo the cached path/dim belong to; a Settings change
+        # makes it stale, forcing a re-resolve + respawn (see _ensure_ready).
+        self._model_repo: str | None = None
         self._binary: str | None = None
         # Sticky after an auto GPU start fails: later spawns stay on CPU.
         self._force_cpu = False
-        # Pooled client; requests pass full URLs, so a respawn's new port needs
-        # no rebuild.
-        self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S)
+        # Pooled client (full URLs per request survive a respawn); trust_env=False skips HTTP(S)_PROXY.
+        self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
         atexit.register(self._shutdown)
 
     @property
@@ -115,24 +120,77 @@ class LlamaServerBackend:
                 "RAG_EMBED_BACKEND=llama-server requires an embeddings-capable build"
             )
 
+    @staticmethod
+    def _resolve_local_gguf(model: str) -> str | None:
+        """A custom model may be a local .gguf file or a directory holding one;
+        resolve it without the hub. None when the value is not a local path."""
+        p = Path(model).expanduser()
+        if p.is_file() and p.suffix.lower() == ".gguf":
+            return str(p)
+        if p.is_dir():
+            files = [
+                f
+                for f in p.iterdir()
+                if f.suffix.lower() == ".gguf" and "mmproj" not in f.name.lower()
+            ]
+            if not files:
+                raise RuntimeError(f"no .gguf file found in local model dir {model!r}")
+            variant = config.EMBED_GGUF_VARIANT.lower()
+            match = [f for f in files if variant in f.name.lower()] or files
+            return str(sorted(match, key = lambda f: len(f.name))[0])
+        return None
+
     def _resolve_model_path(self) -> str:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
-        returning its local path."""
-        if self._model_path is not None:
+        returning its local path. Re-resolves when the effective repo changed (a
+        custom model was saved in Settings)."""
+        # Captured once: if the setting changes mid-download, the path must stay
+        # tagged with the repo it was resolved FOR, so _current() sees the new
+        # setting as stale and respawns instead of serving the old model.
+        desired = config.effective_gguf_repo()
+        if self._model_path is not None and self._model_repo == desired:
+            return self._model_path
+        local = self._resolve_local_gguf(config.effective_embedding_model())
+        if local is not None:
+            self._model_path = local
+            self._model_repo = desired
+            self._dim = None
             return self._model_path
         from huggingface_hub import hf_hub_download, list_repo_files
 
-        repo = config.EMBED_GGUF_REPO
         token = os.environ.get("HF_TOKEN") or None
-        files = [f for f in list_repo_files(repo, token = token) if f.lower().endswith(".gguf")]
-        files = [f for f in files if "mmproj" not in f.lower()]
+        # A custom model derives its "-GGUF" companion repo; when that guess does
+        # not exist, the model repo itself may host the .gguf files.
+        repo = desired
+        candidates = [repo]
+        model = config.effective_embedding_model()
+        if model != repo:
+            candidates.append(model)
+        files: list[str] = []
+        errors: list[str] = []
+        for candidate in candidates:
+            try:
+                files = [
+                    f
+                    for f in list_repo_files(candidate, token = token)
+                    if f.lower().endswith(".gguf") and "mmproj" not in f.lower()
+                ]
+            except Exception as e:  # noqa: BLE001 - missing/gated repo -> next candidate
+                errors.append(f"{candidate!r}: {e}")
+                continue
+            if files:
+                repo = candidate
+                break
+            errors.append(f"{candidate!r}: no .gguf files")
         if not files:
-            raise RuntimeError(f"no .gguf file found in embedder repo {repo!r}")
+            raise RuntimeError("no .gguf embedder found; tried " + "; ".join(errors))
         variant = config.EMBED_GGUF_VARIANT.lower()
         match = [f for f in files if variant in f.lower()] or files
         filename = sorted(match, key = len)[0]
         logger.info("resolving GGUF embedder %s/%s", repo, filename)
         self._model_path = hf_hub_download(repo_id = repo, filename = filename, token = token)
+        self._model_repo = desired
+        self._dim = None
         return self._model_path
 
     # Min free VRAM (MiB) for the embedder; below this, auto stays on CPU.
@@ -305,7 +363,8 @@ class LlamaServerBackend:
                 logger.error("llama-server embedder exited early (code %s)", code)
                 return False
             try:
-                if httpx.get(url, timeout = 2.0).status_code == 200:
+                # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
+                if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
@@ -316,13 +375,19 @@ class LlamaServerBackend:
     def _process_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None
 
+    def _current(self) -> bool:
+        """Alive AND serving the effective repo (a Settings model change makes a
+        live server stale)."""
+        return self._process_alive() and self._model_repo == config.effective_gguf_repo()
+
     def _ensure_ready(self) -> None:
-        """Guarantee a live server, (re)spawning if needed. Double-checked so the
-        alive path takes no lock; self-heals after the chat reaper kills us."""
-        if self._process_alive():
+        """Guarantee a live server on the effective model, (re)spawning if needed.
+        Double-checked so the current path takes no lock; self-heals after the
+        chat reaper kills us and re-resolves after a Settings model change."""
+        if self._current():
             return
         with self._lifecycle_lock:
-            if self._process_alive():
+            if self._current():
                 return
             self._kill_process()
             self._spawn()
@@ -424,14 +489,18 @@ class LlamaServerBackend:
         return arr
 
     def dim(self, *, model_name = None) -> int:
-        """Embedding width, probed once via a 1-text encode and cached."""
-        if self._dim is not None:
-            return self._dim
-        with self._dim_lock:
-            if self._dim is None:
-                vec = self.encode(["x"], normalize = False)
-                self._dim = int(vec.shape[1])
-        return self._dim
+        """Embedding width, probed via a 1-text encode and cached per model
+        (_resolve_model_path clears it when the effective repo changes).
+        Unlocked: concurrent probes are benign, and locking would deadlock when
+        the probe's encode respawns onto a changed model (see __init__)."""
+        self._ensure_ready()
+        cached = self._dim
+        if cached is not None:
+            return cached
+        vec = self.encode(["x"], normalize = False)
+        width = int(vec.shape[1])
+        self._dim = width
+        return width
 
     def warm(self, *, model_name = None) -> None:
         """Start the server and probe dim off the request path."""

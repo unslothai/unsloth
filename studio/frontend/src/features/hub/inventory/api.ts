@@ -163,6 +163,7 @@ export interface GgufVariantDetail {
   size_bytes: number;
   download_size_bytes?: number;
   downloaded?: boolean;
+  update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
 }

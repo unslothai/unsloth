@@ -153,6 +153,30 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     return removed, failures
 
 
+def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
+    removed = 0
+    failures: list[str] = []
+    for target_repo in target_repos:
+        repo_path = getattr(target_repo, "repo_path", None)
+        if not repo_path:
+            continue
+        snapshots = Path(repo_path) / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        try:
+            snap_dirs = [s for s in snapshots.iterdir() if s.is_dir() and not s.is_symlink()]
+        except OSError:
+            continue
+        for snap in snap_dirs:
+            try:
+                snap.rmdir()
+                removed += 1
+            except OSError as e:
+                if e.errno != errno.ENOTEMPTY:
+                    failures.append(f"{snap.name}: {e}")
+    return removed, failures
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -255,6 +279,9 @@ def _delete_gguf_variant_from_repos(
     state_purged = download_manifest.purge_state("model", repo_id, variant)
     # Reclaim the empty quant folder so it stops 404ing on delete.
     removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+    removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+    removed_dirs += removed_snap_dirs
+    dir_failures.extend(snap_dir_failures)
     if dir_failures:
         raise HTTPException(
             status_code = 409,
@@ -282,6 +309,187 @@ def _delete_gguf_variant_from_repos(
         f"{freed_mb:.1f} MB freed"
     )
     return {"status": "deleted", "repo_id": repo_id, "variant": variant}
+
+
+def reclaim_replaced_gguf_variant(
+    repo_id: str,
+    variant: str,
+    keep_main_hashes: frozenset[str],
+    hf_token: Optional[str] = None,
+) -> dict:
+    """Prune stale main-GGUF files for a variant after a replacement verified.
+
+    This is intentionally narrower than user-driven delete: it removes only
+    same-variant main files whose local blob hash is not in *keep_main_hashes*,
+    then unlinks their blobs only if no remaining snapshot references them.
+    Shared companions and sibling variants are left intact.
+    """
+    if not keep_main_hashes:
+        logger.info(
+            "Skipping stale GGUF reclaim for %s [%s]: current main hashes unresolved",
+            repo_id,
+            variant,
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "unresolved_hashes",
+        }
+    if not _is_valid_repo_id(repo_id) or not _is_valid_gguf_variant(variant):
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "invalid_target",
+        }
+
+    failures: list[str] = []
+    removed_snapshots = 0
+    deleted_blobs = 0
+    deleted_bytes = 0
+    variant_key = variant.lower()
+
+    try:
+        cache_scans = cache_inventory.all_hf_cache_scans()
+    except Exception as e:
+        logger.warning(
+            "Skipping stale GGUF reclaim for %s [%s]: cache scan failed: %s",
+            repo_id,
+            variant,
+            download_registry.scrub_secrets(str(e), hf_token = hf_token),
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "scan_failed",
+        }
+
+    candidate_repos = [
+        repo_info
+        for hf_cache in cache_scans
+        for repo_info in hf_cache.repos
+        if str(getattr(repo_info, "repo_type", "")) == "model"
+        and str(getattr(repo_info, "repo_id", "")).lower() == repo_id.lower()
+    ]
+    try:
+        matched_repo_ids = resolve_destructive_repo_ids(
+            repo_id,
+            [str(getattr(repo_info, "repo_id", "")) for repo_info in candidate_repos],
+            noun = "models",
+        )
+    except HTTPException as e:
+        detail = getattr(e, "detail", str(e))
+        logger.warning(
+            "Skipping stale GGUF reclaim for %s [%s]: %s",
+            repo_id,
+            variant,
+            download_registry.scrub_secrets(str(detail), hf_token = hf_token),
+        )
+        return {
+            "status": "skipped",
+            "repo_id": repo_id,
+            "variant": variant,
+            "reason": "ambiguous_repo",
+        }
+    target_repos = [
+        repo_info
+        for repo_info in candidate_repos
+        if str(getattr(repo_info, "repo_id", "")) in matched_repo_ids
+    ]
+
+    for target_repo in target_repos:
+        repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        stale_matches: list[tuple[Path, Optional[Path], str]] = []
+        matches = _repo_file_matches(
+            target_repo,
+            lambda name: _is_main_gguf_filename(name)
+            and extract_quant_label(name).lower() == variant_key,
+        )
+        for snap, blob, name in matches:
+            # Prune only a file we can identify as a real, stale cache blob. A
+            # no-symlink snapshot file has no identifiable blob hash, so keep it.
+            blob_hash = (
+                _blob_hash_from_path(blob)
+                if cache_inventory._is_real_cache_blob(blob, repo_dir)
+                else None
+            )
+            if blob_hash is None or blob_hash in keep_main_hashes:
+                continue
+            stale_matches.append((snap, blob, name))
+
+        if not stale_matches:
+            continue
+
+        for snap, _blob, name in stale_matches:
+            try:
+                if _path_exists_or_symlink(snap):
+                    snap.unlink()
+                    removed_snapshots += 1
+            except OSError as e:
+                failures.append(f"{name}: {e}")
+
+        ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        seen_blobs: set[Path] = set()
+        for _snap, blob, name in stale_matches:
+            if blob is None:
+                continue
+            try:
+                blob_key = blob.resolve()
+            except OSError:
+                blob_key = blob
+            if blob_key in seen_blobs:
+                continue
+            seen_blobs.add(blob_key)
+            if ref_counts.get(blob_key, 0) > 0:
+                continue
+            try:
+                if blob.exists():
+                    deleted_bytes += blob.stat().st_size
+                    blob.unlink()
+                    deleted_blobs += 1
+            except OSError as e:
+                failures.append(f"{name}: {e}")
+
+    removed_dirs = 0
+    dir_failures: list[str] = []
+    if target_repos:
+        removed_dirs, dir_failures = _remove_empty_variant_dirs(target_repos, variant)
+        removed_snap_dirs, snap_dir_failures = _remove_empty_snapshot_dirs(target_repos)
+        removed_dirs += removed_snap_dirs
+        dir_failures.extend(snap_dir_failures)
+        failures.extend(dir_failures)
+
+    if failures:
+        logger.warning(
+            "Stale GGUF reclaim for %s [%s] left %d failure(s): %s",
+            repo_id,
+            variant,
+            len(failures),
+            "; ".join(failures[:3]),
+        )
+
+    if removed_snapshots or deleted_blobs or removed_dirs:
+        cache_inventory.invalidate_hf_cache_scans()
+        logger.info(
+            "Reclaimed stale GGUF %s [%s]: snapshots=%d blobs=%d dirs=%d freed=%.1f MB",
+            repo_id,
+            variant,
+            removed_snapshots,
+            deleted_blobs,
+            removed_dirs,
+            deleted_bytes / (1024 * 1024),
+        )
+
+    return {
+        "status": "reclaimed",
+        "repo_id": repo_id,
+        "variant": variant,
+        "removed_snapshots": removed_snapshots,
+        "deleted_blobs": deleted_blobs,
+        "removed_dirs": removed_dirs,
+    }
 
 
 def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:

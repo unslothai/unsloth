@@ -19,7 +19,7 @@ import secrets
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -62,13 +62,24 @@ def _save_upload(file: UploadFile) -> tuple[str, str]:
     uploads = ensure_dir(rag_uploads_root())
     stored_path = str(uploads / f"{uuid.uuid4().hex}{ext}")
     size = 0
+    cap = config.MAX_UPLOAD_BYTES
+    too_big = False
     with open(stored_path, "wb") as out:
         while True:
             block = file.file.read(1 << 20)
             if not block:
                 break
             size += len(block)
+            if cap and size > cap:
+                too_big = True
+                break
             out.write(block)
+    if too_big:
+        os.remove(stored_path)
+        raise HTTPException(
+            status_code = 413,
+            detail = f"File exceeds the {cap // (1024 * 1024)} MB upload limit.",
+        )
     if size == 0:
         os.remove(stored_path)
         raise HTTPException(status_code = 400, detail = "Uploaded file is empty.")
@@ -156,7 +167,7 @@ def create_knowledge_base(
             conn,
             name = payload.name.strip(),
             description = (payload.description or None),
-            embedding_model = config.EMBEDDING_MODEL,
+            embedding_model = config.effective_embedding_model(),
         )
         return {"id": kb_id, "name": payload.name.strip()}
     finally:
@@ -207,6 +218,8 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
 async def upload_kb_document(
     kb_id: str,
     file: UploadFile = File(...),
+    ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -218,7 +231,7 @@ async def upload_kb_document(
         conn.close()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.kb_scope(kb_id), kb_id, None, filename, stored_path
+        store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -238,12 +251,20 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
 async def upload_thread_document(
     thread_id: str,
     file: UploadFile = File(...),
+    ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     stored_path, filename = _save_upload(file)
     document_id, job_id = ingestion.start_ingestion(
-        store.thread_scope(thread_id), None, thread_id, filename, stored_path
+        store.thread_scope(thread_id),
+        None,
+        thread_id,
+        filename,
+        stored_path,
+        ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -263,6 +284,8 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
 async def upload_project_document(
     project_id: str,
     file: UploadFile = File(...),
+    ocr: bool | None = Form(None),
+    caption: bool | None = Form(None),
     subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
@@ -278,6 +301,8 @@ async def upload_project_document(
         filename,
         stored_path,
         project_id = project_id,
+        ocr = ocr,
+        caption = caption,
     )
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
@@ -321,6 +346,7 @@ def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict
         "stage": row.get("stage"),
         "progress": row.get("progress") or 0.0,
         "error": row.get("error"),
+        "numChunks": row.get("num_chunks") or 0,
     }
 
 

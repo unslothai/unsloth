@@ -58,7 +58,7 @@ export const HubSectionRow = memo(function HubSectionRow({
           type="button"
           onClick={onOpenList}
           aria-label={`See all ${title}`}
-          className="hub-section-title group/section -mx-1 inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1 text-[18px] font-semibold tracking-[-0.02em] text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="hub-section-title group/section -mx-1 inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1 text-[18px] font-semibold tracking-[-0.02em] text-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {title}
           <HugeiconsIcon

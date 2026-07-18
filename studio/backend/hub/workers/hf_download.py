@@ -653,6 +653,21 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
         snapshot_path,
         metadata_unavailable = metadata_unavailable,
     )
+    if plan is not None:
+        try:
+            from hub.services.models.deletion import reclaim_replaced_gguf_variant
+            reclaim_replaced_gguf_variant(
+                repo_id,
+                variant,
+                plan.main_hashes,
+                hf_token,
+            )
+        except Exception as e:
+            print(
+                f"Verified GGUF update for {repo_id} [{variant}], but stale-cache "
+                f"reclaim failed ({type(e).__name__}: {e})",
+                file = sys.stderr,
+            )
 
 
 def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:

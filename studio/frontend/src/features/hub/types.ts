@@ -28,9 +28,6 @@ export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 
-import type { GpuFitFilter, GpuFitLevel } from "./lib/gpu-fit-filter";
-export type { GpuFitFilter, GpuFitLevel };
-
 export interface DiscoverRow {
   id: string;
   owner: string;
@@ -40,7 +37,6 @@ export interface DiscoverRow {
   isPartialOnDevice: boolean;
   summary: string;
   capabilities: Capability[];
-  fitLevel?: GpuFitLevel | null;
 }
 
 export type SelectedResourceSource = "huggingface" | "hub_cache" | LocalSource;

@@ -113,8 +113,14 @@ def _stub_props(
     body = None,
     exc = None,
 ):
-    def fake_get(url, timeout = None):
+    def fake_get(
+        url,
+        timeout = None,
+        trust_env = None,
+    ):
         assert url.endswith("/props")
+
+        assert trust_env is False
         if exc is not None:
             raise exc
         return _FakeResponse(status_code, body)

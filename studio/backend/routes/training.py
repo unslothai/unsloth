@@ -47,7 +47,7 @@ except ImportError:
     from utils.paths import resolve_dataset_path
 
 # Auth
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 
 from utils.utils import log_and_http_error
 
@@ -114,7 +114,9 @@ async def get_visible_hardware_utilization(current_subject: str = Depends(get_cu
 
 @router.post("/start")
 async def start_training(
-    request: TrainingStartRequest, current_subject: str = Depends(get_current_subject)
+    request: TrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     Start a training job.
@@ -125,8 +127,34 @@ async def start_training(
     try:
         logger.info(f"Starting training job with model: {request.model_name}")
 
+        # When Studio is driven as an inference API (API-key auth), refuse to start
+        # training while a request is in flight: training frees VRAM by unloading
+        # the chat model, which would kill the stream. The Studio UI (session auth)
+        # still starts training and coexists/frees VRAM as before. (A mixed UI+API
+        # session is not yet special-cased.)
+        if via_api_key is True:
+            from core.inference.llama_keepwarm import other_inference_request_count
+            if other_inference_request_count(current_request_counted = False) > 0:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        "Cannot start training over the API while an inference request is in "
+                        "progress. Wait for it to finish, or start training from the Studio UI."
+                    ),
+                )
+
         # No in-process ensure_transformers_version(): the subprocess
         # (worker.py) activates the correct version before importing ML libs.
+
+        # A consented latest-transformers install stage-and-swaps .venv_t5_latest;
+        # a worker spawned mid-swap could activate a half-replaced sidecar.
+        from utils.transformers_latest import is_install_in_progress
+
+        if is_install_in_progress():
+            raise HTTPException(
+                status_code = 409,
+                detail = ("A transformers installation is in progress. Retry when it completes."),
+            )
 
         backend = get_training_backend()
 
@@ -255,6 +283,7 @@ async def start_training(
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
+            "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
             "load_in_4bit": request.load_in_4bit,
@@ -321,6 +350,24 @@ async def start_training(
             "gpu_ids": request.gpu_ids,
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
+
+        # Latest-sidecar models size and train 16-bit (same flip as chat load):
+        # 4-bit is disabled for brand-new architectures, so VRAM coexistence
+        # checks must not underestimate against a load the worker will refuse.
+        if training_kwargs["load_in_4bit"]:
+            from utils.transformers_version import latest_tier_active_for
+            if await asyncio.to_thread(
+                latest_tier_active_for,
+                training_kwargs["model_name"],
+                training_kwargs["hf_token"] or None,
+            ):
+                training_kwargs["load_in_4bit"] = False
+                logger.info(
+                    "Latest-transformers sidecar active for %s - sizing and "
+                    "training in 16-bit (4-bit is disabled for brand-new "
+                    "architectures)",
+                    training_kwargs["model_name"],
+                )
 
         # Training page has no trust_remote_code toggle, so honor the YAML default
         # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
@@ -407,9 +454,16 @@ async def start_training(
                 logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
-        success = backend.start_training(
-            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
-        )
+        from utils.transformers_version import SidecarSwapInProgress
+
+        try:
+            success = backend.start_training(
+                job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+            )
+        except SidecarSwapInProgress as exc:
+            # Expected loss of the race against a sidecar install: a retryable
+            # 409 matching the route-entry guard, not an internal error.
+            raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
             progress_error = backend.trainer.training_progress.error
@@ -679,7 +733,9 @@ async def stream_training_progress(
     if last_event_id is not None:
         try:
             resume_from_step = int(last_event_id)
-            logger.info(f"SSE reconnect: resuming from step {resume_from_step}")
+            # Fires on every reconnect (each tab switch); the meaningful signal is
+            # the "replayed N missed steps" line below, logged only when N > 0.
+            logger.debug(f"SSE reconnect: resuming from step {resume_from_step}")
         except ValueError:
             logger.warning(f"Invalid Last-Event-ID: {last_event_id}")
 
@@ -847,6 +903,11 @@ async def stream_training_progress(
         )
 
         while backend.is_training_active():
+            # Client gone: end the generator without falling through to the final
+            # "complete" frame, which a buffered/proxy consumer could otherwise read
+            # as a finished run while training is still active.
+            if await request.is_disconnected():
+                return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0

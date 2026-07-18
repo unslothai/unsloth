@@ -21,6 +21,10 @@ from ._utils import (
     USE_MODELSCOPE,
     get_transformers_model_type,
     hf_login,
+    # Single source of truth is _utils.py; re-exported here so callers doing
+    # `from unsloth.models.loader import DISABLE_SDPA_MODEL_NAMES` keep working and so
+    # _is_sdpa_excluded (in _utils) can honor it without a loader -> _utils cycle.
+    DISABLE_SDPA_MODEL_NAMES,
 )
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger
@@ -33,6 +37,7 @@ from transformers import AutoConfig
 from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -105,24 +110,31 @@ from ._utils import (
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
     set_task_config_attr,
+    maybe_prefetch_hf_snapshot,
 )
 
-# Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
-# doing `from unsloth.models.loader import FORCE_FLOAT32` keep working.
-# Fallback list mirrors zoo for users who upgrade unsloth without upgrading
-# unsloth_zoo (so this module never fails at import).
+# Source of truth is unsloth_zoo.model_lists. Re-exported so callers doing
+# `from unsloth.models.loader import FORCE_FLOAT32` keep working. The fallback
+# list is also unioned in so a newer unsloth still forces float32 for these
+# archs when paired with an older unsloth_zoo that predates them (upgrade skew).
+_FORCE_FLOAT32_FALLBACK = [
+    "gemma3,",  # Add comma bc gemma3 will match gemma3n
+    "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
+    "gemma3n",
+    "gemma4",  # Gemma4 (gemma4 / gemma4_text): float16 NaNs grad norms in the backward
+    "glm4_moe",  # GLM-4.x MoE (glm4_moe / glm4_moe_lite): float16 NaNs grad norms
+    "gpt_oss",
+    "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
+    "qwen3_moe",  # Qwen3-MoE (Qwen3-30B-A3B): float16 NaNs grad norms in the backward
+]
 try:
-    from unsloth_zoo import FORCE_FLOAT32  # noqa: F401
+    from unsloth_zoo import FORCE_FLOAT32 as _ZOO_FORCE_FLOAT32
+    FORCE_FLOAT32 = list(_ZOO_FORCE_FLOAT32)
 except ImportError:
-    global FORCE_FLOAT32
-    # Forces float32 precision since float16 goes to infinity
-    FORCE_FLOAT32 = [
-        "gemma3,",  # Add comma bc gemma3 will match gemma3n
-        "gemma3text",  # Gemma3TextModel (EmbeddingGemma, standalone text-only Gemma3)
-        "gemma3n",
-        "gpt_oss",
-        "qwen3_5",  # Qwen3.5 GDN layers produce NaN grad norms in float16 training
-    ]
+    FORCE_FLOAT32 = []
+for _mt in _FORCE_FLOAT32_FALLBACK:
+    if not any(_mt in _entry for _entry in FORCE_FLOAT32):
+        FORCE_FLOAT32.append(_mt)
 
 global DISABLE_COMPILE_MODEL_NAMES
 # Must be alphabetically sorted for each entry
@@ -194,13 +206,44 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "granite,llava_next",  # Granite-vision 3
 ]
 
-global DISABLE_SDPA_MODEL_NAMES
-# Disables some SDPA modules since it's wrong
-DISABLE_SDPA_MODEL_NAMES = [
-    "gemma3,",  # Add comma bc gemma3 will match gemma3n
-    "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
-    "gpt_oss",
-]
+# Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the
+# flash-linear-attention Triton kernels (unsloth_zoo/_vendored/fla), so no install is
+# needed; transformers uses the much slower pure PyTorch path only when they can't be enabled.
+FLA_MODEL_TYPE_PREFIXES = ("qwen3_next", "qwen3_5", "kimi_linear", "olmo_hybrid")
+_fla_advised = False
+
+
+def _maybe_advise_fla_install(model_types):
+    """One-time note when a gated-deltanet model loads without the fast kernels.
+
+    The kernels ship with Unsloth (no install needed); this fires only when they
+    could not be enabled on this platform (e.g. no CUDA, torch < 2.7 or
+    triton < 3.3), i.e. exactly when transformers uses the slow pure PyTorch path.
+    """
+    global _fla_advised
+    if _fla_advised:
+        return
+    if model_types is None:
+        return
+    if isinstance(model_types, str):
+        model_types = [model_types]  # a lone string would otherwise iterate chars
+    try:
+        if not any(
+            isinstance(t, str) and t.startswith(FLA_MODEL_TYPE_PREFIXES) for t in model_types
+        ):
+            return
+        from transformers.utils.import_utils import is_flash_linear_attention_available
+        if is_flash_linear_attention_available():
+            return  # bundled (or user-installed) fast kernels are active
+    except Exception:
+        return
+    _fla_advised = True
+    print(
+        "Unsloth: This model uses gated-deltanet linear attention layers. Unsloth\n"
+        "bundles the flash-linear-attention kernels, but they could not be enabled\n"
+        "on this setup (they need CUDA with torch >= 2.7 and triton >= 3.3), so\n"
+        "transformers will use a slower pure PyTorch path."
+    )
 
 
 def _fix_rope_inv_freq(model):
@@ -226,14 +269,18 @@ def _fix_rope_inv_freq(model):
             and hasattr(module, "_apply_inv_freq_scaling")
             and hasattr(module, "multi_gpu_cos_cached")
         ):
-            inv_freq = 1.0 / (
-                module.base
-                ** (
-                    torch.arange(0, module.dim, 2, dtype = torch.int64, device = "cpu").float()
-                    / module.dim
+            if hasattr(module, "_unsloth_recompute_inv_freq"):
+                # Restore config scaling (llama3/yarn); unscaled here broke v5.
+                inv_freq = module._unsloth_recompute_inv_freq()
+            else:
+                inv_freq = 1.0 / (
+                    module.base
+                    ** (
+                        torch.arange(0, module.dim, 2, dtype = torch.int64, device = "cpu").float()
+                        / module.dim
+                    )
                 )
-            )
-            inv_freq = module._apply_inv_freq_scaling(inv_freq)
+                inv_freq = module._apply_inv_freq_scaling(inv_freq)
             module.inv_freq = inv_freq
             for device_idx in range(len(module.multi_gpu_cos_cached)):
                 if module.multi_gpu_cos_cached[device_idx] is not None:
@@ -468,8 +515,10 @@ class FastLanguageModel(FastLlamaModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-        # Change -BF16 to all False for 4bit, 8bit etc
-        if model_name.lower().endswith("-bf16"):
+        # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        if model_name.lower().endswith("-bf16") and (
+            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
+        ):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -627,8 +676,10 @@ class FastLanguageModel(FastLlamaModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-            # Change -BF16 to all False for 4bit, 8bit etc
-            if model_name.lower().endswith("-bf16"):
+            # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            if model_name.lower().endswith("-bf16") and (
+                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
+            ):
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
@@ -864,6 +915,28 @@ class FastLanguageModel(FastLlamaModel):
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
             # Now add PEFT adapters
+            # Warm the adapter repo: PeftModel downloads it in-process and can hang on Xet.
+            _prefetched = maybe_prefetch_hf_snapshot(
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                # Adapter always loads in-process via PeftModel, so warm it even under fast_inference.
+                fast_inference = False,
+                force_download = kwargs.get("force_download", False),
+                # Leave use_safetensors auto (inheriting base format could skip a safetensors-only
+                # adapter). adapter_only restricts the warm to the adapter files + root aux.
+                adapter_only = True,
+            )
+            # Child did the forced download; clear the flag so the load reuses the warm cache.
+            if _prefetched and kwargs.get("force_download", False):
+                kwargs["force_download"] = False
+            # Forward cache_dir so the load reads the warmed adapter. No subfolder (that targets the
+            # base checkpoint; adapters live at the root).
+            peft_load_kwargs = {}
+            if kwargs.get("cache_dir") is not None:
+                peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -872,9 +945,19 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
+                **peft_load_kwargs,
             )
             # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
+            # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
+            # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
+            try:
+                from unsloth_zoo.temporary_patches.moe_grouped_modulelist import (
+                    auto_enable_grouped_moe,
+                )
+                auto_enable_grouped_moe(model)
+            except Exception:
+                pass  # optional speedup; never block model loading
 
         # Patch Tiled MLP
         # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
@@ -885,6 +968,7 @@ class FastLanguageModel(FastLlamaModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 
@@ -1114,8 +1198,10 @@ class FastModel(FastBaseModel):
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-        # Change -BF16 to all False for 4bit, 8bit etc
-        if model_name.lower().endswith("-bf16"):
+        # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+        if model_name.lower().endswith("-bf16") and (
+            load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
+        ):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
@@ -1261,6 +1347,7 @@ class FastModel(FastBaseModel):
             trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
+        _maybe_advise_fla_install(model_types)
 
         # ---- Text-diffusion models (e.g. DiffusionGemma) take a transformers-only slow path. ----
         # These use a custom block-diffusion `generate` and a novel backbone, so we skip Unsloth's
@@ -1472,8 +1559,10 @@ class FastModel(FastBaseModel):
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-            # Change -BF16 to all False for 4bit, 8bit etc
-            if model_name.lower().endswith("-bf16"):
+            # '-bf16' hub repos load bf16; a local dir keeps the requested quant unless 16bit is set
+            if model_name.lower().endswith("-bf16") and (
+                load_in_16bit or not os.path.isdir(os.path.expanduser(model_name))
+            ):
                 load_in_4bit = False
                 load_in_8bit = False
                 load_in_fp8 = False
@@ -1788,6 +1877,28 @@ class FastModel(FastBaseModel):
 
                 _LoraModel._create_and_replace = _patched_car
 
+            # Warm the adapter repo: PeftModel downloads it in-process and can hang on Xet.
+            _prefetched = maybe_prefetch_hf_snapshot(
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+                # Adapter always loads in-process via PeftModel, so warm it even under fast_inference.
+                fast_inference = False,
+                force_download = kwargs.get("force_download", False),
+                # Leave use_safetensors auto (inheriting base format could skip a safetensors-only
+                # adapter). adapter_only restricts the warm to the adapter files + root aux.
+                adapter_only = True,
+            )
+            # Child did the forced download; clear the flag so the load reuses the warm cache.
+            if _prefetched and kwargs.get("force_download", False):
+                kwargs["force_download"] = False
+            # Forward cache_dir so the load reads the warmed adapter. No subfolder (that targets the
+            # base checkpoint; adapters live at the root).
+            peft_load_kwargs = {}
+            if kwargs.get("cache_dir") is not None:
+                peft_load_kwargs["cache_dir"] = kwargs["cache_dir"]
             try:
                 model = PeftModel.from_pretrained(
                     model,
@@ -1797,6 +1908,7 @@ class FastModel(FastBaseModel):
                     local_files_only = local_files_only,
                     is_trainable = True,
                     trust_remote_code = trust_remote_code,
+                    **peft_load_kwargs,
                 )
             finally:
                 # Always restore original PEFT method, even if loading fails
@@ -1807,6 +1919,15 @@ class FastModel(FastBaseModel):
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
+            # Re-evaluate grouped MoE now the adapter is attached: an expert-LoRA block falls back
+            # to the original loop, an attention-only adapter keeps the grouped path. Guarded.
+            try:
+                from unsloth_zoo.temporary_patches.moe_grouped_modulelist import (
+                    auto_enable_grouped_moe,
+                )
+                auto_enable_grouped_moe(model)
+            except Exception:
+                pass  # optional speedup; never block model loading
 
         # Apply QAT if specified
         if qat_scheme is not None:
@@ -1822,6 +1943,7 @@ class FastModel(FastBaseModel):
             patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
 
         model = _fix_rope_inv_freq(model)
+        model = _exclude_rope_inv_freq_from_ddp(model)
         return model, tokenizer
 
 

@@ -42,6 +42,7 @@ version = {attr = "unsloth.models._utils.__version__"}
 include-package-data = true
 
 [tool.setuptools.package-data]
+unsloth_cli = ["codex_fallback_prompt.md"]
 studio = [
     "*.sh",
     "*.ps1",
@@ -73,7 +74,7 @@ triton = [
 ]
 
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.6.7",
+    "unsloth_zoo>=2026.7.3",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -94,7 +95,7 @@ huggingfacenotorch = [
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
-    "unsloth_zoo>=2026.6.7",
+    "unsloth_zoo>=2026.7.3",
     "torchvision",
     "unsloth[triton]",
 ]
@@ -255,10 +256,6 @@ cu118onlytorch270 = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp310-cp310-manylinux_2_28_x86_64.whl ; python_version=='3.10' and ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp311-cp311-manylinux_2_28_x86_64.whl ; python_version=='3.11' and ('linux' in sys_platform)",
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp312-cp312-manylinux_2_28_x86_64.whl ; python_version=='3.12' and ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp39-cp39-win_amd64.whl ; python_version=='3.9' and (sys_platform == 'win32')",
-    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp310-cp310-win_amd64.whl ; python_version=='3.10' and (sys_platform == 'win32')",
-    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp311-cp311-win_amd64.whl ; python_version=='3.11' and (sys_platform == 'win32')",
-    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.30-cp312-cp312-win_amd64.whl ; python_version=='3.12' and (sys_platform == 'win32')",
 ]
 cu126onlytorch270 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.30-cp39-cp39-manylinux_2_28_x86_64.whl ; python_version=='3.9' and ('linux' in sys_platform)",
@@ -282,7 +279,6 @@ cu128onlytorch270 = [
 ]
 cu118onlytorch271 = [
     "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.31.post1-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu118/xformers-0.0.31.post1-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu126onlytorch271 = [
     "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.31.post1-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
@@ -584,7 +580,7 @@ colab-ampere-torch220 = [
     "flash-attn>=2.6.3 ; ('linux' in sys_platform)",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.6.7",
+    "unsloth_zoo>=2026.7.3",
     "packaging",
     "tyro",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
@@ -879,14 +875,12 @@ flashattentiontorch240abiFALSEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp310-cp310-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.10'",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp311-cp311-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.11'",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp312-cp312-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.12'",
-    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp313-cp313-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.13'",
 ]
 flashattentiontorch240abiTRUEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp39-cp39-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.9'",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp310-cp310-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.10'",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp311-cp311-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.11'",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp312-cp312-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.12'",
-    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.4cxx11abiTRUE-cp313-cp313-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.13'",
 ]
 intelgputorch260 = [
     "unsloth_zoo[intelgpu]",
@@ -1174,14 +1168,14 @@ intelgputorch2120 = [
     "unsloth_zoo[intelgpu]",
     "unsloth[huggingfacenotorch]",
 
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=844d981cb1b3948085e8cfa62c74de9f100259f6131959aa70be49123b88ae81 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=a16b1d00e94ad87d62af3512e390348b8656419598004100c56028bf494f086b ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=4e46e71e077cf483404a4c17ce40d71c5f0e13a81459139d4346ca427b1dd455 ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=4fdaed1bafc51d3a2834656a3420a6686a74ea226508765a49bf15d58ff3a930 ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp310-cp310-win_amd64.whl#sha256=2778b46b22e9fa0916398db299a125027a1b2331c1173b3dd2b9e2cab6263a31 ; sys_platform == 'win32' and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp311-cp311-win_amd64.whl#sha256=ad5b147d04ee0d40f3d4d32f85f5aa3a3beb6cd5799ca026d3d7f4afa3d9e24f ; sys_platform == 'win32' and python_version == '3.11' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp312-cp312-win_amd64.whl#sha256=d9482063af2a308543f23333e32edd738ea87cbb33ade68afda9ae0fd704ccd9 ; sys_platform == 'win32' and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp313-cp313-win_amd64.whl#sha256=5d4d67f0deb1e851c01b293e602b8dcddad26ca2be61221cee3dc0e1aa0cdefd ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=81ff0eb0c4fc8e19d2510b28c3e1d9382a3c7d6fdaf6a9f9631a93a030d841cf ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=55574a68d275b85cd4d5cbf185084bae019ebf09c3f43b0bd2831b14935ec8e7 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=a31c058c5c2e78ebe490a2e69f2f50caec6b1307ac096e944f116fdc06819d9a ; platform_system == 'Linux' and python_version == '3.12' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=e701a31efa0334775f357c98716f3821775aa944219f7888e13c2dfe2daabe2a ; platform_system == 'Linux' and python_version == '3.13' and platform_machine == 'x86_64'",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp310-cp310-win_amd64.whl#sha256=0d7730651c3e52fbf3a430cc201455f0c6600dc72e681aec495f131ea44f341a ; sys_platform == 'win32' and python_version == '3.10' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp311-cp311-win_amd64.whl#sha256=8f4a63de73e3d632098f93c8f0bd77244958a47d7c5f728b8ff35f8a91fdb983 ; sys_platform == 'win32' and python_version == '3.11' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp312-cp312-win_amd64.whl#sha256=6589ece3adc2b1ab88d90ff1267afc25df5c7b868f0b633e732cac70df36cbde ; sys_platform == 'win32' and python_version == '3.12' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "triton-xpu @ https://download.pytorch.org/whl/triton_xpu-3.7.1-cp313-cp313-win_amd64.whl#sha256=2fdf001a9b0575e8b1827127259bb9b13bf36e659882be74c2dfab46597d3e7a ; sys_platform == 'win32' and python_version == '3.13' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.12.0%2Bxpu-cp310-cp310-linux_x86_64.whl#sha256=e8923cd1fe560472904b1461b745d2f1826bb9c1bc0808225d5f28a450e4d553 ; platform_system == 'Linux' and python_version == '3.10' and platform_machine == 'x86_64'",
     "torch @ https://download.pytorch.org/whl/xpu/torch-2.12.0%2Bxpu-cp311-cp311-linux_x86_64.whl#sha256=f7c082b2fc9b61def594d30ea57762dc4a8bc7111a9a9593953ed948de242e28 ; platform_system == 'Linux' and python_version == '3.11' and platform_machine == 'x86_64'",

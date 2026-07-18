@@ -74,9 +74,81 @@ _LOGIN_WINDOW_SECONDS = 60.0
 _LOGIN_MAX_FAILS = 5
 _LOGIN_IP_MAX_FAILS = 30
 _LOGIN_LOCKOUT_SECONDS = 60
-# Bucket-dict cap. On overflow, prune stale entries; if still full the failure
-# folds into the per-IP aggregate only.
+# Bucket-dict cap. On overflow, reclaim expired buckets; a new IP that still can't
+# fit falls back to a sharded overflow rather than evicting a hot bucket.
 _LOGIN_MAX_BUCKETS = 4096
+# Last full stale-sweep time; rate-limits the O(n) sweep under a burst of new IPs.
+_LAST_IP_PRUNE = 0.0
+# Sharded overflow for per-IP failures that can't get their own bucket while the
+# dict is saturated. Each shard is a small fixed-capacity dict ``ip -> [count,
+# window_start]``: a per-IP count (so a source is throttled, and cleared on
+# success, by its own failures -- no cross-IP collateral) with hard-bounded
+# memory and O(1) lookups. When a shard is full a new IP evicts the lowest-count
+# entry (and starts clean, never inheriting its count) rather than growing without
+# bound, so a high-cardinality spray can't blow memory/CPU the way a per-failure
+# deque could; a persistent attacker keeps a high count and is never the one
+# evicted.
+_LOGIN_IP_OVERFLOW_SHARDS = 256
+_LOGIN_IP_OVERFLOW_MAX = 64  # distinct IPs tracked per shard
+_LOGIN_IP_OVERFLOW: list[dict] = [dict() for _ in range(_LOGIN_IP_OVERFLOW_SHARDS)]
+
+
+def _overflow_shard(ip: str) -> dict:
+    return _LOGIN_IP_OVERFLOW[hash(ip) % _LOGIN_IP_OVERFLOW_SHARDS]
+
+
+def _overflow_record(ip: str, now: float) -> int:
+    """Record an overflow failure for ``ip`` and return its windowed count."""
+    shard = _overflow_shard(ip)
+    entry = shard.get(ip)
+    if entry is not None:
+        if now - entry[1] > _LOGIN_WINDOW_SECONDS:
+            entry[0], entry[1] = 1, now
+        else:
+            # Only "at or above the per-IP threshold" matters for blocking, so cap
+            # the count there. This also keeps the migration into a per-IP bucket
+            # bounded -- without the cap a saturated source could accrue an
+            # unbounded count, then materialize one deque entry per failure
+            # (``[start] * carried``) on the next attempt, allocating an arbitrarily
+            # large deque while holding the login lock.
+            entry[0] = min(entry[0] + 1, _LOGIN_IP_MAX_FAILS)
+        return entry[0]
+    if len(shard) >= _LOGIN_IP_OVERFLOW_MAX:
+        # Make room by dropping the lowest-count entry, but the new source starts
+        # clean -- never inherit the evicted IP's failures, or an unrelated source
+        # could be 429'd after one attempt. Worst case under a saturated shard is
+        # that a heavy hitter briefly resets, not that a bystander is blocked.
+        del shard[min(shard, key = lambda k: shard[k][0])]
+    shard[ip] = [1, now]
+    return 1
+
+
+def _overflow_blocked(ip: str, now: float) -> int:
+    """Seconds this IP is throttled by its own overflow count, or 0."""
+    shard = _overflow_shard(ip)
+    entry = shard.get(ip)
+    if entry is None:
+        return 0
+    if now - entry[1] > _LOGIN_WINDOW_SECONDS:
+        del shard[ip]
+        return 0
+    if entry[0] >= _LOGIN_IP_MAX_FAILS:
+        return max(1, int(_LOGIN_WINDOW_SECONDS - (now - entry[1])))
+    return 0
+
+
+def _overflow_take(ip: str, now: float) -> tuple[int, float]:
+    """Pop ip's overflow entry, returning its ``(count, window_start)`` so the
+    count can migrate into a fresh per-IP bucket. ``(0, now)`` if none/expired."""
+    entry = _overflow_shard(ip).pop(ip, None)
+    if entry is None or now - entry[1] > _LOGIN_WINDOW_SECONDS:
+        return 0, now
+    # Cap the carried count so the bucket migration never allocates more than the
+    # per-IP threshold worth of deque entries (defensive; _overflow_record already
+    # clamps, but keep the bound at the consumption site too).
+    return min(entry[0], _LOGIN_IP_MAX_FAILS), entry[1]
+
+
 # Unrepresentable as a real username (leading NUL); folds unknown-user attempts
 # into one slot so attacker cardinality can't blow the bucket dict.
 _UNKNOWN_LOGIN_USER = "\x00unknown-user"
@@ -169,13 +241,50 @@ def _prune_stale_buckets(now: float) -> None:
         _LOGIN_BUCKETS.pop(key, None)
 
 
+def _prune_stale_ip_buckets(now: float) -> None:
+    """Drop empty / expired per-IP buckets to bound memory under spray.
+
+    The dict is otherwise reclaimed only on a successful login, so a failure-only
+    spray from many (or spoofed) IPs would grow it without bound.
+    """
+    stale: list[str] = []
+    for bucket_ip, bucket in _LOGIN_IP_BUCKETS.items():
+        _prune_bucket(bucket, now)
+        if not bucket:
+            stale.append(bucket_ip)
+    for bucket_ip in stale:
+        _LOGIN_IP_BUCKETS.pop(bucket_ip, None)
+
+
 def _record_login_failure(key: tuple[str, str]) -> int:
+    global _LAST_IP_PRUNE
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        ip_bucket = _LOGIN_IP_BUCKETS.setdefault(ip, deque())
-        _prune_bucket(ip_bucket, now)
-        ip_bucket.append(now)
+        # Keep the dict bounded without disabling throttling and without letting a
+        # spray reset a hot bucket: for a new IP at the cap, reclaim expired buckets
+        # (rate-limited) to make room.
+        ip_bucket = _LOGIN_IP_BUCKETS.get(ip)
+        if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            if now - _LAST_IP_PRUNE >= 1.0:
+                _prune_stale_ip_buckets(now)
+                _LAST_IP_PRUNE = now
+        if ip_bucket is None and len(_LOGIN_IP_BUCKETS) >= _LOGIN_MAX_BUCKETS:
+            # Still full -- every bucket is hot. Count this failure in the IP's
+            # bounded overflow shard instead of evicting a live one, so the spray
+            # stays throttled but can't push out (and reset) any IP's own counter.
+            ip_fails = _overflow_record(ip, now)
+        else:
+            if ip_bucket is None:
+                ip_bucket = _LOGIN_IP_BUCKETS[ip] = deque()
+                # Carry over any overflow failures this IP accrued while the dict
+                # was saturated, so straddling the overflow -> bucket transition
+                # can't double the effective per-IP limit.
+                carried, start = _overflow_take(ip, now)
+                ip_bucket.extend([start] * carried)
+            _prune_bucket(ip_bucket, now)
+            ip_bucket.append(now)
+            ip_fails = len(ip_bucket)
 
         if key not in _LOGIN_BUCKETS and len(_LOGIN_BUCKETS) >= _LOGIN_MAX_BUCKETS:
             _prune_stale_buckets(now)
@@ -184,8 +293,8 @@ def _record_login_failure(key: tuple[str, str]) -> int:
             _prune_bucket(account_bucket, now)
             account_bucket.append(now)
             return len(account_bucket)
-        # Bucket dict at cap; per-IP cap still applies via ip_bucket.
-        return len(ip_bucket)
+        # Both dicts at cap (sustained spray): fall back to the per-IP count.
+        return ip_fails
 
 
 def _blocked_for(bucket: deque | None, now: float, max_fails: int) -> int:
@@ -202,10 +311,16 @@ def _login_blocked(key: tuple[str, str]) -> int:
     now = time.monotonic()
     ip, _username = key
     with _LOGIN_BUCKETS_LOCK:
-        return max(
-            _blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS),
+        # Honor the IP's overflow shard regardless of current dict capacity: a
+        # source counted there during saturation must stay throttled until those
+        # failures age out, even if a bucket later frees up -- otherwise a fresh
+        # bucket would reset it. Shards are empty outside saturation, so this is a
+        # no-op in the common case.
+        ip_blocked = max(
             _blocked_for(_LOGIN_IP_BUCKETS.get(ip), now, _LOGIN_IP_MAX_FAILS),
+            _overflow_blocked(ip, now),
         )
+        return max(_blocked_for(_LOGIN_BUCKETS.get(key), now, _LOGIN_MAX_FAILS), ip_blocked)
 
 
 def _clear_login_bucket(key: tuple[str, str]) -> None:
@@ -213,6 +328,10 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
+        # A successful login resets the IP's throttle, including any overflow it
+        # accumulated during saturation (drop only this IP's entry, so a
+        # shard-mate's throttle is untouched).
+        _overflow_shard(ip).pop(ip, None)
 
 
 # Sync def (not async): compute_identity_proof touches SQLite on the first call,
@@ -381,8 +500,9 @@ async def change_password(
             detail = "New password must be different from the current password",
         )
 
-    storage.update_password(current_subject, payload.new_password)
-    storage.revoke_user_refresh_tokens(current_subject)
+    # Single transaction: a separate refresh-token purge could fail after the
+    # password commit, leaving pre-change tokens able to mint access tokens.
+    storage.update_password(current_subject, payload.new_password, revoke_refresh_tokens = True)
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:
