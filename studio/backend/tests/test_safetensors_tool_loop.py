@@ -3205,6 +3205,196 @@ class TestLoopBehaviour:
 class TestLoopRePrompt:
     """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``MAX_ACT_REPROMPTS`` extra slots. Studio always nudges, so these drive the loop with ``nudge_tool_calls=True``."""
 
+    def test_reasoning_intent_does_not_reprompt_a_visible_answer(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "<think>Let me prepare the requested summary carefully.</think>"
+                "This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_intent_does_not_reprompt_a_visible_answer(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield "Let me prepare the requested summary carefully.</think>This is the final visible answer."
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_with_reemitted_think_does_not_reprompt(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "Let me prepare the requested summary carefully."
+                "<think>more private planning</think>This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_with_later_think_does_not_reprompt(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "private prefilled planning</think>"
+                "<think>Let me prepare the requested summary carefully.</think>"
+                "This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_reasoning_only_intent_still_reprompts_and_uses_a_tool(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["<think>Let me search for that.</think>"],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_prefilled_no_close_reasoning_intent_still_reprompts(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I need more context.<think>Let me search for that."],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me search for that.</think><think>checking details</think>"],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_reprompt_history_uses_visible_intent_text(self):
+        captured: list[list[dict]] = []
+
+        def _gen(messages, active_tools = None):
+            captured.append([dict(message) for message in messages])
+            if len(captured) == 1:
+                yield "<think>private planning details</think>Let me search for that."
+            elif len(captured) == 2:
+                yield '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+            else:
+                yield "Here is the answer."
+
+        exec_fn = FakeExecuteTool(["result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "find cats"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        assert captured[1][1] == {"role": "assistant", "content": "Let me search for that."}
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
     def test_intent_signal_triggers_reprompt(self):
         # Turn 1: intent signal, no tool call.
         # Turn 2 (re-prompt): proper tool call -> executes.
