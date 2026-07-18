@@ -417,12 +417,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
-            // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
-            // are tuned for standard LoRA and would clobber CPT settings.
-            const cptOverrides =
-              get().trainingMethod === "cpt"
-                ? getCptModelDefaultsPatch(learningRateManuallySet)
-                : {};
+            // Preserve CPT hyperparams only when CPT is still the active
+            // manual choice; stale CPT state should not block model defaults.
+            const keepManualCpt =
+              get().trainingMethodManuallySet &&
+              get().trainingMethod === "cpt";
+            const cptOverrides = keepManualCpt
+              ? getCptModelDefaultsPatch(learningRateManuallySet)
+              : {};
 
             set({
               ...patch,
@@ -445,14 +447,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (
               modelSizeBytes &&
               modelSizeBytes > 0 &&
-              !get().trainingMethodManuallySet &&
-              get().trainingMethod !== "cpt"
+              !keepManualCpt
             ) {
               void autoSelectTrainingMethod(modelSizeBytes, effectiveContextLength)
                 .then((method) => {
                   if (get().selectedModel !== modelName) return;
-                  if (get().trainingMethodManuallySet) return;
-                  if (get().trainingMethod === "cpt") return;
+                  if (get().trainingMethodManuallySet && get().trainingMethod === "cpt") return;
                   if (method) {
                     const lrPatch = !get().learningRateManuallySet && !modelConfigHasLR
                       ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }

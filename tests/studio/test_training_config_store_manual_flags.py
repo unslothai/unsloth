@@ -47,3 +47,17 @@ def test_audio_and_vision_completion_guards_are_outside_manual_default_gate():
     dataset_block = source[dataset_block_start:dataset_block_end]
     assert "!get().trainOnCompletionsManuallySet" not in dataset_block
     assert "updates.trainOnCompletions = false;" in dataset_block
+
+
+def test_stale_cpt_only_blocks_auto_defaults_while_manual_flag_is_set():
+    source = STORE.read_text(encoding = "utf-8")
+
+    model_block_start = source.index("// Preserve CPT hyperparams only when CPT is still the active")
+    model_block_end = source.index(".catch((error) => {", model_block_start)
+    model_block = source[model_block_start:model_block_end]
+
+    assert "const keepManualCpt =" in model_block
+    assert "get().trainingMethodManuallySet &&" in model_block
+    assert "get().trainingMethod === \"cpt\"" in model_block
+    assert "!keepManualCpt" in model_block
+    assert "if (get().trainingMethodManuallySet && get().trainingMethod === \"cpt\") return;" in model_block
