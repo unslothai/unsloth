@@ -445,6 +445,39 @@ def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
     assert routed is host
 
 
+def test_resolve_prebuilt_cpu_fallback_overrides_intel_vulkan(monkeypatch, capsys):
+    """--cpu-fallback via CLI must suppress Vulkan even on an Intel GPU host."""
+    monkeypatch.setattr(
+        ilp,
+        "detect_host",
+        lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True),
+    )
+    seen = {}
+
+    def _resolver(tag, host, repo, published_release_tag):
+        seen["host"] = host
+        seen["repo"] = repo
+        raise ilp.PrebuiltFallback("no asset")
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "install_llama_prebuilt.py",
+            "--resolve-prebuilt",
+            "latest",
+            "--cpu-fallback",
+            "--output-format",
+            "json",
+        ],
+    )
+    assert ilp.main() == ilp.EXIT_SUCCESS
+    # --cpu-fallback must suppress Intel GPU, route to fork (not upstream Vulkan)
+    assert seen["host"].has_intel_gpu is False
+    assert seen["repo"] == FORK
+
+
 def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():
     # A mixed NVIDIA+Intel host that hid NVIDIA (CUDA_VISIBLE_DEVICES=""/-1):
     # physical NVIDIA present but not usable. Must NOT auto-route to Vulkan, or
