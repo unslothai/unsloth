@@ -293,25 +293,43 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     # Module.dtype reports the first floating parameter, which is now fp8 STORAGE; pipelines
     # derive tensor dtypes from encoder.dtype (Flux2 casts prompt embeds to it and feeds the
     # result to randn_tensor, which has no fp8 kernel; VLM pipelines cast pixel_values to it,
-    # racing the upcast hooks). The encoder computes in target.dtype, so report that.
+    # racing the upcast hooks). The encoder computes in target.dtype, so report that -- via a
+    # property shadowed on the ORIGINAL class reading a per-instance override. Swapping
+    # __class__ to a dynamic subclass instead breaks transformers' kwargs-based output
+    # recording (Qwen3VLModel returned hidden_states=None and krea-2 crashed at encode).
     compute_dtype = getattr(target, "dtype", None)
     try:
-        if compute_dtype is not None and not getattr(encoder, "_unsloth_te_dtype_override", False):
-            cls = type(encoder)
-            encoder.__class__ = type(
-                cls.__name__,
-                (cls,),
-                {
-                    "dtype": property(lambda self, _d = compute_dtype: _d),
-                    "_unsloth_te_dtype_override": True,
-                },
-            )
+        if compute_dtype is not None:
+            _install_dtype_override(type(encoder))
+            encoder._unsloth_te_compute_dtype = compute_dtype
         # Marks the cast COMPLETE (hooks fully installed), enabling the idempotent early return
         # above. Best-effort like the dtype override: a non-Module double without settable
         # attributes still counts as cast, it just re-casts on a repeat call.
         encoder._unsloth_te_cast_complete = True
     except Exception:  # noqa: BLE001 — real HF encoders are heap-type nn.Modules; only doubles fail
         pass
+
+
+def _install_dtype_override(cls: type) -> None:
+    """Shadow ``cls.dtype`` with a property preferring the per-instance compute-dtype
+    override ``_cast_fp8`` sets; instances without it keep the original behaviour. Class
+    identity is untouched, applied once per class."""
+    existing = cls.__dict__.get("dtype")
+    if getattr(getattr(existing, "fget", None), "_unsloth_te_dtype_override", False):
+        return
+    # The property object itself when accessed through the class (property.__get__(None, cls)).
+    original_fget = getattr(getattr(cls, "dtype", None), "fget", None)
+
+    def _dtype(self):
+        override = self.__dict__.get("_unsloth_te_compute_dtype")
+        if override is not None:
+            return override
+        if original_fget is not None:
+            return original_fget(self)
+        raise AttributeError("dtype")
+
+    _dtype._unsloth_te_dtype_override = True
+    cls.dtype = property(_dtype)
 
 
 def _has_layerwise_hooks(encoder: Any) -> bool:
