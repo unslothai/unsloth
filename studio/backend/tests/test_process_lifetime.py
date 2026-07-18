@@ -143,9 +143,7 @@ def test_spawn_parent_pid_forkserver_uses_getppid(monkeypatch):
     import multiprocessing
 
     monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = True: "forkserver")
-    monkeypatch.setattr(
-        multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242)
-    )
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: types.SimpleNamespace(pid = 4242))
     monkeypatch.setattr(pl.os, "getppid", lambda: 6080)  # the forkserver
     assert pl._spawn_parent_pid() == 6080
 

@@ -188,6 +188,7 @@ def _spawn_parent_pid() -> int:
     multiprocessing, or on any lookup failure."""
     try:
         import multiprocessing
+
         # forkserver: OS parent (getppid) != recorded logical parent, so the
         # recorded pid is not a valid reparent baseline -- trust getppid().
         if multiprocessing.get_start_method(allow_none = True) != "forkserver":
