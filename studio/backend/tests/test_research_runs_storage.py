@@ -171,13 +171,10 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
     payloads = []
 
     class FakeResponse:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
         def raise_for_status(self):
+            return None
+
+        async def aclose(self):
             return None
 
         async def aiter_lines(self):
@@ -196,8 +193,11 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, *args, **kwargs):
+        def build_request(self, *args, **kwargs):
             payloads.append(kwargs["json"])
+            return object()
+
+        async def send(self, request, *, stream):
             return FakeResponse()
 
     monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
@@ -290,6 +290,31 @@ def test_schema_and_state_transitions(research_home):
         "research_sources",
         "research_events",
     }
+
+
+def test_pruning_messages_preserves_runs_whose_user_message_survives(research_home):
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "temporary",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "Delete me"}],
+            "createdAt": 4,
+        }
+    )
+    survivors = [
+        message
+        for message in studio_db.list_chat_messages("thread-1")
+        if message["id"] != "temporary"
+    ]
+
+    studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+
+    assert research_db.get_run("run-1") is not None
+    assert research_db.has_thread_claim("alice", "thread-1") is True
+    assert studio_db.get_chat_message("thread-1", "temporary") is None
 
 
 def test_revision_hash_conflicts_and_idempotent_approval(research_home):
@@ -483,6 +508,27 @@ def test_supervisor_stop_signals_tool_cancellation_before_task_cancelled(researc
         assert cancel_event.is_set()
 
     asyncio.run(scenario())
+
+
+def test_recovered_supervisor_waits_for_actual_server_port(research_home):
+    from core.research_runs import ResearchSupervisor
+
+    _create()
+    supervisor = ResearchSupervisor(SimpleNamespace(state = SimpleNamespace()), poll_seconds = 0.01)
+
+    async def scenario():
+        task = asyncio.create_task(supervisor._loop())
+        await asyncio.sleep(0.03)
+        supervisor._stopping.set()
+        await task
+
+    asyncio.run(scenario())
+    assert research_db.get_run("run-1")["status"] == "planning"
+    with pytest.raises(RuntimeError, match = "server port"):
+        supervisor._endpoint()
+
+    supervisor.note_request_port(SimpleNamespace(scope = {"server": ("127.0.0.1", 4321)}))
+    assert supervisor._endpoint() == "http://127.0.0.1:4321/v1/chat/completions"
 
 
 def test_sources_are_normalized_by_url(research_home):
@@ -830,6 +876,95 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         for part in assistant["content"]
         if isinstance(part, dict) and part.get("type") == "source"
     )
+
+
+def test_recovered_running_research_resumes_durable_progress(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    assert research_db.claim_next("old-worker")["claimedFromStatus"] == "queued"
+    assert research_db.reset_execution_steps("run-1", "old-worker") is True
+    assert research_db.upsert_execution_step(
+        "run-1",
+        0,
+        "Saved step",
+        "saved query",
+        "completed",
+        {
+            "action": "search",
+            "input": "saved query",
+            "evidenceSources": [
+                {
+                    "kind": "knowledge_base",
+                    "filename": "private.txt",
+                    "snippet": "Private durable evidence",
+                }
+            ],
+        },
+        "old-worker",
+    )
+    assert research_db.upsert_source(
+        "run-1",
+        0,
+        "https://saved.example/source",
+        "Saved source",
+        "Saved durable snippet",
+        "old-worker",
+    )
+    assert research_db.upsert_execution_step(
+        "run-1", 1, "Interrupted", "partial query", "running", None, "old-worker"
+    )
+    assert research_db.upsert_source(
+        "run-1",
+        1,
+        "https://partial.example/source",
+        "Partial source",
+        "Must be discarded",
+        "old-worker",
+    )
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
+        conn.commit()
+    finally:
+        conn.close()
+    assert research_db.recover_expired() == 1
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    recovered = research_db.claim_next(supervisor.worker_id)
+    assert recovered["claimedFromStatus"] == "running"
+
+    async def fake_stream_completion(run, messages, **kwargs):
+        system = messages[0]["content"]
+        prompt = messages[1]["content"]
+        if "iterative research process" in system:
+            assert "Saved durable snippet" in prompt
+            assert "Private durable evidence" not in prompt
+            assert "Must be discarded" not in prompt
+            return json.dumps({"action": "finish", "title": "Enough"}), "", "stop"
+        assert "Saved durable snippet" in prompt
+        assert "Private durable evidence" in prompt
+        assert "Must be discarded" not in prompt
+        return (
+            "# Resumed report\n\nSaved finding [Saved source](https://saved.example/source).",
+            "",
+            "stop",
+        )
+
+    def unexpected_tool(*args, **kwargs):
+        raise AssertionError("Recovered evidence should be synthesized without restarting")
+
+    monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
+    monkeypatch.setattr(worker, "execute_tool", unexpected_tool)
+    asyncio.run(supervisor._process(recovered))
+
+    completed = research_db.get_run("run-1")
+    assert completed["status"] == "completed"
+    assert [step["position"] for step in completed["steps"]] == [0]
+    assert [source["url"] for source in completed["sources"]] == ["https://saved.example/source"]
+    assert completed["report"].startswith("# Resumed report")
 
 
 def test_create_without_assistant_id_does_not_eagerly_create_message(research_home):
@@ -1435,6 +1570,54 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
 
     asyncio.run(scenario())
     assert iterator_cancelled["value"] is True
+
+
+def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkeypatch):
+    from core import research_runs as worker
+
+    _create()
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    run = research_db.claim_next(supervisor.worker_id)
+    request_cancelled = {"value": False}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def build_request(self, *args, **kwargs):
+            return object()
+
+        async def send(self, request, *, stream):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                request_cancelled["value"] = True
+
+    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        worker.auth_storage,
+        "create_api_key",
+        lambda **kwargs: ("internal-key", {"id": 1}),
+    )
+    monkeypatch.setattr(worker.auth_storage, "revoke_internal_api_key", lambda key_id: True)
+
+    async def scenario():
+        task = asyncio.create_task(
+            supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
+        )
+        await asyncio.sleep(0.05)
+        supervisor.cancel("run-1")
+        with pytest.raises(worker.RunCancelled):
+            await asyncio.wait_for(task, timeout = 1)
+
+    asyncio.run(scenario())
+    assert request_cancelled["value"] is True
 
 
 def test_route_maps_unstable_assistant_conflict_to_409(research_home):

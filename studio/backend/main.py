@@ -633,6 +633,14 @@ logger = LogConfig.setup_logging(
 app.add_middleware(LoggingMiddleware)
 
 
+@app.middleware("http")
+async def capture_research_server_port(request: Request, call_next):
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    if supervisor is not None:
+        supervisor.note_request_port(request)
+    return await call_next(request)
+
+
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
 from starlette.datastructures import MutableHeaders  # noqa: E402

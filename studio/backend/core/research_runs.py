@@ -461,6 +461,9 @@ class ResearchSupervisor:
     async def _loop(self) -> None:
         while not self._stopping.is_set():
             try:
+                if self._server_port() is None:
+                    await asyncio.sleep(self.poll_seconds)
+                    continue
                 run = await asyncio.to_thread(db.claim_next, self.worker_id)
                 if run is None:
                     await asyncio.sleep(self.poll_seconds)
@@ -472,12 +475,18 @@ class ResearchSupervisor:
                 logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)
 
-    def _endpoint(self) -> str:
+    def _server_port(self) -> int | None:
         port = getattr(self.app.state, "server_port", None)
         if not isinstance(port, int) or port <= 0:
             port = getattr(self.app.state, "research_request_port", None)
         if not isinstance(port, int) or port <= 0:
-            port = 8888
+            return None
+        return port
+
+    def _endpoint(self) -> str:
+        port = self._server_port()
+        if port is None:
+            raise RuntimeError("Research is waiting for the Studio server port")
         return f"http://127.0.0.1:{port}/v1/chat/completions"
 
     async def _completion(
@@ -709,12 +718,25 @@ class ResearchSupervisor:
         try:
             timeout = httpx.Timeout(float(config["budgets"]["modelTimeoutSeconds"]))
             async with httpx.AsyncClient(timeout = timeout, trust_env = False) as client:
-                async with client.stream(
+                request = client.build_request(
                     "POST",
                     self._endpoint(),
                     json = payload,
                     headers = {"Authorization": f"Bearer {token}"},
-                ) as response:
+                )
+                response: httpx.Response | None = None
+                send_task = asyncio.create_task(client.send(request, stream = True))
+                try:
+                    while not send_task.done():
+                        await asyncio.wait({send_task}, timeout = 0.2)
+                        if self._cancel_event(run["id"]).is_set():
+                            send_task.cancel()
+                            try:
+                                await send_task
+                            except asyncio.CancelledError:
+                                pass
+                            await self._check_active(run["id"])
+                    response = await send_task
                     response.raise_for_status()
                     async for line in self._iter_stream_lines(run["id"], response):
                         if self._cancel_event(run["id"]).is_set():
@@ -749,6 +771,20 @@ class ResearchSupervisor:
                             and asyncio.get_running_loop().time() - last_progress_flush >= 0.25
                         ):
                             await flush_progress()
+                finally:
+                    if not send_task.done():
+                        send_task.cancel()
+                        try:
+                            await send_task
+                        except asyncio.CancelledError:
+                            pass
+                    if response is None and send_task.done() and not send_task.cancelled():
+                        try:
+                            response = send_task.result()
+                        except Exception:
+                            pass
+                    if response is not None:
+                        await response.aclose()
             await flush_progress()
             return report, reasoning, finish_reason
         finally:
@@ -894,6 +930,7 @@ class ResearchSupervisor:
         # second markdown copy to the assistant message beneath that card.
 
     async def _research(self, run: dict) -> None:
+        resuming = run.get("claimedFromStatus") == "running"
         fresh = await asyncio.to_thread(db.get_run, run["id"])
         if not fresh or not fresh.get("plan"):
             raise ValueError("Approved plan is missing")
@@ -913,13 +950,58 @@ class ResearchSupervisor:
             get_chat_message, run["threadId"], run["userMessageId"]
         )
         question = _extract_text(question_message or {})
-        written = await asyncio.to_thread(
-            db.reset_execution_steps,
-            run["id"],
-            self.worker_id,
-        )
+        reset = db.prepare_execution_resume if resuming else db.reset_execution_steps
+        written = await asyncio.to_thread(reset, run["id"], self.worker_id)
         await self._check_worker_write(run["id"], written)
-        for position in range(max_steps):
+        run = await asyncio.to_thread(db.get_run, run["id"])
+        if not run:
+            raise LeaseLost()
+        if resuming:
+            sources = list(run.get("sources") or [])[:max_sources]
+
+        for step in run.get("steps") or []:
+            result = step.get("result") if isinstance(step.get("result"), dict) else {}
+            action = str(result.get("action") or "search")
+            argument = str(result.get("input") or step.get("query") or "")
+            if action == "fetch":
+                fetched_urls.add(argument)
+            elif argument:
+                used_queries.add(argument)
+            if step.get("status") != "completed":
+                continue
+            step_sources = [
+                source for source in sources if source.get("stepPosition") == step.get("position")
+            ]
+            web_evidence = str(result.get("excerpt") or "")
+            if not web_evidence and step_sources:
+                web_evidence = "\n\n---\n\n".join(
+                    f"Title: {source.get('title') or source['url']}\n"
+                    f"URL: {source['url']}\n"
+                    f"Snippet: {source.get('snippet') or ''}"
+                    for source in step_sources
+                )
+            rag_evidence = "\n".join(
+                f"{item.get('filename') or 'Document'}: {item.get('snippet') or ''}"
+                for item in result.get("evidenceSources") or []
+                if isinstance(item, dict)
+            )
+            title = str(step.get("title") or "Recovered research step")
+            notes.append(
+                f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"
+                f"Knowledge base:\n{rag_evidence}"
+            )
+            decision_notes.append(
+                f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}"
+            )
+
+        start_position = (
+            max(
+                (int(step["position"]) for step in run.get("steps") or []),
+                default = -1,
+            )
+            + 1
+        )
+        for position in range(start_position, max_steps):
             await self._check_active(run["id"])
             source_catalog = "\n".join(
                 f"- {source.get('title') or source['url']} | {source['url']} | "

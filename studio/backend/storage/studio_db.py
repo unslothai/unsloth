@@ -672,6 +672,7 @@ def get_connection() -> sqlite3.Connection:
             if not _schema_ready:
                 try:
                     _ensure_schema(conn)
+                    conn.commit()
                     _schema_ready = True
                 except Exception:
                     conn.close()
@@ -1648,8 +1649,6 @@ def sync_chat_messages(
             thread_id,
             [m["id"] for m in messages],
         )
-        if prune_missing:
-            conn.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -1679,6 +1678,17 @@ def sync_chat_messages(
             ],
         )
         if prune_missing:
+            survivor_ids = {str(message["id"]) for message in messages}
+            existing_ids = {
+                str(row["id"])
+                for row in conn.execute(
+                    "SELECT id FROM chat_messages WHERE thread_id = ?", (thread_id,)
+                ).fetchall()
+            }
+            conn.executemany(
+                "DELETE FROM chat_messages WHERE thread_id = ? AND id = ?",
+                [(thread_id, message_id) for message_id in existing_ids - survivor_ids],
+            )
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif messages:
             _bump_chat_thread_updated_at(

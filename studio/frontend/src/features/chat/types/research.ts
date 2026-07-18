@@ -145,6 +145,7 @@ export interface ResearchEventData {
   createdAt: number;
   attempt?: number;
   status?: ResearchRunStatus;
+  resumed?: boolean;
   phase?: ResearchPhase;
   callId?: string;
   reasoningDelta?: string;

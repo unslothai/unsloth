@@ -678,9 +678,18 @@ def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
             "started_at=COALESCE(started_at, ?), updated_at=? WHERE id=?",
             (next_status, worker_id, now + lease_ms, now, now, now, row["id"]),
         )
-        _event_locked(conn, row["id"], "run.started", {"status": next_status})
+        resumed = status == "running"
+        _event_locked(
+            conn,
+            row["id"],
+            "run.started",
+            {"status": next_status, "resumed": resumed},
+        )
         _commit_event(conn)
-        return get_run(row["id"])
+        claimed = get_run(row["id"])
+        if claimed is not None:
+            claimed["claimedFromStatus"] = status
+        return claimed
     except Exception:
         conn.rollback()
         raise
@@ -866,6 +875,37 @@ def reset_execution_steps(run_id: str, worker_id: str | None = None) -> bool:
             return False
         conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
+    """Keep completed evidence while discarding the interrupted step."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if not _worker_can_write_locked(conn, run_id, worker_id, {"running"}):
+            conn.commit()
+            return False
+        interrupted = conn.execute(
+            "SELECT position FROM research_plan_steps WHERE run_id = ? "
+            "AND status NOT IN ('completed','failed')",
+            (run_id,),
+        ).fetchall()
+        conn.executemany(
+            "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
+            [(run_id, int(row["position"])) for row in interrupted],
+        )
+        conn.execute(
+            "DELETE FROM research_plan_steps WHERE run_id = ? "
+            "AND status NOT IN ('completed','failed')",
+            (run_id,),
+        )
         conn.commit()
         return True
     except Exception:

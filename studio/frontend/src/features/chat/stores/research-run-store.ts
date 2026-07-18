@@ -105,7 +105,10 @@ function statusActivity(event: ResearchEvent): ResearchActivity | null {
         ? null
         : {
             ...base,
-            title: attempt > 0 ? "Research resumed" : "Research started",
+            title:
+              event.data.resumed || attempt > 0
+                ? "Research resumed"
+                : "Research started",
             state: "complete",
           };
     case "run.approved":
@@ -259,7 +262,7 @@ function reduceActivity(
 
   if (event.event === "step.started") {
     const action = event.data.action ?? "search";
-    next.push({
+    const activity: ResearchActivity = {
       id: `step-${attempt}-${event.data.stepPosition ?? event.id}`,
       seq: event.id,
       attempt,
@@ -274,7 +277,10 @@ function reduceActivity(
       action,
       input: event.data.input,
       sources: [],
-    });
+    };
+    const existingIndex = next.findIndex((item) => item.id === activity.id);
+    if (existingIndex >= 0) next[existingIndex] = activity;
+    else next.push(activity);
     return next;
   }
 
@@ -369,6 +375,27 @@ function reduceActivity(
       if (activity.attempt === attempt && activity.state === "running") {
         next[index] = { ...activity, seq: event.id, state: terminalState };
       }
+    }
+  }
+
+  if (event.event === "run.started" && event.data.resumed) {
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      const activity = next[index];
+      if (activity.kind !== "step" || activity.attempt !== attempt) continue;
+      const snapshot = event.run.steps.find(
+        (step) => step.position === activity.stepPosition,
+      );
+      if (snapshot?.status !== "completed" && snapshot?.status !== "failed") {
+        next.splice(index, 1);
+        continue;
+      }
+      next[index] = {
+        ...activity,
+        seq: event.id,
+        state: snapshot.status === "failed" ? "failed" : "complete",
+        evidenceSources: snapshot.result?.evidenceSources,
+        excerpt: snapshot.result?.excerpt,
+      };
     }
   }
 

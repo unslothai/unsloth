@@ -107,6 +107,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "source.added" in coordinator
     assert 'activity.state === "running"' in coordinator
     assert "terminalState" in coordinator
+    assert "event.data.resumed" in coordinator
+    assert "next.splice(index, 1)" in coordinator
     assert 'event.event === "run.completed"' in coordinator
     assert "compactReplayUpdates" in coordinator
     assert "hydrateResearchReplay" in coordinator
