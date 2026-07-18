@@ -396,7 +396,9 @@ def test_install_ps1_uv_fallback_keeps_rebuild_alive_when_quarantine_move_fails(
     assert (
         block.index('Write-Host "[WARN] Could not quarantine failed uv venv:')
         < block.index('$VenvStage = New-StudioVenvSiblingPath "unsloth_studio.stage.fallback"')
-        < block.index('$venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvStage }')
+        < block.index(
+            "$venvExit = Invoke-InstallCommand { & $DetectedPython.Path -m venv $VenvStage }"
+        )
     )
 
 
