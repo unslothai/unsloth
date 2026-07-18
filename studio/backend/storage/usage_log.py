@@ -28,7 +28,7 @@ def record_event(entry: ApiMonitorEntry) -> None:
             """,
             (
                 entry.id,
-                int(entry.start_time * 1000) if entry.start_time else int(time.time() * 1000),
+                int(entry.started_at * 1000) if entry.started_at else int(time.time() * 1000),
                 entry.model or "unknown",
                 source,
                 entry.provider_type,
