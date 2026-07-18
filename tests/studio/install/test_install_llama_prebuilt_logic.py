@@ -991,6 +991,34 @@ def test_binary_env_strips_secrets_from_downloaded_binary_environment(
     assert env["CUDA_VISIBLE_DEVICES"] == "1"
 
 
+def test_binary_env_linux_strips_loader_injections_and_broad_inherited_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    bin_dir = install_dir / "build" / "bin"
+    runtime_lib = tmp_path / "runtime" / "lib"
+    runtime_lib.mkdir(parents = True)
+    bin_dir.mkdir(parents = True)
+    binary_path = bin_dir / "llama-server"
+    binary_path.write_bytes(b"fake")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "linux_runtime_dirs", lambda _bp: [])
+    monkeypatch.setenv(
+        "LD_LIBRARY_PATH",
+        os.pathsep.join([str(Path("/")), str(runtime_lib.parent / ".." / "runtime" / "lib")]),
+    )
+    monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "inject.so"))
+    monkeypatch.setenv("LD_AUDIT", str(tmp_path / "audit.so"))
+
+    env = binary_env(binary_path, install_dir, linux_host())
+
+    assert "LD_PRELOAD" not in env
+    assert "LD_AUDIT" not in env
+    ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(Path("/")) not in ld_dirs
+    assert str(runtime_lib.resolve()) in ld_dirs
+
+
 def test_binary_env_redirects_home_away_from_real_credential_stores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1093,7 +1121,9 @@ def test_binary_env_macos_strips_inherited_dyld_loader_controls(
     binary_path = bin_dir / "llama-server"
     binary_path.write_bytes(b"fake")
 
-    monkeypatch.setenv("DYLD_LIBRARY_PATH", str(runtime_lib))
+    monkeypatch.setenv(
+        "DYLD_LIBRARY_PATH", str(runtime_lib.parent / ".." / runtime_lib.parent.name / runtime_lib.name)
+    )
     monkeypatch.setenv("DYLD_INSERT_LIBRARIES", str(tmp_path / "inject.dylib"))
     monkeypatch.setenv("DYLD_FRAMEWORK_PATH", str(tmp_path / "Frameworks"))
     monkeypatch.setenv("DYLD_FALLBACK_LIBRARY_PATH", str(tmp_path / "fallback"))
@@ -1103,9 +1133,10 @@ def test_binary_env_macos_strips_inherited_dyld_loader_controls(
     assert "DYLD_INSERT_LIBRARIES" not in env
     assert "DYLD_FRAMEWORK_PATH" not in env
     assert "DYLD_FALLBACK_LIBRARY_PATH" not in env
-    assert str(bin_dir) in env["DYLD_LIBRARY_PATH"].split(os.pathsep)
-    assert str(install_dir) in env["DYLD_LIBRARY_PATH"].split(os.pathsep)
-    assert str(runtime_lib) in env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    dyld_dirs = env["DYLD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(bin_dir) in dyld_dirs
+    assert str(install_dir) in dyld_dirs
+    assert str(runtime_lib.resolve()) in dyld_dirs
 
 
 def test_linux_runtime_dirs_probes_with_secret_free_env(monkeypatch: pytest.MonkeyPatch):
@@ -1430,6 +1461,73 @@ def test_existing_install_matches_plan_with_fingerprint_linux(
     )
 
     assert existing_install_matches_plan(install_dir, host, plan) is True
+
+
+def test_existing_install_matches_plan_linux_allows_skipped_ldd_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_linux_install_shape(install_dir)
+
+    choice = AssetChoice(
+        repo = "unslothai/llama.cpp",
+        tag = "release-1",
+        name = "llama-b9001-bin-ubuntu-x64.tar.gz",
+        url = "https://example.com/llama-b9001-bin-ubuntu-x64.tar.gz",
+        source_label = "upstream",
+        install_kind = "linux-cpu",
+        expected_sha256 = "a" * 64,
+    )
+    checksums = ApprovedReleaseChecksums(
+        repo = "unslothai/llama.cpp",
+        release_tag = "release-1",
+        upstream_tag = "b9001",
+        source_commit = "deadbeef",
+        artifacts = {
+            source_archive_logical_name("b9001"): ApprovedArtifactHash(
+                asset_name = source_archive_logical_name("b9001"),
+                sha256 = "b" * 64,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-source",
+            ),
+            choice.name: ApprovedArtifactHash(
+                asset_name = choice.name,
+                sha256 = choice.expected_sha256,
+                repo = "ggml-org/llama.cpp",
+                kind = "upstream-prebuilt",
+            ),
+        },
+    )
+    plan = INSTALL_LLAMA_PREBUILT.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = checksums,
+    )
+
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_run_validation_ldd_probe",
+        lambda _binary_path, *, env: LinuxLibraryProbeResult(
+            status = LINUX_LDD_PROBE_SKIPPED,
+            missing = [],
+            reason = "bwrap unavailable",
+        ),
+    )
+
+    write_prebuilt_metadata(
+        install_dir,
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        choice = choice,
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+    )
+
+    assert existing_install_matches_plan(install_dir, linux_host(), plan) is True
 
 
 def test_existing_install_matches_plan_false_without_fingerprint(tmp_path: Path):
@@ -3413,6 +3511,77 @@ def test_build_validation_sandbox_plan_linux_skips_broad_inherited_library_binds
     assert _command_has_bind(plan, "--ro-bind", runtime_lib)
     assert not _command_has_bind(plan, "--ro-bind", Path("/"))
     assert not _command_has_bind(plan, "--ro-bind", Path("/home/alice"))
+
+
+def test_build_validation_sandbox_plan_linux_gpu_validation_binds_vulkan_render_nodes(
+    monkeypatch, tmp_path
+):
+    bwrap_path = tmp_path / "bwrap"
+    bwrap_path.write_text("")
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_resolve_command_path",
+        lambda command: str(bwrap_path) if command == "bwrap" else None,
+    )
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_binary_is_setuid_root", lambda _path: True)
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "_linux_validation_server_probe_command",
+        lambda command, payload_env, timeout = 60: command,
+    )
+    install_dir = tmp_path / "install"
+    binary_dir = tmp_path / "bin"
+    model_dir = tmp_path / "models"
+    for directory in (install_dir, binary_dir, model_dir):
+        directory.mkdir(parents = True, exist_ok = True)
+    binary_path = binary_dir / "llama-server"
+    binary_path.write_text("")
+
+    original_glob = Path.glob
+    original_exists = Path.exists
+
+    def fake_glob(path: Path, pattern: str):
+        normalized = str(path).replace("\\", "/")
+        if normalized == "/dev/dri" and pattern == "card*":
+            return [Path("/dev/dri/card0")]
+        if normalized == "/dev/dri" and pattern == "renderD*":
+            return [Path("/dev/dri/renderD128")]
+        if normalized == "/dev/nvidia-caps" and pattern == "nvidia-cap*":
+            return []
+        return original_glob(path, pattern)
+
+    def fake_exists(path: Path) -> bool:
+        normalized = str(path).replace("\\", "/")
+        if normalized in {
+            "/dev/dri",
+            "/dev/dri/card0",
+            "/dev/dri/renderD128",
+            "/etc/vulkan",
+            "/usr/share/vulkan",
+        }:
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "glob", fake_glob)
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    plan = build_validation_sandbox_plan(
+        ["llama-server", "-m", str(model_dir / "stories260K.gguf"), "--port", "7777"],
+        binary_path = binary_path,
+        install_dir = install_dir,
+        host = linux_host(),
+        purpose = INSTALL_LLAMA_PREBUILT._VALIDATION_PURPOSE_SERVER,
+        runtime_line = None,
+        env = {"LD_LIBRARY_PATH": str(binary_dir)},
+        enable_gpu_layers = True,
+        gpu_backend = "cuda",
+    )
+
+    assert plan.is_runnable
+    assert _command_has_bind(plan, "--dev-bind-try", Path("/dev/dri/card0"))
+    assert _command_has_bind(plan, "--dev-bind-try", Path("/dev/dri/renderD128"))
+    assert _command_has_bind(plan, "--ro-bind", Path("/etc/vulkan"))
+    assert _command_has_bind(plan, "--ro-bind", Path("/usr/share/vulkan"))
 
 
 def test_build_validation_sandbox_plan_linux_server_probe_uses_resolved_helper_path(
