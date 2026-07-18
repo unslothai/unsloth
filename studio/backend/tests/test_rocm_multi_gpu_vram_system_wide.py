@@ -76,51 +76,82 @@ def _device(
 # ── Linux per-card sysfs ──
 
 
-def test_linux_per_card_keyed_by_rocm_ordinal_via_pci(monkeypatch, tmp_path):
-    # A non-amdgpu adapter (Intel) owns card0; the AMD GPUs are card1/card2 and
-    # lack mem_info_vram_* files, so ROCm sees them as devices 0/1. The helper
-    # must key by ROCm ordinal (amdgpu cards in PCI order), NOT the DRM card
-    # number -- else device 1 would get card1 (AMD device 0) and device 0 nothing.
-    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    # card1 -> PCI 0000:03:00.0 (AMD dev 0), card2 -> PCI 0000:41:00.0 (AMD dev 1).
-    # The `device` entry is a symlink to the PCI dir, as in real sysfs.
-    pci = {1: "0000:03:00.0", 2: "0000:41:00.0"}
-    used_files = []
-    for card, (used, total) in ((1, (40, 48)), (2, (1, 8))):
-        pci_dir = tmp_path / "pci" / pci[card]
-        pci_dir.mkdir(parents = True)
-        (pci_dir / "mem_info_vram_used").write_text(str(used * 1024**3))
-        (pci_dir / "mem_info_vram_total").write_text(str(total * 1024**3))
-        card_dir = tmp_path / "drm" / f"card{card}"
-        card_dir.mkdir(parents = True)
+def _fake_drm(tmp_path, monkeypatch, cards):
+    """Build a fake /sys/class/drm tree and point the helper's glob at it.
+
+    ``cards``: (card_no, pci_bdf, driver, vram) tuples, where ``vram`` is a
+    (used_gb, total_gb) pair or None for a device exposing no mem_info_vram_*
+    files at all. Mirrors real sysfs: ``card<N>/device`` symlinks to the PCI dir
+    and ``device/driver`` symlinks to the bound driver. The glob returns the card
+    dirs in REVERSED order so the PCI sort has to establish the ordinals.
+    """
+    drivers = tmp_path / "drivers"
+    card_paths = []
+    for card_no, bdf, driver, vram in cards:
+        pci_dir = tmp_path / "pci" / bdf
+        pci_dir.mkdir(parents = True, exist_ok = True)
+        drv_dir = drivers / driver
+        drv_dir.mkdir(parents = True, exist_ok = True)
+        (pci_dir / "driver").symlink_to(drv_dir)
+        if vram is not None:
+            used, total = vram
+            (pci_dir / "mem_info_vram_used").write_text(str(int(used * 1024**3)))
+            (pci_dir / "mem_info_vram_total").write_text(str(int(total * 1024**3)))
+        card_dir = tmp_path / "drm" / f"card{card_no}"
+        card_dir.mkdir(parents = True, exist_ok = True)
         (card_dir / "device").symlink_to(pci_dir)
-        used_files.append(str(card_dir / "device" / "mem_info_vram_used"))
-    # glob returns them in arbitrary order; the PCI sort must decide the ordinals.
-    monkeypatch.setattr(hw.glob, "glob", lambda pattern: list(reversed(used_files)))
-    # card1 (PCI 03) -> ROCm ordinal 0 (48 GB), card2 (PCI 41) -> ordinal 1 (8 GB)
+        card_paths.append(str(card_dir))
+    monkeypatch.setattr(hw.glob, "glob", lambda pattern: list(reversed(card_paths)))
+    return card_paths
+
+
+def test_linux_per_card_keyed_by_rocm_ordinal_via_pci(monkeypatch, tmp_path):
+    # A non-amdgpu adapter (Intel) owns card0; the AMD GPUs are card1/card2, so
+    # ROCm sees them as devices 0/1. The helper must key by ROCm ordinal (amdgpu
+    # cards in PCI order), NOT the DRM card number -- else device 1 would get
+    # card1 (AMD device 0) and device 0 nothing. The Intel card takes no ordinal.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    _fake_drm(
+        tmp_path,
+        monkeypatch,
+        [
+            (0, "0000:00:02.0", "i915", (0.5, 2.0)),  # foreign adapter: excluded
+            (1, "0000:03:00.0", "amdgpu", (40, 48)),  # AMD device 0
+            (2, "0000:41:00.0", "amdgpu", (1, 8)),  # AMD device 1
+        ],
+    )
     assert hw._rocm_linux_sysfs_vram_per_card_gb() == {0: (40.0, 48.0), 1: (1.0, 8.0)}
 
 
 def test_linux_per_card_keeps_holes_from_bad_cards(monkeypatch, tmp_path):
-    # An amdgpu card with a zero total (transient / headless) is dropped from the
-    # overlay but must still CONSUME its ROCm ordinal: the good card keeps ordinal
-    # 1, never compacted to 0 -- else its usage would be misattributed to device 0.
+    # An amdgpu card with a zero total (transient / headless) yields no entry but
+    # must still CONSUME its ROCm ordinal: the good card keeps ordinal 1, never
+    # compacted to 0 -- else its usage would be misattributed to device 0.
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    zero = tmp_path / "card0" / "device"
-    good = tmp_path / "card1" / "device"
-    zero.mkdir(parents = True)
-    good.mkdir(parents = True)
-    (zero / "mem_info_vram_used").write_text("0")
-    (zero / "mem_info_vram_total").write_text("0")
-    (good / "mem_info_vram_used").write_text(str(2 * 1024**3))
-    (good / "mem_info_vram_total").write_text(str(16 * 1024**3))
-    monkeypatch.setattr(
-        hw.glob,
-        "glob",
-        lambda pattern: [
-            str(zero / "mem_info_vram_used"),
-            str(good / "mem_info_vram_used"),
-            str(tmp_path / "card2" / "device" / "mem_info_vram_used"),  # missing
+    _fake_drm(
+        tmp_path,
+        monkeypatch,
+        [
+            (0, "0000:03:00.0", "amdgpu", (0, 0)),  # zero total -> no entry
+            (1, "0000:41:00.0", "amdgpu", (2, 16)),
+        ],
+    )
+    assert hw._rocm_linux_sysfs_vram_per_card_gb() == {1: (2.0, 16.0)}
+
+
+def test_linux_per_card_reserves_ordinal_for_amd_without_vram_files(monkeypatch, tmp_path):
+    # An AMD device with incomplete sysfs support (an APU exposing no
+    # mem_info_vram_* files at all) is still a ROCm device, so it must consume
+    # ordinal 0 -- enumerating by bound driver rather than by the VRAM-file glob.
+    # Otherwise the discrete card shifts down to ordinal 0 and a similar-capacity
+    # GPU would receive another device's system-wide usage.
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    _fake_drm(
+        tmp_path,
+        monkeypatch,
+        [
+            (0, "0000:03:00.0", "amdgpu", None),  # APU: no VRAM sysfs files
+            (1, "0000:41:00.0", "amdgpu", (2, 16)),
         ],
     )
     assert hw._rocm_linux_sysfs_vram_per_card_gb() == {1: (2.0, 16.0)}
@@ -294,18 +325,30 @@ def test_visible_utilization_nvidia_fallback_skips_overlay(monkeypatch):
 
 
 def test_masks_layered_only_when_both_active(monkeypatch):
-    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
-    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
     assert hw._rocm_visibility_masks_layered() is False
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
     assert hw._rocm_visibility_masks_layered() is False  # HIP alone -> physical
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
-    assert hw._rocm_visibility_masks_layered() is True  # both -> layered
+    assert hw._rocm_visibility_masks_layered() is True  # HIP over ROCR -> layered
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
     assert hw._rocm_visibility_masks_layered() is False  # ROCR alone -> physical
     # An empty value is not an active filter, so it does not layer.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "  ")
     assert hw._rocm_visibility_masks_layered() is False
+
+
+def test_cuda_over_rocr_counts_as_layered(monkeypatch):
+    # On ROCm the HIP layer honors CUDA_VISIBLE_DEVICES too, so a CUDA mask
+    # composed over ROCR layers exactly like a HIP one: ROCR=2,3 + CUDA=1 means
+    # physical GPU 3, while the spec reports the ROCR value [2,3]. Must be layered.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert hw._rocm_visibility_masks_layered() is False  # CUDA alone -> physical
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+    assert hw._rocm_visibility_masks_layered() is True  # CUDA over ROCR -> layered
 
 
 def test_visible_utilization_layered_masks_skip_overlay(monkeypatch):
