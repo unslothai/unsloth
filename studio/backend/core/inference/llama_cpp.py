@@ -8429,18 +8429,39 @@ class LlamaCppBackend:
     )
 
     def _sidecar_weight_files(self) -> list[str]:
-        # First operand of each weight-modifying sidecar flag; their contents key
-        # KV validity like the GGUF itself.
+        # Operands of weight-modifying sidecar flags; their contents key KV
+        # validity like the GGUF itself. llama.cpp accepts comma-separated
+        # paths, and FNAME:SCALE items on the -scaled variants (older builds
+        # took FNAME SCALE as two argv entries), so expand every plausible
+        # reading and let stat() in the fingerprint decide which paths exist.
         args = [str(a).strip() for a in (self._extra_args or ())]
         files: list[str] = []
         for i, arg in enumerate(args):
             flag, sep, inline = arg.partition("=")
             if flag not in self._SIDECAR_WEIGHT_FLAGS:
                 continue
-            if sep:
-                files.append(inline)
-            elif i + 1 < len(args):
-                files.append(args[i + 1])
+            operand = inline if sep else (args[i + 1] if i + 1 < len(args) else "")
+            if not operand:
+                continue
+            candidates = [operand]
+            pieces = [p for p in operand.split(",") if p]
+            if len(pieces) > 1:
+                candidates.extend(pieces)
+            if flag.endswith("-scaled"):
+                for item in list(candidates):
+                    # A ":<number>" tail is a scale, not part of the path;
+                    # rpartition keeps Windows drive prefixes intact.
+                    head, colon, tail = item.rpartition(":")
+                    if not (colon and head):
+                        continue
+                    try:
+                        float(tail)
+                    except ValueError:
+                        continue
+                    candidates.append(head)
+            for cand in candidates:
+                if cand not in files:
+                    files.append(cand)
         return files
 
     def _prompt_cache_off(self) -> bool:

@@ -179,6 +179,39 @@ def test_fingerprint_tracks_lora_sidecar_rewrite(tmp_path):
     assert backend._sidecar_weight_files() == [str(adapter)]
 
 
+def test_sidecar_files_parse_csv_and_colon_scale(tmp_path):
+    backend = _resume_backend(tmp_path)
+    a, b = tmp_path / "a.gguf", tmp_path / "b.gguf"
+
+    backend._extra_args = ["--lora", f"{a},{b}"]
+    files = backend._sidecar_weight_files()
+    assert str(a) in files and str(b) in files
+
+    backend._extra_args = ["--lora-scaled", f"{a}:0.5"]
+    assert str(a) in backend._sidecar_weight_files()
+
+    backend._extra_args = ["--control-vector-scaled", f"{a}:1.0,{b}:2.0"]
+    files = backend._sidecar_weight_files()
+    assert str(a) in files and str(b) in files
+
+    # Windows drive letter must not be mistaken for a scale separator.
+    backend._extra_args = ["--lora-scaled", "C:\\adapters\\a.gguf:0.75"]
+    assert "C:\\adapters\\a.gguf" in backend._sidecar_weight_files()
+    backend._extra_args = ["--lora", "C:\\adapters\\a.gguf"]
+    assert backend._sidecar_weight_files() == ["C:\\adapters\\a.gguf"]
+
+
+def test_fingerprint_tracks_colon_scaled_adapter_rewrite(tmp_path):
+    backend = _resume_backend(tmp_path)
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"v1")
+    backend._extra_args = ["--lora-scaled", f"{adapter}:0.5"]
+
+    before = backend._slot_launch_fingerprint()
+    adapter.write_bytes(b"v2-different")  # re-exported adapter, same path
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
