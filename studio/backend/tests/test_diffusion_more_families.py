@@ -296,6 +296,16 @@ def test_ideogram4_memory_table_counts_both_dits():
     assert text_encoders_gb > 5.0
 
 
+def test_hidream_prequant_wiring():
+    # Hosted int8/fp8 checkpoints (28/28 per-case gate pairs per scheme; int8 verified
+    # bit-identical to on-the-fly quantize) serve the family default base.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("HiDream-ai/HiDream-I1-Full")
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/HiDream-I1-Full-FP8"
+
+
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
     # Measured on a B200 (outputs/hidream_smoke): int8 and fp8 both engage and render
     # cleanly, including a 2-3 token prompt on int8 -- the routed MoE expert Linears

@@ -363,6 +363,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # need the same TE4 assembly for tiny demand, so no GGUF artifact is wired yet.
     DiffusionFamily(
         name = "hidream-i1",
+        # Hosted checkpoints: 28/28 per-case gate pairs per scheme (LPIPS suite means 0.291
+        # int8 / 0.278 fp8, the 50-step trajectory band); int8 verified bit-identical to
+        # on-the-fly quantize across all 1615 state dict tensors.
+        prequant_repos = (
+            ("int8", "unsloth/HiDream-I1-Full-FP8"),
+            ("fp8", "unsloth/HiDream-I1-Full-FP8"),
+        ),
         pipeline_class = "HiDreamImagePipeline",
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
