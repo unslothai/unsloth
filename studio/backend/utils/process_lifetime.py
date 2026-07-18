@@ -200,12 +200,51 @@ def _spawn_parent_pid() -> int:
     return os.getppid()
 
 
+def _watch_parent_sentinel() -> None:
+    """Exit if the LOGICAL parent -- the process that started this multiprocessing
+    worker -- dies. PDEATHSIG only covers the OS parent, which for a forkserver
+    worker is the forkserver, not Studio; the multiprocessing parent sentinel
+    tracks the requesting process across spawn / fork / forkserver (and works off
+    Linux). A no-op when not started via multiprocessing. Best-effort daemon
+    watcher; never raises."""
+    try:
+        import multiprocessing
+        import multiprocessing.connection as _connection
+
+        parent = multiprocessing.parent_process()
+        if parent is None:
+            return
+        sentinel = getattr(parent, "sentinel", None)
+        if sentinel is None:
+            return
+
+        def _wait_then_exit() -> None:
+            try:
+                _connection.wait([sentinel])  # blocks until the logical parent dies
+            except Exception:
+                return
+            os._exit(1)
+
+        threading.Thread(
+            target = _wait_then_exit, daemon = True, name = "unsloth-parent-death-watch"
+        ).start()
+    except Exception:
+        pass
+
+
 def bind_current_process_to_parent_lifetime() -> None:
-    """Bind the CURRENT process to its parent's death (Linux). For multiprocessing
-    children, which cannot take a preexec_fn, so the parent cannot set
-    PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
+    """Bind the CURRENT process to the death of the process that started it. For
+    multiprocessing children, which cannot take a preexec_fn, so the parent
+    cannot set PR_SET_PDEATHSIG for them -- the child must do it itself at
+    startup.
+
+    Two complementary mechanisms: PR_SET_PDEATHSIG (Linux) fires on OS-parent
+    death, and the multiprocessing parent-sentinel watcher fires on LOGICAL
+    parent (Studio) death -- needed for forkserver workers, whose OS parent is
+    the forkserver rather than Studio."""
     if _is_linux():
         _pdeathsig_preexec(_spawn_parent_pid())
+    _watch_parent_sentinel()
 
 
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:

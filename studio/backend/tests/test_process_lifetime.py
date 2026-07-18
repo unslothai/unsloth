@@ -73,6 +73,19 @@ def _wait_dead(pid: int, timeout: float) -> bool:
     return not _alive(pid)
 
 
+def _killpg(proc) -> None:
+    # Reap the process and its whole session/group (forkserver + workers) so a
+    # test never leaves long-lived Python processes behind.
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
 # ── No-op safety / composition ──
 
 
@@ -343,36 +356,66 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
 def test_bind_does_not_kill_forkserver_worker(tmp_path):
     # A forkserver worker's OS parent is the forkserver, not the logical process
     # that requested it; binding must not mistake that for a reparent and exit(1)
-    # before the target runs. The child writes a marker so we can prove it ran.
+    # before the target runs. The worker writes a marker then exits cleanly, and
+    # the requester joins and exits normally, so nothing is left running.
     marker = tmp_path / "ran.txt"
     mid = tmp_path / "mid_fs.py"
     mid.write_text(
-        "import sys, time, multiprocessing as mp\n"
+        "import sys, multiprocessing as mp\n"
         f"sys.path.insert(0, {str(_BACKEND)!r})\n"
         "from utils.process_lifetime import bind_current_process_to_parent_lifetime\n"
         "def _child(path):\n"
         "    bind_current_process_to_parent_lifetime()\n"
-        f"    open(path, 'w').write('ran')\n"
-        "    time.sleep(300)\n"
+        f"    open(path, 'w').write('ran')\n"  # never reached if bind exited(1)
         "if __name__ == '__main__':\n"
         "    p = mp.get_context('forkserver').Process(target = _child, "
-        f"args = ({str(marker)!r},), daemon = True)\n"
+        f"args = ({str(marker)!r},))\n"
+        "    p.start()\n"
+        "    p.join(timeout = 10)\n"
+        "    print('exit', p.exitcode, flush = True)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)], stdout = subprocess.PIPE, text = True, start_new_session = True
+    )
+    try:
+        line = proc.stdout.readline().strip()
+        proc.wait(timeout = 10)
+        assert marker.exists(), "forkserver worker exited before running its target"
+        assert line == "exit 0", f"worker did not exit cleanly: {line!r}"
+    finally:
+        _killpg(proc)
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "forkserver PDEATHSIG is Linux-only")
+def test_bind_kills_forkserver_worker_when_requester_dies(tmp_path):
+    # The requester ("Studio") is the LOGICAL parent; the worker's OS parent is
+    # the forkserver. PDEATHSIG alone would miss this, so the parent-sentinel
+    # watcher must reap the worker when the requester is SIGKILLed.
+    mid = tmp_path / "mid_fs_kill.py"
+    mid.write_text(
+        "import sys, time, multiprocessing as mp\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "from utils.process_lifetime import bind_current_process_to_parent_lifetime\n"
+        "def _child():\n"
+        "    bind_current_process_to_parent_lifetime()\n"
+        "    time.sleep(300)\n"
+        "if __name__ == '__main__':\n"
+        "    p = mp.get_context('forkserver').Process(target = _child, daemon = False)\n"
         "    p.start()\n"
         "    print(p.pid, flush = True)\n"
         "    time.sleep(300)\n"
     )
-    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    proc = subprocess.Popen(
+        [sys.executable, str(mid)], stdout = subprocess.PIPE, text = True, start_new_session = True
+    )
     try:
         child_pid = int(proc.stdout.readline().strip())
-        # The child must survive bind and reach its target (write the marker),
-        # not exit(1) immediately as it did when expected==logical parent pid.
-        deadline = time.time() + 5
-        while time.time() < deadline and not marker.exists():
-            time.sleep(0.05)
-        assert marker.exists(), "forkserver worker exited before running its target"
         assert _alive(child_pid)
+        proc.kill()  # SIGKILL the requester
+        proc.wait(timeout = 5)
+        assert _wait_dead(child_pid, 8.0), "forkserver worker survived requester death"
     finally:
-        proc.kill()
+        _killpg(proc)
 
 
 # ── Windows Job Object path (mocked kernel32, runs on Linux CI) ──
