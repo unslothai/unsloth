@@ -106,6 +106,43 @@ def test_dispatched_multi_gpu_model_is_released_and_redispatched(_fake_accelerat
     assert _fake_accelerate["dispatched"] == [(model, device_map)]
 
 
+def test_dispatched_move_failure_redispatches_and_returns_none(_fake_accelerate):
+    # If .to("cpu") raises AFTER the accelerate hooks are removed, the model
+    # must be re-dispatched (not left hookless/half-moved) and offload aborts.
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+    device_map = {"model.embed": 0, "model.layers.1": 1}
+
+    class _MoveFails(_FakeModel):
+        def to(self, target):
+            raise RuntimeError("host RAM cannot hold the sharded model")
+
+    model = _MoveFails(device_map = device_map, devices = ("cuda:0", "cuda:1"))
+    token = ns["_offload_model_for_quantize_subprocess"](model)
+    assert token is None  # offload aborted
+    assert _fake_accelerate["removed"] == [model]  # hooks were removed...
+    assert _fake_accelerate["dispatched"] == [(model, device_map)]  # ...then restored
+
+
+def test_single_device_move_failure_restores_and_returns_none():
+    ns = _load_helpers(_fake_torch(), _FakeLogger())
+
+    class _MoveFails(_FakeModel):
+        def __init__(self):
+            super().__init__(devices = ("cuda:0",))
+
+        def to(self, target):
+            self.moved_to.append(str(target))
+            if target == "cpu":
+                raise RuntimeError("move failed")
+            return self
+
+    model = _MoveFails()
+    token = ns["_offload_model_for_quantize_subprocess"](model)
+    assert token is None
+    # attempted the cpu move, then restored back to the original device
+    assert model.moved_to == ["cpu", "cuda:0"]
+
+
 def test_cpu_or_disk_offloaded_map_is_left_alone(_fake_accelerate):
     # accelerate is already offloading part of the model; removing hooks and
     # re-dispatching could thrash, so leave it untouched.
@@ -153,3 +190,26 @@ def test_restore_failure_warns_instead_of_raising(_fake_accelerate):
     model = _ExplodingModel(devices = ("cuda:0",))
     ns["_restore_model_after_quantize_subprocess"](model, ("device", "cuda:0"))
     assert fake_logger.warnings  # warned, did not raise
+
+
+def test_lora_merge_budgets_per_device():
+    # A merged tensor W lives on the GPU of its source layer, so a model sharded
+    # across GPUs (device_map="balanced") must be budgeted against W's own
+    # device, not GPU0 -- otherwise GPU1+ can OOM while only GPU0 is checked
+    # (#7053). Pin the device-aware budget in the LoRA-merge save path.
+    src = _SAVE_PY.read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    fn = next(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "unsloth_save_model"
+        ),
+        None,
+    )
+    assert fn is not None, "unsloth_save_model not found"
+    body = ast.get_source_segment(src, fn)
+    # Budget keyed on W's device, not a hardcoded device 0 / unqualified alloc.
+    assert "torch.cuda.memory_allocated(W.device)" in body
+    assert "_device_vram_budget(W.device)" in body
+    assert "get_device_properties(0).total_memory * maximum_memory_usage" not in body

@@ -1122,7 +1122,21 @@ def unsloth_save_model(
         torch_dtype
     )
 
-    max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
+    # Per-device VRAM budget: a merged tensor lives on the GPU of its source
+    # layer, so a model sharded across GPUs (device_map="balanced") must be
+    # budgeted against W's own device, not GPU0 -- otherwise GPU1+ can OOM as
+    # their merged weights accumulate while only GPU0's headroom is checked.
+    _max_vram_by_device = {}
+
+    def _device_vram_budget(dev):
+        if dev.type != "cuda":
+            return None
+        idx = dev.index if dev.index is not None else torch.cuda.current_device()
+        if idx not in _max_vram_by_device:
+            _max_vram_by_device[idx] = int(
+                torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage
+            )
+        return _max_vram_by_device[idx]
 
     print("Unsloth: Saving model... This might take 5 minutes ...")
 
@@ -1138,8 +1152,14 @@ def unsloth_save_model(
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
 
-            if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
-                # Save to GPU memory
+            _dev_budget = _device_vram_budget(W.device)
+            if _dev_budget is not None and (
+                torch.cuda.memory_allocated(W.device) + W.nbytes
+            ) < _dev_budget:
+                # Fits on W's own GPU -> keep it there.
+                state_dict[name] = W
+            elif W.device.type != "cuda":
+                # Already off-GPU (offloaded layer): keeping it costs no VRAM.
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
             # elif (max_ram - W.nbytes) > 0:
@@ -4622,12 +4642,23 @@ def _offload_model_for_quantize_subprocess(model):
             from accelerate.hooks import remove_hook_from_submodules
 
             remove_hook_from_submodules(model)
-            model.to("cpu")
+            try:
+                model.to("cpu")
+            except Exception:
+                # The move failed (e.g. host RAM can't hold the sharded model)
+                # AFTER the hooks were removed; re-dispatch so the model is left
+                # usable rather than hookless and half-moved across CPU/GPUs.
+                _restore_model_after_quantize_subprocess(model, ("dispatch", dict(device_map)))
+                return None
             return ("dispatch", dict(device_map))
         devices = {str(p.device) for p in model.parameters()}
         if len(devices) == 1 and next(iter(devices)).startswith("cuda"):
             device = next(model.parameters()).device
-            model.to("cpu")
+            try:
+                model.to("cpu")
+            except Exception:
+                _restore_model_after_quantize_subprocess(model, ("device", device))
+                return None
             return ("device", device)
     except Exception:
         return None
