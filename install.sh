@@ -1554,6 +1554,11 @@ _has_usable_nvidia_gpu() {
     _nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _nvsmi="nvidia-smi"
+    elif [ -x "/usr/lib/wsl/lib/nvidia-smi" ]; then
+        # WSL2 GPU-PV ships nvidia-smi ONLY here, and root login shells drop
+        # the dir from PATH; without this fallback the WSL install detects no
+        # NVIDIA GPU and picks CPU torch wheels.
+        _nvsmi="/usr/lib/wsl/lib/nvidia-smi"
     elif [ -x "/usr/bin/nvidia-smi" ]; then
         _nvsmi="/usr/bin/nvidia-smi"
     fi
@@ -2074,6 +2079,9 @@ get_torch_index_url() {
         _nvidia_detected=1
         if command -v nvidia-smi >/dev/null 2>&1; then
             _smi="nvidia-smi"
+        elif [ -x "/usr/lib/wsl/lib/nvidia-smi" ]; then
+            # Same WSL2 GPU-PV location fallback as _has_usable_nvidia_gpu.
+            _smi="/usr/lib/wsl/lib/nvidia-smi"
         elif [ -x "/usr/bin/nvidia-smi" ]; then
             _smi="/usr/bin/nvidia-smi"
         fi

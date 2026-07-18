@@ -2153,13 +2153,10 @@ exit 0
                 substep "in an ADMINISTRATOR PowerShell run:   wsl --install" "Cyan"
                 substep "reboot, then re-run:                 irm https://unsloth.ai/install.ps1 | iex" "Cyan"
             }
-            # Deferred until reboot: restore any rolled-aside previous venv and signal not-complete.
-            # `exit 1` for -File (plain return exits 0); under `irm | iex` (no $PSCommandPath) return,
-            # since exit would kill the user's shell.
-            Restore-StudioVenvRollback
-            $global:LASTEXITCODE = 1
-            if ($PSCommandPath) { exit 1 }
-            return
+            # Deferred until reboot: signal not-complete through Exit-InstallFailure
+            # (restores the rolled-aside venv, exits 1 for -File, throws under iex so
+            # -Command automation cannot see a deferred setup as success).
+            return (Exit-InstallFailure "WSL setup deferred: enable WSL2 and reboot, then re-run the installer")
         }
 
         $distro = if ($env:UNSLOTH_WSL_DISTRO) { $env:UNSLOTH_WSL_DISTRO } else { "Ubuntu-24.04" }
@@ -2252,6 +2249,11 @@ exit 0
         # below requires it, so a run that dies mid-install can no longer coast on
         # a stale venv passing the torch/CLI probes.
         $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; mkdir -p /root/.unsloth; touch /root/.unsloth/.skip-wsl-windows-shortcut; rm -f /root/.unsloth/.install-ok; '
+        # Root login shells reset PATH via /etc/profile and can drop /usr/lib/wsl/lib,
+        # the only nvidia-smi location under WSL2 GPU-PV; without it install.sh's GPU
+        # detection picks CPU torch wheels and the torch.cuda probe then fails the
+        # whole install. Appended (not prepended) so a PATH nvidia-smi still wins.
+        $_fwdEnv += 'export PATH="$PATH:/usr/lib/wsl/lib"; '
         # Forward a non-default --package into the WSL install (already validated
         # against ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ at parse time, so splicing is safe);
         # previously it was silently dropped and the user got stock unsloth.
@@ -2284,10 +2286,9 @@ exit 0
         # probes below would only re-validate a stale venv from a previous install.
         if ($wslRc -eq 86) {
             step "wsl" "could not download install.sh inside WSL (network or bad ref) -- the installer never ran." "Yellow"
-            Restore-StudioVenvRollback
-            $global:LASTEXITCODE = 1
-            if ($PSCommandPath) { exit 1 }
-            return
+            # Exit-InstallFailure restores the rollback and fails the process in every
+            # invocation mode (exit for -File, throw for iex/-Command automation).
+            return (Exit-InstallFailure "could not download install.sh inside WSL; the installer never ran")
         }
         # $wslRc can be non-zero from the llama.cpp prebuilt step even on success, so verify torch.cuda directly.
         $torchOk = $false
@@ -2541,12 +2542,10 @@ exit 0
             $global:LASTEXITCODE = 0
             return
         }
-        # Failed (torch.cuda unavailable): restore any rolled-aside previous venv and report non-zero
-        # (plain return exits 0 for -File; under iex `exit` would kill the caller's shell).
-        Restore-StudioVenvRollback
-        $global:LASTEXITCODE = 1
-        if ($PSCommandPath) { exit 1 }
-        return
+        # Failed (torch.cuda unavailable): Exit-InstallFailure restores the rolled-aside
+        # venv and fails the process in every invocation mode, so iex/-Command
+        # automation cannot read this as success.
+        return (Exit-InstallFailure "WSL Studio install did not finish cleanly (torch.cuda not detected; inner exit $wslRc)")
     }
 
     # ── GPU arch → newest compatible Windows ROCm wheel release ──

@@ -236,7 +236,7 @@ if command -v pkill >/dev/null 2>&1; then
                 _pgid=$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]')
                 case "$_pgid" in
                     ''|0|1|"$_self_pgid")
-                        pkill "-$_sig" -P "$_pid" 2>/dev/null
+                        pkill "-$_sig" -P "$_pid" 2>/dev/null || true
                         kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
                     *) kill -s "$_sig" -- "-$_pgid" 2>/dev/null \
                         || kill -s "$_sig" "$_pid" 2>/dev/null || true ;;

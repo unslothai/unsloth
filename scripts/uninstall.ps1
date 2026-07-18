@@ -605,15 +605,18 @@ function Uninstall-UnslothStudio {
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
             # Probe candidates by exit code ('' = default distro) since `wsl --list` emits UTF-16 PS
-            # mis-parses. rm runs FIRST (the kills could SIGKILL this shell) and drops the dangling
-            # /root/.local/bin/unsloth symlink. Scope STRICTLY to /root (the fallback's install dir);
-            # /home/*/.unsloth may be another user's. The 8888 kill only targets a listener whose
-            # process cmdline is under /root/.unsloth (Studio's bind), so an unrelated service on 8888
-            # -- Jupyter et al. default to it -- is NOT killed; it's also gated on an Unsloth install
-            # having existed (checked BEFORE rm deletes the marker). pkill matches argv containing
-            # /root/.unsloth/ (not bare names that would hit a user's own llama-server); the backslash
-            # + [h]-bracket in '/root/\.unslot[h]/' keep it from matching this command's own argv.
-            $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; if [ $_had -eq 1 ]; then for _p in $(fuser 8888/tcp 2>/dev/null); do grep -qa /root/\.unsloth/ /proc/$_p/cmdline 2>/dev/null && kill -9 $_p 2>/dev/null; done; fi; pkill -9 -f ''/root/\.unslot[h]/'' 2>/dev/null; true'
+            # mis-parses. Kills run BEFORE rm: a live CUDA build (cmake/nvcc under
+            # /root/.unsloth/llama.cpp) would otherwise keep burning CPU/GPU and recreate files after
+            # the rm. Each matched PID's whole process GROUP is signalled (cmake --build children carry
+            # relative argv no pattern can match), guarded against this shell's own pgid, plus direct
+            # children via pkill -P; this shell cannot self-match (its argv carries an extra backslash
+            # and the [h]-bracket in the pkill pattern). Scope STRICTLY to /root (the fallback's
+            # install dir); /home/*/.unsloth may be another user's. The 8888 kill only targets a
+            # listener whose process cmdline is under /root/.unsloth (Studio's bind), so an unrelated
+            # service on 8888 -- Jupyter et al. default to it -- is NOT killed; it's also gated on an
+            # Unsloth install having existed. /proc cmdline greps still work after kills since they
+            # read process state, not files.
+            $_clean = '_had=0; if [ -d /root/.unsloth ] || [ -L /root/.local/bin/unsloth ]; then _had=1; fi; _mypg=$(ps -o pgid= -p $$ 2>/dev/null | tr -d " "); for _p in $(pgrep -f ''/root/\.unslot[h]/'' 2>/dev/null); do _pg=$(ps -o pgid= -p $_p 2>/dev/null | tr -d " "); case "$_pg" in ""|0|1|"$_mypg") pkill -9 -P $_p 2>/dev/null; kill -9 $_p 2>/dev/null ;; *) kill -9 -- -$_pg 2>/dev/null || kill -9 $_p 2>/dev/null ;; esac; done; if [ $_had -eq 1 ]; then for _p in $(fuser 8888/tcp 2>/dev/null); do grep -qa /root/\.unsloth/ /proc/$_p/cmdline 2>/dev/null && kill -9 $_p 2>/dev/null; done; fi; rm -rf /root/.unsloth /root/llama-cuda /root/provision_llama_cuda.sh /root/llama_cuda_build.log 2>/dev/null; rm -f /root/.local/bin/unsloth 2>/dev/null; true'
             # Clean only distros with evidence of a fallback install: the wsl-distro.txt marker or an
             # explicit UNSLOTH_WSL_DISTRO. The broad candidate probe is only for legacy marker-less
             # installs (ARM64 only); on x86 it would delete distros this installer never touched
