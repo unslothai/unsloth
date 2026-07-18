@@ -2565,6 +2565,9 @@ class VideoGenerateProgressResponse(BaseModel):
     )
     step: int = Field(0, description = "Denoising steps completed so far")
     total: int = Field(0, description = "Total denoising steps for this run")
+    # Image-endpoint-compatible aliases so one poller works against both APIs.
+    total_steps: int = Field(0, description = "Total denoising steps (alias of total)")
+    fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     video: Optional[GalleryVideo] = Field(
         None, description = "Saved gallery record when phase is 'completed'"

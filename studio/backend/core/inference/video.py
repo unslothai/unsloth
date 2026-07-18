@@ -773,18 +773,36 @@ class VideoBackend:
             return None
 
     def _cache_bytes(self, repo_id: Optional[str]) -> int:
-        """Bytes of ``repo_id`` currently in the HF blob cache (progress polling)."""
+        """Bytes of ``repo_id`` currently in the HF blob cache (progress polling).
+
+        Walks the repo's cache directory directly instead of ``scan_cache_dir``:
+        the scanner skips in-flight ``*.incomplete`` blobs, so during a multi-GB
+        shard pull the counter would freeze at the last completed blob for minutes
+        while the disk keeps filling (the bar sat stuck mid-download)."""
         if not repo_id:
             return 0
         try:
-            from huggingface_hub import scan_cache_dir
-            rid = repo_id.strip()
-            for repo in scan_cache_dir().repos:
-                if repo.repo_id == rid:
-                    return int(repo.size_on_disk)
+            import os
+
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            folder = Path(HF_HUB_CACHE) / ("models--" + repo_id.strip().replace("/", "--"))
+            if not folder.is_dir():
+                return 0
+            total = 0
+            for root, _dirs, files in os.walk(folder):
+                for name in files:
+                    try:
+                        path = os.path.join(root, name)
+                        # Snapshot entries are symlinks into blobs/; skip them so a
+                        # blob is not counted twice.
+                        if not os.path.islink(path):
+                            total += os.path.getsize(path)
+                    except OSError:
+                        continue
+            return int(total)
         except Exception:  # noqa: BLE001 -- cache scan is best-effort
             return 0
-        return 0
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -1724,6 +1742,14 @@ class VideoBackend:
             if self._generate_job_active:
                 gen["active"] = True
         gen.setdefault("active", False)
+        # Mirror the image endpoint's field names (total_steps / fraction) alongside the
+        # native "total": the two generate-progress APIs used to disagree, so a client
+        # polling the image shape against video read total_steps=null / fraction=0 while
+        # the step counter advanced.
+        total = int(gen.get("total") or 0)
+        step = int(gen.get("step") or 0)
+        gen["total_steps"] = total
+        gen["fraction"] = min(1.0, step / total) if total > 0 else 0.0
         return gen
 
     def cancel_generate(self) -> bool:
