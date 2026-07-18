@@ -24,7 +24,7 @@ import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
-from ._utils import is_bfloat16_supported
+from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
@@ -79,7 +79,14 @@ def _resolve_diffusion_model_class(config):
     )
 
 
-def _load_diffusion_config(model_name, token, trust_remote_code, revision, local_files_only):
+def _load_diffusion_config(
+    model_name,
+    token,
+    trust_remote_code,
+    revision,
+    local_files_only,
+    cache_dir = None,
+):
     """Load the config, aliasing the legacy ``diffusion_gemma`` model_type to the ``diffusion_gemma4``
     classes current transformers ships. AutoConfig raises on the legacy type; catch that, rewrite the
     type/arch names in-memory, and rebuild."""
@@ -90,6 +97,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
             trust_remote_code = trust_remote_code,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
     except ValueError as e:
         if "diffusion_gemma" not in str(e):
@@ -103,6 +111,7 @@ def _load_diffusion_config(model_name, token, trust_remote_code, revision, local
             token = token,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
         with open(cfg_path, encoding = "utf-8") as f:
             cd = json.load(f)
@@ -152,12 +161,16 @@ class FastDiffusionModel:
                 os.environ.get("HF_HUB_OFFLINE", "0") == "1"
                 or os.environ.get("TRANSFORMERS_OFFLINE", "0") == "1"
             )
+
+        cache_dir = kwargs.get("cache_dir")
+
         config = _load_diffusion_config(
             model_name,
             token,
             trust_remote_code,
             revision,
             local_files_only,
+            cache_dir = cache_dir,
         )
         model_type = getattr(config, "model_type", None)
         if not is_diffusion_model_type(model_type):
@@ -168,6 +181,21 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
+        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline
+        # loads every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
+        maybe_prefetch_hf_snapshot(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            fast_inference = False,
+            force_download = kwargs.get("force_download", False),
+            use_safetensors = kwargs.get("use_safetensors"),
+            # Forward variant (e.g. "fp16") so the warm keeps variant weights.
+            variant = kwargs.get("variant"),
+        )
+
         load_kwargs = dict(
             dtype = dtype,
             device_map = device_map,
@@ -176,7 +204,14 @@ class FastDiffusionModel:
             attn_implementation = attn_implementation,
             revision = revision,
             local_files_only = local_files_only,
+            cache_dir = cache_dir,
         )
+        # Match the load's weight format to the warm (None/auto already matches).
+        if kwargs.get("use_safetensors") is not None:
+            load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
+        # Forward variant to the real load so it reads the warmed variant weights.
+        if kwargs.get("variant") is not None:
+            load_kwargs["variant"] = kwargs["variant"]
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
@@ -222,6 +257,7 @@ class FastDiffusionModel:
                 trust_remote_code = trust_remote_code,
                 revision = revision,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
             )
         except Exception:
             tokenizer = AutoTokenizer.from_pretrained(
@@ -230,6 +266,7 @@ class FastDiffusionModel:
                 trust_remote_code = trust_remote_code,
                 revision = revision,
                 local_files_only = local_files_only,
+                cache_dir = cache_dir,
             )
 
         return model, tokenizer

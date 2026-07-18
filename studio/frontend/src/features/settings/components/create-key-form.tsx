@@ -64,7 +64,7 @@ export function CreateKeyForm({
                 onClick={() => setExpiry(p.value)}
                 aria-pressed={active}
                 className={cn(
-                  "inline-flex h-8 items-center rounded-full px-3.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "inline-flex h-8 items-center rounded-full px-3.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                   active
                     ? "hub-tab-toggle-pill text-foreground"
                     : "text-muted-foreground hover:text-foreground",

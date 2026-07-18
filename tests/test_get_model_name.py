@@ -102,6 +102,19 @@ class TestGetModelName(unittest.TestCase):
             ),
             ("unsloth/Kimi-K2-Instruct", True, "unsloth/Kimi-K2-Instruct-BF16", True),
             ("unsloth/Kimi-K2-Instruct", False, "unsloth/Kimi-K2-Instruct", False),
+            # DeepScaleR-1.5B must resolve to its own 16bit repo, not another model
+            (
+                "agentica-org/DeepScaleR-1.5B-Preview",
+                False,
+                "unsloth/DeepScaleR-1.5B-Preview",
+                True,
+            ),
+            (
+                "agentica-org/DeepScaleR-1.5B-Preview",
+                True,
+                "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit",
+                True,
+            ),
             # Fallback-to-original behavior
             "nonexistent-user/nonexistent-model-123",
             "google/gemma-3-random-prototype-123",
@@ -157,6 +170,10 @@ class TestGetModelName(unittest.TestCase):
             with self.subTest(src = src):
                 self.assertEqual(FLOAT_TO_INT_MAPPER[src], expected)
         self.assertEqual(MAP_TO_UNSLOTH_16bit["qwen/qwen3-8b-fp8"], "unsloth/Qwen3-8B-FP8")
+        self.assertEqual(
+            MAP_TO_UNSLOTH_16bit["agentica-org/deepscaler-1.5b-preview"],
+            "unsloth/DeepScaleR-1.5B-Preview",
+        )
 
 
 if __name__ == "__main__":

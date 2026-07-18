@@ -5,8 +5,8 @@
 Covers:
   * GGUF variant listing computes update_available from the already-fetched
     sibling metadata instead of a second Hub call.
-  * hf_hub_download_with_xet_fallback(force_download=True) bypasses the
-    try_to_load_from_cache cache-first early-return.
+  * hf_hub_download_with_xet_fallback forwards force_download through the shim to the
+    shared unsloth_zoo helper (which owns the cache-first early-return and its bypass).
 
 The cache "Update" action now runs through the download manager as a normal
 managed download (so it shows in the Downloads panel with progress + cancel),
@@ -341,44 +341,26 @@ def test_cached_model_scan_keeps_local_safetensors_repo(monkeypatch, tmp_path):
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
 
 
-def test_force_download_bypasses_cache_first_early_return(monkeypatch):
-    """force_download=True skips the try_to_load_from_cache early-return and
-    proceeds to the real download path; force_download=False returns the cached
-    path without ever attempting a download (X2/F2)."""
-    import huggingface_hub as hf
+def test_force_download_is_forwarded_through_the_shim(monkeypatch):
+    """The shim's contract is to forward force_download unchanged to the shared helper (which owns the
+    cache-first early-return and bypass). Verify both False and True reach it (X2/F2)."""
     import utils.hf_xet_fallback as X
 
-    cached_path = "/cache/blob/cached.gguf"
+    seen = []
 
-    # Pretend the blob IS cached on disk (try_to_load_from_cache is imported
-    # inside the function from huggingface_hub, and os.path.exists must agree).
-    monkeypatch.setattr(hf, "try_to_load_from_cache", lambda *a, **k: cached_path, raising = False)
-    monkeypatch.setattr(X.os.path, "exists", lambda p: True, raising = False)
+    def fake_shared(repo_id, filename, token, **kwargs):
+        seen.append(kwargs.get("force_download"))
+        return "/downloaded/path"
 
-    attempts = []
+    monkeypatch.setattr(X, "_shared_hf_hub_download_with_xet_fallback", fake_shared, raising = True)
 
-    def fake_attempt(repo_id, filename, token, **kwargs):
-        attempts.append(
-            {"repo_id": repo_id, "filename": filename, "force": kwargs.get("force_download")}
-        )
-        return ("ok", "/freshly/downloaded/path")
-
-    monkeypatch.setattr(X, "_run_download_attempt", fake_attempt, raising = True)
-
-    # force_download=False: cache-first early-return, no download attempt.
-    out = X.hf_hub_download_with_xet_fallback(
+    X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = False
     )
-    assert out == cached_path
-    assert attempts == []  # never reached the real download
-
-    # force_download=True: bypass the early-return, run the real download.
-    out2 = X.hf_hub_download_with_xet_fallback(
+    X.hf_hub_download_with_xet_fallback(
         "unsloth/repo", "model.gguf", token = None, force_download = True
     )
-    assert out2 == "/freshly/downloaded/path"
-    assert len(attempts) == 1
-    assert attempts[0]["force"] is True
+    assert seen == [False, True]  # the shim forwards force_download to the shared helper unchanged
 
 
 # ── multi-revision GGUF blob comparison and update reclaim ──
@@ -400,12 +382,146 @@ def test_repo_gguf_blob_map_collects_all_revision_blobs():
     """Every cached revision's blob for a gguf file is kept as a set, not
     collapsed to one arbitrary blob."""
     repo_info = SimpleNamespace(
+        repo_path = "/",  # real blobs live at <repo_path>/blobs/<etag>
         revisions = [
             _rev(("lfm2-350m-q4_k_m.gguf", "OLDsha")),
             _rev(("lfm2-350m-q4_k_m.gguf", "NEWsha")),
-        ]
+        ],
     )
     assert CI._repo_gguf_blob_map(repo_info) == {"lfm2-350m-q4_k_m.gguf": {"OLDsha", "NEWsha"}}
+
+
+# ── no-symlink (Windows without Developer Mode) GGUF update detection ──
+#
+# Regression for the phantom "Update available" that NEVER clears (#7060). Without
+# the symlink privilege, hf_hub_download MOVES the blob into snapshots/ instead of
+# symlinking it, so blobs/ is empty and scan_cache_dir reports blob_path = the
+# snapshot file. Its name is the FILENAME, not an etag, so a remote-vs-local sha256
+# comparison can never match and every cached GGUF reports an update forever --
+# which re-downloading cannot fix, since the same file is rewritten with no blob.
+
+
+def _rev_no_symlink(*files):
+    """A revision whose GGUFs were MOVED into snapshots/ (no blobs/ entry)."""
+    return SimpleNamespace(
+        files = [
+            SimpleNamespace(
+                file_name = name,
+                blob_path = f"/hf/models--org--repo/snapshots/{'a' * 40}/{name}",
+                size_on_disk = size,
+            )
+            for name, size in files
+        ]
+    )
+
+
+def _requirement(*expected):
+    from hub.utils.download_manifest import ExpectedFile
+    from hub.utils.gguf_plan import GgufVariantPlan
+
+    expected_files = tuple(
+        ExpectedFile(path = path, size = size, sha256 = sha) for path, size, sha in expected
+    )
+    return GgufVariantPlan(
+        main_filenames = frozenset(e.path for e in expected_files),
+        target_filenames = tuple(e.path for e in expected_files),
+        main_hashes = frozenset(e.sha256 for e in expected_files if e.sha256),
+        required_hashes = frozenset(e.sha256 for e in expected_files if e.sha256),
+        companion_hashes = frozenset(),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected_files,
+        main_size_bytes = sum(e.size for e in expected_files),
+        download_size_bytes = sum(e.size for e in expected_files),
+    )
+
+
+def test_repo_gguf_blob_map_uses_size_identity_when_cache_has_no_blob():
+    """A snapshot-resident GGUF (no blobs/ entry) must NOT be recorded under its
+    filename as if that were a hash -- it gets a size identity instead."""
+    repo_info = SimpleNamespace(
+        repo_path = "/hf/models--org--repo",
+        revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 4096))],
+    )
+
+    assert CI._repo_gguf_blob_map(repo_info) == {
+        "model-Q4_K_M.gguf": {CI.local_size_identity(4096)}
+    }
+
+
+def test_repo_gguf_blob_map_skips_snapshot_file_with_unknown_size():
+    """No blob and no readable size means no identity at all, rather than a
+    filename masquerading as a hash."""
+    repo_info = SimpleNamespace(
+        repo_path = "/hf/models--org--repo",
+        revisions = [_rev_no_symlink(("model-Q4_K_M.gguf", 0))],
+    )
+
+    assert CI._repo_gguf_blob_map(repo_info) == {}
+
+
+def test_repo_gguf_blob_map_ignores_repo_blobs_subdir_on_no_symlink():
+    """A repo that ships a GGUF under its own blobs/ subdir lands at
+    snapshots/<rev>/blobs/model.gguf on a no-symlink cache. Its parent is named
+    'blobs' but it is NOT the cache blob store, so it gets a size identity rather
+    than having its filename recorded as a hash (which would show a phantom update)."""
+    repo_path = "/hf/models--org--repo"
+    repo_info = SimpleNamespace(
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        blob_path = f"{repo_path}/snapshots/{'a' * 40}/blobs/model-Q4_K_M.gguf",
+                        size_on_disk = 4096,
+                    )
+                ]
+            )
+        ],
+    )
+
+    assert CI._repo_gguf_blob_map(repo_info) == {
+        "model-Q4_K_M.gguf": {CI.local_size_identity(4096)}
+    }
+
+
+def test_no_symlink_cache_matching_remote_size_reports_no_update():
+    """The #7060 repro: a GGUF stored directly in snapshots/ whose size matches the
+    remote is CURRENT, and must not show a phantom 'update available'."""
+    local_blobs = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "REMOTEsha256"))
+
+    assert (
+        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
+    )
+
+
+def test_no_symlink_cache_with_different_remote_size_still_reports_update():
+    """A genuine upstream change is still detected in the no-symlink layout."""
+    local_blobs = {"model-Q4_K_M.gguf": {CI.local_size_identity(4096)}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 8192, "REMOTEsha256"))
+
+    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
+
+
+def test_symlinked_cache_with_stale_blob_still_reports_update():
+    """The blob-hash path is untouched: a real blob that does not match the remote
+    sha256 is still stale, and a size-identity fallback must not rescue it."""
+    local_blobs = {"model-Q4_K_M.gguf": {"OLDsha"}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
+
+    assert GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is True
+
+
+def test_symlinked_cache_with_current_blob_reports_no_update():
+    """The blob-hash path is untouched: a matching blob is current."""
+    local_blobs = {"model-Q4_K_M.gguf": {"OLDsha", "NEWsha"}}
+    requirement = _requirement(("model-Q4_K_M.gguf", 4096, "NEWsha"))
+
+    assert (
+        GV._variant_update_available_from_requirement(local_blobs, requirement, "Q4_K_M") is False
+    )
 
 
 def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp_path):
@@ -481,3 +597,42 @@ def test_reclaim_replaced_gguf_variant_prunes_old_revision_only(monkeypatch, tmp
     assert sibling_snap.exists() is True
     assert sibling_blob.exists() is True
     assert invalidated == [True]
+
+
+def test_reclaim_replaced_gguf_variant_keeps_no_symlink_current_file(monkeypatch, tmp_path):
+    """No-symlink cache (Windows without Developer Mode): the moved GGUF lives
+    directly in snapshots/ and blobs/ is empty, so scan_cache_dir reports
+    blob_path == the snapshot file and its name is the FILENAME, not an etag.
+    Reclaim must NOT mistake that filename for a stale hash and delete the
+    freshly-downloaded current file."""
+    repo_id = "org/repo-GGUF"
+    repo_path = tmp_path / "models--org--repo-GGUF"
+    snap = repo_path / "snapshots" / ("a" * 40) / "model-Q4_K_M.gguf"
+    snap.parent.mkdir(parents = True, exist_ok = True)
+    snap.write_bytes(b"current-download")
+    (repo_path / "blobs").mkdir(parents = True, exist_ok = True)  # empty: moved, not linked
+
+    repo_info = SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    SimpleNamespace(
+                        file_name = "model-Q4_K_M.gguf",
+                        file_path = str(snap),
+                        blob_path = str(snap),  # no-symlink: blob_path == the snapshot file
+                    )
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(CI, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo_info])])
+    monkeypatch.setattr(CI, "invalidate_hf_cache_scans", lambda: None)
+
+    result = D.reclaim_replaced_gguf_variant(repo_id, "Q4_K_M", frozenset({"REMOTEsha256"}))
+
+    assert snap.exists() is True  # the current file must survive
+    assert result["removed_snapshots"] == 0
+    assert result["deleted_blobs"] == 0

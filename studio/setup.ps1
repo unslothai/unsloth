@@ -203,6 +203,31 @@ function New-UnslothTemporaryFile {
     return Get-Item -LiteralPath $tempPath
 }
 
+function Remove-AgentInstructionFiles {
+    param([string[]]$Roots)
+
+    foreach ($root in $Roots) {
+        if (-not $root) { continue }
+        $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+        if (-not $item -or -not $item.PSIsContainer) { continue }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        $pending = New-Object System.Collections.Stack
+        $pending.Push($item)
+        while ($pending.Count -gt 0) {
+            $current = $pending.Pop()
+            foreach ($child in @(Get-ChildItem -LiteralPath $current.FullName -Force -ErrorAction SilentlyContinue)) {
+                if ($child.PSIsContainer) {
+                    if (-not ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                        $pending.Push($child)
+                    }
+                } elseif ($child.Name -in @("AGENTS.md", "CLAUDE.md")) {
+                    Remove-Item -LiteralPath $child.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
 function Get-InstalledLlamaPrebuiltRelease {
     param([string]$InstallDir)
 
@@ -2314,6 +2339,11 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
+Remove-AgentInstructionFiles -Roots @(
+    (Join-Path $FrontendDir "node_modules"),
+    (Join-Path $OxcValidatorDir "node_modules")
+)
+
 # ==========================================================================
 #  PHASE 3: Python environment + dependencies
 # ==========================================================================
@@ -2621,7 +2651,18 @@ function Fast-Install {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     if ($UseUv) {
         $VenvPy = (Get-Command python).Source
-        $result = & uv pip install --python $VenvPy @Args_ 2>&1
+        # An explicit --index-url must win. Inherited uv index env vars otherwise
+        # override it and pull CPU torch over the CUDA/ROCm build (#6898), so drop
+        # them only for index-pinned installs; mirrors still apply elsewhere.
+        $saved = @{}
+        if (@($Args_) -contains '--index-url') {
+            foreach ($n in 'UV_DEFAULT_INDEX', 'UV_INDEX_URL', 'UV_INDEX', 'UV_EXTRA_INDEX_URL') {
+                $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+                Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+            }
+        }
+        try { $result = & uv pip install --python $VenvPy @Args_ 2>&1 }
+        finally { foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } } }
         if ($LASTEXITCODE -eq 0) { return }
     }
     & python -m pip install @Args_ 2>&1
@@ -2645,6 +2686,28 @@ if ($env:SKIP_STUDIO_BASE -ne "1" -and $env:STUDIO_LOCAL_INSTALL -ne "1") {
     if ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
+        # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
+        # $_PkgName itself is current; the fast path above would otherwise
+        # never reach install_python_stack's anyio repair (#6797).
+        $_anyioBad = $false
+        try {
+            & python -c "
+import re, sys
+from importlib.metadata import version, PackageNotFoundError
+try:
+    parts = version('anyio').split('.')
+    major = int(parts[0])
+    minor = int(re.sub(r'[^0-9].*', '', parts[1])) if len(parts) > 1 else 0
+except (PackageNotFoundError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if (major, minor) >= (4, 14) else 1)
+" 2>$null
+            if ($LASTEXITCODE -eq 0) { $_anyioBad = $true }
+        } catch {}
+        if ($_anyioBad) {
+            substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
         # date" path would leave the user on CPU torch with Train/Export disabled.
@@ -3066,12 +3129,11 @@ $LlamaCppDir = Join-Path $UnslothHome "llama.cpp"
 $NeedLlamaSourceBuild = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
-# GPU Windows (CUDA / ROCm) installs the fork's app-* prebuilts; CPU-only stays
-# on ggml-org (the fork ships no windows-cpu bundle). Mirrors setup.sh's routing.
-# A resolved gfx arch counts as a GPU host even when $HasROCm is false (Adrenalin
-# driver only, no HIP runtime): the fork's per-gfx bundle ships its own runtime,
-# so route there instead of ggml-org / a CPU build.
-$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
+# Every host installs the fork's app-* prebuilts now: GPU Windows (CUDA / ROCm)
+# already did, and the fork now also ships the CPU bundles for Windows x64 and
+# arm64 (windows-cpu / windows-arm64). ggml-org artifacts are no longer used by
+# default. Mirrors setup.sh's routing.
+$HelperReleaseRepo = "unslothai/llama.cpp"
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
@@ -3158,7 +3220,87 @@ if ($LlamaPr) {
     $SkipPrebuiltInstall = $true
 }
 
-if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+$LocalLlamaCppLinked = $false
+$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
+if ($LocalLlamaCppSrc) {
+    if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
+        exit 1
+    }
+    $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
+    # Reusing a local dir disables both the prebuilt download and the source
+    # build, so a runnable llama-server.exe must already be present. Accept any
+    # layout LlamaCppBackend._layout_candidates() resolves (root-level, build\bin,
+    # or build\bin\Release) so the flag never rejects a tree Studio could run.
+    $LocalLlamaServerFound = $false
+    foreach ($_cand in @(
+            (Join-Path $ResolvedLocal "llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\llama-server.exe"),
+            (Join-Path $ResolvedLocal "build\bin\Release\llama-server.exe"))) {
+        if (Test-Path -LiteralPath $_cand) { $LocalLlamaServerFound = $true; break }
+    }
+    if ($ResolvedLocal -eq $LlamaCppDir) {
+        # Points at the canonical install location itself: never delete-then-link
+        # onto itself. Reuse an existing build here (skip prebuilt + source) so the
+        # staged prebuilt installer can't replace a build the user asked to reuse;
+        # if nothing is built yet, fall through to the normal install.
+        if ($LocalLlamaServerFound) {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR is the canonical install location and already holds a build; reusing it" "Yellow"
+            $LocalLlamaCppLinked = $true
+            $NeedLlamaSourceBuild = $false
+        } else {
+            substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location with nothing built there yet; running the normal install" "Yellow"
+        }
+    } else {
+        # Fail clearly rather than junction an unbuilt or wrong-platform checkout
+        # and leave Studio with no usable binary.
+        if (-not $LocalLlamaServerFound) {
+            step "llama.cpp" "no llama-server.exe under $ResolvedLocal (looked for .\llama-server.exe, .\build\bin and .\build\bin\Release) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "Red"
+            exit 1
+        }
+        # If the target is already a junction/symlink (e.g. a previous
+        # --with-llama-cpp-dir run), delete only the link via DirectoryInfo.Delete().
+        # Remove-Item -Recurse -Force on a reparse point can traverse the link and
+        # wipe the user's real llama.cpp directory on PowerShell 5.1. Dropping the
+        # stale link here also keeps the custom-home ownership check below idempotent.
+        # Use Get-Item -Force (not Test-Path): a *broken* junction whose target was
+        # moved/deleted makes Test-Path return false, which would leave the dangling
+        # link in place and make mklink below fail; Get-Item still resolves it so we
+        # can remove it and relink to a new valid directory.
+        $existing = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+        if ($existing -and ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+            $existing.Delete()
+        }
+        if ($StudioHomeIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        }
+        if (Test-Path -LiteralPath $LlamaCppDir) {
+            Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+            # A locked/in-use tree can silently survive removal (SilentlyContinue
+            # masks it). Don't then junction/copy over a half-present dir; mirror the
+            # prebuilt path's active-process handling and stop with a clear message.
+            if (Test-Path -LiteralPath $LlamaCppDir) {
+                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+                substep "Close Studio or other llama.cpp users and retry" "Yellow"
+                exit 3
+            }
+        }
+        cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            substep "Could not create directory junction; copying instead..." "Yellow"
+            Copy-Item -Recurse -LiteralPath $ResolvedLocal -Destination $LlamaCppDir
+            Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
+        }
+        Write-Host ""
+        step "llama.cpp" "linked local directory: $ResolvedLocal"
+        $LocalLlamaCppLinked = $true
+        $NeedLlamaSourceBuild = $false
+    }
+}
+
+if ($LocalLlamaCppLinked) {
+    # local directory linked above; skip prebuilt install
+} elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
@@ -3182,11 +3324,13 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
                 # treat a valid ROCm install as mismatched. A name-inferred gfx
                 # arch (Adrenalin-only, no confirmed runtime) still counts as
                 # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
-                # mirroring the --rocm-gfx forward below. NOTE: this block is
-                # currently inert -- write_prebuilt_metadata does not persist an
-                # install_kind key, so $existingKind is always null. If that changes,
-                # add the remaining host kinds (e.g. windows-arm64) before relying on it.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu") }
+                # mirroring the --rocm-gfx forward below. The CPU branch covers both
+                # the x64 windows-cpu and arm64 windows-arm64 bundles (Windows arm64
+                # has no GPU prebuilt). NOTE: this block is currently inert --
+                # write_prebuilt_metadata does not persist an install_kind key, so
+                # $existingKind is always null; keep $expectedKinds in sync with the
+                # kinds install_llama_prebuilt.py installs before relying on it.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
@@ -3368,7 +3512,8 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
 
 # Install build tools now (last resort) rather than eagerly in Phase 1, so the
 # prebuilt path stays fast. Same condition as the if/elseif chain below: a source
-# build runs only when needed and no usable binary is already present.
+# build runs only when needed and no usable binary is already present. A linked
+# local dir sets $NeedLlamaSourceBuild = $false, so this no-ops for that path.
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
     -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
 if ($WillBuildLlamaFromSource) {
@@ -3377,7 +3522,13 @@ if ($WillBuildLlamaFromSource) {
     $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 }
 
-if (-not $NeedLlamaSourceBuild) {
+if ($LocalLlamaCppLinked) {
+    # Local dir linked above -- honor the flag's contract: skip BOTH the prebuilt
+    # download and the source build. Falling through here would run CMake inside
+    # the user's checkout (via the junction) when it lacks build\bin\Release\llama-server.exe.
+    Write-Host ""
+    step "llama.cpp" "linked (skipping build)"
+} elseif (-not $NeedLlamaSourceBuild) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
 } elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
@@ -3904,6 +4055,16 @@ if (-not $NeedLlamaSourceBuild) {
     }
 }
 
+$llamaCppItem = Get-Item -LiteralPath $LlamaCppDir -Force -ErrorAction SilentlyContinue
+$llamaCppIsLink = $llamaCppItem -and ($llamaCppItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+if (-not $llamaCppIsLink -and (
+        -not $StudioHomeIsCustom -or
+        (Test-Path -LiteralPath (Join-Path $LlamaCppDir $StudioOwnedMarker) -PathType Leaf) -or
+        (Test-StudioOwnedAdoptable $LlamaCppDir)
+    )) {
+    Remove-AgentInstructionFiles -Roots @($LlamaCppDir)
+}
+
 # ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
@@ -3925,7 +4086,9 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     }
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
-step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
+step "launch" "unsloth studio -p 8888"
+substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
 Write-Host ""
 
 # Match studio/setup.sh: exit non-zero for degraded llama.cpp when called

@@ -1473,12 +1473,14 @@ class TestHardwareAmdBranching:
         assert "from . import amd" in source
 
     def test_hardware_branches_on_is_rocm_for_utilization(self):
-        """get_gpu_utilization dispatches to amd.py via _smi_query when IS_ROCM."""
+        """get_gpu_utilization dispatches visible metrics through amd.py on ROCm."""
         hw_path = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert '_smi_query("get_primary_gpu_utilization"' in func_body
+        assert "_smi_query(" in func_body
+        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_reconcile_rocm_unified_memory" in func_body
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -2294,6 +2296,70 @@ class TestRocmTorchInstalledEnvVar:
         mock_bnb.assert_not_called()
 
 
+class TestWindowsRocmTorchaoGuard:
+    """Verify the torchao skip can detect an installed Windows ROCm torch build."""
+
+    def test_installed_torch_is_windows_rocm_accepts_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = "yes"
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is True
+
+    def test_installed_torch_is_windows_rocm_rejects_non_rocm_probe(self):
+        rv = MagicMock()
+        rv.returncode = 0
+        rv.stdout = ""
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod.subprocess, "run", return_value = rv),
+        ):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    def test_installed_torch_is_windows_rocm_is_non_windows_noop(self):
+        with patch.object(stack_mod, "IS_WINDOWS", False):
+            assert stack_mod._installed_torch_is_windows_rocm() is False
+
+    @patch.object(stack_mod, "_repair_bad_anyio")
+    @patch.object(stack_mod, "_ensure_rocm_torch")
+    @patch.object(stack_mod, "_ensure_cuda_torch")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True)
+    @patch.object(stack_mod, "run")
+    @patch.object(stack_mod, "pip_install")
+    def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
+        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+    ):
+        unstructured_plugin = tmp_path / "unstructured"
+        github_plugin = tmp_path / "github"
+        unstructured_plugin.mkdir()
+        github_plugin.mkdir()
+
+        subprocess_result = MagicMock()
+        subprocess_result.returncode = 0
+        subprocess_result.stdout = ""
+
+        with (
+            patch.dict(os.environ, {"SKIP_STUDIO_BASE": "1"}),
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "IS_MAC_ARM", False),
+            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "_rocm_windows_torch_installed", False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = True),
+            patch.object(stack_mod, "LOCAL_DD_UNSTRUCTURED_PLUGIN", unstructured_plugin),
+            patch.object(stack_mod, "LOCAL_DD_GITHUB_PLUGIN", github_plugin),
+            patch.object(stack_mod.subprocess, "run", return_value = subprocess_result),
+        ):
+            assert stack_mod.install_python_stack() == 0
+
+        installed_specs = [str(arg) for call in mock_pip.call_args_list for arg in call.args]
+        assert not any("torchao" in arg for arg in installed_specs)
+
+
 # TEST: worker.py -- Windows ROCm patches (source-level checks)
 
 
@@ -3098,21 +3164,25 @@ class TestRocmGfxForwarding:
         assert "--rocm-gfx" in source
         assert "$script:ROCmGfxArch" in source
 
-    def test_setup_sh_routes_inferred_gfx_to_fork(self):
-        # An inferred gfx arch must route to the fork even without ROCm tooling.
-        # Pin the specific guard (a bare "${_setup_gfx:-}" also appears elsewhere).
+    def test_setup_sh_routes_unconditionally_to_fork(self):
+        # CPU-only hosts no longer fall back to ggml-org -- the release-repo
+        # decision is an unconditional fork assignment now. Pin the line text.
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        assert '[ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]' in source
+        assert '_HELPER_RELEASE_REPO="unslothai/llama.cpp"' in source
+        assert '_HELPER_RELEASE_REPO="ggml-org/llama.cpp"' not in source
 
-    def test_setup_ps1_routes_inferred_gfx_to_fork(self):
-        # On Windows, a resolved $script:ROCmGfxArch counts as a fork install
-        # even when $HasROCm is false (Adrenalin-only, no HIP runtime).
+    def test_setup_ps1_routes_unconditionally_to_fork(self):
+        # Same on Windows: the fork now ships the windows-cpu / windows-arm64
+        # bundles, so $HelperReleaseRepo is an unconditional fork assignment.
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
-        assert "$HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch" in source
+        assert '$HelperReleaseRepo = "unslothai/llama.cpp"' in source
+        assert "$HelperReleaseRepo = if (" not in source
 
-    # The assertions above pin the guard *text*; the tests below *execute* the
-    # real routing block and assert the resolved repo, so a refactor that keeps
-    # the literal but breaks the inferred-gfx -> fork decision is still caught.
+    # The text pins above guard the literal. The tests below *execute* the real
+    # routing line from setup.sh / setup.ps1 and assert the resolved release repo,
+    # so a refactor that reintroduces a conditional (or a ggml-org branch) is still
+    # caught. Inputs are varied -- CPU-only, inferred/forwarded gfx, usable NVIDIA --
+    # to prove no host slips back onto ggml-org. No GPU, no tooling, no network.
 
     @staticmethod
     def _resolve_setup_sh_repo(
@@ -3121,15 +3191,18 @@ class TestRocmGfxForwarding:
         setup_gfx,
         rocm_gfx_arch_env = "",
     ):
-        """Run setup.sh's routing block under bash with PATH emptied (no ROCm tooling) and return _HELPER_RELEASE_REPO."""
+        """Run setup.sh's release-repo routing block under bash and return the
+        resolved _HELPER_RELEASE_REPO. PATH is emptied so any stray tooling probe
+        misses; routing is unconditional, so the GPU inputs only prove no branch
+        reroutes a host to ggml-org."""
         import shutil
 
         bash = shutil.which("bash")
         if bash is None:
             pytest.skip("bash not available")
         source = _SETUP_SH_PATH.read_text(encoding = "utf-8")
-        start = source.index("\n_LINUX_HAS_GPU=false\n") + 1
-        end = source.index("\nunset _GPU_TOOL", start) + len("\nunset _GPU_TOOL")
+        start = source.index('\n_HELPER_RELEASE_REPO="unslothai/llama.cpp"\n') + 1
+        end = source.index("\n_LLAMA_PR=", start)
         block = source[start:end]
         assert "_HELPER_RELEASE_REPO" in block, "setup.sh routing anchors not found"
         env = {
@@ -3151,25 +3224,31 @@ class TestRocmGfxForwarding:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def test_setup_sh_inferred_gfx_resolves_to_fork(self):
-        # Only a name-inferred gfx arch -> route to the fork's per-gfx prebuilt
-        # (not ggml-org). x64 and arm64 share the fork branch.
-        assert self._resolve_setup_sh_repo("x86_64", False, "gfx1100") == "unslothai/llama.cpp"
-        assert self._resolve_setup_sh_repo("aarch64", False, "gfx1100") == "unslothai/llama.cpp"
-
-    def test_setup_sh_env_forwarded_gfx_resolves_to_fork(self):
-        # No probe fired but UNSLOTH_ROCM_GFX_ARCH is set: adopt the env arch
-        # and route to the fork, same as name-inference.
-        repo = self._resolve_setup_sh_repo("x86_64", False, "", rocm_gfx_arch_env = "gfx1100")
-        assert repo == "unslothai/llama.cpp"
-
-    def test_setup_sh_cpu_host_still_resolves_to_ggml(self):
-        # A real CPU host (no GPU, no inferred gfx, no env override) must keep routing to ggml-org.
-        assert self._resolve_setup_sh_repo("x86_64", False, "") == "ggml-org/llama.cpp"
+    @pytest.mark.parametrize(
+        "machine, nvidia_usable, setup_gfx, env_gfx",
+        [
+            ("x86_64", False, "", ""),  # plain CPU host (used to take ggml-org)
+            ("aarch64", False, "", ""),  # plain CPU arm64 host (used to take ggml-org)
+            ("x86_64", False, "gfx1100", ""),  # name-inferred gfx
+            ("x86_64", False, "", "gfx1100"),  # env-forwarded gfx
+            ("x86_64", True, "", ""),  # usable NVIDIA
+        ],
+    )
+    def test_setup_sh_routing_block_always_resolves_to_fork(
+        self, machine, nvidia_usable, setup_gfx, env_gfx
+    ):
+        assert (
+            self._resolve_setup_sh_repo(
+                machine, nvidia_usable, setup_gfx, rocm_gfx_arch_env = env_gfx
+            )
+            == "unslothai/llama.cpp"
+        )
 
     @staticmethod
-    def _resolve_setup_ps1_repo(has_nvidia, has_rocm, gfx_arch):
-        """Run setup.ps1's $HelperReleaseRepo selection under pwsh and return the resolved repo."""
+    def _resolve_setup_ps1_repo():
+        """Run setup.ps1's $HelperReleaseRepo assignment under pwsh and return the
+        resolved repo. The assignment is unconditional now, so there are no host
+        inputs to vary."""
         import shutil
 
         pwsh = shutil.which("pwsh")
@@ -3177,21 +3256,11 @@ class TestRocmGfxForwarding:
             pytest.skip("pwsh not available")
         source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
         line = next(
-            (
-                ln
-                for ln in source.splitlines()
-                if ln.strip().startswith("$HelperReleaseRepo = if (")
-            ),
+            (ln for ln in source.splitlines() if ln.strip().startswith("$HelperReleaseRepo =")),
             None,
         )
         assert line is not None, "$HelperReleaseRepo selection not found in setup.ps1"
-        harness = (
-            f"$HasNvidiaSmi = ${'true' if has_nvidia else 'false'}\n"
-            f"$HasROCm = ${'true' if has_rocm else 'false'}\n"
-            f"$script:ROCmGfxArch = '{gfx_arch}'\n"
-            f"{line}\n"
-            "Write-Output $HelperReleaseRepo"
-        )
+        harness = f"{line}\nWrite-Output $HelperReleaseRepo"
         result = subprocess.run(
             [pwsh, "-NoProfile", "-Command", harness],
             capture_output = True,
@@ -3201,13 +3270,10 @@ class TestRocmGfxForwarding:
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
-    def test_setup_ps1_inferred_gfx_resolves_to_fork(self):
-        # Adrenalin-only host: $HasROCm false but gfx inferred -> fork's windows-rocm bundle.
-        assert self._resolve_setup_ps1_repo(False, False, "gfx1100") == "unslothai/llama.cpp"
-
-    def test_setup_ps1_cpu_host_still_resolves_to_ggml(self):
-        # No NVIDIA, no ROCm, no inferred gfx -> CPU host stays on ggml-org.
-        assert self._resolve_setup_ps1_repo(False, False, "") == "ggml-org/llama.cpp"
+    def test_setup_ps1_routing_resolves_to_fork(self):
+        # Windows routing is unconditional now: CPU-only Windows (x64 and arm64)
+        # uses the fork's windows-cpu / windows-arm64 bundles, not ggml-org.
+        assert self._resolve_setup_ps1_repo() == "unslothai/llama.cpp"
 
 
 # TEST: _pick_rocm_gfx_target -- visible-device selection from rocminfo output.
@@ -3360,8 +3426,9 @@ class TestInstallShDropinPersistence:
     def test_gate5_early_return_persists_dropin(self):
         """The rocminfo-already-works early return must call the persist helper before returning."""
         source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
-        # The persist call must precede `return 0` at the rocminfo gfx1151 gate.
-        gate = source.find("Name:[[:space:]]*gfx1151")
+        # The persist call must precede `return 0` at the rocminfo GPU-agent gate
+        # (uniquely identified by the `!/generic/` clause the other probes lack).
+        gate = source.find("Name:[[:space:]]*gfx[1-9]/ && !/generic/")
         assert gate != -1
         window = source[gate : gate + 900]
         assert "_persist_rocm_wsl_dropin" in window
@@ -3373,6 +3440,49 @@ class TestInstallShDropinPersistence:
         body = source[body_start : body_start + 1200]
         assert "librocdxg.so" in body
         assert "profile.d/unsloth-rocm-wsl.sh" in body
+
+
+_STRIXHALO_WSL_PATH = PACKAGE_ROOT / "scripts" / "install_rocm_wsl_strixhalo.sh"
+
+
+class TestWslRerouteNvidiaGuard:
+    """_maybe_reroute_strixhalo_to_2404 must skip the AMD reroute on hybrid AMD+NVIDIA hosts by
+    reusing _has_usable_nvidia_gpu (CUDA_VISIBLE_DEVICES-aware + /proc/driver/nvidia fallback),
+    which must be defined before the reroute's call site so it is actually available."""
+
+    def test_reroute_calls_nvidia_helper_before_amd_signal(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        start = source.find("_maybe_reroute_strixhalo_to_2404()")
+        assert start != -1
+        body = source[start : start + 1200]
+        nv = body.find("_has_usable_nvidia_gpu")
+        wmi = body.find("_wsl_amd_gpu_name")
+        assert nv != -1, "reroute must consult _has_usable_nvidia_gpu before deciding to reroute"
+        assert wmi != -1
+        # The NVIDIA guard must precede the AMD/WMI signal and return early.
+        assert nv < wmi
+        assert body.find("return 0", nv) < wmi
+
+    def test_nvidia_helper_and_deps_defined_before_reroute_callsite(self):
+        source = _INSTALL_SH_PATH.read_text(encoding = "utf-8")
+        call = source.find("\n_maybe_reroute_strixhalo_to_2404 || true")
+        assert call != -1
+        for fn in ("_run_bounded() {", "_cvd_hides_nvidia() {", "_has_usable_nvidia_gpu() {"):
+            idx = source.find(fn)
+            assert idx != -1 and idx < call, f"{fn} must be defined before the reroute call"
+
+
+class TestStrixhaloGfxOverridePipefail:
+    """The UNSLOTH_WSL_GFX override check must use a consuming grep, not grep -q: under
+    `set -o pipefail` an early -q exit SIGPIPEs printf and misreports the arch on large output."""
+
+    def test_gfx_override_uses_consuming_grep(self):
+        source = _STRIXHALO_WSL_PATH.read_text(encoding = "utf-8")
+        idx = source.find('grep -E "Name:[[:space:]]*${GFX}')
+        assert idx != -1, "GFX override must use a consuming grep -E (not grep -q)"
+        line = source[idx : source.find("\n", idx)]
+        assert ">/dev/null" in line
+        assert 'grep -qE "Name:[[:space:]]*${GFX}' not in source
 
 
 class TestLlamaCppRuntimeWslOrdering:
