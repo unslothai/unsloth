@@ -119,6 +119,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # transformer 37.8 bf16; Gemma3-27B TE ~50.4; VAE 2.4 + connectors 2.9 + audio 0.2.
         bf16_components_gb = (37.8, 50.4, 5.5),
         gguf_repo = "unsloth/LTX-2.3-GGUF",
+        # Pre-cast Gemma3-12B TE (hub store is fp32 ~49 GB, pre-cast ~13.2 GB): the biggest
+        # download win of the hosted TE set.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream video DiT (UMT5
     # text encoder). No audio, no second expert (boundary_ratio null, transformer_2 null), so
