@@ -1,7 +1,16 @@
 from pathlib import Path
 
 
-STORE = Path(__file__).resolve().parents[2] / "studio" / "frontend" / "src" / "features" / "training" / "stores" / "training-config-store.ts"
+STORE = (
+    Path(__file__).resolve().parents[2]
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "training"
+    / "stores"
+    / "training-config-store.ts"
+)
 
 
 def test_apply_config_patch_marks_completion_intent_manual():
