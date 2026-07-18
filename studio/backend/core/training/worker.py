@@ -2312,8 +2312,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         else:
             _spark_smi = False
             if _plat.machine().lower() in ("aarch64", "arm64"):
+                import shutil as _shutil
+
+                # The WoA shim execs the venv binary directly (no login shell),
+                # where /usr/lib/wsl/lib can be off PATH -- resolve explicitly.
+                _smi_bin = "nvidia-smi"
+                if _shutil.which(_smi_bin) is None and os.path.exists("/usr/lib/wsl/lib/nvidia-smi"):
+                    _smi_bin = "/usr/lib/wsl/lib/nvidia-smi"
                 _smi = _sp.run(
-                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    [_smi_bin, "--query-gpu=name", "--format=csv,noheader"],
                     capture_output = True,
                     text = True,
                     timeout = 5,

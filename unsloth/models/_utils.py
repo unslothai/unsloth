@@ -1725,9 +1725,15 @@ def _is_dgx_spark_no_cuda_init():
         if platform.machine().lower() not in ("aarch64", "arm64"):
             return False
         import subprocess
+        import shutil
 
+        # The WoA shim execs the venv binary directly (no login shell), where
+        # /usr/lib/wsl/lib can be off PATH -- resolve WSL's nvidia-smi explicitly.
+        _smi = "nvidia-smi"
+        if shutil.which(_smi) is None and os.path.exists("/usr/lib/wsl/lib/nvidia-smi"):
+            _smi = "/usr/lib/wsl/lib/nvidia-smi"
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            [_smi, "--query-gpu=name", "--format=csv,noheader"],
             capture_output = True,
             text = True,
             timeout = 5,

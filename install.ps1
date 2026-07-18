@@ -2170,26 +2170,26 @@ exit 0
             $global:LASTEXITCODE = -1
             try { & wsl.exe --set-default-version 2 *> $null } catch {}
             try { & wsl.exe --install -d $distro --no-launch } catch {}
-        } else {
-            # A PRE-EXISTING distro may be WSL1 (no GPU passthrough; would fail only at the final
-            # torch.cuda check). Detect from inside (encoding-proof, unlike UTF-16 `wsl -l -v`) and
-            # convert in place -- `wsl --set-version` preserves files.
-            $_wsl2Probe = 'grep -qiE ''microsoft-standard|WSL2'' /proc/version 2>/dev/null || test -e /usr/lib/wsl/lib/libcuda.so'
-            $_isWsl2 = $false
+        }
+        # Verify WSL2 for pre-existing AND freshly installed distros: set-default-version
+        # can fail silently (old WSL builds), leaving a fresh WSL1 distro that would only
+        # fail at the final torch.cuda check. Detect from inside (encoding-proof, unlike
+        # UTF-16 `wsl -l -v`) and convert in place -- `wsl --set-version` preserves files.
+        $_wsl2Probe = 'grep -qiE ''microsoft-standard|WSL2'' /proc/version 2>/dev/null || test -e /usr/lib/wsl/lib/libcuda.so'
+        $_isWsl2 = $false
+        $global:LASTEXITCODE = -1
+        try { & wsl.exe -d $distro -u root -- bash -c $_wsl2Probe *> $null; $_isWsl2 = ($LASTEXITCODE -eq 0) } catch {}
+        if (-not $_isWsl2) {
+            substep "distro '$distro' looks like WSL1 (no GPU passthrough) -- converting to WSL2 (one-time; can take a few minutes)..." "Yellow"
+            $global:LASTEXITCODE = -1
+            try { & wsl.exe --set-version $distro 2 } catch {}
             $global:LASTEXITCODE = -1
             try { & wsl.exe -d $distro -u root -- bash -c $_wsl2Probe *> $null; $_isWsl2 = ($LASTEXITCODE -eq 0) } catch {}
             if (-not $_isWsl2) {
-                substep "distro '$distro' looks like WSL1 (no GPU passthrough) -- converting to WSL2 (one-time; can take a few minutes)..." "Yellow"
-                $global:LASTEXITCODE = -1
-                try { & wsl.exe --set-version $distro 2 } catch {}
-                $global:LASTEXITCODE = -1
-                try { & wsl.exe -d $distro -u root -- bash -c $_wsl2Probe *> $null; $_isWsl2 = ($LASTEXITCODE -eq 0) } catch {}
-                if (-not $_isWsl2) {
-                    Restore-StudioVenvRollback
-                    return (Exit-InstallFailure "WSL distro '$distro' is WSL1 and automatic conversion failed; NVIDIA GPU passthrough needs WSL2. Convert it, then re-run the installer:  wsl --set-version `"$distro`" 2" 1)
-                }
-                substep "'$distro' converted to WSL2." "Green"
+                Restore-StudioVenvRollback
+                return (Exit-InstallFailure "WSL distro '$distro' is WSL1 and automatic conversion failed; NVIDIA GPU passthrough needs WSL2. Convert it, then re-run the installer:  wsl --set-version `"$distro`" 2" 1)
             }
+            substep "'$distro' converted to WSL2." "Green"
         }
         substep "installing Unsloth Studio inside WSL '$distro' with full GPU (this downloads PyTorch)..." "Cyan"
         # Non-main ref: fetch + export THAT ref so the WSL venv gets the branch's setup.sh + patches
@@ -2219,6 +2219,13 @@ exit 0
         # so the value can't break out of the bash -lc string.
         if ($env:UNSLOTH_PYTORCH_MIRROR -and ($env:UNSLOTH_PYTORCH_MIRROR -match '^https?://[A-Za-z0-9._~:/?#@%+=&-]+$')) {
             $_fwdEnv += "export UNSLOTH_PYTORCH_MIRROR='$($env:UNSLOTH_PYTORCH_MIRROR)'; "
+        }
+        # Forward an explicit UNSLOTH_PYTHON pin: Windows env vars do not cross into
+        # WSL, so without this the inner install.sh silently built the venv on its
+        # default Python while the installer reported success. Strict version shape
+        # so the splice into bash -lc cannot break out; the default stays install.sh's.
+        if ($env:UNSLOTH_PYTHON -and ($env:UNSLOTH_PYTHON -match '^\d+\.\d+(\.\d+)?$')) {
+            $_fwdEnv += "export UNSLOTH_PYTHON='$($env:UNSLOTH_PYTHON)'; "
         }
         # install.ps1 owns the WoA shortcut (one canonical "Unsloth Studio.lnk" with a
         # %USERPROFILE%\.unsloth icon that renders on WoA). Tell install.sh to skip its own
