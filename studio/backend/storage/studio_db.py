@@ -1540,6 +1540,10 @@ class ChatMessageConflictError(RuntimeError):
     """Raised when a chat message id already belongs to another thread."""
 
 
+class ChatMessageProtectedError(RuntimeError):
+    """Raised when pruning would remove a message owned by a durable feature."""
+
+
 class CorruptSettingsError(RuntimeError):
     """Raised when a partial settings patch would overwrite corrupt settings."""
 
@@ -1744,9 +1748,24 @@ def sync_chat_messages(
                     "SELECT id FROM chat_messages WHERE thread_id = ?", (thread_id,)
                 ).fetchall()
             }
+            removed_ids = existing_ids - survivor_ids
+            research_message_ids = {
+                str(message_id)
+                for row in conn.execute(
+                    """SELECT user_message_id, assistant_message_id
+                       FROM research_runs WHERE thread_id = ?""",
+                    (thread_id,),
+                ).fetchall()
+                for message_id in row
+                if message_id is not None
+            }
+            if removed_ids & research_message_ids:
+                raise ChatMessageProtectedError(
+                    "Research prompts and responses cannot be deleted from their original thread"
+                )
             conn.executemany(
                 "DELETE FROM chat_messages WHERE thread_id = ? AND id = ?",
-                [(thread_id, message_id) for message_id in existing_ids - survivor_ids],
+                [(thread_id, message_id) for message_id in removed_ids],
             )
             _recompute_chat_thread_updated_at(conn, thread_id)
         elif messages:
@@ -1755,7 +1774,7 @@ def sync_chat_messages(
             )
         conn.commit()
         return list_chat_messages(thread_id)
-    except ChatMessageConflictError:
+    except (ChatMessageConflictError, ChatMessageProtectedError):
         conn.rollback()
         raise
     except sqlite3.Error:

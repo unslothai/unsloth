@@ -57,6 +57,29 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     assert called is False
 
 
+def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "thread-1"})
+
+    def reject_prune(*_args, **_kwargs):
+        raise chat_history.ChatMessageProtectedError(
+            "Research prompts and responses cannot be deleted from their original thread"
+        )
+
+    monkeypatch.setattr(chat_history, "sync_chat_messages", reject_prune)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            chat_history.replace_thread_messages(
+                "thread-1",
+                chat_history.ChatMessageSyncRequest(messages = [], pruneMissing = True),
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "Research prompts and responses" in str(exc_info.value.detail)
+
+
 # ---------------------------------------------------------------------------
 # /api/chat/settings
 # ---------------------------------------------------------------------------
@@ -126,7 +149,7 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
     assert persisted == backend, (
-        f"schema drift: frontend-only {persisted - backend}, " f"backend-only {backend - persisted}"
+        f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
     )
 
 

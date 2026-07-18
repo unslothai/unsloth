@@ -417,6 +417,28 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
     assert studio_db.get_chat_message("thread-1", "temporary") is None
 
 
+@pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
+def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_id):
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "completed")
+    survivors = [
+        message
+        for message in studio_db.list_chat_messages("thread-1")
+        if message["id"] != removed_id
+    ]
+
+    with pytest.raises(studio_db.ChatMessageProtectedError, match = "cannot be deleted"):
+        studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+
+    assert research_db.get_run("run-1") is not None
+    assert research_db.has_thread_claim("thread-1") is True
+    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
+
+
 def test_revision_hash_conflicts_and_idempotent_approval(research_home):
     _create()
     first = research_db.set_plan("run-1", _plan(), expected_revision = 0)

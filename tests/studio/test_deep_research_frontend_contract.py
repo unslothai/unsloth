@@ -94,13 +94,14 @@ def test_research_presentation_is_integrated() -> None:
     research_gate = thread.split("const researchDisabled =", 1)[1].split(";", 1)[0]
     assert "!modelLoaded" not in research_gate
     assert "<ResearchMessage />" in thread
-    assert "if (research.runId) return null" in thread
-    assert "!research.runId &&" in thread
-    assert "if (isActiveResearchMessage)" in thread
+    assert "if (researchRunId) return null" in thread
+    assert "!researchRunId &&" in thread
+    assert "if (researchRunId || ownsResearchMessage)" in thread
+    assert "parentId === messageId && Boolean(getResearchRunId(message.metadata))" in thread
     message_error = thread.split("const MessageError: FC = () =>", 1)[1].split(
         "const GeneratingIndicator:", 1
     )[0]
-    assert "!research.runId &&" in message_error
+    assert "!researchRunId &&" in message_error
     assert "ResearchActivityPanel" in page
     assert "ResearchActivitySheet" in page
     assert "ResearchActivityPanel" in chat_index

@@ -3614,13 +3614,13 @@ const ComposerRightControls: FC<{
 };
 
 const MessageError: FC = () => {
-  const research = useResearchMessageState();
+  const researchRunId = useResearchMessageRunId();
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
         {/* Recovery path for interrupted/failed turns: regenerate in place. */}
-        {!research.runId && (
+        {!researchRunId && (
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
@@ -3978,49 +3978,36 @@ const ForkMessageButton: FC = () => {
   );
 };
 
-const TERMINAL_RESEARCH_MESSAGE_STATUSES = new Set([
-  "cancelled",
-  "completed",
-  "failed",
-]);
+const getResearchRunId = (metadata: unknown): string | null => {
+  const custom = (
+    metadata as
+      | {
+          custom?: {
+            researchRunId?: unknown;
+            researchRun?: { id?: unknown };
+          };
+        }
+      | undefined
+  )?.custom;
+  const runId = custom?.researchRunId ?? custom?.researchRun?.id;
+  return typeof runId === "string" ? runId : null;
+};
 
-const useResearchMessageState = () => {
-  const metadata = useAuiState(({ message }) =>
-    (
-      message.metadata as
-        | {
-            custom?: {
-              researchRunId?: unknown;
-              researchStatus?: unknown;
-              researchRun?: { id?: unknown; status?: unknown };
-            };
-          }
-        | undefined
-    )?.custom,
-  );
-  const metadataRunId = metadata?.researchRunId ?? metadata?.researchRun?.id;
-  const runId = typeof metadataRunId === "string" ? metadataRunId : null;
-  const followedStatus = useResearchRunStore((state) =>
-    runId ? state.sessions[runId]?.run.status : undefined,
-  );
-  const metadataStatus = metadata?.researchStatus ?? metadata?.researchRun?.status;
-  return {
-    runId,
-    status:
-      followedStatus ??
-      (typeof metadataStatus === "string" ? metadataStatus : null),
-  };
+const useResearchMessageRunId = () => {
+  return useAuiState(({ message }) => getResearchRunId(message.metadata));
 };
 
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const research = useResearchMessageState();
-  const isActiveResearchMessage = Boolean(
-    research.runId &&
-      (!research.status ||
-        !TERMINAL_RESEARCH_MESSAGE_STATUSES.has(research.status)),
+  const researchRunId = useResearchMessageRunId();
+  const ownsResearchMessage = aui
+    .thread()
+    .export()
+    .messages.some(
+      ({ parentId, message }) =>
+        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
   );
 
   const handleDelete = async () => {
@@ -4066,7 +4053,7 @@ const DeleteMessageButton: FC = () => {
     }
   };
 
-  if (isActiveResearchMessage) {
+  if (researchRunId || ownsResearchMessage) {
     return null;
   }
 
@@ -4118,11 +4105,11 @@ const CopyButton: FC = () => {
 
 const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
-  const research = useResearchMessageState();
+  const researchRunId = useResearchMessageRunId();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
 
-  if (research.runId) return null;
+  if (researchRunId) return null;
 
   return (
     <TooltipIconButton
@@ -4141,7 +4128,7 @@ const EditAssistantMessageButton: FC = () => {
 
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
-  const research = useResearchMessageState();
+  const researchRunId = useResearchMessageRunId();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -4156,7 +4143,7 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         <EditAssistantMessageButton />
-        {!research.runId && (
+        {!researchRunId && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
               <RefreshCwIcon strokeWidth={1.75} className="size-icon" />

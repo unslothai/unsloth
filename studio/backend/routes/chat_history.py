@@ -15,6 +15,7 @@ from loggers import get_logger
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
+    ChatMessageProtectedError,
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
@@ -459,7 +460,7 @@ async def replace_thread_messages(
                 )
             ]
         )
-    except ChatMessageConflictError as exc:
+    except (ChatMessageConflictError, ChatMessageProtectedError) as exc:
         raise log_and_http_error(
             exc,
             409,
