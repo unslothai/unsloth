@@ -712,6 +712,7 @@ class WhisperSttSidecar:
                         "Download it in Settings, then Voice, before loading it."
                     )
 
+                retry_on_cpu = False
                 try:
                     candidate = self._build_model(repo, device, dtype, cancel_event)
                     self._raise_if_load_cancelled(cancel_event)
@@ -720,31 +721,31 @@ class WhisperSttSidecar:
                 except Exception as exc:
                     if _is_missing_local_model_error(exc):
                         raise not_downloaded(exc) from exc
-                    # Retry on CPU when the accelerator cannot load the model.
-                    if device != "cpu":
-                        logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
-                        # The traceback pins frames that still reference the
-                        # partly loaded accelerator model; drop it so the cache
-                        # clear can release that memory before the CPU retry.
-                        exc = exc.with_traceback(None)
-                        _clear_device_cache(device)
-                        try:
-                            candidate = self._build_model(
-                                repo,
-                                "cpu",
-                                torch.float32,
-                                cancel_event,
-                            )
-                            self._raise_if_load_cancelled(cancel_event)
-                        except SttLoadCancelledError:
-                            raise
-                        except Exception as cpu_exc:
-                            if _is_missing_local_model_error(cpu_exc):
-                                raise not_downloaded(cpu_exc) from cpu_exc
-                            raise
-                        device = "cpu"
-                    else:
+                    if device == "cpu":
                         raise
+                    # Retry on CPU when the accelerator cannot load the model.
+                    logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
+                    retry_on_cpu = True
+                if retry_on_cpu:
+                    # Retried outside the handler: live exception state pins
+                    # frames that still reference the partly loaded model, so
+                    # leave it before clearing the cache to release that memory.
+                    _clear_device_cache(device)
+                    try:
+                        candidate = self._build_model(
+                            repo,
+                            "cpu",
+                            torch.float32,
+                            cancel_event,
+                        )
+                        self._raise_if_load_cancelled(cancel_event)
+                    except SttLoadCancelledError:
+                        raise
+                    except Exception as cpu_exc:
+                        if _is_missing_local_model_error(cpu_exc):
+                            raise not_downloaded(cpu_exc) from cpu_exc
+                        raise
+                    device = "cpu"
                 with self._load_state_lock:
                     self._raise_if_load_cancelled(cancel_event)
                     self._engine = candidate
