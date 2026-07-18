@@ -80,6 +80,7 @@ class _FakePipe:
         num_frames = None,
         frame_rate = None,
         generator = None,
+        sigmas = None,
         callback_on_step_end = None,
         **kwargs,
     ):
@@ -92,6 +93,7 @@ class _FakePipe:
             "height": height,
             "num_frames": num_frames,
             "frame_rate": frame_rate,
+            "sigmas": sigmas,
             **kwargs,
         }
         if callback_on_step_end is not None:
@@ -844,6 +846,77 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     call = backend._state.pipe.last_kwargs
     assert call["num_inference_steps"] == 8
     assert call["guidance_scale"] == 1.0
+    # At the distilled default step count the calibrated ltx_core curve is passed verbatim
+    # (the DiT was trained against it; the scheduler's own 8-step spacing lands far off).
+    from core.inference.video_ltx2 import LTX23_DISTILLED_SIGMAS
+
+    assert call["sigmas"] == list(LTX23_DISTILLED_SIGMAS)
+
+
+def test_generate_distilled_custom_steps_keep_scheduler_spacing(fake_runtime, tmp_path):
+    # A non-default step count on the distilled DiT has no calibrated list; the scheduler's
+    # spacing applies and no sigmas kwarg is injected.
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    backend.generate(prompt = "a sloth", steps = 12)
+    call = backend._state.pipe.last_kwargs
+    assert call["num_inference_steps"] == 12
+    assert call["sigmas"] is None
+
+
+def test_generate_dev_base_never_gets_distilled_sigmas(fake_runtime, tmp_path):
+    # The dev/base DiT uses the resolution-shifted scheduler spacing even at 8 steps: the
+    # calibrated list is distilled-only.
+    (tmp_path / "ltx-2.3-22b-dev-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-dev-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    backend.generate(prompt = "a sloth", steps = 8)
+    call = backend._state.pipe.last_kwargs
+    assert call["num_inference_steps"] == 8
+    assert call["sigmas"] is None
+
+
+def test_ltx23_verbatim_sigmas_restores_scheduler_config():
+    # The context manager must neutralise exactly the transforms that distort explicit
+    # sigmas and put the original values back afterwards, even on error.
+    from core.inference.video_ltx2 import ltx23_verbatim_sigmas
+
+    class _Cfg(dict):
+        pass
+
+    class _Sched:
+        def __init__(self):
+            self.config = _Cfg(
+                use_dynamic_shifting = True, shift = 1.0, shift_terminal = 0.1
+            )
+
+        def register_to_config(self, **kw):
+            self.config.update(kw)
+
+    pipe = types.SimpleNamespace(scheduler = _Sched())
+    with ltx23_verbatim_sigmas(pipe):
+        assert pipe.scheduler.config["use_dynamic_shifting"] is False
+        assert pipe.scheduler.config["shift_terminal"] is None
+    assert pipe.scheduler.config["use_dynamic_shifting"] is True
+    assert pipe.scheduler.config["shift_terminal"] == 0.1
+    with pytest.raises(RuntimeError):
+        with ltx23_verbatim_sigmas(pipe):
+            raise RuntimeError("boom")
+    assert pipe.scheduler.config["use_dynamic_shifting"] is True
+    # A pipe without a scheduler is a no-op, not a crash.
+    with ltx23_verbatim_sigmas(types.SimpleNamespace()):
+        pass
 
 
 def test_generate_resets_step_cache_only_when_engaged(fake_runtime, tmp_path):
