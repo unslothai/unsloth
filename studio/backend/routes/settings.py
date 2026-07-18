@@ -388,7 +388,7 @@ def update_embedding_model(
     that ``force`` cannot bypass, so the UI must not offer "save anyway".
     Documents indexed under the previous model must be re-uploaded."""
     from utils.models import is_embedding_model
-    from utils.paths import resolve_cached_repo_id_case
+    from utils.paths import is_local_path, resolve_cached_repo_id_case
 
     try:
         model = validate_embedding_model(payload.embedding_model)
@@ -468,10 +468,13 @@ def update_embedding_model(
     # accepts a case-insensitive cache hit, but the offline SentenceTransformer
     # load resolves the cache by exact case, so store the cached spelling (a
     # no-op when nothing case-matching is cached) to keep the model loadable.
-    # Skip this for the default: rewriting its casing would make the exact-string
-    # default comparison in set_rag_embedding_model() treat it as a custom
-    # override, so later changes to the configured default would stop applying.
-    if model != default_embedding_model():
+    # Skip the default: rewriting its casing would make the exact-string default
+    # comparison in set_rag_embedding_model() treat it as a custom override, so
+    # later changes to the configured default would stop applying. Skip local
+    # paths too: a relative directory like "org/model" is loaded from disk, and
+    # rewriting it to a case-insensitive HF cache collision ("Org/model") would
+    # stop resolving to that directory and be read as a Hub repo id instead.
+    if model != default_embedding_model() and not is_local_path(model):
         model = resolve_cached_repo_id_case(model)
     set_rag_embedding_model(model)
     logger.info(

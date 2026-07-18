@@ -103,9 +103,19 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         else:
             from huggingface_hub import hf_hub_download
             from huggingface_hub.utils import EntryNotFoundError
+            from utils.utils import hf_env_offline
 
             try:
-                local = hf_hub_download(name, "modules.json", token = token or None)
+                # local_files_only when offline: huggingface_hub honors only
+                # HF_HUB_OFFLINE natively, so a TRANSFORMERS_OFFLINE-only session
+                # would otherwise block on network timeouts here even though the
+                # cached snapshot already has modules.json.
+                local = hf_hub_download(
+                    name,
+                    "modules.json",
+                    token = token or None,
+                    local_files_only = hf_env_offline(),
+                )
             except EntryNotFoundError:
                 return ()
             data = json.loads(open(local).read())

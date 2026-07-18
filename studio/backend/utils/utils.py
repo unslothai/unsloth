@@ -161,3 +161,19 @@ def format_error_message(error: Exception, model_name: str) -> str:
         return f"Not enough {device_label} memory to load '{model_short}'. Try a smaller model or free memory."
 
     return str(error)
+
+
+_HF_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def hf_env_offline() -> bool:
+    """True when either HF offline env var is truthy (strip+lower, on/true/yes/1).
+
+    ``huggingface_hub`` natively honors only ``HF_HUB_OFFLINE``; callers that make
+    direct Hub calls must consult this so a ``TRANSFORMERS_OFFLINE``-only session
+    does not block on network timeouts for data the local cache already has.
+    """
+    return (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+    )

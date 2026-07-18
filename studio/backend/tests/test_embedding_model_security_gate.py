@@ -273,6 +273,25 @@ def test_custom_model_saved_in_cache_casing(client, monkeypatch):
     assert saved.get("model") == "BAAI/bge-m3"
 
 
+def test_local_path_model_is_not_casing_normalized(client, monkeypatch, tmp_path):
+    # A local directory (here an existing path) is loaded from disk. Rewriting it
+    # to a case-insensitive HF cache collision would stop resolving to that
+    # directory and be read as a Hub repo id, so normalization must be skipped.
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    import utils.paths as _paths
+
+    def _must_not_run(m):
+        raise AssertionError("a local path must not be casing-normalized")
+
+    monkeypatch.setattr(_paths, "resolve_cached_repo_id_case", _must_not_run)
+    local_dir = tmp_path / "org" / "model"
+    local_dir.mkdir(parents = True)
+    r = c.put("/embedding-model", json = {"embedding_model": str(local_dir), "force": True})
+    assert r.status_code == 200
+    assert saved.get("model") == str(local_dir)
+
+
 def test_default_model_is_not_casing_normalized(client, monkeypatch):
     # Submitting the exact default must NOT be run through cache-casing
     # normalization: rewriting it would make set_rag_embedding_model()'s exact

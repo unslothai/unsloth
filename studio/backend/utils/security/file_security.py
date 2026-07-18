@@ -241,6 +241,15 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     retries once on a transient error, then returns None so the caller fails open.
     """
     from huggingface_hub import model_info as hf_model_info
+    from utils.utils import hf_env_offline
+
+    # Offline (including a TRANSFORMERS_OFFLINE-only session, which huggingface_hub
+    # does not honor natively): this is a pure Hub-metadata lookup with no local
+    # fallback, so attempting it would just burn both request timeouts before
+    # failing open anyway. Skip straight to the fail-open path.
+    if hf_env_offline():
+        logger.debug("HF security scan skipped for '%s': offline; failing open.", model_name)
+        return None
 
     token_arg = hf_token if hf_token else False
     last_exc = None
