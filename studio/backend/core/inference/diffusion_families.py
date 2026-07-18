@@ -84,6 +84,12 @@ class DiffusionFamily:
     # checkpoint; the loader's base_model_id validation correctly refuses the default entry for
     # them. Resolution prefers an exact variant match, then falls back to ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id) triples
+    # (component is the pipeline attribute, e.g. "text_encoder"). Serves the layerwise-fp8
+    # storage scheme only: the cast is a deterministic transform, so the stored artifact is
+    # bit-identical to dense-load-then-cast while skipping the multi-GB dense TE download
+    # (see diffusion_te_prequant.py). Empty -> the TE loads dense and casts as before.
+    te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF
     # is shared with diffusers; sd-cli also needs a single-file VAE + text encoder(s) (the base repo
     # ships those sharded). Each is a (repo_id, filename); ``sd_cpp_text_encoders`` carries a trailing

@@ -88,6 +88,9 @@ class VideoFamily:
     # Per-base variants, mirroring DiffusionFamily.prequant_variant_repos (unused by the
     # current video entries -- the resolution helper reads the attribute, so it must exist).
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id) triples;
+    # same semantics as DiffusionFamily.te_prequant_repos (diffusion_te_prequant.py).
+    te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # True when the pipeline REQUIRES a conditioning image (WanImageToVideoPipeline): the
     # generate path decodes/resizes the request's init_image and refuses a run without one;
     # the UI shows the source-image control only for these families.
