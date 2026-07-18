@@ -3,13 +3,14 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
 # ──────────────────────────────────────────────────────────────────────────────
-# Enable ROCm-on-WSL for AMD Strix Halo (Radeon 8060S / gfx1151)
+# Enable ROCm-on-WSL for AMD GPUs (Strix Halo/Point APUs AND discrete Radeon RX
+# 7000/9000). Verified on gfx1151 (Radeon 8060S) and gfx1200 (Radeon RX 9060 XT).
 # ──────────────────────────────────────────────────────────────────────────────
-# install.sh already routes gfx1151 to the right ROCm wheels once a ROCm runtime
-# is present; what it does NOT do is install AMD's ROCm userspace + the WSL DXG
-# bridge. This helper automates that Linux-side prerequisite on Ubuntu 24.04
-# WSL2 and is invoked by install.sh when it sees a Strix Halo APU in WSL (via
-# /dev/dxg) but no ROCm runtime yet. Fully idempotent (re-run just re-verifies).
+# install.sh routes the detected arch to the right ROCm wheels once a runtime exists;
+# what it does NOT do is install AMD's ROCm userspace + the WSL DXG bridge (librocdxg).
+# This helper does that Linux-side prerequisite on Ubuntu 24.04 WSL2, invoked by
+# install.sh when it sees an AMD GPU via /dev/dxg but no ROCm yet. Arch-agnostic: the
+# arch is auto-detected from rocminfo (override UNSLOTH_WSL_GFX=gfx1200). Idempotent.
 #
 # Manual, admin-gated Windows prerequisite: an AMD Adrenalin driver with
 # production ROCDXG/WSL support (26.2.2+). install.ps1 offers to update it. Once
@@ -34,10 +35,12 @@ set -euo pipefail
 
 # ── Tunables (override via env) ──────────────────────────────────────────────
 ROCM_VER="${UNSLOTH_WSL_ROCM_VER:-7.2.1}"            # ROCm release to install
-GFX="gfx1151"
+# GPU arch: empty = auto-detect from rocminfo after install (override UNSLOTH_WSL_GFX=gfx1200).
+# The ROCm + librocdxg setup is arch-agnostic; only verify + the smoke test need the arch.
+GFX="${UNSLOTH_WSL_GFX:-}"
 LIBROCDXG_REF="${UNSLOTH_LIBROCDXG_REF:-develop}"    # ROCm/librocdxg git ref to build
-# AMD's gfx1151 wheel index (same one install.sh uses); only for the smoke test.
-TORCH_INDEX="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}/${GFX}/"
+# AMD's wheel index for the (optional) smoke test; resolved after arch detection.
+TORCH_INDEX=""
 # Optional torch smoke test (throwaway venv). OFF by default: install.sh installs
 # torch itself into the real venv right after, so a duplicate download is wasteful.
 SMOKE_TEST="${UNSLOTH_WSL_SMOKE_TEST:-0}"
@@ -220,12 +223,12 @@ $SUDO ldconfig
 say "Persisting ROCm-on-WSL environment"
 _envfile="/etc/profile.d/unsloth-rocm-wsl.sh"
 $SUDO tee "$_envfile" >/dev/null <<EOF
-# >>> Unsloth ROCm-on-WSL (gfx1151) >>>
+# >>> Unsloth ROCm-on-WSL >>>
 export HSA_ENABLE_DXG_DETECTION=1
 export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
 export PATH="${ROCM_DIR}/bin:\${PATH}"
 export LD_LIBRARY_PATH="${ROCM_DIR}/lib:\${LD_LIBRARY_PATH:-}"
-# <<< Unsloth ROCm-on-WSL (gfx1151) <<<
+# <<< Unsloth ROCm-on-WSL <<<
 EOF
 # also drop into ~/.bashrc for interactive shells
 if [ -n "${HOME:-}" ] && ! grep -q "Unsloth ROCm-on-WSL" "${HOME}/.bashrc" 2>/dev/null; then
@@ -237,32 +240,50 @@ export PATH="${ROCM_DIR}/bin:${PATH}"
 export LD_LIBRARY_PATH="${ROCM_DIR}/lib:${LD_LIBRARY_PATH:-}"
 
 # ── Step 5: verify the runtime enumerates the GPU ────────────────────────────
-say "Verifying rocminfo sees ${GFX}"
+say "Verifying rocminfo enumerates the GPU over DXG"
 # Capture rocminfo into a var BEFORE grepping: piping into `grep -q` SIGPIPEs
 # rocminfo on first match, which under `set -o pipefail` turns a successful match
-# into a pipeline failure. Match the gfx1151 ISA "Name:" agent exactly (not a
-# broad gfx1[0-9]) so a generic fallback ISA or unrelated RDNA GPU can't pass.
+# into a pipeline failure.
 _rocminfo_out="$(rocminfo 2>/dev/null || true)"
-if ! printf '%s\n' "$_rocminfo_out" | grep -qE "Name:[[:space:]]*${GFX}([^0-9]|$)"; then
+# GPU agents advertise an ISA "Name: gfxNNNN". Match gfx[1-9] (excludes gfx000, the CPU
+# agent), drop the "gfx*-generic" fallback ISA, and take the first real GPU arch.
+_detected_gfx="$(printf '%s\n' "$_rocminfo_out" | grep -E 'Name:[[:space:]]*gfx[1-9]' | grep -v 'generic' | grep -oE 'gfx[1-9][0-9a-z]*' | head -1 || true)"
+if [ -z "$_detected_gfx" ]; then
     printf '%s\n' "$_rocminfo_out" | head -25 >&2 || true
-    die "rocminfo did not enumerate a ${GFX} GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
+    die "rocminfo did not enumerate any GPU agent. Most common cause: the Windows AMD driver predates production ROCDXG -- update Adrenalin (install.ps1 offers this), reboot, and re-run."
 fi
+# Honour a caller-pinned arch (sanity-check via a consuming grep, not grep -q: under
+# pipefail -q would SIGPIPE printf on large output and misreport the arch); else adopt.
+if [ -n "$GFX" ] && ! printf '%s\n' "$_rocminfo_out" | grep -E "Name:[[:space:]]*${GFX}([^0-9]|$)" >/dev/null; then
+    die "rocminfo enumerated '${_detected_gfx}' but not the requested UNSLOTH_WSL_GFX='${GFX}'."
+fi
+GFX="${GFX:-$_detected_gfx}"
 # Display-only summary: best-effort (|| true) so head's early pipe-close under
 # `set -o pipefail` can't fail the bootstrap after verification already passed.
 printf '%s\n' "$_rocminfo_out" | grep -E 'Marketing Name|Device Type|Compute Unit' | grep -iE "Radeon|GPU|Compute" | head -3 || true
 note "ROCm-on-WSL runtime is live for ${GFX}."
 
-# ── Step 6 (optional): torch smoke test from the gfx1151 index ───────────────
+# ── Step 6 (optional): torch smoke test from AMD's per-arch wheel index ───────
 if [ "$SMOKE_TEST" = "1" ]; then
     say "Smoke-testing PyTorch on ${GFX} (throwaway venv)"
+    # Map the detected arch to AMD's repo.amd.com wheel family index.
+    case "$GFX" in
+        gfx1200|gfx1201)                 _fam="gfx120X-all" ;;
+        gfx1100|gfx1101|gfx1102|gfx1103) _fam="gfx110X-all" ;;
+        *)                               _fam="$GFX" ;;   # gfx1150/gfx1151/gfx90a: own index
+    esac
+    TORCH_INDEX="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}/${_fam}/"
     _venv="${HOME}/.unsloth/rocm-smoketest"
     rm -rf "$_venv"; python3 -m venv "$_venv"
     "$_venv/bin/pip" install --quiet --upgrade pip
-    # gfx1151 index is primary (torch + triton); PyPI only an extra for pure-py
+    # AMD arch index is primary (torch + triton); PyPI only an extra for pure-py
     # deps. The constraint keeps pip on the ROCm wheel, not a newer PyPI CUDA torch.
     "$_venv/bin/pip" install --index-url "$TORCH_INDEX" \
         --extra-index-url https://pypi.org/simple "$TORCH_CONSTRAINT" || \
         die "torch install from ${TORCH_INDEX} failed."
+    # WSL: torch's bundled ROCr must load the DXG bridge -- drop librocdxg into torch/lib.
+    _tlib="$("$_venv/bin/python" -c 'import torch,os;print(os.path.join(os.path.dirname(torch.__file__),"lib"))' 2>/dev/null || true)"
+    [ -d "$_tlib" ] && cp -f "${ROCM_DIR}"/lib/librocdxg.so* "$_tlib"/ 2>/dev/null || true
     "$_venv/bin/python" - <<'PY'
 import torch
 ok = torch.cuda.is_available()

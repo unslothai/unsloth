@@ -3,8 +3,8 @@
 
 """Tests for the `--cloudflare/--no-cloudflare` Studio flag.
 
-Pins the typer Option (default on) on both `unsloth studio` and
-`unsloth studio run`, and that the chosen polarity reaches the re-exec'd
+Pins the typer Option (tri-state, default off / None) on both `unsloth studio`
+and `unsloth studio run`, and that the chosen polarity reaches the re-exec'd
 child and run_server. Modeled on test_studio_run_parallel_flag.py.
 """
 
@@ -33,7 +33,7 @@ _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 # ── option registration ──────────────────────────────────────────────
 
 
-def test_run_exposes_cloudflare_option_default_on():
+def test_run_exposes_cloudflare_option_default_off():
     import inspect
 
     sig = inspect.signature(_studio().run)
@@ -41,16 +41,16 @@ def test_run_exposes_cloudflare_option_default_on():
     opt = sig.parameters["cloudflare"].default
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "--cloudflare/--no-cloudflare" in decls
-    assert getattr(opt, "default", None) is True
+    assert getattr(opt, "default", "missing") is None
 
 
-def test_studio_default_exposes_cloudflare_option_default_on():
+def test_studio_default_exposes_cloudflare_option_default_off():
     import inspect
 
     sig = inspect.signature(_studio().studio_default)
     assert "cloudflare" in sig.parameters
     opt = sig.parameters["cloudflare"].default
-    assert getattr(opt, "default", None) is True
+    assert getattr(opt, "default", "missing") is None
 
 
 # ── re-exec forwarding: `unsloth studio run` ─────────────────────────
@@ -69,6 +69,11 @@ def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    # A built frontend dist is present so the public-launch UI check passes
+    # deterministically (independent of whether the repo dist was built).
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     fake_bin = fake_venv / "bin" / "unsloth"
     real_is_file = Path.is_file
     monkeypatch.setattr(
@@ -107,19 +112,23 @@ def _invoke_run(monkeypatch, args):
 
 
 @pytest.mark.parametrize(
-    "user_flag,expected,unexpected",
+    "extra_flags,expected,unexpected",
     [
-        (None, "--cloudflare", "--no-cloudflare"),  # default on
-        ("--cloudflare", "--cloudflare", "--no-cloudflare"),
-        ("--no-cloudflare", "--no-cloudflare", "--cloudflare"),
+        # Default (no flag) forwards --no-cloudflare explicitly so a mixed-version
+        # child venv (old default: --cloudflare on) can't re-enable the tunnel.
+        ([], "--no-cloudflare", "--cloudflare"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        # --secure implies the tunnel; never forward --no-cloudflare with it.
+        (["--secure"], None, "--no-cloudflare"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, user_flag, expected, unexpected):
-    extras = [user_flag] if user_flag else []
-    captured = _invoke_run(monkeypatch, _BASE + extras)
+def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, extra_flags, expected, unexpected):
+    captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
-    assert expected in argv, f"expected {expected} in child argv; got {argv}"
+    if expected is not None:
+        assert expected in argv, f"expected {expected} in child argv; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected} in child argv; got {argv}"
 
 
@@ -142,7 +151,11 @@ def _invoke_studio_default(
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
     monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
-    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)
+    # A built frontend dist is present so the public-launch UI check passes; this
+    # suite exercises flag forwarding, not the missing-dist lockout guard.
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
     monkeypatch.setattr(sys, "platform", platform)
 
     def fake_execvp(file, argv):
@@ -158,18 +171,24 @@ def _invoke_studio_default(
 
 
 @pytest.mark.parametrize(
-    "user_flag,expected,unexpected",
+    "extra_flags,expected,unexpected",
     [
-        (None, "--cloudflare", "--no-cloudflare"),
-        ("--no-cloudflare", "--no-cloudflare", "--cloudflare"),
+        # Default (no flag) forwards --no-cloudflare explicitly: _find_run_py can fall
+        # back to an older studio-venv run.py (default on), so a mixed install must
+        # not re-enable the tunnel.
+        ([], "--no-cloudflare", "--cloudflare"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        # --secure implies the tunnel; never forward --no-cloudflare with it.
+        (["--secure"], None, "--no-cloudflare"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, user_flag, expected, unexpected):
-    extras = [user_flag] if user_flag else []
-    captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extras)
+def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, expected, unexpected):
+    captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
-    assert expected in argv, f"expected {expected}; got {argv}"
+    if expected is not None:
+        assert expected in argv, f"expected {expected}; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected}; got {argv}"
 
 
@@ -182,7 +201,10 @@ class _RunServerCaptured(SystemExit):
         self.kwargs = dict(kwargs)
 
 
-@pytest.mark.parametrize("user_flag,expected", [(None, True), ("--no-cloudflare", False)])
+@pytest.mark.parametrize(
+    "user_flag,expected",
+    [(None, None), ("--cloudflare", True), ("--no-cloudflare", False)],
+)
 def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, expected):
     import types
 
@@ -348,21 +370,22 @@ def test_run_silent_emits_cloudflare_notice_for_external_bind(monkeypatch):
     assert ("print", {"secure": False, "loopback_host": "127.0.0.1"}) in calls
 
 
-# ── parent-level --no-cloudflare with a subcommand is rejected ───────
+# ── parent-level --cloudflare/--no-cloudflare with a subcommand is rejected ─
 
 
-def test_studio_default_rejects_no_cloudflare_with_subcommand(monkeypatch):
-    # `unsloth studio --no-cloudflare run ...` would not reach the subcommand,
-    # so it must error (mirrors --parallel) rather than silently still tunnel.
+@pytest.mark.parametrize("flag", ["--cloudflare", "--no-cloudflare"])
+def test_studio_default_rejects_cloudflare_flag_with_subcommand(monkeypatch, flag):
+    # `unsloth studio --cloudflare run ...` (or --no-cloudflare) would not reach the
+    # subcommand, so it must error (mirrors --parallel) rather than silently drop it.
     import typer as _typer
 
     studio_mod = _studio()
     app = _typer.Typer()
     app.add_typer(studio_mod.studio_app, name = "studio")
-    result = CliRunner().invoke(app, ["studio", "--no-cloudflare", "run", "--model", "X"])
+    result = CliRunner().invoke(app, ["studio", flag, "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "--no-cloudflare" in combined, combined
+    assert flag in combined, combined
 
 
 # ── run() tears the server + tunnel down if startup aborts ───────────

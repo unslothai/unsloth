@@ -44,6 +44,8 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   bypassPermissions: false,
 };
 
+export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
+
 export interface PlusMenuPrefsState {
   pins: Record<PlusMenuItemId, boolean>;
   setPin: (id: PlusMenuItemId, value: boolean) => void;
@@ -72,7 +74,7 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
         })),
     }),
     {
-      name: "unsloth_plus_menu_pins",
+      name: PLUS_MENU_PINS_STORAGE_KEY,
       // Backfill any ids added in a later release so persisted state from an
       // older version still resolves every menu item.
       merge: (persisted, current) => {

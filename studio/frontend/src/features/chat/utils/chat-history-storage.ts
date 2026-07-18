@@ -590,7 +590,10 @@ export async function listStoredChatThreads(
   }
   return Array.from(byId.values())
     .filter((thread) => matchesThreadListArgs(thread, args))
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .sort(
+      (a, b) =>
+        (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+    );
 }
 
 export async function listStoredChatThreadsWithMessages(

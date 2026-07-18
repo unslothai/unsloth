@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""install_llama_prebuilt.py: host->repo mapping and the --resolve-prebuilt mode.
+"""install_llama_prebuilt.py: the --resolve-prebuilt probe (plans against the fork
+by default; --published-repo overrides).
 
 These back the in-app update for source-build (markerless) installs: the backend
 asks the installer whether an official prebuilt exists for this host without
@@ -24,9 +25,7 @@ if str(_studio) not in sys.path:
 
 ilp = importlib.import_module("install_llama_prebuilt")
 
-if not hasattr(ilp, "published_repo_for_host") or not hasattr(
-    ilp, "resolve_simple_install_release_plans"
-):
+if not hasattr(ilp, "resolve_simple_install_release_plans"):
     pytest.skip("PR symbols not present - check branch", allow_module_level = True)
 
 FORK = ilp.DEFAULT_PUBLISHED_REPO  # unslothai/llama.cpp
@@ -56,71 +55,25 @@ def _host(**kw):
     return ilp.HostInfo(**base)
 
 
-def test_published_repo_for_host():
-    # CPU-only Linux (x64 and arm64) -> ggml-org upstream.
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True)) == UPSTREAM
-    assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_arm64 = True, machine = "aarch64"))
-        == UPSTREAM
+def test_force_cpu_clears_all_gpu_attributes_including_intel():
+    # --cpu-fallback is the "select the CPU prebuilt even when a GPU is present"
+    # escape hatch. It must drop EVERY GPU attribute, including has_intel_gpu, or
+    # the planner still prepends the Vulkan asset on an Intel-GPU host.
+    host = _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_usable_nvidia = True,
+        has_physical_nvidia = True,
+        has_rocm = True,
+        rocm_gfx_target = "gfx1100",
+        has_intel_gpu = True,
     )
-    # GPU Linux -> fork.
-    assert (
-        ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_usable_nvidia = True))
-        == FORK
-    )
-    assert ilp.published_repo_for_host(_host(is_linux = True, is_x86_64 = True, has_rocm = True)) == FORK
-    # CPU-only Windows -> ggml-org (setup.ps1: the fork ships no win-cpu bundle).
-    assert (
-        ilp.published_repo_for_host(_host(system = "Windows", is_windows = True, is_x86_64 = True))
-        == UPSTREAM
-    )
-    # GPU Windows -> fork.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True, has_usable_nvidia = True)
-        )
-        == FORK
-    )
-    # macOS -> fork regardless of GPU (ggml-org macOS bundles need too-new macOS).
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
-        )
-        == FORK
-    )
-    # Linux with AMD tooling but no probed GPU -> fork (setup.sh routes on tooling).
-    assert (
-        ilp.published_repo_for_host(
-            _host(is_linux = True, is_x86_64 = True), linux_amd_tooling_present = True
-        )
-        == FORK
-    )
-    # The tooling hint is Linux-only: Windows CPU stays on ggml-org.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Windows", is_windows = True, is_x86_64 = True),
-            linux_amd_tooling_present = True,
-        )
-        == UPSTREAM
-    )
-
-
-def test_macos_intel_and_arm_both_route_to_fork():
-    # macOS uses the unslothai fork's own Mac prebuilts for BOTH arm64 and Intel;
-    # there is no longer any upstream-on-macOS default path, so the obsolete
-    # pre-macOS-26 pin (b9415) is gone.
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
-        )
-        == FORK
-    )
-    assert (
-        ilp.published_repo_for_host(
-            _host(system = "Darwin", is_macos = True, is_x86_64 = True, machine = "x86_64")
-        )
-        == FORK
-    )
+    forced = ilp._apply_host_overrides(host, force_cpu = True)
+    assert forced.has_usable_nvidia is False
+    assert forced.has_physical_nvidia is False
+    assert forced.has_rocm is False
+    assert forced.rocm_gfx_target is None
+    assert forced.has_intel_gpu is False
 
 
 def test_macos_upstream_pin_only_for_explicit_pre26_upstream():
@@ -188,15 +141,13 @@ def test_resolve_prebuilt_unavailable(monkeypatch, capsys):
     assert out["repo"] == FORK
 
 
-def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
-    # CPU-probed Linux host but rocminfo on PATH: the dispatch must route to the
-    # fork so a HIP source build is not offered an upstream CPU prebuilt.
-    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
-    monkeypatch.setattr(ilp.shutil, "which", lambda tool: tool == "rocminfo")
+def _run_resolve_capture_host(monkeypatch, capsys):
+    """Drive --resolve-prebuilt and return the host the resolver was handed."""
     seen = {}
 
     def _resolver(tag, host, repo, published_release_tag):
         seen["repo"] = repo
+        seen["host"] = host
         raise ilp.PrebuiltFallback("no asset")
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _resolver)
@@ -207,8 +158,31 @@ def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return seen, out
+
+
+def test_resolve_prebuilt_cpu_linux_routes_to_fork(monkeypatch, capsys):
+    # CPU-only Linux host (no GPU): the dispatch routes to the fork, which now
+    # ships the CPU prebuilt -- it no longer falls back to ggml-org upstream.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
     assert seen["repo"] == FORK
     assert out["repo"] == FORK
+
+
+def test_resolve_prebuilt_rocm_sdk_only_host_still_offered_cpu(monkeypatch, capsys):
+    # A CPU-only host that merely has ROCm/HIP SDK tools on PATH (no AMD GPU, so
+    # detect_host leaves has_rocm False) is a valid CPU-prebuilt target. The probe
+    # must NOT reclassify it as ROCm from tool presence alone and suppress the CPU
+    # bundle -- that would deny the fork CPU prebuilt to a legitimate CPU source
+    # build. The host is left CPU-only and resolves against the fork.
+    monkeypatch.setattr(ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True))
+    monkeypatch.setattr(
+        ilp.shutil, "which", lambda tool: "/opt/rocm/bin/hipconfig" if tool == "hipconfig" else None
+    )
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["repo"] == FORK
+    assert seen["host"].has_rocm is False
 
 
 # Blackwell floor is sm_100 (data-center B100/B200, B300/GB300), below consumer
@@ -360,3 +334,386 @@ def test_sm103_host_drops_cuda128_windows_build():
     )
     kept_b200 = ilp._drop_blackwell_incapable_windows_cuda(b200, [cuda128, cuda129])
     assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]
+
+
+def _upstream_release(tag, asset_names):
+    return {
+        "tag_name": tag,
+        "assets": [
+            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+        ],
+    }
+
+
+def test_direct_upstream_arm64_intel_prefers_vulkan():
+    # Auto-detected Intel GPU on Linux arm64 -> Vulkan prebuilt first, CPU
+    # second (mirrors the x86_64 branch; ggml-org ships the arm64 Vulkan asset).
+    host = _host(is_linux = True, is_arm64 = True, machine = "aarch64", has_intel_gpu = True)
+    rel = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
+    kinds = [a.install_kind for a in plan.attempts]
+    assert kinds[0] == "linux-vulkan", kinds
+    assert "linux-arm64" in kinds
+    assert plan.attempts[0].name == "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
+
+
+def test_direct_upstream_intel_with_hidden_nvidia_is_cpu_only():
+    # A host with a physical NVIDIA hidden via CUDA_VISIBLE_DEVICES (physical
+    # True, usable False) + an Intel iGPU must NOT get the Vulkan archive even
+    # when planning directly against upstream: Vulkan ignores CUDA_VISIBLE_DEVICES
+    # and could grab the reserved card. It falls through to the CPU asset.
+    host = _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_intel_gpu = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
+    rel = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-x64.tar.gz", "llama-b9925-bin-ubuntu-x64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
+    assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
+
+
+def test_direct_upstream_arm64_without_intel_is_cpu_only():
+    host = _host(is_linux = True, is_arm64 = True, machine = "aarch64")
+    rel = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
+    assert [a.install_kind for a in plan.attempts] == ["linux-arm64"]
+
+
+def test_direct_upstream_x86_intel_prefers_vulkan():
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    rel = _upstream_release(
+        "b9925",
+        ["llama-b9925-bin-ubuntu-vulkan-x64.tar.gz", "llama-b9925-bin-ubuntu-x64.tar.gz"],
+    )
+    plan = ilp.direct_upstream_release_plan(rel, host, UPSTREAM, "latest")
+    kinds = [a.install_kind for a in plan.attempts]
+    assert kinds[0] == "linux-vulkan", kinds
+    assert "linux-cpu" in kinds
+
+
+def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
+    # The widened glob must cover both arch-suffixed (x64) and bare (arm64) CPU
+    # libs so a valid Vulkan install is not re-flagged unhealthy every check.
+    choice = ilp.AssetChoice(
+        repo = UPSTREAM,
+        tag = "b9925",
+        name = "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz",
+        url = "https://example/x",
+        source_label = "upstream",
+        install_kind = "linux-vulkan",
+    )
+    groups = ilp.runtime_payload_health_groups(choice)
+    assert ["libggml-cpu*.so*"] in groups
+    assert ["libggml-cpu-*.so*"] not in groups
+
+
+def test_route_to_vulkan_prebuilt_auto_intel_goes_upstream_and_drops_fork_pin():
+    # Routing fork -> upstream also drops the fork release pin, which is in a
+    # different tag namespace and would make the upstream resolver miss.
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, FORK, "b9596-mix-abc", force_cpu = False)
+    assert repo == UPSTREAM
+    assert tag == ""
+    assert routed.has_intel_gpu is True
+
+
+def test_route_to_vulkan_prebuilt_preserves_explicit_upstream_pin():
+    # A pin set WITH an explicit upstream repo is already on upstream -> kept.
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    _routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, UPSTREAM, "b9596", force_cpu = False)
+    assert repo == UPSTREAM
+    assert tag == "b9596"
+
+
+def test_route_to_vulkan_prebuilt_cpu_fallback_wins():
+    # --cpu-fallback suppresses Vulkan routing even for an Intel host.
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    routed, repo, tag = ilp._route_to_vulkan_prebuilt(host, FORK, "b9596-mix-abc", force_cpu = True)
+    assert repo == FORK
+    assert tag == "b9596-mix-abc"
+    assert routed is host
+
+
+def test_route_to_vulkan_prebuilt_hidden_nvidia_not_rerouted():
+    # A mixed NVIDIA+Intel host that hid NVIDIA (CUDA_VISIBLE_DEVICES=""/-1):
+    # physical NVIDIA present but not usable. Must NOT auto-route to Vulkan, or
+    # Vulkan (which ignores CUDA_VISIBLE_DEVICES) could grab the reserved GPU.
+    host = _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_intel_gpu = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = False,
+    )
+    _routed, repo, _tag = ilp._route_to_vulkan_prebuilt(host, FORK, "", force_cpu = False)
+    assert repo == FORK
+
+
+def test_route_to_vulkan_prebuilt_rocm_host_not_rerouted():
+    # An Intel iGPU alongside a usable ROCm GPU stays on its ROCm/fork path.
+    host = _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True, has_rocm = True)
+    _routed, repo, _tag = ilp._route_to_vulkan_prebuilt(host, FORK, "", force_cpu = False)
+    assert repo == FORK
+
+
+def test_route_to_vulkan_prebuilt_non_intel_unchanged():
+    host = _host(is_linux = True, is_x86_64 = True)
+    routed, repo, _tag = ilp._route_to_vulkan_prebuilt(host, FORK, "", force_cpu = False)
+    assert repo == FORK
+    assert routed is host
+
+
+def test_resolve_prebuilt_intel_host_routes_to_upstream(monkeypatch, capsys):
+    # The --resolve-prebuilt probe must agree with the install path: an
+    # auto-detected Intel host resolves against upstream (Vulkan), not the fork.
+    monkeypatch.setattr(
+        ilp, "detect_host", lambda: _host(is_linux = True, is_x86_64 = True, has_intel_gpu = True)
+    )
+    seen, out = _run_resolve_capture_host(monkeypatch, capsys)
+    assert seen["repo"] == UPSTREAM
+    assert out["repo"] == UPSTREAM
+
+
+# ---------------------------------------------------------------------------
+# windows_intel_gpu_in_registry: the in-process Windows Intel probe. A fake
+# winreg module stands in for the real registry so the walk runs anywhere.
+# ---------------------------------------------------------------------------
+
+
+class _FakeRegKey:
+    def __init__(
+        self,
+        subkeys = None,
+        values = None,
+        denied = False,
+    ):
+        self.subkeys = subkeys or {}
+        self.values = values or {}
+        self.denied = denied
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _FakeWinreg:
+    HKEY_LOCAL_MACHINE = object()
+
+    def __init__(self, root_key):
+        self._root_key = root_key
+
+    def OpenKey(self, parent, name):
+        if parent is self.HKEY_LOCAL_MACHINE:
+            # Pin the production constant: a typo'd class GUID must fail here,
+            # not silently return the fake tree.
+            if name != ilp._WINDOWS_DISPLAY_CLASS_KEY:
+                raise FileNotFoundError(name)
+            if self._root_key is None:
+                raise FileNotFoundError(name)
+            return self._root_key
+        key = parent.subkeys.get(name)
+        if key is None:
+            # Real winreg raises OSError, never KeyError, for a missing key.
+            raise FileNotFoundError(name)
+        if key.denied:
+            raise PermissionError(name)
+        return key
+
+    def QueryInfoKey(self, key):
+        return (len(key.subkeys), len(key.values), 0)
+
+    def EnumKey(self, key, index):
+        return list(key.subkeys)[index]
+
+    def QueryValueEx(self, key, value_name):
+        if value_name not in key.values:
+            raise FileNotFoundError(value_name)
+        return (key.values[value_name], 1)
+
+
+def _probe_with_display_class(monkeypatch, adapters):
+    # The helper lazily does `import winreg`; plant the fake in sys.modules the
+    # same way unsloth_cli/tests/test_start.py fakes it for _refresh_windows_path.
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(_FakeRegKey(subkeys = adapters)))
+    return ilp.windows_intel_gpu_in_registry()
+
+
+def test_windows_intel_registry_matches_vendor_id(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0&SUBSYS_12345678",
+                        "DriverDesc": "Intel(R) Arc(TM) A770 Graphics",
+                    }
+                ),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_matches_driver_desc_without_device_id(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(values = {"DriverDesc": "Intel(R) UHD Graphics 630"}),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_ignores_non_intel_adapters(monkeypatch):
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "0000": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684",
+                        "DriverDesc": "NVIDIA GeForce RTX 4090",
+                    }
+                ),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_1002&DEV_744C",
+                        "DriverDesc": "AMD Radeon RX 7900 XTX",
+                    }
+                ),
+            },
+        )
+        is False
+    )
+
+
+def test_windows_intel_registry_skips_restricted_properties_subkey(monkeypatch):
+    # The real class key carries an ACL-restricted "Properties" subkey and can
+    # deny access to individual adapter keys; neither may abort the walk.
+    assert (
+        _probe_with_display_class(
+            monkeypatch,
+            {
+                "Properties": _FakeRegKey(denied = True),
+                "0000": _FakeRegKey(denied = True),
+                "0001": _FakeRegKey(
+                    values = {
+                        "MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0",
+                    }
+                ),
+            },
+        )
+        is True
+    )
+
+
+def test_windows_intel_registry_missing_class_key_is_false(monkeypatch):
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(None))
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def _detect_windows_host(
+    monkeypatch,
+    winreg_fake,
+    powershell_stdout = "",
+):
+    """Drive the real detect_host() as a GPU-less Windows host with a fake
+    registry, recording every run_capture invocation. Pins the wiring the
+    unit tests above cannot see: registry-first, CIM only on a registry miss."""
+    monkeypatch.setitem(sys.modules, "winreg", winreg_fake)
+    monkeypatch.setattr(ilp.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ilp.platform, "machine", lambda: "AMD64")
+    for _env in (
+        "CUDA_VISIBLE_DEVICES",
+        "HIP_VISIBLE_DEVICES",
+        "ROCR_VISIBLE_DEVICES",
+        "HIP_PATH",
+        "ROCM_PATH",
+    ):
+        monkeypatch.delenv(_env, raising = False)
+    monkeypatch.setattr(
+        ilp.shutil,
+        "which",
+        lambda name: "powershell" if name in ("powershell", "pwsh") else None,
+    )
+    captured = []
+
+    def _fake_run_capture(command, **kwargs):
+        captured.append(command[0])
+        if command[0] == "powershell":
+            return SimpleNamespace(returncode = 0, stdout = powershell_stdout, stderr = "")
+        return SimpleNamespace(returncode = 1, stdout = "", stderr = "")
+
+    monkeypatch.setattr(ilp, "run_capture", _fake_run_capture)
+    return ilp.detect_host(), captured
+
+
+def test_detect_host_registry_intel_skips_cim_probe(monkeypatch):
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_8086&DEV_56A0"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(monkeypatch, winreg)
+    assert host.has_intel_gpu is True
+    assert "powershell" not in captured
+
+
+def test_detect_host_cim_fallback_fires_on_registry_miss(monkeypatch):
+    winreg = _FakeWinreg(
+        _FakeRegKey(
+            subkeys = {
+                "0000": _FakeRegKey(values = {"MatchingDeviceId": r"PCI\VEN_10DE&DEV_2684"}),
+            }
+        )
+    )
+    host, captured = _detect_windows_host(
+        monkeypatch, winreg, powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured
+
+
+def test_windows_intel_registry_unexpected_error_is_false(monkeypatch):
+    # The probe is advisory: even a non-OSError bug in the walk must return
+    # False (deferring to the CIM fallback), never crash detect_host.
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    monkeypatch.setitem(sys.modules, "winreg", _ExplodingWinreg())
+    assert ilp.windows_intel_gpu_in_registry() is False
+
+
+def test_detect_host_cim_rescues_exploding_registry(monkeypatch):
+    class _ExplodingWinreg:
+        HKEY_LOCAL_MACHINE = object()
+
+        def OpenKey(self, parent, name):
+            raise TypeError(name)
+
+    host, captured = _detect_windows_host(
+        monkeypatch, _ExplodingWinreg(), powershell_stdout = "Intel(R) Arc(TM) A770 Graphics"
+    )
+    assert host.has_intel_gpu is True
+    assert "powershell" in captured

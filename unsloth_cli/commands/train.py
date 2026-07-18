@@ -7,8 +7,40 @@ from typing import Optional
 
 import typer
 
+from unsloth_cli._inference import ensure_studio_backend_path
 from unsloth_cli.config import Config, load_config
 from unsloth_cli.options import add_options_from_config
+
+
+def _should_use_mlx_backend_for_cli() -> bool:
+    ensure_studio_backend_path()
+    from studio.backend.core.training.training import should_use_mlx_training_backend
+    return should_use_mlx_training_backend()
+
+
+def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
+    # Activate before any transformers import: adapter model-type detection imports utils.models.
+    ensure_studio_backend_path()
+    from utils.transformers_version import activate_transformers_for_subprocess
+    try:
+        activate_transformers_for_subprocess(model_name, hf_token)
+    except Exception as exc:
+        typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
+
+
+def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
+    if _should_use_mlx_backend_for_cli():
+        _activate_mlx_transformers(model_name, hf_token)
+        # MLX is torch-free: use the lightweight adapter, not trainer.py (imports torch/unsloth/trl at load).
+        ensure_studio_backend_path()
+        from studio.backend.core.training.training import create_mlx_trainer_adapter
+
+        return create_mlx_trainer_adapter()
+
+    ensure_studio_backend_path()
+    from studio.backend.core.training.trainer import UnslothTrainer
+
+    return UnslothTrainer()
 
 
 @add_options_from_config(Config)
@@ -39,6 +71,7 @@ def train(
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
+    config_overrides = config_overrides or {}
     cfg.apply_overrides(**config_overrides)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option
@@ -83,9 +116,7 @@ def train(
         )
         raise typer.Exit(code = 2)
 
-    from studio.backend.core.training.trainer import UnslothTrainer
-
-    trainer = UnslothTrainer()
+    trainer = _create_cli_trainer(cfg.model, hf_token)
 
     # Load model (trainer.is_vlm is set after this)
     if not trainer.load_model(
@@ -124,13 +155,20 @@ def train(
 
     try:
         while trainer.training_thread and trainer.training_thread.is_alive():
+            progress = trainer.get_training_progress()
+            if getattr(progress, "error", None):
+                break
             time.sleep(1)
     except KeyboardInterrupt:
         typer.echo("Stopping training (Ctrl+C detected)...")
         trainer.stop_training()
     finally:
         if trainer.training_thread:
-            trainer.training_thread.join()
+            progress = trainer.get_training_progress()
+            if getattr(progress, "error", None):
+                trainer.training_thread.join(timeout = 5)
+            else:
+                trainer.training_thread.join()
 
     final = trainer.get_training_progress()
     if getattr(final, "error", None):

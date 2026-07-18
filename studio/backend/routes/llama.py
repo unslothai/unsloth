@@ -14,14 +14,17 @@ never blocks on a missing marker / offline GitHub.
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
+from loggers import get_logger
 from utils.llama_cpp_update import get_update_status, start_update
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 
@@ -69,6 +72,27 @@ class LlamaUpdateActionResponse(BaseModel):
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
+_llama_update_lock = threading.Lock()
+_last_llama_update_step = -1
+
+
+def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
+    """One llama_update_progress line per 10% step so a prebuilt update reports
+    progress without a line per poll. Resyncs when a new update starts."""
+    global _last_llama_update_step
+    if job.state != "running" or job.progress is None:
+        return
+    step = int(max(0.0, min(float(job.progress), 1.0)) * 10)
+    with _llama_update_lock:
+        prev = _last_llama_update_step
+        if step == prev:
+            return
+        _last_llama_update_step = step
+        if step < prev:
+            return  # new update; resync without logging
+    logger.info("llama_update_progress", to_tag = job.to_tag or "", percent = step * 10)
+
+
 @router.get("/update-status", response_model = LlamaUpdateStatusResponse)
 async def llama_update_status(
     force_refresh: bool = Query(
@@ -78,7 +102,9 @@ async def llama_update_status(
 ) -> LlamaUpdateStatusResponse:
     # Off the event loop: detection may probe the host and read GitHub.
     status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
-    return LlamaUpdateStatusResponse(**status)
+    resp = LlamaUpdateStatusResponse(**status)
+    _log_llama_update_progress(resp.job)
+    return resp
 
 
 @router.post("/update", response_model = LlamaUpdateActionResponse)

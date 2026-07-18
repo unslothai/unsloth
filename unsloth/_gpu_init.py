@@ -26,6 +26,7 @@ already_imported = [mod for mod in critical_modules if mod in sys.modules]
 # Fix some issues before importing other packages
 from .import_fixes import (
     fix_message_factory_issue,
+    fix_torch_check_is_size,
     check_fbgemm_gpu_version,
     disable_broken_causal_conv1d,
     disable_broken_vllm,
@@ -72,6 +73,7 @@ fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
+fix_torch_check_is_size()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
@@ -81,6 +83,7 @@ del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
+del fix_torch_check_is_size
 del check_fbgemm_gpu_version
 del torchvision_compatibility_check
 del fix_diffusers_warnings
@@ -173,6 +176,7 @@ from .import_fixes import (
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
     fix_triton_compiled_kernel_missing_attrs,
+    fix_dynamo_config_thread_visibility,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
     patch_ipykernel_hf_xet,
@@ -203,6 +207,10 @@ fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
 fix_triton_compiled_kernel_missing_attrs()
+# Must run before unsloth_zoo's patch_torch_compile and the gpt-oss temporary
+# patches raise the dynamo recompile limits, so those settings reach the
+# autograd worker threads on torch >= 2.12.
+fix_dynamo_config_thread_visibility()
 patch_trunc_normal_precision_issue()
 ignore_logger_messages()
 patch_ipykernel_hf_xet()
@@ -233,6 +241,7 @@ del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
 del fix_triton_compiled_kernel_missing_attrs
+del fix_dynamo_config_thread_visibility
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet

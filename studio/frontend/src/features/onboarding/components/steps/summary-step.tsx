@@ -118,14 +118,14 @@ export function SummaryStep() {
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10">
-              <HugeiconsIcon icon={GpuIcon} className="size-4 text-emerald-600" />
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-control-accent/10">
+              <HugeiconsIcon icon={GpuIcon} className="size-4 text-control-accent" />
             </div>
             <div className="flex flex-1 flex-col">
               <span className="text-xs text-muted-foreground">GPU</span>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">{hw.gpuName ?? "---"}</span>
-                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GB` : "---"}</Badge>
+                <Badge variant="secondary">{hw.vramTotalGb != null ? `${hw.vramTotalGb} GiB` : "---"}</Badge>
               </div>
             </div>
           </div>
@@ -144,8 +144,8 @@ export function SummaryStep() {
         </CardHeader>
         <CardContent className="flex flex-1 flex-col">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10">
-              <HugeiconsIcon icon={ChipIcon} className="size-4 text-emerald-600" />
+            <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-control-accent/10">
+              <HugeiconsIcon icon={ChipIcon} className="size-4 text-control-accent" />
             </div>
             <div className="flex flex-1 flex-col overflow-hidden">
               <span className="text-xs text-muted-foreground">Model</span>
