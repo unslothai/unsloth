@@ -91,11 +91,7 @@ function Install-UnslothStudio {
         if ($TauriMode) {
             exit $Code
         }
-<<<<<<< HEAD
-        throw $Message
-=======
         return $Code
->>>>>>> 946c8179f (Studio: preserve Windows venv lifecycle outcomes)
     }
 
     # ── Parse flags ──
