@@ -4832,8 +4832,7 @@ def _is_broad_sandbox_library_path(path: str | Path, *, require_library_dir: boo
     if len(resolved.parts) <= 3 and resolved.parts[1].lower() in {"home", "users"}:
         return True
     if require_library_dir:
-        parts = PurePosixPath(str(path)).parts
-        if parts[-1].lower() not in _SANDBOX_LIBRARY_DIR_NAMES:
+        if resolved.name.lower() not in _SANDBOX_LIBRARY_DIR_NAMES:
             return True
     try:
         if resolved == Path.home().resolve():
@@ -5115,7 +5114,11 @@ def _linux_validation_bwrap_prefix(
             "/sys/bus/pci",
             "/sys/dev/char",
             "/sys/devices",
+            "/etc/vulkan",
+            "/usr/share/vulkan",
         ]
+        dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("card*"))
+        dev_nodes.extend(str(node) for node in Path("/dev/dri").glob("renderD*"))
         if gpu_backend == "cuda":
             dev_nodes.extend(
                 [
@@ -6163,6 +6166,7 @@ _PYTHON_IMPORT_POINTER_VARS = (
     "PYTHONHOME",
     "PYTHONPATH",
 )
+_LD_ALLOWED_ENV_NAMES = frozenset({"LD_LIBRARY_PATH"})
 _DYLD_ALLOWED_ENV_NAMES = frozenset({"DYLD_LIBRARY_PATH"})
 
 _isolated_runtime_home_dir: str | None = None
@@ -6196,6 +6200,9 @@ def scrubbed_environ() -> dict[str, str]:
     ):
         env.pop(pointer, None)
     for key in tuple(env):
+        if key.upper().startswith("LD_") and key.upper() not in _LD_ALLOWED_ENV_NAMES:
+            env.pop(key, None)
+            continue
         if key.upper().startswith("DYLD_") and key.upper() not in _DYLD_ALLOWED_ENV_NAMES:
             env.pop(key, None)
     return env
@@ -6234,15 +6241,21 @@ def binary_env(
         _native_rocm = _native_linux_system_rocm_lib_dirs(str(binary_path.parent))
         if _native_rocm:
             ld_dirs = [*_native_rocm, *ld_dirs]
-        existing = [part for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep) if part]
-        # An inherited entry under a mode-000 parent or a stale NFS mount is not
-        # ours to require. The bundle's own dirs stay strict.
+        existing = [
+            str(_resolve_existing_path(Path(part)))
+            for part in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+            if part and not _is_broad_sandbox_library_path(part)
+        ]
         required = dedupe_existing_dirs(ld_dirs)
         inherited = dedupe_existing_dirs(existing, skip_unusable = True)
         env["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
     elif host.is_macos:
         dyld_dirs = [str(binary_path.parent), str(install_dir)]
-        existing = [part for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep) if part]
+        existing = [
+            str(_resolve_existing_path(Path(part)))
+            for part in env.get("DYLD_LIBRARY_PATH", "").split(os.pathsep)
+            if part and not _is_broad_sandbox_library_path(part, require_library_dir = True)
+        ]
         required = dedupe_existing_dirs(dyld_dirs)
         inherited = dedupe_existing_dirs(existing, skip_unusable = True)
         env["DYLD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys([*required, *inherited]))
@@ -7557,7 +7570,7 @@ def existing_install_matches_choice(
                 [runtime_dir / "llama-server", runtime_dir / "llama-quantize"],
                 install_dir,
                 host,
-                allow_skipped_probe = False,
+                allow_skipped_probe = True,
             )
         except Exception:
             return False
