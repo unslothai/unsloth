@@ -98,11 +98,15 @@ function Install-UnslothStudio {
             exit $Code
         }
         # -File ignores $LASTEXITCODE on plain return, so `exit` carries the code; under
-        # `irm | iex` (no $PSCommandPath) `exit` would kill the user's shell, so set the var.
+        # `irm | iex` (no $PSCommandPath) `exit` would kill the user's shell. There, set
+        # the var for callers that check it, then raise a terminating error: interactive
+        # shells survive a throw and just print it, while `-Command "irm ... | iex"`
+        # automation exits 1 (a plain return would report success on fatal errors).
         if ($PSCommandPath) {
             exit $Code
         }
         $global:LASTEXITCODE = $Code
+        throw $Message
     }
 
     # ── Parse flags ──

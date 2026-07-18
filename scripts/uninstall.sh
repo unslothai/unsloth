@@ -224,13 +224,20 @@ if command -v pkill >/dev/null 2>&1; then
     # make children carry relative argv that no pattern can match, and killing
     # only the wrapper orphans them mid-build. Group kill sweeps the tree; PID
     # kill remains the fallback when pgid is unreadable or shared with init.
+    # Never group-kill our own group: in a non-interactive session (no job
+    # control) a lingering provisioner can share the uninstaller's pgid, and
+    # kill(-pgid) would TERM this script and its caller mid-cleanup. Fall back
+    # to the PID plus its direct children in that case.
+    _self_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]')
     _kill_llama_build() {
         _sig="$1"
         for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
             for _pid in $(pgrep -f "$_pat" 2>/dev/null); do
                 _pgid=$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]')
                 case "$_pgid" in
-                    ''|0|1) kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
+                    ''|0|1|"$_self_pgid")
+                        pkill "-$_sig" -P "$_pid" 2>/dev/null
+                        kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
                     *) kill -s "$_sig" -- "-$_pgid" 2>/dev/null \
                         || kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
                 esac

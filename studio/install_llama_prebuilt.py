@@ -3024,6 +3024,14 @@ def detect_host() -> HostInfo:
     macos_version = parse_macos_version(platform.mac_ver()[0]) if is_macos else None
 
     nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        # Root WSL sessions drop /usr/lib/wsl/lib (the only nvidia-smi home
+        # under WSL2 GPU-PV) from PATH, which would misroute an ARM NVIDIA WSL
+        # host to the CPU prebuilt; mirror setup.sh's resolver order.
+        for _cand in ("/usr/lib/wsl/lib/nvidia-smi", "/usr/bin/nvidia-smi"):
+            if os.access(_cand, os.X_OK):
+                nvidia_smi = _cand
+                break
     driver_cuda_version = None
     compute_caps: list[str] = []
     visible_cuda_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
