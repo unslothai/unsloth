@@ -2979,10 +2979,16 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # extras break 4-bit QLoRA, but aarch64 manylinux wheels work (verified on
     # sm_121 via PTX JIT). Best-effort: no wheel keeps 16-bit LoRA / full finetuning.
     # SKIP_TORCH gate stops a --no-torch (GGUF-only) install dragging torch back in.
+    # nvidia-smi may live only in /usr/lib/wsl/lib (WSL2 GPU-PV), which root login
+    # shells drop from PATH -- resolve explicitly (same order as setup.sh's
+    # _resolve_nvsmi) so the WoA/WSL install still gets 4-bit QLoRA support.
+    _bnb_nvsmi="$(command -v nvidia-smi 2>/dev/null || true)"
+    [ -z "$_bnb_nvsmi" ] && [ -x /usr/lib/wsl/lib/nvidia-smi ] && _bnb_nvsmi=/usr/lib/wsl/lib/nvidia-smi
+    [ -z "$_bnb_nvsmi" ] && [ -x /usr/bin/nvidia-smi ] && _bnb_nvsmi=/usr/bin/nvidia-smi
     if [ "$SKIP_TORCH" = false ] \
             && { [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; } \
-            && command -v nvidia-smi >/dev/null 2>&1 \
-            && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+            && [ -n "$_bnb_nvsmi" ] \
+            && "$_bnb_nvsmi" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
             && ! "$_VENV_PY" -c "import bitsandbytes" >/dev/null 2>&1; then
         substep "installing bitsandbytes (aarch64 wheels; enables 4-bit QLoRA)..."
         if ! uv pip install --python "$_VENV_PY" "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0" >/dev/null 2>&1; then

@@ -219,13 +219,27 @@ _remove_path "$HOME/.unsloth/studio"
 # _pkill_studio uses.
 if command -v pkill >/dev/null 2>&1; then
     _llama_re=$(_pkill_escape "$HOME/.unsloth/llama.cpp")
-    for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
-        pkill -TERM -f "$_pat" 2>/dev/null || true
-    done
+    # Signal the whole process GROUP of each match, not just the matching PID:
+    # the provisioner cds into the tree before `cmake --build build`, so cmake/
+    # make children carry relative argv that no pattern can match, and killing
+    # only the wrapper orphans them mid-build. Group kill sweeps the tree; PID
+    # kill remains the fallback when pgid is unreadable or shared with init.
+    _kill_llama_build() {
+        _sig="$1"
+        for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
+            for _pid in $(pgrep -f "$_pat" 2>/dev/null); do
+                _pgid=$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]')
+                case "$_pgid" in
+                    ''|0|1) kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
+                    *) kill -s "$_sig" -- "-$_pgid" 2>/dev/null \
+                        || kill -s "$_sig" "$_pid" 2>/dev/null || true ;;
+                esac
+            done
+        done
+    }
+    _kill_llama_build TERM
     sleep 0.5
-    for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
-        pkill -KILL -f "$_pat" 2>/dev/null || true
-    done
+    _kill_llama_build KILL
 fi
 # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
 # by deleting it). No-op in env/custom mode (they nest under the custom root) and

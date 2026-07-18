@@ -2223,6 +2223,13 @@ exit 0
         if ($env:UNSLOTH_PYTORCH_MIRROR -and ($env:UNSLOTH_PYTORCH_MIRROR -match '^https?://[A-Za-z0-9._~:/?#@%+=&-]+$')) {
             $_fwdEnv += "export UNSLOTH_PYTORCH_MIRROR='$($env:UNSLOTH_PYTORCH_MIRROR)'; "
         }
+        # Forward the npm mirror the same way: setup.sh threads UNSLOTH_NPM_REGISTRY
+        # into every npm/bun install, and on mirror-required networks the WSL
+        # frontend/OXC steps would otherwise hit registry.npmjs.org and fail the
+        # install. Same strict http(s) allow-list + single-quote as above.
+        if ($env:UNSLOTH_NPM_REGISTRY -and ($env:UNSLOTH_NPM_REGISTRY -match '^https?://[A-Za-z0-9._~:/?#@%+=&-]+$')) {
+            $_fwdEnv += "export UNSLOTH_NPM_REGISTRY='$($env:UNSLOTH_NPM_REGISTRY)'; "
+        }
         # Forward an explicit UNSLOTH_PYTHON pin: Windows env vars do not cross into
         # WSL, so without this the inner install.sh silently built the venv on its
         # default Python while the installer reported success. Strict version shape
@@ -2379,14 +2386,23 @@ exit 0
                 # Record the distro so the uninstaller can clean a custom UNSLOTH_WSL_DISTRO install
                 # without the env var set.
                 try { Set-Content -LiteralPath (Join-Path (Split-Path $shimDir -Parent) "wsl-distro.txt") -Value $distro -Encoding ASCII } catch {}
-                # A fresh profile may have no HKCU 'Path'; null would make TrimEnd() throw.
-                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-                if (-not $userPath) { $userPath = "" }
-                if (($userPath -split ';') -notcontains $shimDir) {
-                    $newUserPath = if ($userPath.Trim()) { $userPath.TrimEnd(';') + ";" + $shimDir } else { $shimDir }
-                    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-                }
-                $env:Path = $env:Path.TrimEnd(';') + ";" + $shimDir
+                # PREPEND (not append): a previous NATIVE install prepended
+                # %USERPROFILE%\.unsloth\studio\bin (unsloth.exe) to user PATH,
+                # and that exe outlives the venv this fallback just rolled aside
+                # -- an appended shim would lose to the dead native launcher in
+                # every new terminal. Add-ToUserPath de-dupes and hoists.
+                $null = Add-ToUserPath -Directory $shimDir -Position 'Prepend'
+                $env:Path = $shimDir + ";" + $env:Path.TrimStart(';')
+                # Drop the dead default-root native shim outright when the venv
+                # binary it launches is gone (custom-root shims are left alone;
+                # the PATH prepend above already outranks them).
+                try {
+                    $staleNativeShim = Join-Path $env:USERPROFILE ".unsloth\studio\bin\unsloth.exe"
+                    $staleNativeTarget = Join-Path $env:USERPROFILE ".unsloth\studio\unsloth_studio\Scripts\unsloth.exe"
+                    if ((Test-Path -LiteralPath $staleNativeShim) -and -not (Test-Path -LiteralPath $staleNativeTarget)) {
+                        Remove-Item -LiteralPath $staleNativeShim -Force -ErrorAction Stop
+                    }
+                } catch {}
                 step "shim" "created native 'unsloth' command -> forwards to WSL '$distro'" "Green"
                 substep "open a NEW terminal, then (no WSL knowledge needed):" "Cyan"
                 substep "    unsloth studio        # runs in WSL; opens http://localhost:8888" "Cyan"
