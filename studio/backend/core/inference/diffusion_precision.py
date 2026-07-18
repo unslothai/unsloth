@@ -452,8 +452,10 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
 
     # Idempotent: a pre-cast encoder (diffusion_te_prequant) arrives with the layerwise hooks
     # already installed, and re-registering the same hook name raises -- which would make
-    # quantize_text_encoders report the (actually engaged) cast as failed.
-    if _has_layerwise_hooks(encoder):
+    # quantize_text_encoders report the (actually engaged) cast as failed. Keyed on the explicit
+    # completion marker this function sets, NOT on hook presence alone: leftover hooks from a
+    # cast that failed mid-pass must still fail closed, not read as "already cast".
+    if getattr(encoder, "_unsloth_te_cast_complete", False) and _has_layerwise_hooks(encoder):
         return
 
     # Layerwise casting stores each leaf's weights in fp8 and upcasts per forward. Two things on a
@@ -497,26 +499,28 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     # result to randn_tensor, which has no fp8 kernel; VLM pipelines cast pixel_values to it,
     # racing the upcast hooks). The encoder computes in target.dtype, so report that.
     compute_dtype = getattr(target, "dtype", None)
-    if compute_dtype is not None and not getattr(encoder, "_unsloth_te_dtype_override", False):
-        cls = type(encoder)
-        encoder.__class__ = type(
-            cls.__name__,
-            (cls,),
-            {
-                "dtype": property(lambda self, _d = compute_dtype: _d),
-                "_unsloth_te_dtype_override": True,
-            },
-        )
+    try:
+        if compute_dtype is not None and not getattr(encoder, "_unsloth_te_dtype_override", False):
+            cls = type(encoder)
+            encoder.__class__ = type(
+                cls.__name__,
+                (cls,),
+                {
+                    "dtype": property(lambda self, _d = compute_dtype: _d),
+                    "_unsloth_te_dtype_override": True,
+                },
+            )
+        # Marks the cast COMPLETE (hooks fully installed), enabling the idempotent early return
+        # above. Best-effort like the dtype override: a non-Module double without settable
+        # attributes still counts as cast, it just re-casts on a repeat call.
+        encoder._unsloth_te_cast_complete = True
+    except Exception:  # noqa: BLE001 — real HF encoders are heap-type nn.Modules; only doubles fail
+        pass
 
 
 def _has_layerwise_hooks(encoder: Any) -> bool:
     """True when any submodule already carries the diffusers layerwise-casting hook."""
-    for module in encoder.modules():
-        registry = getattr(module, "_diffusers_hook", None)
-        get_hook = getattr(registry, "get_hook", None)
-        if callable(get_hook) and get_hook("layerwise_casting") is not None:
-            return True
-    return False
+    return _has_layerwise_casting(encoder)
 
 
 def _cast_nvfp4(encoder: Any, target: Any) -> None:
