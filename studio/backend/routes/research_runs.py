@@ -239,7 +239,7 @@ async def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    if db.has_thread_claim(current_subject, payload.threadId):
+    if db.has_thread_claim(payload.threadId):
         raise HTTPException(
             status_code = 409,
             detail = "This thread already has a Deep Research run",
@@ -271,7 +271,7 @@ async def active_research_runs(
 ):
     return {
         "runs": db.list_active(current_subject, thread_id),
-        "hasRun": db.has_thread_claim(current_subject, thread_id),
+        "hasRun": db.has_thread_claim(thread_id),
     }
 
 

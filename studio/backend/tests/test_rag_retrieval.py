@@ -4,6 +4,8 @@
 """Retrieval + tool tests: RRF fusion, min-score floor, scope, source-map."""
 
 import math
+import threading
+import time
 
 import pytest
 
@@ -190,6 +192,55 @@ def test_dispatcher_no_sentinel_when_no_hits(rag_home, monkeypatch):
     monkeypatch.setattr(retrieval, "retrieve_hybrid", lambda conn, scope, q, **k: [])
     out = tools._search_knowledge_base({"query": "hello"}, {"kb_id": "missing"})
     assert tools.RAG_SOURCES_SENTINEL not in out
+
+
+def test_knowledge_search_honors_cancellation_and_timeout(monkeypatch):
+    from core.inference import tools
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def stalled_search(arguments, rag_scope):
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait()
+        return "late"
+
+    monkeypatch.setattr(tools, "_search_knowledge_base", stalled_search)
+    cancel = threading.Event()
+
+    def cancel_after_start():
+        started.wait()
+        cancel.set()
+
+    threading.Thread(target = cancel_after_start, daemon = True).start()
+    began = time.monotonic()
+    try:
+        cancelled = tools.execute_tool(
+            "search_knowledge_base",
+            {"query": "q"},
+            cancel_event = cancel,
+            timeout = 30,
+            rag_scope = {"kb_id": "a"},
+        )
+        assert "cancelled" in cancelled.lower()
+        assert time.monotonic() - began < 1
+
+        started.clear()
+        timed_out = tools.execute_tool(
+            "search_knowledge_base",
+            {"query": "q"},
+            timeout = 0,
+            rag_scope = {"kb_id": "a"},
+        )
+        assert "timed out" in timed_out.lower()
+        assert calls == 1
+    finally:
+        release.set()
+        assert tools._RAG_SEARCH_SLOT.acquire(timeout = 1)
+        tools._RAG_SEARCH_SLOT.release()
 
 
 def test_search_for_autoinject_gates_on_dense_score(rag_conn, bow_embeddings, monkeypatch):

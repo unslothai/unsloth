@@ -136,12 +136,41 @@ def test_planner_uses_last_valid_plan_when_reasoning_contains_a_draft():
     assert worker._parse_and_validate_plan("", reasoning, 5) == _plan()
 
 
+def test_synthesis_evidence_is_bounded_across_all_steps():
+    from core import research_runs as worker
+
+    evidence = worker._bounded_synthesis_evidence(
+        [f"### Step {index}\n" + "x" * 20_000 for index in range(12)]
+    )
+
+    assert len(evidence) <= worker._MAX_SYNTHESIS_EVIDENCE_CHARS
+    assert all(f"### Step {index}" in evidence for index in range(12))
+
+
 def test_report_is_recovered_from_substantial_synthesis_reasoning():
     from core import research_runs as worker
 
     report = "**Executive Summary**\n\n" + ("Evidence-based conclusion. " * 30)
     reasoning = "I will organize the final answer.\n" + report
     assert worker._recover_report_from_reasoning(reasoning) == report.strip()
+
+
+def test_document_citations_are_restricted_to_persisted_sources():
+    from core import research_runs as worker
+
+    report = (
+        "Supported [Document: private.pdf, p. 2]. "
+        "Fabricated [Document: invented.pdf, p. 9] and "
+        "[Document: multiline.pdf,\np. 3]."
+    )
+    validated = worker._validate_report_document_sources(
+        report,
+        [{"filename": "private.pdf", "page": 2}],
+    )
+
+    assert "[Document: private.pdf, p. 2]" in validated
+    assert "invented.pdf" not in validated
+    assert "multiline.pdf" not in validated
     assert worker._recover_report_from_reasoning("Too short") == ""
     assert worker._recover_report_from_reasoning("Internal analysis. " * 50) == ""
     assert (
@@ -288,8 +317,79 @@ def test_schema_and_state_transitions(research_home):
         "research_thread_claims",
         "research_plan_steps",
         "research_sources",
+        "research_document_sources",
         "research_events",
     }
+
+
+def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db.upsert_chat_thread(
+        {
+            "id": "shared-thread",
+            "title": "Shared",
+            "modelType": "base",
+            "modelId": "model",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "shared-user",
+            "threadId": "shared-thread",
+            "role": "user",
+            "content": [{"type": "text", "text": "Question"}],
+            "createdAt": 2,
+        }
+    )
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("DROP TABLE research_thread_claims")
+        conn.execute(
+            """CREATE TABLE research_thread_claims (
+                   owner_subject TEXT NOT NULL,
+                   thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+                   created_at INTEGER NOT NULL,
+                   PRIMARY KEY(owner_subject, thread_id)
+               ) WITHOUT ROWID"""
+        )
+        conn.executemany(
+            "INSERT INTO research_thread_claims VALUES (?, 'shared-thread', ?)",
+            [("bob", 20), ("alice", 10)],
+        )
+        conn.executemany(
+            """INSERT INTO research_runs
+               (id, owner_subject, thread_id, user_message_id, status, config_json,
+                created_at, updated_at)
+               VALUES (?, ?, 'shared-thread', 'shared-user', 'queued', '{}', ?, ?)""",
+            [("bob-run", "bob", 20, 20), ("alice-run", "alice", 10, 10)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    studio_db._schema_ready = False
+    conn = studio_db.get_connection()
+    try:
+        primary_key = [
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(research_thread_claims)").fetchall()
+            if row["pk"]
+        ]
+        claims = conn.execute(
+            "SELECT owner_subject, thread_id FROM research_thread_claims"
+        ).fetchall()
+        runs = conn.execute("SELECT id, status FROM research_runs ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+    assert primary_key == ["thread_id"]
+    assert [tuple(row) for row in claims] == [("alice", "shared-thread")]
+    assert [tuple(row) for row in runs] == [("alice-run", "queued"), ("bob-run", "failed")]
+    with pytest.raises(research_db.ResearchConflictError, match = "does not own"):
+        research_db.retry("bob-run")
+    assert research_db.claim_next("migration-worker")["id"] == "alice-run"
 
 
 def test_pruning_messages_preserves_runs_whose_user_message_survives(research_home):
@@ -313,7 +413,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
     studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
 
     assert research_db.get_run("run-1") is not None
-    assert research_db.has_thread_claim("alice", "thread-1") is True
+    assert research_db.has_thread_claim("thread-1") is True
     assert studio_db.get_chat_message("thread-1", "temporary") is None
 
 
@@ -482,11 +582,23 @@ def test_execution_reset_clears_steps_and_sources(research_home):
         "run-1", 0, "Old step", "old query", "completed", worker_id = "worker-1"
     )
     research_db.upsert_source("run-1", 0, "https://old.example", "Old", "Stale", "worker-1")
+    research_db.upsert_document_source(
+        "run-1",
+        0,
+        {
+            "documentId": "doc-old",
+            "chunkId": "chunk-old",
+            "filename": "old.pdf",
+            "text": "Stale private evidence",
+        },
+        "worker-1",
+    )
 
     assert research_db.reset_execution_steps("run-1", "worker-1") is True
     run = research_db.get_run("run-1")
     assert run["steps"] == []
     assert run["sources"] == []
+    assert run["documentSources"] == []
 
 
 def test_supervisor_stop_signals_tool_cancellation_before_task_cancelled(research_home):
@@ -848,6 +960,8 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
             return json.dumps(_plan()), "Planned several lines of inquiry.", "stop"
         if "iterative research process" in system:
             return next(decisions), "Evaluated the evidence and selected the next action.", "stop"
+        assert "<document_source_catalog>" in prompt
+        assert "private.pdf" in prompt
         report = report_response
         research_db.set_report_progress(run["id"], report)
         return report, "Checked the available evidence.", "stop"
@@ -857,7 +971,22 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
     def fake_tool(name, arguments, *args, **kwargs):
         tool_calls.append((name, kwargs))
         if name == "search_knowledge_base":
-            return "Private evidence"
+            return (
+                "Private evidence"
+                + worker.RAG_SOURCES_SENTINEL
+                + json.dumps(
+                    [
+                        {
+                            "chunkId": "doc-1:0",
+                            "documentId": "doc-1",
+                            "filename": "private.pdf",
+                            "page": 2,
+                            "text": "Private durable evidence",
+                            "score": 0.9,
+                        }
+                    ]
+                )
+            )
         if arguments.get("url"):
             return "Full page evidence."
         return "Title: Example\nURL: https://example.com\nSnippet: Evidence snippet."
@@ -882,6 +1011,8 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
     assert completed["status"] == "completed"
     assert completed["report"].startswith("# Final report")
     assert completed["sources"][0]["url"] == "https://example.com"
+    assert completed["documentSources"][0]["documentId"] == "doc-1"
+    assert completed["documentSources"][0]["filename"] == "private.pdf"
     assert completed["steps"][0]["query"] == "example evidence"
     assert completed["steps"][0]["input"] == "example evidence"
     assert completed["steps"][0]["result"]["input"] == "example evidence"
@@ -991,6 +1122,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
     assert completed["status"] == "completed"
     assert [step["position"] for step in completed["steps"]] == [0]
     assert [source["url"] for source in completed["sources"]] == ["https://saved.example/source"]
+    assert [source["filename"] for source in completed["documentSources"]] == ["private.txt"]
     assert completed["report"].startswith("# Resumed report")
 
 
@@ -1096,7 +1228,7 @@ def test_assistant_discovery_binding_and_terminal_fallback_are_idempotent(resear
 
 def test_research_claim_lasts_for_thread_lifetime(research_home):
     _create()
-    assert research_db.has_thread_claim("alice", "thread-1") is True
+    assert research_db.has_thread_claim("thread-1") is True
 
     conn = studio_db.get_connection()
     try:
@@ -1105,7 +1237,7 @@ def test_research_claim_lasts_for_thread_lifetime(research_home):
     finally:
         conn.close()
     assert research_db.get_run("run-1") is None
-    assert research_db.has_thread_claim("alice", "thread-1") is True
+    assert research_db.has_thread_claim("thread-1") is True
 
     studio_db.upsert_chat_message(
         {
@@ -1124,7 +1256,23 @@ def test_research_claim_lasts_for_thread_lifetime(research_home):
         )
 
     studio_db.delete_chat_threads(["thread-1"])
-    assert research_db.has_thread_claim("alice", "thread-1") is False
+    assert research_db.has_thread_claim("thread-1") is False
+
+
+def test_research_claim_is_global_across_authenticated_subjects(research_home):
+    first = _create()
+
+    with pytest.raises(research_db.ResearchConflictError, match = "already has"):
+        research_db.create_run(
+            run_id = "run-2",
+            owner_subject = "bob",
+            thread_id = "thread-1",
+            user_message_id = "user-1",
+            assistant_message_id = None,
+            config = first["config"],
+        )
+
+    assert research_db.has_thread_claim("thread-1") is True
 
 
 def test_list_active_returns_complete_snapshots(research_home):

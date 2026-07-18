@@ -62,6 +62,12 @@ export interface ResearchSource {
   fetchedAt?: number;
 }
 
+export interface ResearchDocumentSource extends ResearchEvidenceSource {
+  id?: string | number;
+  stepPosition?: number | null;
+  fetchedAt?: number;
+}
+
 export interface ResearchInferenceRequest {
   model: string;
   temperature?: number;
@@ -104,6 +110,7 @@ export interface ResearchRun {
   planHash: string | null;
   steps: ResearchStepSnapshot[];
   sources: ResearchSource[];
+  documentSources?: ResearchDocumentSource[];
   config?: {
     model?: string;
     inferenceRequest?: Record<string, unknown>;

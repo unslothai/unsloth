@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-import { MarkdownPreview } from "@/components/markdown/markdown-preview";
+import type { Citation } from "@/components/assistant-ui/citation-utils";
+import { DocumentSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import {
   type SourceData,
   SourcesGroup,
 } from "@/components/assistant-ui/sources";
+import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
-import {
-  Check,
-  Telescope,
-  TriangleAlert,
-} from "lucide-react";
+import { Check, Telescope, TriangleAlert } from "lucide-react";
 import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
@@ -76,6 +74,21 @@ export function ResearchMessage(): ReactElement {
       title: source.title || source.url,
       description: source.snippet ?? undefined,
     }));
+    const documentSources: Citation[] = (run.documentSources ?? []).map(
+      (source, index) => ({
+        id: source.chunkId ?? String(source.id ?? index),
+        filename: source.filename,
+        page: source.page,
+        score: source.score,
+        text: source.snippet ?? "",
+        documentId: source.documentId,
+        chunkId: source.chunkId,
+      }),
+    );
+    const documentCount = new Set(
+      documentSources.map((source) => source.documentId ?? source.filename),
+    ).size;
+    const sourceCount = sources.length + documentCount;
     return (
       <div className="min-w-0">
         <button
@@ -86,7 +99,7 @@ export function ResearchMessage(): ReactElement {
           <span className="flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary">
             <Check className="size-3" />
           </span>
-          <span>Deep research completed · {run.sources.length} sources</span>
+          <span>Deep research completed · {sourceCount} sources</span>
           <span className="text-primary">View activity</span>
         </button>
         <MarkdownPreview
@@ -94,6 +107,7 @@ export function ResearchMessage(): ReactElement {
           className="max-h-none overflow-visible border-0 bg-transparent p-0 text-[15.5px]"
         />
         <SourcesGroup sources={sources} />
+        <DocumentSourcesGroup sources={documentSources} />
       </div>
     );
   }

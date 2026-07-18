@@ -151,8 +151,8 @@ def create_run(
             )
         except sqlite3.IntegrityError as exc:
             claim = conn.execute(
-                "SELECT 1 FROM research_thread_claims WHERE owner_subject=? AND thread_id=?",
-                (owner_subject, thread_id),
+                "SELECT 1 FROM research_thread_claims WHERE thread_id=?",
+                (thread_id,),
             ).fetchone()
             if claim is not None:
                 raise ResearchConflictError("This thread already has a Deep Research run") from exc
@@ -295,6 +295,16 @@ def get_run(run_id: str, owner_subject: str | None = None) -> dict | None:
                 (run_id,),
             ).fetchall()
         ]
+        result["documentSources"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, step_position AS stepPosition, document_id AS documentId, "
+                "chunk_id AS chunkId, filename, page, score, snippet, "
+                "fetched_at AS fetchedAt FROM research_document_sources "
+                "WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        ]
         return result
     finally:
         conn.close()
@@ -314,13 +324,13 @@ def list_active(owner_subject: str, thread_id: str) -> list[dict]:
     return [run for row in rows if (run := get_run(row["id"], owner_subject)) is not None]
 
 
-def has_thread_claim(owner_subject: str, thread_id: str) -> bool:
+def has_thread_claim(thread_id: str) -> bool:
     conn = get_connection()
     try:
         return (
             conn.execute(
-                "SELECT 1 FROM research_thread_claims WHERE owner_subject=? AND thread_id=?",
-                (owner_subject, thread_id),
+                "SELECT 1 FROM research_thread_claims WHERE thread_id=?",
+                (thread_id,),
             ).fetchone()
             is not None
         )
@@ -607,6 +617,12 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
         if int(row["retry_count"]) >= max_retries:
             raise ResearchConflictError("Retry budget exhausted")
+        claim = conn.execute(
+            "SELECT owner_subject FROM research_thread_claims WHERE thread_id=?",
+            (row["thread_id"],),
+        ).fetchone()
+        if claim is None or claim["owner_subject"] != row["owner_subject"]:
+            raise ResearchConflictError("This run does not own the thread research claim")
         placeholders = ",".join("?" for _ in ACTIVE_STATUSES)
         active = conn.execute(
             f"SELECT id FROM research_runs WHERE owner_subject=? AND thread_id=? AND id<>? "
@@ -640,6 +656,7 @@ def retry(run_id: str, max_retries: int = 3) -> str:
         if status != "awaiting_approval":
             conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM research_document_sources WHERE run_id = ?", (run_id,))
         _event_locked(conn, run_id, "run.retried", {"status": status})
         _commit_event(conn)
         return status
@@ -656,10 +673,12 @@ def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
         conn.execute("BEGIN IMMEDIATE")
         now = now_ms()
         row = conn.execute(
-            """SELECT * FROM research_runs
-               WHERE status IN ('planning','queued','running','cancelling')
-                 AND (lease_owner IS NULL OR lease_expires_at < ?)
-               ORDER BY created_at LIMIT 1""",
+            """SELECT r.* FROM research_runs r
+               JOIN research_thread_claims c ON c.thread_id=r.thread_id
+               WHERE r.owner_subject=c.owner_subject
+                 AND r.status IN ('planning','queued','running','cancelling')
+                 AND (r.lease_owner IS NULL OR r.lease_expires_at < ?)
+               ORDER BY r.created_at LIMIT 1""",
             (now,),
         ).fetchone()
         if row is None:
@@ -875,6 +894,7 @@ def reset_execution_steps(run_id: str, worker_id: str | None = None) -> bool:
             return False
         conn.execute("DELETE FROM research_plan_steps WHERE run_id = ?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM research_document_sources WHERE run_id = ?", (run_id,))
         conn.commit()
         return True
     except Exception:
@@ -899,6 +919,10 @@ def prepare_execution_resume(run_id: str, worker_id: str) -> bool:
         ).fetchall()
         conn.executemany(
             "DELETE FROM research_sources WHERE run_id = ? AND step_position = ?",
+            [(run_id, int(row["position"])) for row in interrupted],
+        )
+        conn.executemany(
+            "DELETE FROM research_document_sources WHERE run_id = ? AND step_position = ?",
             [(run_id, int(row["position"])) for row in interrupted],
         )
         conn.execute(
@@ -1042,6 +1066,60 @@ def upsert_source(
             },
         )
         _commit_event(conn)
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def upsert_document_source(
+    run_id: str,
+    position: int,
+    source: dict[str, Any],
+    worker_id: str | None = None,
+) -> bool:
+    filename = str(source.get("filename") or "Document")[:500]
+    document_id = source.get("documentId")
+    chunk_id = source.get("chunkId")
+    page = source.get("page")
+    source_key = str(chunk_id or f"{document_id or filename}:{page or ''}")[:1000]
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if worker_id is not None and not _worker_can_write_locked(
+            conn,
+            run_id,
+            worker_id,
+            {"running"},
+        ):
+            conn.commit()
+            return False
+        fetched_at = now_ms()
+        conn.execute(
+            """INSERT INTO research_document_sources
+               (run_id, step_position, source_key, document_id, chunk_id, filename,
+                page, score, snippet, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id, source_key) DO UPDATE SET
+               step_position=excluded.step_position, document_id=excluded.document_id,
+               chunk_id=excluded.chunk_id, filename=excluded.filename, page=excluded.page,
+               score=excluded.score, snippet=excluded.snippet, fetched_at=excluded.fetched_at""",
+            (
+                run_id,
+                position,
+                source_key,
+                str(document_id)[:500] if document_id is not None else None,
+                str(chunk_id)[:500] if chunk_id is not None else None,
+                filename,
+                int(page) if isinstance(page, (int, float)) else None,
+                float(source["score"]) if isinstance(source.get("score"), (int, float)) else None,
+                str(source.get("text") or source.get("snippet") or "")[:4000],
+                fetched_at,
+            ),
+        )
+        conn.commit()
         return True
     except Exception:
         conn.rollback()

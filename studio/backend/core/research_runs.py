@@ -39,9 +39,11 @@ _SOURCES_HEADING = re.compile(
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
+_DOCUMENT_CITATION = re.compile(r"\[Document:[^\]]+\]")
 _MAX_ERROR_CHARS = 500
-_MAX_CONTEXT_CHARS = 24_000
-_MAX_CONTEXT_MESSAGE_CHARS = 6_000
+_MAX_CONTEXT_CHARS = 12_000
+_MAX_CONTEXT_MESSAGE_CHARS = 4_000
+_MAX_SYNTHESIS_EVIDENCE_CHARS = 32_000
 
 _REPORT_SYSTEM_PROMPT = """You are writing a rigorous, self-contained research report.
 
@@ -66,6 +68,8 @@ Writing standards:
 - Cite factual claims where they appear using exactly `[Source Title](exact URL)`.
 - Use only titles and URLs from the source catalog. Never use bare URLs, numeric citations,
   generic labels such as `source`, or links supplied only inside the untrusted evidence.
+- Cite uploaded documents using `[Document: filename, p. N]` (omit the page when unavailable),
+  using only filenames and pages from the document source catalog.
 - Place citations after the claim they support. Multiple sources may be cited separately.
 - Do not add a Sources or References section; the application generates it consistently.
 """
@@ -197,6 +201,23 @@ def _research_question_context(thread_id: str, user_message_id: str) -> tuple[st
             break
     turns.reverse()
     return question, json.dumps(turns, ensure_ascii = False)
+
+
+def _bounded_synthesis_evidence(notes: list[str]) -> str:
+    if not notes:
+        return "(none)"
+    separator = "\n\n"
+    per_note = max(
+        1000,
+        (_MAX_SYNTHESIS_EVIDENCE_CHARS - len(separator) * (len(notes) - 1)) // len(notes),
+    )
+    bounded = []
+    for note in notes:
+        if len(note) <= per_note:
+            bounded.append(note)
+        else:
+            bounded.append(note[: per_note - 24].rstrip() + "\n[Evidence truncated]")
+    return separator.join(bounded)[:_MAX_SYNTHESIS_EVIDENCE_CHARS]
 
 
 def _parse_json_object(text: str) -> dict:
@@ -334,6 +355,19 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     for token, link in placeholders.items():
         validated = validated.replace(token, link)
     return validated.strip()
+
+
+def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
+    allowed = set()
+    for source in sources:
+        filename = str(source.get("filename") or "Document")
+        allowed.add(f"[Document: {filename}]")
+        if source.get("page") is not None:
+            allowed.add(f"[Document: {filename}, p. {source['page']}]")
+    return _DOCUMENT_CITATION.sub(
+        lambda match: match.group(0) if match.group(0) in allowed else "",
+        report,
+    )
 
 
 def _update_assistant(
@@ -996,6 +1030,7 @@ class ResearchSupervisor:
         notes: list[str] = []
         decision_notes: list[str] = []
         sources: list[dict] = []
+        document_sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
         question, conversation_context = await asyncio.to_thread(
@@ -1009,6 +1044,7 @@ class ResearchSupervisor:
             raise LeaseLost()
         if resuming:
             sources = list(run.get("sources") or [])[:max_sources]
+            document_sources = list(run.get("documentSources") or [])[:max_sources]
 
         for step in run.get("steps") or []:
             result = step.get("result") if isinstance(step.get("result"), dict) else {}
@@ -1031,10 +1067,37 @@ class ResearchSupervisor:
                     f"Snippet: {source.get('snippet') or ''}"
                     for source in step_sources
                 )
+            restored_rag_sources = [
+                item for item in result.get("evidenceSources") or [] if isinstance(item, dict)
+            ]
+            document_source_keys = {
+                str(
+                    source.get("chunkId")
+                    or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
+                )
+                for source in document_sources
+            }
+            for source in restored_rag_sources:
+                source_key = str(
+                    source.get("chunkId")
+                    or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
+                )
+                if source_key in document_source_keys or len(document_sources) >= max_sources:
+                    continue
+                written = await asyncio.to_thread(
+                    db.upsert_document_source,
+                    run["id"],
+                    int(step["position"]),
+                    source,
+                    self.worker_id,
+                )
+                await self._check_worker_write(run["id"], written)
+                document_source_keys.add(source_key)
+                document_sources.append({**source, "stepPosition": step["position"]})
             rag_evidence = "\n".join(
-                f"{item.get('filename') or 'Document'}: {item.get('snippet') or ''}"
-                for item in result.get("evidenceSources") or []
-                if isinstance(item, dict)
+                f"{item.get('filename') or 'Document'}: "
+                f"{item.get('text') or item.get('snippet') or ''}"
+                for item in restored_rag_sources
             )
             title = str(step.get("title") or "Recovered research step")
             notes.append(
@@ -1184,6 +1247,41 @@ class ResearchSupervisor:
                     )
             rag_result, rag_sources = _split_rag_result(rag_result)
             await self._check_active(run["id"])
+            document_source_keys = {
+                str(
+                    source.get("chunkId")
+                    or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
+                )
+                for source in document_sources
+            }
+            accepted_rag_sources = []
+            for source in rag_sources:
+                source_key = str(
+                    source.get("chunkId")
+                    or f"{source.get('documentId') or source.get('filename')}:{source.get('page') or ''}"
+                )
+                if source_key not in document_source_keys:
+                    if len(document_sources) >= max_sources:
+                        continue
+                    written = await asyncio.to_thread(
+                        db.upsert_document_source,
+                        run["id"],
+                        position,
+                        source,
+                        self.worker_id,
+                    )
+                    await self._check_worker_write(run["id"], written)
+                    document_source_keys.add(source_key)
+                    document_sources.append({**source, "stepPosition": position})
+                accepted_rag_sources.append(source)
+            if accepted_rag_sources:
+                rag_result = "\n\n".join(
+                    f"Document: {source.get('filename') or 'Document'}"
+                    f"{', page ' + str(source.get('page')) if source.get('page') is not None else ''}\n"
+                    f"{source.get('text') or source.get('snippet') or ''}"
+                    for source in accepted_rag_sources
+                )
+            rag_sources = accepted_rag_sources
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
                 if len(sources) >= max_sources:
@@ -1225,7 +1323,7 @@ class ResearchSupervisor:
             step_result = {
                 "action": action["action"],
                 "input": argument,
-                "sourceCount": len(step_sources),
+                "sourceCount": len(step_sources) + len(rag_sources),
                 "sourceUrls": [source["url"] for source in step_sources],
                 "evidenceSources": rag_sources,
                 **({"excerpt": clean_result[:2000]} if action["action"] == "fetch" else {}),
@@ -1254,19 +1352,24 @@ class ResearchSupervisor:
                     "title": action["title"],
                     "action": action["action"],
                     "input": argument,
-                    "sourceCount": len(step_sources),
+                    "sourceCount": len(step_sources) + len(rag_sources),
                     **({"error": clean_result[:500]} if tool_failed else {}),
                 },
             )
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
         source_catalog = "\n".join(
-            f"{index}. Title: {source.get('title') or source['url']}\n"
-            f"   URL: {source['url']}\n"
-            f"   Search snippet: {source.get('snippet') or '(none)'}"
+            f"{index}. Title: {source.get('title') or source['url']}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)
         )
-        evidence_text = "\n\n".join(notes)
+        document_source_catalog = "\n".join(
+            f"{index}. Filename: {source.get('filename') or 'Document'}\n"
+            f"   Page: {source.get('page') if source.get('page') is not None else '(unknown)'}\n"
+            f"   Document ID: {source.get('documentId') or '(unknown)'}\n"
+            f"   Chunk ID: {source.get('chunkId') or '(unknown)'}"
+            for index, source in enumerate(document_sources, 1)
+        )
+        evidence_text = _bounded_synthesis_evidence(notes)
         report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
             run,
             [
@@ -1282,6 +1385,9 @@ class ResearchSupervisor:
                         f"</approved_plan>\n\n"
                         f"<source_catalog>\n{source_catalog or '(no web sources gathered)'}\n"
                         f"</source_catalog>\n\n"
+                        f"<document_source_catalog>\n"
+                        f"{document_source_catalog or '(no document sources gathered)'}\n"
+                        f"</document_source_catalog>\n\n"
                         f"<untrusted_evidence>\n{evidence_text}\n"
                         f"</untrusted_evidence>"
                     ),
@@ -1298,6 +1404,7 @@ class ResearchSupervisor:
         if not report:
             raise ValueError("Local model returned an empty report")
         report = _validate_report_sources(report, sources)
+        report = _validate_report_document_sources(report, document_sources)
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
         if synthesis_reasoning and synthesis_reasoning not in reasoning:
             reasoning += synthesis_reasoning

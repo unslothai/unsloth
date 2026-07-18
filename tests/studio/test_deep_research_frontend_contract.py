@@ -86,6 +86,8 @@ def test_research_presentation_is_integrated() -> None:
     store = source("features/chat/stores/chat-runtime-store.ts")
     activity = source("features/chat/components/research-activity-panel.tsx")
     message = source("features/chat/components/research-message.tsx")
+    markdown_preview = source("components/markdown/markdown-preview.tsx")
+    safe_markdown_url = source("lib/safe-markdown-url.ts")
     coordinator = source("features/chat/stores/research-run-store.ts")
     assert "DeepResearchComposerButton" in thread
     assert "Deep research" in thread
@@ -103,6 +105,9 @@ def test_research_presentation_is_integrated() -> None:
     assert "Stop research" not in activity
     assert "retryResearchRun" in activity
     assert "Deep research completed" in message
+    assert "<DocumentSourcesGroup" in message
+    assert "urlTransform={safeMarkdownUrl}" in markdown_preview
+    assert 'node.tagName !== "img"' in safe_markdown_url
     assert "ensureResearchRunFollowed" in coordinator
     assert "reasoning.updated" in coordinator
     assert "source.added" in coordinator

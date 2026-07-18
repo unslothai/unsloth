@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { openLink } from "@/lib/open-link";
+import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { cn } from "@/lib/utils";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
@@ -56,6 +57,7 @@ function MarkdownPreviewImpl({
         mode="static"
         plugins={MARKDOWN_PLUGINS}
         components={MARKDOWN_COMPONENTS}
+        urlTransform={safeMarkdownUrl}
         controls={false}
         className={markdownClassName}
       >

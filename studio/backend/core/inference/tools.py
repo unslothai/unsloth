@@ -48,6 +48,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
+_RAG_SEARCH_SLOT = threading.BoundedSemaphore(1)
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -3211,7 +3212,12 @@ def execute_tool(
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
-        return _search_knowledge_base(arguments, rag_scope)
+        return _search_knowledge_base_with_budget(
+            arguments,
+            rag_scope,
+            effective_timeout,
+            cancel_event,
+        )
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
@@ -3335,6 +3341,65 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         import json as _json
         return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
+
+
+def _search_knowledge_base_with_budget(
+    arguments: dict,
+    rag_scope: dict | None,
+    timeout: int | None,
+    cancel_event = None,
+) -> str:
+    if cancel_event is not None and cancel_event.is_set():
+        return "Error: knowledge base search cancelled."
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    while not _RAG_SEARCH_SLOT.acquire(timeout = 0.05):
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: knowledge base search cancelled."
+        if deadline is not None and time.monotonic() >= deadline:
+            return "Error: knowledge base search timed out."
+    if cancel_event is not None and cancel_event.is_set():
+        _RAG_SEARCH_SLOT.release()
+        return "Error: knowledge base search cancelled."
+    if deadline is not None and time.monotonic() >= deadline:
+        _RAG_SEARCH_SLOT.release()
+        return "Error: knowledge base search timed out."
+
+    if timeout is None and cancel_event is None:
+        try:
+            return _search_knowledge_base(arguments, rag_scope)
+        finally:
+            _RAG_SEARCH_SLOT.release()
+
+    result: queue.Queue = queue.Queue(maxsize = 1)
+
+    def search() -> None:
+        try:
+            result.put((True, _search_knowledge_base(arguments, rag_scope)))
+        except BaseException as exc:
+            result.put((False, exc))
+        finally:
+            _RAG_SEARCH_SLOT.release()
+
+    try:
+        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+    except Exception:
+        _RAG_SEARCH_SLOT.release()
+        raise
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: knowledge base search cancelled."
+        if deadline is not None and time.monotonic() >= deadline:
+            return "Error: knowledge base search timed out."
+        wait = 0.05
+        if deadline is not None:
+            wait = min(wait, max(0.001, deadline - time.monotonic()))
+        try:
+            ok, value = result.get(timeout = wait)
+        except queue.Empty:
+            continue
+        if ok:
+            return value
+        raise value
 
 
 # Forced first-pass RAG retrieval: a high cosine floor keeps it precise (fires on
@@ -4432,7 +4497,7 @@ def _web_search(
                 continue
             title = " ".join(str(r.get("title") or "").split())
             snippet = " ".join(str(r.get("body") or "").split())
-            parts.append(f"Title: {title}\n" f"URL: {href}\n" f"Snippet: {snippet}")
+            parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
             return "No results found within the website access limits."
         text = "\n\n---\n\n".join(parts)
