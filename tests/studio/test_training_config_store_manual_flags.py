@@ -1,7 +1,16 @@
 from pathlib import Path
 
 
-STORE = Path(__file__).resolve().parents[2] / "studio" / "frontend" / "src" / "features" / "training" / "stores" / "training-config-store.ts"
+STORE = (
+    Path(__file__).resolve().parents[2]
+    / "studio"
+    / "frontend"
+    / "src"
+    / "features"
+    / "training"
+    / "stores"
+    / "training-config-store.ts"
+)
 
 
 def test_v12_migration_seeds_context_length_manual_intent():
