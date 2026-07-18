@@ -9,29 +9,16 @@ import {
 /**
  * Colab-style Ctrl/Cmd+A inside a cell output.
  *
- * In JupyterLab, clicking a cell's output leaves the notebook in command mode
- * (an output area is not an editor), so Ctrl/Cmd+A fires `notebook:select-all`
- * which selects EVERY cell in the notebook. On a large notebook that is both
- * surprising and laggy. Colab instead selects only the text of the output you
- * clicked. This plugin reproduces that: when the keystroke originates from
- * within an output area we select just that output's text and stop the event so
- * the notebook-wide select-all command never runs.
+ * Clicking a cell's output leaves the notebook in command mode, so Ctrl/Cmd+A
+ * fires `notebook:select-all` (selects EVERY cell). Colab instead selects only
+ * the clicked output's text; this reproduces that and stops the event so the
+ * notebook-wide select-all never runs.
  *
- * We listen in the CAPTURE phase (before Lumino's command keybindings) and only
- * act when:
- *   - the chord is exactly Ctrl/Cmd+A (no Alt; Shift ignored), and
- *   - focus is NOT in a text editor / input / contenteditable (so editing a
- *     code cell with Ctrl+A still selects within that editor), and
- *   - the keystroke target OR the last pointer-down landed inside an output area.
- *
- * We deliberately do NOT use the text selection anchor to decide ownership: a
- * stale selection inside an output survives a later click onto a command-mode
- * cell or the file browser (clicking a non-text region does not always move the
- * anchor), which would make Ctrl/Cmd+A keep re-selecting that old output instead
- * of doing the normal select-all in the new context. The last pointer-down is
- * reset on every click (to null when the click is outside any output), so it
- * tracks the user's current intent; in every other case we do nothing and
- * JupyterLab keeps its default behaviour.
+ * Listens in the CAPTURE phase and acts only when the chord is exactly Ctrl/Cmd+A
+ * (no Alt), focus is NOT in an editor/input/contenteditable, and the keystroke
+ * target or last pointer-down landed in an output area. We use the last
+ * pointer-down, not the text selection anchor, because a stale anchor survives a
+ * click away and would hijack select-all elsewhere.
  */
 
 // Output containers, widest first. `.jp-OutputArea-output` is a single output;
@@ -102,11 +89,9 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
       if (inEditableContext()) {
         return;
       }
-      // Own the chord only when the user is actually in an output right now:
-      // the keystroke target, else the last place they clicked. We do NOT trust
-      // the text selection anchor -- it goes stale after clicking away from a
-      // previously selected output (see the file header), which would otherwise
-      // hijack select-all in the notebook / file browser.
+      // Own the chord only when in an output now: the keystroke target, else the
+      // last click. Not the selection anchor -- it goes stale after clicking away
+      // (see the header) and would hijack select-all elsewhere.
       const output =
         closestOutput(event.target as Node | null) ?? lastPointerOutput;
       if (!output) {

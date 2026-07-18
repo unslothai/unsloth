@@ -45,11 +45,9 @@ def check_torch() -> tuple[int, int]:
     cap = torch.cuda.get_device_capability(0)
     name = torch.cuda.get_device_name(0)
     print(f"device 0    {name}  sm_{cap[0]}{cap[1]}")
-    # The cu128 wheels ship SASS down to sm_75 (Turing), and the runtime
-    # entrypoint allows the same floor. Match here so the post-publish
-    # smoke job does not false-fail on a Turing-only self-hosted runner.
-    # Turing falls back to fp16 since bf16 isn't supported -- that's a
-    # capability hint, not a hard failure.
+    # cu128 wheels ship SASS down to sm_75 (Turing); match the runtime entrypoint's
+    # floor so the smoke job doesn't false-fail on a Turing-only runner. Turing
+    # falls back to fp16 (a capability hint, not a hard failure).
     if cap[0] < 7 or (cap[0] == 7 and cap[1] < 5):
         sys.exit(f"FAIL: pre-Turing GPU {name} is not supported by this image")
     if cap[0] < 8:
@@ -62,21 +60,17 @@ def check_imports() -> None:
     import triton
 
     print(f"triton      {triton.__version__}")
-    # Import order matters: unsloth must be imported BEFORE transformers / trl /
-    # peft so its monkey-patches land, and BEFORE unsloth_zoo so the latter sees
-    # the UNSLOTH_IS_PRESENT env marker that unsloth/__init__.py sets. Doing it
-    # otherwise trips an explicit guard in unsloth_zoo/__init__.py with
-    # "ImportError: Please install Unsloth via `pip install unsloth`!".
+    # Import order matters: unsloth BEFORE transformers/trl/peft (so its patches
+    # land) and BEFORE unsloth_zoo (which needs the UNSLOTH_IS_PRESENT marker,
+    # else its __init__ guard raises "Please install Unsloth via pip install unsloth").
     import unsloth
 
     print(f"unsloth     {unsloth.__version__}")
     import unsloth_zoo
 
     print(f"unsloth_zoo {unsloth_zoo.__version__}")
-    # xformers is not built for aarch64 cu128 as of this writing; the arm64
-    # variant of this image installs unsloth with `[huggingface]` extras
-    # which omits it. Treat the import as best-effort so the same script
-    # smoke-tests both arches.
+    # xformers has no aarch64 cu128 wheel, so the arm64 image omits it
+    # ([huggingface] extras). Best-effort import so one script covers both arches.
     try:
         import xformers
         print(f"xformers    {xformers.__version__}")

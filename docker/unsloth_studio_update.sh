@@ -65,11 +65,9 @@ echo "[studio-update] before: unsloth $(version_of)"
 # (or any branch/tag/sha); otherwise take the latest PyPI release.
 if [ -n "$REF" ]; then
     SPECS="git+https://github.com/unslothai/unsloth.git@${REF}#egg=unsloth"
-    # unsloth-zoo does NOT track unsloth's tags/SHAs (its release cadence differs;
-    # the publish workflow resolves the zoo ref separately for the same reason).
-    # Use --zoo-ref if given; else use the unsloth ref only when the zoo repo
-    # actually has it, falling back to main so `--ref <unsloth-tag>` does not fail
-    # on a tag/SHA that simply does not exist in unsloth-zoo.
+    # unsloth-zoo does NOT track unsloth's tags/SHAs (different cadence). Use
+    # --zoo-ref if given; else the unsloth ref only when the zoo repo has it,
+    # falling back to main so `--ref <unsloth-tag>` doesn't fail on a missing ref.
     _zoo_ref="$ZOO_REF"
     if [ -z "$_zoo_ref" ]; then
         if git ls-remote --exit-code https://github.com/unslothai/unsloth-zoo.git \

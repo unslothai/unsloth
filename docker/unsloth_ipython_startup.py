@@ -17,13 +17,10 @@ try:
     # the safe-install behaviour. Unset everywhere else => shim is a passthrough.
     os.environ["UNSLOTH_NB_SHIM"] = "1"
 
-    # Scope the transformers-request marker to THIS kernel so two notebooks
-    # running concurrently in the same container (each its own kernel process)
-    # do not read each other's pin. The pip/uv shim runs as a child of this
-    # kernel and inherits UNSLOTH_NB_TF_MARKER, so writer (shim) and reader
-    # (unsloth_nb_compat pre_run_cell hook, same process tree) agree on the
-    # path. Falls back to the shared default when unset (e.g. `unsloth-run`,
-    # which drives a single notebook per process).
+    # Scope the transformers-request marker to THIS kernel so concurrent notebooks
+    # don't read each other's pin. The pip/uv shim (a child of this kernel)
+    # inherits UNSLOTH_NB_TF_MARKER, so writer and reader agree on the path. Falls
+    # back to the shared default when unset (e.g. `unsloth-run`, one notebook/process).
     if not os.environ.get("UNSLOTH_NB_TF_MARKER"):
         # A kernel id that is stable for the kernel's lifetime and unique per
         # kernel: the ipykernel connection file name, else the kernel PID.

@@ -8,20 +8,16 @@ import {
 import { INotebookTracker } from '@jupyterlab/notebook';
 
 /**
- * Colab-style cell navigation that works in BOTH command and edit mode.
+ * Colab-style cell navigation in BOTH command and edit mode.
  *
- * Pressing ArrowDown on the last line of a cell (edit mode) or while a cell is
- * selected (command mode) moves to the next cell and aligns its TOP to the
- * viewport; ArrowUp is the mirror. JupyterLab's built-in selection scroll uses
- * `scrollIntoViewIfNeeded`, which CENTERS any cell taller than the viewport --
- * so moving onto a cell with a long output (e.g. `trainer.train()`) drops the
- * view in the middle of the output instead of at the cell top.
+ * ArrowDown on a cell's last line (edit) or while selected (command) moves to the
+ * next cell and aligns its TOP to the viewport; ArrowUp mirrors it. JupyterLab's
+ * built-in scroll CENTERS cells taller than the viewport, dropping the view in
+ * the middle of a long output (e.g. `trainer.train()`).
  *
- * Settings cannot fix this: since JupyterLab 4.1 the editor handles keydown in
- * the bubbling phase, and the command-mode arrows are owned by Lumino. So we
- * listen in the CAPTURE phase (before CodeMirror or Lumino see the key), decide
- * whether we are at a cell boundary, and when we are we move the active cell and
- * scroll its top into view ourselves.
+ * Settings can't fix this (JupyterLab 4.1 handles keydown in the bubbling phase,
+ * command-mode arrows are Lumino's), so we listen in the CAPTURE phase, detect a
+ * cell boundary, and move + scroll-to-top ourselves.
  */
 const cellNavPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:cell-nav',

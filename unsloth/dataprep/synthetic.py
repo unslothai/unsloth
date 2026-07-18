@@ -285,19 +285,17 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            # vLLM >= 0.19 emits "Starting vLLM API server ... on ..." (and
-            # the uvicorn startup lines) through the logging module, which
-            # writes to STDERR. Watching stdout alone makes a healthy server
-            # look like a startup timeout, after which we kill it.
+            # vLLM >= 0.19 emits the startup lines through logging, which writes
+            # to STDERR; watching stdout alone makes a healthy server look like a
+            # timeout and get killed.
             ready_regex = ready_re,
             text = False,
         )
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
         ready = False
-        # timeout = None (or 0) preserves the previous Event.wait(None) escape
-        # hatch: wait indefinitely for the readiness message (useful for large
-        # models or slow first-time downloads). Any positive value is a deadline.
+        # timeout None/0 keeps the previous Event.wait(None): wait indefinitely
+        # for readiness (large models / slow downloads). A positive value is a deadline.
         deadline = (time.monotonic() + timeout) if timeout else None
         while deadline is None or time.monotonic() < deadline:
             if self.stdout_capture.wait_for_ready(timeout = 1) or self.stderr_capture.wait_for_ready(

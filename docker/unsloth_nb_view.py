@@ -4,39 +4,27 @@
 
 # Build a categorized, Colab-like folder VIEW of the Unsloth notebooks.
 #
-# The canonical notebooks live under DEST/nb/<file>.ipynb (a mirror of
-# unslothai/notebooks, populated + refreshed by unsloth_sync_notebooks.sh). That
-# flat tree is great for syncing but poor for browsing. This builds a sibling
-# directory of *relative symlinks* grouped into folders that mirror the README
-# section headers, e.g.
-#
+# The canonical notebooks live flat under DEST/nb/<file>.ipynb (mirror of
+# unslothai/notebooks, kept by unsloth_sync_notebooks.sh). This builds a sibling
+# dir of *relative symlinks* grouped into folders mirroring the README headers:
 #   <VIEW>/01 Main Notebooks/Llama3_2_(1B_and_3B)_Conversational.ipynb
-#   <VIEW>/02 Gemma 4 Notebooks/...
-#   ...
 #   <VIEW>/99 Other Notebooks/<anything on disk not linked from the README>
-#
-# Why symlinks: the real .ipynb files are never moved or renamed, so the sync
-# state machine (which walks `find -type f`, skipping symlinks) and the
-# edit/refresh logic are completely unaffected. The VIEW is a sibling of DEST
-# (outside it), rebuilt from scratch on every boot, and disposable.
+# Symlinks so the real files never move (the sync state machine skips symlinks);
+# the VIEW is a disposable sibling of DEST, rebuilt from scratch on every boot.
 #
 # Categorization rules:
-#   * Section = the nearest preceding `### ` header in DEST/README.md. The same
-#     topic header repeats across the Fine-tuning / Kaggle / AMD domains; those
-#     merge into one folder (first appearance fixes the order).
-#   * Folder names are cleaned: dashes and slashes -> spaces, whitespace
-#     collapsed, numbered `NN ` by first appearance so JupyterLab's alpha sort
-#     preserves README order. "Other Notebooks" is always last.
-#   * A notebook linked under several sections lands in its first (README order).
-#   * AMD-*.ipynb are hidden unless --amd (an AMD/HIP GPU was detected).
-#   * Any on-disk nb/*.ipynb not linked from the README goes to "Other Notebooks".
+#   * Section = nearest preceding `###` header in README.md; a header repeated
+#     across Fine-tuning/Kaggle/AMD domains merges into one folder (first order).
+#   * Folder names cleaned (dashes/slashes -> spaces) and numbered `NN ` by first
+#     appearance so JupyterLab's alpha sort keeps README order; "Other" is last.
+#   * A notebook linked under several sections lands in its first.
+#   * AMD-*.ipynb hidden unless --amd; unlinked nb/*.ipynb go to "Other Notebooks".
 #
 # Usage:
 #   unsloth_nb_view.py <DEST> <VIEW> [--amd]      build the symlink view
 #   unsloth_nb_view.py <DEST> --print [--amd]     print "section\tfile" rows
-#
-# Exit code is 0 on success; on any error it prints a diagnostic to stderr and
-# exits non-zero so the caller can fall back to the raw tree.
+# Exits 0 on success; on error prints to stderr and exits nonzero so the caller
+# can fall back to the raw tree.
 import argparse
 import os
 import re
@@ -51,10 +39,9 @@ _OTHER = "Other Notebooks"
 
 def clean_section(title):
     """README header text -> a filesystem-friendly folder label."""
-    # Drop trailing '#' and surrounding whitespace.
     title = title.strip().strip("#").strip()
-    # Strip a leading run of emoji / symbols some domain headers lead with (e.g.
-    # "🐧 AMD Notebooks", "📒 Kaggle Notebooks") so the folder label is clean text.
+    # Strip a leading run of emoji/symbols some domain headers lead with so the
+    # folder label is clean text.
     title = re.sub(r"^[^\w]+", "", title)
     title = title.replace("-", " ").replace("/", " ")
     title = re.sub(r"\s+", " ", title).strip()
@@ -79,11 +66,9 @@ def parse_readme(readme_path):
     rows = []
     seen_pairs = set()  # (section, filename) already emitted
     section = None
-    # Reset on ANY markdown heading, not just `###`. The catalog uses `#`/`##`
-    # domain headers (e.g. "# AMD Notebooks", "# Kaggle Notebooks") that carry
-    # their own `nb/*.ipynb` link tables directly, with no intervening `###`.
-    # Matching only `###` left `section` stale, so those links were mis-filed
-    # under the previous section instead of getting their own folder.
+    # Reset on ANY markdown heading, not just `###`: `#`/`##` domain headers carry
+    # their own nb/*.ipynb tables with no intervening `###`, so matching only `###`
+    # left `section` stale and mis-filed those links under the previous section.
     for line in text.splitlines():
         m = re.match(r"^#{1,6}\s+(.*)$", line)
         if m:
@@ -204,16 +189,10 @@ def _points_into(link, dest_real):
 
 
 def _clear_view(path, dest_real):
-    # Tear down a previously built VIEW in place. VIEW is also JupyterLab's
-    # landing directory, so a user may have saved real notebooks (or their own
-    # symlinks) here -- those MUST survive a rebuild. We therefore unlink only
-    # the symlinks we own (they resolve into DEST, see _points_into) and rmdir
-    # only folders that end up empty; any regular file and any user symlink is
-    # left untouched, and a non-empty folder simply stays.
-    #
-    # The VIEW root itself is never unlinked: build_view already resolved a
-    # symlinked root to its target, and an operator's routing symlink must
-    # survive. isdir on a non-link root is safe to walk.
+    # Tear down a previously built VIEW in place. It is also JupyterLab's landing
+    # dir, so user files/symlinks MUST survive: unlink only the symlinks we own
+    # (resolve into DEST, see _points_into) and rmdir only emptied folders. The
+    # VIEW root is never unlinked (build_view already resolved a symlinked root).
     if os.path.islink(path) or not os.path.isdir(path):
         return
     for root, dirs, files in os.walk(path, topdown = False):

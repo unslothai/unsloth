@@ -10,13 +10,10 @@ import {
 /**
  * Colab-like chrome tweaks applied image-wide.
  *
- * Hide the right activity bar (the vertical strip that carries the Property
- * Inspector / Debugger tabs) by default. JupyterLab has no settings key to hide
- * a side activity bar outright -- `@jupyterlab/application-extension:shell` only
- * exposes `activityBarPosition` (move it) and `layout` (reposition widgets) --
- * so we hide the strip with always-on CSS (independent of the active theme) and
- * collapse the right panel once on startup. Panels can still be reopened from
- * the View menu / command palette; nothing is removed, only hidden by default.
+ * Hide the right activity bar (Property Inspector / Debugger tabs) by default.
+ * JupyterLab has no settings key to hide a side activity bar, so hide the strip
+ * with always-on CSS and collapse the right panel once on startup. Panels can
+ * still be reopened from the View menu; nothing is removed, only hidden.
  */
 
 const STYLE_ID = 'unsloth-ui-chrome-style';

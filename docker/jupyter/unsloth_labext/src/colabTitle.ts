@@ -10,17 +10,11 @@ import { Cell } from '@jupyterlab/cells';
 
 /**
  * Colab "#@title" form cells. In Colab a code cell whose first line is
- * `#@title Some Title` renders as a titled, collapsed form: the title shows as a
- * clickable header, the code is hidden by default ("Show code"), and the output
- * stays visible. JupyterLab has no equivalent, so this plugin reproduces it.
- *
- * For each code cell whose first line matches `#@title <text>` we inject a small
- * clickable title bar at the top of the cell and hide the cell input by default
- * via a CSS class on the cell node (we toggle visibility with CSS rather than
- * the model's source_hidden so we never mutate/persist notebook metadata and the
- * output area is untouched). Clicking the bar shows/hides the code. Windowing is
- * disabled image-wide (overrides.json), so cell nodes are stable and the
- * injected bar persists.
+ * `#@title Some Title` renders as a titled, collapsed form (clickable header,
+ * code hidden by default, output visible). JupyterLab has no equivalent, so this
+ * reproduces it: inject a clickable title bar and hide the input via a CSS class
+ * (not the model's source_hidden, so notebook metadata is never mutated).
+ * Clicking toggles the code. Windowing is disabled image-wide, so the bar persists.
  */
 
 const TITLE_RE = /^\s*#\s*@title\b[ \t]*(.*)$/;

@@ -4,36 +4,23 @@
 
 # Remove the Colab-only "how to run" sentence from Unsloth notebooks for Docker.
 #
-# Every generated notebook opens with a first markdown cell whose first line is a
-# Colab instruction, e.g.
-#
-#   To run this, press "*Runtime*" and press "*Run all*" on a **free** Tesla T4
-#   Google Colab instance!
-#   ... (and the A100 / L4 / "AMD Dev Cloud" variants) ...
-#
-# Inside the Docker image there is no "Runtime > Run all" menu and no Colab GPU,
-# so the sentence is wrong/confusing. This strips ONLY that leading sentence; the
-# rest of the cell (the Unsloth badge row, the "install on your local device"
-# guide link, the "You will learn how to do ..." line) is kept untouched.
-#
-# This is a Docker-only transform applied at notebook-sync time. It is NOT pushed
-# upstream: on Colab the sentence is correct, so the public notebooks keep it.
+# Every generated notebook's first markdown cell opens with a Colab instruction
+# ("To run this, press Runtime > Run all on a free Tesla T4 ...", plus A100/L4/AMD
+# variants). Inside Docker there is no such menu or Colab GPU, so it is wrong;
+# strip ONLY that leading sentence and keep the rest of the cell (badge row,
+# local-install link, "You will learn ..." line). Docker-only, applied at sync
+# time; NOT pushed upstream (on Colab the sentence is correct).
 #
 # Two modes:
-#   unsloth_nb_strip_colab.py <a.ipynb> [b.ipynb ...]
-#       strip the listed notebooks in place (idempotent).
+#   unsloth_nb_strip_colab.py <a.ipynb> [b.ipynb ...]   strip in place (idempotent)
 #   unsloth_nb_strip_colab.py --state <STATE> --dest <DEST>
-#       STATE-aware sync migration. For each .ipynb in the "<sha256>  <relpath>"
-#       STATE file (written by unsloth_sync_notebooks.sh) that still hashes to its
-#       recorded value (WE own it, unedited), strip the intro and update the
-#       recorded hash in place; user-edited notebooks (hash != recorded) are left
-#       untouched. Runs after every STATE write, covering first-boot populate,
-#       deleted-file restore, GitHub refresh and in-place image upgrades.
+#       STATE-aware sync migration: for each .ipynb in the STATE file that still
+#       hashes to its recorded value (owned + unedited), strip the intro and update
+#       the hash; user-edited notebooks are left untouched. Runs after every STATE
+#       write (populate, restore, refresh, in-place upgrade).
 #
-# Safe with refresh decisions: unsloth_nb_content_sig.py already classifies the
-# intro cell as boilerplate, so the body digest used to detect "only boilerplate
-# moved upstream" is identical whether or not the sentence is present.
-#
+# Safe with refresh decisions: content_sig already classifies the intro cell as
+# boilerplate, so the body digest is identical with or without the sentence.
 # Exit code is always 0.
 import argparse
 import hashlib
@@ -44,12 +31,11 @@ import sys
 # The stable identifier for the offending line (covers every GPU/Cloud variant).
 _INTRO_PREFIX = "to run this, press"
 
-# The baked notebooks ship example tqdm/progress-bar widget outputs plus a
-# metadata.widgets state block; JupyterLab's ipywidgets manager cannot always
-# rebuild the Colab-saved state, so they render as a stuck "Loading widget..."
-# placeholder. Dropping the widget outputs + orphan state removes it; running the
-# cell still creates a fresh widget. Outputs are not part of the refresh signature
-# (content_sig hashes only cell type+source), so this is safe for edit detection.
+# The baked notebooks ship example tqdm widget outputs + a metadata.widgets state
+# block; JupyterLab can't always rebuild the Colab-saved state, so they render as
+# a stuck "Loading widget..." placeholder. Dropping the widget outputs + orphan
+# state removes it (running the cell recreates a fresh widget). Outputs aren't in
+# the refresh signature (content_sig hashes cell type+source), so this is safe.
 _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 

@@ -3,12 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for select_cuda_jit_tools() from docker/entrypoint.sh.
 #
-# cu12.8 is the immutable baked default (libnvrtc.so.12 -> .cu128.orig); the cu13
-# tools are switched on ONLY for sm_103 (B300 / GB300) and sm_121 (GB10 / DGX
-# Spark), which ship on >= 580 drivers -- see the rationale in docker/entrypoint.sh.
-# The function picks per device via nvidia-smi compute_cap: those two arches
-# retarget libnvrtc.so.12 -> the staged .cu13 alias (and point Triton at cu13
-# ptxas); every other arch keeps the cu12.8 default and leaves ptxas unset.
+# cu12.8 is the immutable baked default; the cu13 tools switch on ONLY for sm_103
+# and sm_121 (>= 580 drivers). The function picks per device via nvidia-smi
+# compute_cap: those two arches retarget libnvrtc.so.12 -> the .cu13 alias (and
+# point Triton at cu13 ptxas); every other arch keeps cu12.8 and leaves ptxas unset.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -32,16 +30,11 @@ assert_eq() {
 }
 
 # $1 = compute_cap(s) the mock nvidia-smi reports, ONE PER LINE ("none" -> no
-# nvidia-smi on PATH). A multi-line value models a mixed-GPU host so we can check
-# that every visible cap is scanned, not just the first.
-# $2 (optional) = the target libnvrtc.so.12 starts on; defaults to the baked
-# cu12.8 default, and "libnvrtc.so.12.cu13" models the stale link an earlier
-# sm_103/sm_121 boot left in the same container's writable layer.
-# Builds a fake Studio venv NVRTC dir exactly as the build stages it: the real
-# cu12.8 lib as .cu128.orig, libnvrtc.so.12 -> it (the immutable default), and a
-# .cu13 alias pointing at a stand-in cu13 lib. Runs the function against it via
-# UNSLOTH_STUDIO_HOME. The hardcoded base venv path does not exist on the test
-# host, so its glob is skipped. Prints "<PTXAS_STATE> <NVRTC_TARGET>".
+# nvidia-smi). A multi-line value models a mixed-GPU host (checks every cap is
+# scanned). $2 (optional) = the target libnvrtc.so.12 starts on; defaults to the
+# cu12.8 default, "libnvrtc.so.12.cu13" models a stale link from an earlier boot.
+# Builds a fake Studio venv NVRTC dir as the build stages it and runs the function
+# via UNSLOTH_STUDIO_HOME. Prints "<PTXAS_STATE> <NVRTC_TARGET>".
 run_select() {
     _cap="$1"
     _init="${2:-libnvrtc.so.12.cu128.orig}"

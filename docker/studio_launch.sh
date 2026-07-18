@@ -21,12 +21,9 @@ export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 # resolves; set to 1 (docker run -e) to expose JupyterLab on a trycloudflare URL.
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
-# Make the runtime env visible to SSH sessions, which get a fresh login shell
-# without the `docker run -e` vars. Secrets are excluded on purpose: tokens,
-# API keys and passwords stay in process env only, never on disk where an
-# SSH session (or anything reading /etc/profile.d) could pick them up.
-# shlex.quote() each value: env vars can contain quotes, $, backticks etc,
-# and this file is sourced by every login shell.
+# Make the runtime env visible to SSH login shells (which lack the `docker run -e`
+# vars). Secrets are excluded on purpose -- they stay in process env, never on
+# disk. shlex.quote() each value since this file is sourced by every login shell.
 python - > /etc/profile.d/unsloth_env.sh <<'PY' || true
 import os, re, shlex
 keep   = re.compile(r"^(HF_|CUDA_|NCCL_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
@@ -37,9 +34,8 @@ for key, value in sorted(os.environ.items()):
 PY
 
 # --- Jupyter -----------------------------------------------------------------
-# Hash the password with jupyter's own helper; never store the plaintext.
-# No fixed default password: when JUPYTER_PASSWORD is unset we generate a
-# random one and print it once in the boot banner (docker logs).
+# Hash the password with jupyter's helper; never store plaintext. No fixed
+# default: when JUPYTER_PASSWORD is unset, generate a random one and print it once.
 JUPYTER_CONFIG_DIR=/root/.jupyter
 JUPYTER_NOTE="password from JUPYTER_PASSWORD env"
 if [[ -f "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" ]]; then
@@ -63,23 +59,20 @@ c.ServerApp.open_browser = False
 c.ServerApp.root_dir = "/workspace"
 c.PasswordIdentityProvider.hashed_password = "${HASH}"
 EOF
-    # Land straight in the categorized notebook view, but only when it is enabled
-    # AND lives under root_dir (so it is expressible as a /lab/tree path). Mirror
-    # unsloth_sync_notebooks.sh's gating -- UNSLOTH_NOTEBOOKS_VIEW_DIR plus both
-    # UNSLOTH_SKIP_NOTEBOOK_VIEW (no view built) and UNSLOTH_SKIP_NOTEBOOK_SYNC
-    # (entrypoint skips sync entirely, so nothing under the view dir exists) -- so
-    # a relocated, disabled, or unsynced view never points JupyterLab at a missing
-    # dir; in those cases JupyterLab just opens on its default (/lab) over /workspace.
+    # Land in the categorized notebook view, but only when it's enabled AND under
+    # root_dir (expressible as /lab/tree). Mirror unsloth_sync_notebooks.sh's
+    # gating (UNSLOTH_NOTEBOOKS_VIEW_DIR + SKIP_NOTEBOOK_VIEW + SKIP_NOTEBOOK_SYNC)
+    # so a relocated/disabled/unsynced view never points at a missing dir;
+    # otherwise JupyterLab opens on its default /lab over /workspace.
     _root_dir="/workspace"
     _view_dir="${UNSLOTH_NOTEBOOKS_VIEW_DIR:-/workspace/Unsloth Notebooks}"
     if [[ "${UNSLOTH_SKIP_NOTEBOOK_VIEW:-0}" != "1" \
           && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
           && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
-        # default_url must be set on BOTH ServerApp and LabApp -- the lab
-        # extension app otherwise overrides ServerApp's value back to /lab.
-        # preferred_dir points the file browser at that folder. A literal space
-        # is URL-encoded to %20 in the redirect itself.
+        # default_url must be set on BOTH ServerApp and LabApp (the lab app
+        # otherwise overrides ServerApp back to /lab). preferred_dir points the
+        # file browser at that folder; a literal space is URL-encoded to %20.
         cat >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<EOF
 c.ServerApp.default_url = "/lab/tree/${_view_rel}"
 c.LabApp.default_url = "/lab/tree/${_view_rel}"
@@ -105,12 +98,10 @@ fi
 mkdir -p /workspace
 
 # --- Branding / AGPLv3 attribution integrity gate (whole container) -----------
-# This image is built by Unsloth and ships under the GNU AGPLv3. Refuse to start
-# anything if the Unsloth attribution (Help/About, spinning-logo splash, branded
-# login, theme, AGPLv3 license text + source links) has been stripped or altered.
-# The same checker also runs as a jupyter_server extension (refuses JupyterLab on
-# its own) and at image-build time. Bypass for local development if ever needed:
-# UNSLOTH_SKIP_BRANDING_CHECK=1 (intended for Unsloth's own debugging, not resale).
+# This image ships under the GNU AGPLv3. Refuse to start if the Unsloth
+# attribution (Help/About, splash, login, theme, AGPLv3 license + source links)
+# is stripped or altered. The same checker runs as a jupyter_server extension and
+# at build time. Bypass for local dev: UNSLOTH_SKIP_BRANDING_CHECK=1 (not resale).
 if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     if ! /opt/unsloth-venv/bin/python -m unsloth_branding --verify; then
         echo "Refusing to start the container." >&2

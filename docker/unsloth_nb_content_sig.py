@@ -48,12 +48,10 @@ def _is_install_code(cell):
     low = t.lower()
     if any(m in low for m in _INSTALL_MARKERS):
         return True
-    # A %%capture / %%bash cell is boilerplate ONLY when it also carries an
-    # install command. A bare %%capture (e.g. wrapping training to silence
-    # output) or a %%bash cell doing real tutorial setup is substantive: hashing
-    # it keeps the boot refresh from silently skipping an upstream fix to that
-    # cell (a false SAME). The install markers above already catch the generated
-    # install cell, which begins with %%capture.
+    # A %%capture / %%bash cell is boilerplate ONLY when it also carries an install
+    # command. A bare %%capture or a %%bash doing real setup is substantive: hash
+    # it so the boot refresh doesn't skip an upstream fix (a false SAME). The
+    # install markers above already catch the generated install cell.
     return False
 
 

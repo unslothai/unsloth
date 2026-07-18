@@ -99,12 +99,10 @@ fi
 # an atomic rename), then swap. On any failure the existing install is untouched.
 parent="$(dirname "$INSTALL_DIR")"
 
-# The documented persistence recipe mounts a named volume AT the install dir
-# (-v unsloth_llama:/opt/unsloth/llama.cpp). A mount point cannot be renamed --
-# rename(2) fails EBUSY -- so the whole-dir swap below would always fail there.
-# Detect the mount and swap the CONTENTS inside the mounted tree instead, which
-# also keeps the update IN the volume (persistent across a recreate).
-# UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides the autodetection.
+# The persistence recipe mounts a named volume AT the install dir. A mount point
+# can't be renamed (rename(2) EBUSY), so the whole-dir swap below would fail
+# there; detect the mount and swap the CONTENTS inside the tree (also keeps the
+# update in the volume). UNSLOTH_LLAMA_UPDATE_IN_PLACE=1/0 overrides autodetection.
 IN_PLACE="${UNSLOTH_LLAMA_UPDATE_IN_PLACE:-}"
 if [ -z "$IN_PLACE" ]; then
     IN_PLACE=0
@@ -125,17 +123,14 @@ else
 fi
 swap_done=0
 # The exit handler must never delete $backup while it is the ONLY copy of the
-# install (signal between the two renames, or a failed swap whose restore also
-# failed): put the old tree back first, and remove it only after the new tree
-# is verifiably active. The signal traps make bash run the EXIT trap on
-# HUP/INT/TERM too.
+# install: put the old tree back first, and remove it only after the new tree is
+# verifiably active. The signal traps run the EXIT trap on HUP/INT/TERM too.
 cleanup() {
     if [ "$swap_done" -ne 1 ]; then
         if [ "$IN_PLACE" = "1" ]; then
             # Contents-swap restore. Every old entry lives in exactly one of
-            # $backup / $INSTALL_DIR, so a same-named entry in the install dir
-            # can only be a half-moved NEW one: drop it, then move the old one
-            # back. Never deletes anything that is not shadowed by the backup.
+            # $backup / $INSTALL_DIR, so a same-named entry in the install dir is a
+            # half-moved NEW one: drop it, then move the old one back.
             if [ -d "$backup" ]; then
                 _restore_fail=0
                 for _e in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do

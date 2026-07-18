@@ -45,9 +45,8 @@ RELEASE_REPO = "unslothai/llama.cpp"
 
 
 def resolve_latest_tag(repo: str) -> str:
-    # Follow the /releases/latest redirect to /releases/tag/<tag>. This needs no
-    # API token and is not subject to the GitHub API rate limit, so it works on
-    # any build host (CI, laptop, B200) without configuration.
+    # Follow the /releases/latest redirect: no API token, no rate limit, works on
+    # any build host.
     url = f"https://github.com/{repo}/releases/latest"
     request = urllib.request.Request(url, headers = {"User-Agent": "unsloth-docker-build"})
     with urllib.request.urlopen(request, timeout = 60) as response:
@@ -149,18 +148,12 @@ def main() -> None:
         if os.path.isdir(conversion):
             shutil.copytree(conversion, os.path.join(install_dir, "conversion"), dirs_exist_ok = True)
 
-    # Make the baked marker readable by Studio's llama.cpp freshness check
-    # (utils.llama_cpp_freshness.check_prebuilt_freshness) so the in-app
-    # "newer llama.cpp available" banner works inside the Docker image.
-    # The release tarball's UNSLOTH_PREBUILT_INFO.json carries upstream_tag /
-    # source_repo, but the freshness reader keys off tag / release_tag /
-    # published_repo -- the schema Studio's install_llama_prebuilt.py writes,
-    # which the image bypasses by baking the bundle directly. Without these
-    # keys the freshness check bails and can never report "behind", so the
-    # banner stays hidden even when a newer release exists. setdefault() so a
-    # future tarball that already ships these keys is left untouched, and we
-    # add no build timestamp -- behind/update_available do not need one, and
-    # omitting it keeps the layer byte-identical across build hosts.
+    # Make the baked marker readable by Studio's freshness check so the in-app
+    # "newer llama.cpp available" banner works. The tarball's marker carries
+    # upstream_tag/source_repo, but the reader keys off tag/release_tag/
+    # published_repo (the schema install_llama_prebuilt.py writes). setdefault()
+    # leaves a future tarball that already has these keys untouched; no build
+    # timestamp, so the layer stays byte-identical across build hosts.
     marker_path = os.path.join(install_dir, "UNSLOTH_PREBUILT_INFO.json")
     try:
         with open(marker_path) as f:
@@ -175,15 +168,12 @@ def main() -> None:
         f.write("\n")
     print(f"marker augmented for freshness: tag={tag} published_repo={RELEASE_REPO}")
 
-    # Mirror the install into build/bin/ via hardlinks (zero extra bytes).
-    # Studio's setup.sh treats an executable build/bin/llama-server +
-    # build/bin/llama-quantize as a complete local build and skips its
-    # source-build fallback -- which would otherwise fire inside the image
-    # build, where the host-probing prebuilt updater cannot succeed, and
-    # compile a CPU-only llama.cpp over the baked CUDA bundle. Hardlinks
-    # (not symlinks) keep $ORIGIN rpath resolution working from build/bin
-    # and avoid a cycle when setup.sh later relinks the root quantizer to
-    # build/bin/llama-quantize.
+    # Mirror the install into build/bin/ via hardlinks (zero extra bytes). Studio's
+    # setup.sh treats executable build/bin/llama-server + llama-quantize as a
+    # complete local build and skips its source-build fallback (which would
+    # otherwise compile a CPU-only llama.cpp over the baked CUDA bundle). Hardlinks
+    # (not symlinks) keep $ORIGIN rpath resolution and avoid a cycle when setup.sh
+    # relinks the root quantizer to build/bin/llama-quantize.
     build_bin = os.path.join(install_dir, "build", "bin")
     os.makedirs(build_bin, exist_ok = True)
     for entry in os.listdir(install_dir):
@@ -202,11 +192,9 @@ def main() -> None:
             if "/" not in target and not os.path.lexists(dest):
                 os.symlink(target, dest)
 
-    # Sanity: the server binary must execute on a GPU-less host (the CUDA
-    # backend is a dlopen'd plugin, so --version works anywhere). Check the
-    # quantizer from BOTH roots: Studio's setup.sh relinks the root
-    # llama-quantize to build/bin/llama-quantize, so the build/bin copy must
-    # resolve its libraries standalone.
+    # Sanity: the server must execute on a GPU-less host (the CUDA backend is a
+    # dlopen'd plugin). Check the quantizer from BOTH roots: setup.sh relinks the
+    # root llama-quantize to build/bin, so the build/bin copy must resolve standalone.
     checks = (
         # llama-quantize has no --version; a healthy run prints usage with
         # rc 0, while a loader failure prints to stderr with rc 127.

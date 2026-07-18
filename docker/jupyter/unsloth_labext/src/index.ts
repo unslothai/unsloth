@@ -40,12 +40,10 @@ const themePlugin: JupyterFrontEndPlugin<void> = {
 };
 
 /**
- * Replace the top-left Jupyter logo with the Unsloth logo. The stock
- * `@jupyterlab/application-extension:logo` plugin is disabled + locked at image
- * build time (jupyter labextension disable/lock), so this is the only logo
- * widget added to the top bar. We render an <img> with inline styles rather than
- * a LabIcon/CSS so the branding shows identically regardless of the active theme
- * (the theme CSS is only loaded while Unsloth Dark is selected).
+ * Replace the top-left Jupyter logo with the Unsloth logo. The stock logo plugin
+ * is disabled + locked at build time, so this is the only logo widget. Rendered
+ * as an <img> with inline styles (not a LabIcon/CSS) so branding shows identically
+ * in any theme (the theme CSS loads only while Unsloth Dark is selected).
  */
 const logoPlugin: JupyterFrontEndPlugin<void> = {
   id: 'unsloth-jupyterlab:logo',

@@ -80,10 +80,9 @@ def resolve_paths(
         jupyter_server_dir = os.path.dirname(jupyter_server.__file__)
     labext_dir = os.path.join(venv_share, "labextensions", LABEXT_NAME)
 
-    # Every page_config.json JupyterLab merges to compute disabledExtensions: the
-    # app-settings file plus a labconfig/ file under each jupyter config dir
-    # (where `jupyter labextension disable` writes). Tests pass config_dirs=[] for
-    # a hermetic tree; live resolution scans the real jupyter config path.
+    # Every page_config.json JupyterLab merges for disabledExtensions: the
+    # app-settings file plus a labconfig/ file per jupyter config dir. Tests pass
+    # config_dirs=[] for a hermetic tree; live resolution scans the real path.
     if config_dirs is None:
         try:
             from jupyter_core.paths import jupyter_config_path
@@ -201,11 +200,9 @@ def verify_branding(paths = None):
         problems.append("missing or empty logo: " + paths["logo"])
 
     # 7. No page_config.json disables the Unsloth extension or its plugins.
-    #    Disabling via `disabledExtensions` leaves the static bundle on disk (so
-    #    check 5 still passes) yet strips the logo / About / splash at load. Since
-    #    the guard exists to refuse stripped attribution, reject that too. Stock
-    #    plugins we disable ourselves (logo/splash) are unaffected -- we only flag
-    #    ids belonging to unsloth-jupyterlab.
+    #    Disabling via disabledExtensions leaves the bundle on disk (check 5 passes)
+    #    yet strips the logo/About/splash at load, so reject it too. We only flag
+    #    ids belonging to unsloth-jupyterlab (our own stock disables are fine).
     for pc_path in paths.get("page_configs", []):
         text = _read(pc_path)
         if not text:

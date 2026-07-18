@@ -4995,10 +4995,9 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     try:
         os.replace(staging_dir, dst)
     except OSError as exc:
-        # Busy/in-use (Windows AV holding a DLL) OR cross-device (overlayfs in a
-        # Docker build): both are safe to complete by copying the freshly
-        # extracted staging tree and removing it. Anything else (disk full,
-        # missing path) re-raises so we never leave a partial install behind.
+        # Busy/in-use (Windows AV) OR cross-device (overlayfs in a Docker build):
+        # both are safe to complete by copying the staging tree and removing it.
+        # Anything else (disk full, missing path) re-raises.
         if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")

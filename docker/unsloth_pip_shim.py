@@ -79,12 +79,9 @@ _VALUE_FLAGS = {
     "--implementation",
     "-e",
     "--editable",
-    # Every remaining value-taking flag of `uv pip install` / `pip install`
-    # (generated from both tools' --help). A value flag missing here makes the
-    # scanner misread its VALUE: `uv pip install --torch-backend cu128 torch`
-    # dropped the protected torch but then exec'd uv with no install target at
-    # all (uv hard-errors) instead of no-oping like the attached `=` form.
-    # uv:
+    # Every remaining value-taking flag of pip/uv install (from both --help). A
+    # missing one makes the scanner misread its VALUE: `--torch-backend cu128 torch`
+    # dropped torch then exec'd uv with no target (hard-error). uv:
     "--allow-insecure-host",
     "--build-constraints",
     "-b",
@@ -142,49 +139,35 @@ _VALUE_FLAGS = {
     "--requirements-from-script",
     "--uploaded-prior-to",
 }
-# Of those value-flags, the ones whose VALUE is itself an install target: a
-# requirements file pulls real requirements. An index-url / find-links /
-# constraint / target value is an option, not something to install.
-# uv spells the long forms in the PLURAL (`--requirements`, `--constraints`);
-# include both so a `uv pip install --requirements reqs.txt` is filtered too.
+# Value-flags whose VALUE is itself an install target: a requirements file pulls
+# real requirements (index-url/find-links/constraint/target values are options).
+# uv spells the long forms plural (--requirements/--constraints); include both.
 _REQ_FILE_FLAGS = {"-r", "--requirement", "--requirements"}
-# Constraint files are not install targets, but pip applies their pins during
-# resolution, so a `-c constraints.txt` that pins torch/transformers/etc. can
-# still downgrade or reinstall a baked package when another target pulls it in.
-# Filter protected packages out of them the same way as requirement files.
-# (uv's long form is the plural `--constraints`.)
+# Constraint files aren't install targets, but pip applies their pins during
+# resolution, so a -c that pins torch/transformers can still downgrade a baked
+# package. Filter them like requirement files. (uv's long form is --constraints.)
 _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}
-# -e/--editable <path|url|vcs> takes the NEXT token as its target (pip:
-# `-e, --editable <path/url>`), and that target is a real install target. A
-# protected editable (e.g. `-e git+https://.../unsloth.git#egg=unsloth`) must
-# drop BOTH the flag and its value; dropping the value alone leaves pip a
-# dangling `-e` that swallows the next kept package and fails the whole cell.
+# -e/--editable <path|url|vcs> takes the NEXT token as a real install target. A
+# protected editable must drop BOTH flag and value; dropping only the value
+# leaves pip a dangling -e that swallows the next kept package and fails the cell.
 _EDITABLE_FLAGS = {"-e", "--editable"}
-# -P/--upgrade-package and --reinstall-package are uv's selective upgrade/reinstall
-# flags: naming a baked package (`uv pip install -P torch peft`) lets an ordinary
-# target refresh/reinstall it and clobber the pinned stack. Filter the value through
-# _KEEP too, dropping the flag+value pair for a protected name so no dangling
-# selector swallows the next target. Unlike -e, none is itself an install target.
+# -P/--upgrade-package and --reinstall-package are uv's selective upgrade flags:
+# naming a baked package lets an ordinary target refresh it. Filter the value
+# through _KEEP, dropping the flag+value pair for a protected name. Unlike -e,
+# none is itself an install target.
 _UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package", "--reinstall-package"}
-# Short value-flags pip/uv accept in the ATTACHED form, i.e. the 2-char flag
-# glued to its value in one token: `-rreqs.txt`, `-cconstraints.txt`, `-epath`,
-# `-Pname`. The scanner splits the flag from the value so the value is filtered
-# (requirement/constraint file) or classified (-e/-P) instead of falling through
-# as an opaque option -- otherwise an attached `-r`-only cell no-ops and an
-# attached `-c`/`-e`/`-P` value bypasses _KEEP.
+# Short value-flags accepted ATTACHED (flag glued to value): -rreqs.txt, -cX,
+# -epath, -Pname. The scanner splits flag from value so it is filtered/classified,
+# else an attached -r-only cell no-ops and -c/-e/-P bypasses _KEEP.
 _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
-# Resolver-wide reinstall / ignore-installed switches (pip --force-reinstall,
-# --ignore-installed, -I; uv --reinstall) REINSTALL already-satisfied packages,
-# including the baked torch/transformers a kept target pulls in as deps. Drop them
-# so an unprotected install cannot rebuild the pinned stack; the kept target still
-# installs. Per-package selectors (-P / --reinstall-package) go via _UPGRADE_PKG_FLAGS.
-# uv's --exact is destructive the other way: an exact SYNC that REMOVES everything
-# outside the kept target's closure (vLLM, bitsandbytes, NVIDIA libs), so drop it too.
+# Resolver-wide reinstall/ignore-installed switches (pip --force-reinstall,
+# --ignore-installed, -I; uv --reinstall) rebuild already-satisfied baked deps;
+# drop them (the kept target still installs). uv's --exact is destructive the
+# other way (SYNC removes everything outside the target's closure), so drop it too.
 _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall", "--exact"}
-# Value-flags whose flag+value pair is dropped outright in shim mode.
-# `--upgrade-strategy eager` makes pip upgrade EVERY dependency of a kept target,
-# refreshing the baked torch/transformers. Dropping it falls back to pip's default
-# `only-if-needed`, so the target still installs but satisfied protected deps stay.
+# Value-flags whose flag+value pair is dropped outright. --upgrade-strategy eager
+# would upgrade EVERY dep of a kept target; dropping it falls back to pip's
+# only-if-needed default so satisfied protected deps stay.
 _DROP_VALUE_FLAGS = {"--upgrade-strategy"}
 
 
@@ -215,12 +198,9 @@ def _canon(token):
     if the token is not a plain pkg spec (url / path / vcs / option)."""
     if token.startswith("-"):
         return None
-    # PEP 508 direct reference: "name [extras] @ <url>" (e.g.
-    # "torch @ https://.../torch.whl", "unsloth @ git+https://..."). The name is
-    # at the front, so pull it out BEFORE the url/vcs guard below -- otherwise a
-    # protected package pinned through a URL slips past _KEEP and reinstalls into
-    # the base venv. A non-protected direct reference still returns its name and
-    # is kept by the caller exactly as before (treated as an install target).
+    # PEP 508 direct reference: "name [extras] @ <url>". The name is at the front,
+    # so pull it out BEFORE the url/vcs guard below, or a protected package pinned
+    # through a URL slips past _KEEP. Non-protected refs still return their name.
     _dref = re.match(
         r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)",
         token,
@@ -228,54 +208,37 @@ def _canon(token):
     if _dref:
         return _dref.group(1).lower().replace("_", "-") or None
     if re.match(r"^[a-z]+\+", token) or "://" in token or token.startswith((".", "/")):
-        # A VCS / URL install can still name a protected package via the legacy
-        # `#egg=NAME` (or `&egg=NAME`) fragment, e.g.
-        # `git+https://github.com/unslothai/unsloth.git#egg=unsloth`. Pull that
-        # name out so _KEEP can drop it; otherwise the shim would exec the URL
-        # and reinstall a baked package into the venv. A non-protected egg name
-        # is returned too, but the caller keeps it as a normal target either way.
+        # A VCS/URL install can name a protected package via the legacy #egg=NAME
+        # (or &egg=NAME) fragment; pull it out so _KEEP can drop it, else the shim
+        # execs the URL and reinstalls a baked package.
         _egg = re.search(r"[#&]egg=([A-Za-z0-9][A-Za-z0-9._-]*)", token)
         if _egg:
             return _egg.group(1).lower().replace("_", "-") or None
-        # A direct wheel URL or local wheel path still names its distribution in
-        # the PEP 427 filename ({distribution}-{version}-...-...-....whl), so a
-        # bare `pip install https://.../torch-2.11.0+cu128-...whl` would slip a
-        # protected package past _KEEP as an opaque positional and reinstall the
-        # baked torch. Dashes cannot appear inside the distribution component (a
-        # run of -_. normalises to a single -), so the leading dash-split of the
-        # basename is the distribution name; pull it so _KEEP can drop it. A
-        # non-protected wheel returns its name and the caller keeps the token.
+        # A wheel URL/path names its distribution in the PEP 427 filename, so a
+        # bare `pip install .../torch-2.11.0+cu128-...whl` would slip torch past
+        # _KEEP. Dashes can't appear in the distribution component, so the leading
+        # dash-split of the basename is the name; pull it so _KEEP can drop it.
         _whl = re.search(r"([^/\\#?]+)\.whl(?:[#?]|$)", token)
         if _whl:
             dist = _whl.group(1).split("-", 1)[0].strip().lower().replace("_", "-")
             if dist:
                 return dist
-        # A source archive (sdist / zip) URL or path names its distribution the
-        # same way ({name}-{version}.tar.gz etc.), so `pip install
-        # https://files.pythonhosted.org/.../unsloth-2026.7.1.tar.gz` or
-        # `./torch-2.11.0.tar.gz` must be matched against _KEEP too, not passed
-        # through as an opaque positional that reinstalls the baked package.
+        # A source archive URL/path names its distribution the same way
+        # ({name}-{version}.tar.gz), so match it against _KEEP too instead of
+        # passing it through as an opaque positional.
         _arch = _sdist_name(token.split("#", 1)[0].split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1])
         if _arch:
             return _arch
-        # A VCS URL without an #egg= fragment still installs a named project:
-        # pip/uv derive the distribution from the repo, and for the packages we
-        # protect the repo basename equals the distribution
-        # (huggingface/transformers.git -> transformers,
-        # unslothai/unsloth-zoo.git -> unsloth-zoo). Infer it from the last path
-        # segment so a bare `pip install git+https://github.com/huggingface/
-        # transformers.git` -- an egg-less form this repo itself recommends in
-        # unsloth/models/loader.py -- cannot reinstall the baked package past
-        # _KEEP. A non-protected repo returns its basename and the caller keeps
-        # the token as a normal target either way.
+        # A VCS URL without #egg= still installs a named project: the repo
+        # basename equals the distribution for the packages we protect
+        # (huggingface/transformers.git -> transformers). Infer it from the last
+        # path segment so a bare egg-less git+ URL can't reinstall past _KEEP.
         if re.match(r"^[a-z]+\+", token):
             _rest = token.split("#", 1)[0].split("?", 1)[0]
-            # Drop the @ref from the PATH portion BEFORE taking the last path
-            # segment: a ref may itself contain a slash (@feature/foo), which
-            # would otherwise become the "basename" and dodge _KEEP. Split the
-            # path off the authority first so an SSH userinfo @ (git+ssh://
-            # git@github.com/...) is never mistaken for the ref separator;
-            # like pip's own parser, the ref is everything after the LAST @.
+            # Drop the @ref from the PATH before taking the basename: a ref may
+            # contain a slash (@feature/foo) and dodge _KEEP. Split path from
+            # authority first so an SSH userinfo @ isn't mistaken for the ref;
+            # like pip, the ref is everything after the LAST @.
             if "://" in _rest:
                 _authority, _slash, _path = _rest.partition("://")[2].partition("/")
                 if "@" in _path:
@@ -288,31 +251,23 @@ def _canon(token):
             _seg = _seg.strip().lower().replace("_", "-")
             if _seg:
                 return _seg
-        # A local project DIRECTORY (`pip install ./transformers`,
-        # `pip install -e ./unsloth`) installs the project it contains, and a
-        # same-version dev build slips past even the protected constraints file
-        # (constraints only reject a version MISMATCH), silently swapping the
-        # baked, tested wheel for a local build. Resolve the project name from
-        # its metadata so _KEEP applies to this form like every other artifact
-        # form (wheel/sdist/VCS/egg). Non-directories and metadata-less dirs
-        # pass through as before.
+        # A local project DIRECTORY installs the project it contains; a same-
+        # version dev build slips past even the constraints file (which only
+        # rejects a MISMATCH). Resolve the name from its metadata so _KEEP applies
+        # like every other artifact form. Metadata-less dirs pass through.
         _local = _local_project_name(token)
         if _local:
             return _local
         return None  # plain url / metadata-less local path -> let it pass through
-    # A local project dir referenced without ./ or / (`pip install subdir/proj`)
-    # is still a path target to pip when it exists on disk; classify it the same
-    # way before the spec parse below mangles the separator.
+    # A local project dir referenced without ./ or / is still a path target when
+    # it exists on disk; classify it before the spec parse mangles the separator.
     if "/" in token or os.sep in token:
         _local = _local_project_name(token)
         if _local:
             return _local
-    # A bare wheel filename (no ./ or / prefix and no scheme) is still a valid
-    # pip target from the CWD: `pip install torch-2.11.0-cp312-...-linux.whl`.
-    # It reaches here because it starts with neither `.`/`/` nor a scheme, so
-    # without this it would fall through as the whole filename and miss _KEEP,
-    # reinstalling the baked torch. Parse its PEP 427 distribution the same way
-    # as the URL/path wheel case above.
+    # A bare wheel filename from the CWD (no ./ or scheme) is still a valid pip
+    # target; without this it falls through and misses _KEEP. Parse its PEP 427
+    # distribution like the URL/path wheel case above.
     if token.lower().endswith(".whl"):
         dist = token.rsplit("/", 1)[-1][:-4].split("-", 1)[0].strip().lower().replace("_", "-")
         if dist:
@@ -375,10 +330,9 @@ def _version_pin(token):
     return m.group(1) if m else None
 
 
-# pip expands ${UPPERCASE_NAME} in requirements files AFTER we classify the
-# literal text (pip's ENV_VAR_RE; uv matches it), so `${PKG}==...` with
-# PKG=torch would slip a protected package past _KEEP. Expand with the same
-# syntax for CLASSIFICATION only; kept lines are forwarded verbatim.
+# pip expands ${UPPERCASE_NAME} in requirements files after we classify the text,
+# so `${PKG}==...` with PKG=torch would slip past _KEEP. Expand for CLASSIFICATION
+# only; kept lines are forwarded verbatim.
 _ENV_REF_RE = re.compile(r"\$\{([A-Z0-9_]+)\}")
 
 
@@ -650,10 +604,9 @@ def main():
     if argv[:1] == ["--unsloth-selfcheck-value-flags"]:
         _selfcheck_value_flags()
 
-    # Only intercept inside a notebook kernel (UNSLOTH_NB_SHIM is set by the baked
-    # IPython startup and by `unsloth-run`). EVERYWHERE else -- install.sh during
-    # the image build, internal tooling, an interactive shell -- behave exactly
-    # like the real tool, so we never disturb the build or system package mgmt.
+    # Only intercept inside a notebook kernel (UNSLOTH_NB_SHIM set by the baked
+    # IPython startup and unsloth-run). Everywhere else (build install.sh, shells)
+    # behave exactly like the real tool.
     if os.environ.get("UNSLOTH_NB_SHIM") != "1":
         os.execv(REAL[tool], [REAL[tool]] + argv)
         return
@@ -705,19 +658,16 @@ def main():
                     keep_args.append(_c_path)
                     dropped.extend(_c_drp)
             elif prev_flag in _DROP_VALUE_FLAGS:
-                # --upgrade-strategy (eager): the flag was appended when we saw
-                # it; pop it and drop the flag+value pair so pip falls back to
-                # its safe only-if-needed default.
+                # --upgrade-strategy (eager): pop the appended flag and drop the
+                # pair so pip falls back to only-if-needed.
                 if keep_args and keep_args[-1] == prev_flag:
                     keep_args.pop()
                 dropped.append(prev_flag + " " + tok)
             elif prev_flag in _EDITABLE_FLAGS or prev_flag in _UPGRADE_PKG_FLAGS:
-                # The flag was held back (not appended yet): its value is an
-                # install target (-e path/url/vcs) or an upgrade selector
-                # (-P name), both filtered through _KEEP. Dropping a protected
-                # value drops the flag with it, so pip/uv is never left a
-                # dangling `-e`/`-P` that fails the cell or refreshes a baked
-                # package. A kept editable target sets has_target; -P does not.
+                # The flag was held back: its value is an install target (-e) or
+                # upgrade selector (-P), both filtered through _KEEP. Dropping a
+                # protected value drops the flag too (no dangling -e/-P). A kept
+                # editable sets has_target; -P does not.
                 _action, _ver = _classify_flag_target(tok)
                 if _action == "drop":
                     if _ver and not recorded:
@@ -733,11 +683,9 @@ def main():
             skip_next = False
             prev_flag = None
             continue
-        # --flag=value form: pip accepts --requirement=reqs.txt / --index-url=URL
-        # as a single token. Without this the token starts with "-", so it is kept
-        # as an opaque option and a `-r` file is never filtered -- and worse, it
-        # never counts as a target, so a cell whose only target is that file
-        # silently no-ops and installs nothing.
+        # --flag=value form (--requirement=reqs.txt / --index-url=URL as one
+        # token). Without this it is kept as an opaque option, the -r file is never
+        # filtered, and a file-only cell silently installs nothing.
         if tok.startswith("--") and "=" in tok:
             _flag, _, _val = tok.partition("=")
             if _flag in _VALUE_FLAGS:
@@ -775,12 +723,10 @@ def main():
                 else:
                     keep_args.append(tok)  # option with inline value, not a target
                 continue
-        # Attached short value-flag form: pip/uv accept `-rreqs.txt`,
-        # `-cconstraints.txt`, `-epath` and `-Pname` as ONE token. Without this
-        # the token starts with "-" and falls through as an opaque option, so an
-        # `-r`-only cell no-ops (has_target stays False) and an attached
-        # `-c`/`-e`/`-P` value bypasses _KEEP. Split the 2-char flag from its
-        # value and reuse the separated-form handling.
+        # Attached short value-flag form (-rreqs.txt, -cX, -epath, -Pname as ONE
+        # token). Without this it falls through as an opaque option: an -r-only
+        # cell no-ops and -c/-e/-P bypasses _KEEP. Split the flag from its value
+        # and reuse the separated-form handling.
         if len(tok) > 2 and tok[0] == "-" and tok[1] != "-" and tok[:2] in _ATTACHED_SHORT_FLAGS:
             _sflag, _sval = tok[:2], tok[2:]
             if (_sflag in _REQ_FILE_FLAGS or _sflag in _CONSTRAINT_FILE_FLAGS) and "://" in _sval:
@@ -862,18 +808,15 @@ def main():
     if dropped:
         print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
 
-    # Anything left to actually install? `has_target` was set during the scan for
-    # a kept package spec, a positional url / path / vcs / editable target, or a
-    # -r/--requirement file. A line carrying only baked packages plus option flags
-    # (e.g. `--extra-index-url <url> torch`) leaves no target, so no-op instead of
-    # exec'ing a bare `pip install --extra-index-url <url>` that would fail.
+    # Anything left to install? has_target was set for a kept spec, a positional
+    # url/path/vcs/editable, or a -r file. A line with only baked packages + option
+    # flags leaves no target, so no-op instead of exec'ing a bare install that fails.
     if not has_target:
         print("[unsloth-nb] nothing to install after keeping the baked stack; ok.")
         return
     cmd = [REAL[tool]] + head + keep_args
-    # Constrain the resolver too: without this an allowed target could pull an
-    # incompatible torch/transformers/etc. in as a DEPENDENCY and replace the
-    # baked wheel even though the argument filter kept it off the command line.
+    # Constrain the resolver too: an allowed target could pull an incompatible
+    # torch/transformers in as a DEPENDENCY and replace the baked wheel.
     constraints = _protected_constraints_file()
     if constraints:
         cmd += ["--constraint", constraints]

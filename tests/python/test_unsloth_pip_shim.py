@@ -84,12 +84,10 @@ def _run(shim, tool, args):
             execd = None
         except _Exec as exc:
             # main() builds [REAL[tool]] + head + keep_args + the protected
-            # constraints pair; head ends with the `install` verb, so everything
-            # after it is what we asserted on. The trailing
-            # `--constraint <unsloth-nb-protected-*.txt>` pair is injected on
-            # EVERY forwarded install (resolver-level protection); strip it here
-            # so each test asserts on its own arguments -- the dedicated
-            # constraint-injection tests below cover the pair itself.
+            # constraints pair; head ends with `install`, so everything after it
+            # is what we assert on. The trailing `--constraint <...>` pair is
+            # injected on EVERY install; strip it here so each test asserts on its
+            # own args (dedicated tests below cover the pair).
             i = exc.argv.index("install")
             execd = exc.argv[i + 1 :]
             if (

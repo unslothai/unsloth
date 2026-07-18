@@ -71,12 +71,10 @@ def main():
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
 
-    # Materialise the notebook locally for nbconvert. With --out, stage both the
-    # input copy and the executed result as temp files NEXT TO the destination
-    # (same dir, so the kernel cwd matches and the publish is one atomic
-    # os.replace) and only publish over an existing --out file when execution
-    # succeeded -- a timeout / failed cell / missing kernel must not destroy the
-    # previous output.
+    # Materialise the notebook for nbconvert. With --out, stage the input copy and
+    # the result as temp files NEXT TO the destination (same dir, so kernel cwd
+    # matches and publish is one atomic os.replace) and only publish on success --
+    # a timeout / failed cell / missing kernel must not destroy the previous output.
     tmp_dir = None
     tmp_files = []
     publish_from = None
