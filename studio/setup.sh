@@ -265,16 +265,22 @@ _setup_cvd_hides_nvidia() {
 # via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
 # install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
 # and a mixed host steered to its AMD card keeps the ROCm route.
+# nvidia-smi resolver: on WSL2 GPU-PV the binary lives ONLY in
+# /usr/lib/wsl/lib, which root login shells drop from PATH (/etc/profile
+# resets it), and /proc/driver/nvidia is not populated under the dxg driver --
+# so bare `command -v nvidia-smi` misses real GPUs on the flagship WoA path.
+_resolve_nvsmi() {
+    command -v nvidia-smi 2>/dev/null && return 0
+    [ -x /usr/lib/wsl/lib/nvidia-smi ] && { echo /usr/lib/wsl/lib/nvidia-smi; return 0; }
+    [ -x /usr/bin/nvidia-smi ] && { echo /usr/bin/nvidia-smi; return 0; }
+    return 1
+}
+
 _setup_has_usable_nvidia_gpu() {
     if _setup_cvd_hides_nvidia; then
         return 1
     fi
-    _setup_nvsmi=""
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        _setup_nvsmi="nvidia-smi"
-    elif [ -x "/usr/bin/nvidia-smi" ]; then
-        _setup_nvsmi="/usr/bin/nvidia-smi"
-    fi
+    _setup_nvsmi="$(_resolve_nvsmi)"
     if [ -n "$_setup_nvsmi" ]; then
         if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
            | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
@@ -289,8 +295,8 @@ _setup_has_usable_nvidia_gpu() {
 }
 
 _cuda_driver_max_version() {
-    command -v nvidia-smi >/dev/null 2>&1 || return 0
-    _setup_run_smi nvidia-smi 2>/dev/null \
+    _cdm_smi="$(_resolve_nvsmi)" || return 0
+    _setup_run_smi "$_cdm_smi" 2>/dev/null \
         | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\.([0-9]+).*/\2.\3/p' \
         | head -1 || true
 }
@@ -1424,8 +1430,8 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
         && grep -qi microsoft /proc/version 2>/dev/null \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
-        && command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && _NVSMI_GATE="$(_resolve_nvsmi)" && [ -n "$_NVSMI_GATE" ] \
+        && "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && ! command -v nvcc >/dev/null 2>&1 \
         && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
     step "llama.cpp" "GGUF engine: CUDA build running in background (WSL aarch64 + NVIDIA)" "$C_WARN"
@@ -1449,8 +1455,8 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
         && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
         && ! grep -qi microsoft /proc/version 2>/dev/null \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
-        && command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && _NVSMI_GATE="$(_resolve_nvsmi)" && [ -n "$_NVSMI_GATE" ] \
+        && "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && [ "${_setup_nvidia_usable:-}" = true ] \
         && ! command -v nvcc >/dev/null 2>&1 \
         && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
@@ -2018,8 +2024,8 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && { ! grep -qi microsoft /proc/version 2>/dev/null || [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" != "1" ]; } \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
         && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
-        && command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && _NVSMI_GATE="$(_resolve_nvsmi)" && [ -n "$_NVSMI_GATE" ] \
+        && "$_NVSMI_GATE" -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && [ "${_setup_nvidia_usable:-}" = true ] \
         && [ "${_LOCAL_LLAMA_CPP_LINKED:-false}" != true ] \
         && ! _have_cuda_llama_server; then
@@ -2140,6 +2146,16 @@ else
     printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
 fi
 echo ""
+
+# Core install (venv + torch + Studio deps) is complete here; only the
+# optional llama.cpp engine can still be missing. Stamp that fact BEFORE the
+# tolerated nonzero exit below: install.ps1's WSL fallback cannot tell that
+# exit apart from a real mid-install failure at the process level, so it
+# removes this file before the run and requires it to exist afterwards --
+# otherwise its torch/CLI probes can pass on a stale venv from a previous
+# install. Removed by scripts/uninstall.sh with the rest of ~/.unsloth.
+mkdir -p "$HOME/.unsloth" 2>/dev/null || true
+: > "$HOME/.unsloth/.install-ok" 2>/dev/null || true
 
 # When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
 # installer can report the GGUF failure after finishing PATH/shortcut setup.

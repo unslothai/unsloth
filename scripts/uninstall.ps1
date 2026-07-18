@@ -16,6 +16,26 @@ function Uninstall-UnslothStudio {
     function _Step { param([string]$Msg) Write-Host $Msg }
     function _Substep { param([string]$Msg, [string]$Color = "Gray") Write-Host "  $Msg" -ForegroundColor $Color }
 
+    # True host architecture, mirroring install.ps1's WSL-fallback gate: an
+    # x64-emulated PowerShell on ARM64 reports AMD64 in PROCESSOR_ARCHITECTURE,
+    # which made the legacy marker-less WSL cleanup below skip exactly the
+    # machines the fallback installed on. Each probe only ever turns the answer
+    # ON; Win32_Processor.Architecture 12 = ARM64.
+    function _IsArm64Host {
+        $arm = $false
+        try { $arm = ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ieq 'Arm64') } catch { }
+        if (-not $arm) {
+            try { if ((@(Get-CimInstance Win32_Processor -ErrorAction Stop))[0].Architecture -eq 12) { $arm = $true } } catch { }
+        }
+        if (-not $arm) {
+            try {
+                $machArch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+                if ($machArch -ieq 'ARM64') { $arm = $true }
+            } catch { }
+        }
+        return $arm
+    }
+
     # Remove a file/dir/symlink if present. Idempotent; retries since a just-killed
     # process can briefly hold a handle (Windows refuses the delete until released).
     function _RemovePath {
@@ -417,7 +437,7 @@ function Uninstall-UnslothStudio {
             }
         }
     } catch { }
-    if ((-not $_scCands) -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')) {
+    if ((-not $_scCands) -and (_IsArm64Host)) {
         $_scCands = @('Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
     }
     $_scWs = $null
@@ -601,7 +621,7 @@ function Uninstall-UnslothStudio {
             $_cands = @()
             if ($env:UNSLOTH_WSL_DISTRO) { $_cands += $env:UNSLOTH_WSL_DISTRO }
             if ($_recordedDistro) { $_cands += $_recordedDistro }
-            if ((-not $_cands) -and ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64')) {
+            if ((-not $_cands) -and (_IsArm64Host)) {
                 $_cands = @('', 'Ubuntu', 'Ubuntu-24.04', 'Ubuntu-22.04', 'Debian')
             }
             $_done = @{}

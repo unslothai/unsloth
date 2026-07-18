@@ -60,7 +60,12 @@ if is_cuda_server "$SERVER"; then
 fi
 
 # 1. Require an NVIDIA GPU (this script is only meaningful with one).
-if ! command -v nvidia-smi >/dev/null 2>&1; then
+# Resolve nvidia-smi explicitly: root login shells drop /usr/lib/wsl/lib from
+# PATH, which is the ONLY location on WSL2 GPU-PV (mirrors setup.sh's resolver).
+NVSMI="$(command -v nvidia-smi 2>/dev/null)"
+[ -z "$NVSMI" ] && [ -x /usr/lib/wsl/lib/nvidia-smi ] && NVSMI=/usr/lib/wsl/lib/nvidia-smi
+[ -z "$NVSMI" ] && [ -x /usr/bin/nvidia-smi ] && NVSMI=/usr/bin/nvidia-smi
+if [ -z "$NVSMI" ]; then
     log "no nvidia-smi found; skipping CUDA llama.cpp build"
     exit 0
 fi
@@ -96,7 +101,7 @@ find_nvcc() {
 # a toolkit newer than the driver loads nothing. Read the driver's supported
 # major (all recent drivers print "CUDA Version: X.Y"); unparseable stays empty
 # and keeps the previous install-13.3 behavior (Spark-class drivers all parse).
-_DRV_CUDA_MAJOR="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\)\..*/\1/p' | head -1)"
+_DRV_CUDA_MAJOR="$("$NVSMI" 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\)\..*/\1/p' | head -1)"
 case "$_DRV_CUDA_MAJOR" in *[!0-9]*) _DRV_CUDA_MAJOR="" ;; esac
 _nvcc_major_of() { "$1" --version 2>/dev/null | sed -n 's/.*release \([0-9][0-9]*\)\..*/\1/p' | head -1; }
 
@@ -190,7 +195,7 @@ export CC="$HCC" CXX="$HCXX" CUDAHOSTCXX="$HCXX"
 # GPU-PV / driver combos report "N/A". "native" needs CMake >= 3.24 (Ubuntu
 # 22.04 apt ships 3.22), so the fallback omits the flag entirely and lets
 # ggml's version-guarded CMake defaults pick the arches instead.
-CC_CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
+CC_CAP="$("$NVSMI" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
 case "$CC_CAP" in
     ''|*[!0-9]*) CUDA_ARCH="" ;;
     *)           CUDA_ARCH="$CC_CAP" ;;

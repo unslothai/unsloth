@@ -2233,7 +2233,11 @@ exit 0
         # Persist the skip as a marker file too: `unsloth studio update` reruns
         # install.sh --shortcuts-only through the wsl.exe shim, which carries no env,
         # so without the marker the first update would recreate the duplicate .lnk.
-        $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; mkdir -p /root/.unsloth; touch /root/.unsloth/.skip-wsl-windows-shortcut; '
+        # Clear the completion stamp from any previous install: setup.sh rewrites
+        # it only after the core venv + Studio deps finish, and the post-run gate
+        # below requires it, so a run that dies mid-install can no longer coast on
+        # a stale venv passing the torch/CLI probes.
+        $_fwdEnv += 'export UNSLOTH_SKIP_WSL_WINDOWS_SHORTCUT=1; mkdir -p /root/.unsloth; touch /root/.unsloth/.skip-wsl-windows-shortcut; rm -f /root/.unsloth/.install-ok; '
         # Forward a non-default --package into the WSL install (already validated
         # against ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ at parse time, so splicing is safe);
         # previously it was silently dropped and the user got stock unsloth.
@@ -2292,6 +2296,22 @@ exit 0
             $ErrorActionPreference = $prevEapCli
             if ($LASTEXITCODE -ne 0) {
                 substep "WSL install incomplete: 'unsloth' CLI missing (install.sh cut short after PyTorch) -- not creating a dangling shim." "Yellow"
+                $torchOk = $false
+            }
+        }
+        # Require the completion stamp setup.sh writes after the core venv +
+        # Studio deps finish (cleared above before the run). torch + CLI alone
+        # can both come from a stale venv left by a PREVIOUS install while this
+        # run's installer died mid-way; the tolerated nonzero $wslRc (optional
+        # llama.cpp step) makes that indistinguishable by exit code. Existence
+        # only, no mtime compare: WSL and Windows clocks can skew.
+        if ($torchOk) {
+            $prevEapStamp = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            $global:LASTEXITCODE = -1
+            try { & wsl.exe -d $distro --cd /root -u root -- test -f /root/.unsloth/.install-ok *> $null } catch {}
+            $ErrorActionPreference = $prevEapStamp
+            if ($LASTEXITCODE -ne 0) {
+                substep "WSL install did not complete its core steps this run (no completion stamp; inner exit $wslRc) -- the venv passing the probes is from a previous install." "Yellow"
                 $torchOk = $false
             }
         }
@@ -2379,9 +2399,19 @@ exit 0
                 $L = @(
                     '$ErrorActionPreference = "SilentlyContinue"',
                     ('$distro = "' + $distro + '"'),
-                    'Start-Job { for ($i=0; $i -lt 120; $i++) { try { if ((Invoke-WebRequest "http://localhost:8888/api/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { Start-Process "http://localhost:8888"; break } } catch {}; Start-Sleep 1 } } | Out-Null',
-                    'Write-Host "Starting Unsloth Studio in WSL ($distro); browser opens at http://localhost:8888 when ready (Ctrl+C to stop)..."',
-                    'wsl.exe -d $distro --cd /root -u root -- bash -lic "unsloth studio -p 8888"'
+                    # Port 8888 may already be taken on the Windows side (Jupyter, a
+                    # second Studio): Studio inside WSL would bind a different port
+                    # while the poll below waits on 8888 forever and the browser
+                    # never opens. Scan the same 8888..8908 window the native
+                    # launcher uses (Find-FreeLaunchPort) and pass the winner via
+                    # -p. WSL2 localhost forwarding mirrors the WSL port onto
+                    # Windows, so probing with a Windows-side TcpListener is valid.
+                    '$port = 0',
+                    'foreach ($p in 8888..8908) { $l = $null; try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $p); $l.Start(); $port = $p } catch {} finally { if ($l) { try { $l.Stop() } catch {} } }; if ($port) { break } }',
+                    'if (-not $port) { Write-Host "No free port in 8888-8908; close one of the apps using them and relaunch."; Start-Sleep 10; exit 1 }',
+                    'Start-Job -ArgumentList $port { param($port) for ($i=0; $i -lt 120; $i++) { try { if ((Invoke-WebRequest "http://localhost:$port/api/health" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { Start-Process "http://localhost:$port"; break } } catch {}; Start-Sleep 1 } } | Out-Null',
+                    'Write-Host "Starting Unsloth Studio in WSL ($distro); browser opens at http://localhost:$port when ready (Ctrl+C to stop)..."',
+                    'wsl.exe -d $distro --cd /root -u root -- bash -lic "unsloth studio -p $port"'
                 )
                 Set-Content -LiteralPath $launcher -Value $L -Encoding UTF8
                 # Icon must live OUTSIDE %LOCALAPPDATA%: on WoA the sandboxed icon broker can't read a .ico

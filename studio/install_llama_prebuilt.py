@@ -10,6 +10,7 @@ import argparse
 import atexit
 import errno
 import fnmatch
+import functools
 import glob
 import hashlib
 import json
@@ -2762,11 +2763,20 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     return _tokens[0]
 
 
+@functools.lru_cache(maxsize = 1)
+def _running_under_wsl() -> bool:
+    """WSL kernels self-identify with 'microsoft' in the release string."""
+    try:
+        return "microsoft" in platform.uname().release.lower()
+    except Exception:
+        return False
+
+
 def _nvidia_smi_capture(
     command: list[str],
     *,
-    attempts: int = 2,
-    timeout: int = 60,
+    attempts: int | None = None,
+    timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """run_capture for nvidia-smi probes, hardened against transient slowness.
 
@@ -2776,14 +2786,19 @@ def _nvidia_smi_capture(
     A single short timeout then raises TimeoutExpired, detect_host treats the
     GPU as ABSENT, and the host is misrouted to a CPU prebuilt / slow source
     build instead of the CUDA bundle it can actually use. Retry with a generous
-    per-attempt timeout. Only ever reached when nvidia-smi exists on PATH, so
+    per-attempt timeout there. Off WSL that slowness mode does not exist, and a
+    hung nvidia-smi (broken driver, revoked container GPU) would stall three
+    successive detect_host probes for ~2 minutes each -- so bare metal keeps a
+    single short attempt. Only ever reached when nvidia-smi exists on PATH, so
     CPU-only hosts never incur this wait.
     """
+    _on_wsl = _running_under_wsl()
+    _attempts = max(1, attempts if attempts is not None else (2 if _on_wsl else 1))
+    _timeout = timeout if timeout is not None else (60 if _on_wsl else 10)
     last_exc: Exception | None = None
-    _attempts = max(1, attempts)
     for _attempt in range(_attempts):
         try:
-            return run_capture(command, timeout = timeout)
+            return run_capture(command, timeout = _timeout)
         except subprocess.TimeoutExpired as exc:
             last_exc = exc
             if _attempt + 1 < _attempts:  # don't sleep after the final attempt

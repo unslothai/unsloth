@@ -212,14 +212,11 @@ _custom_studio_roots | while IFS= read -r _custom_root; do
     _remove_path "$_custom_root"
 done
 _remove_path "$HOME/.unsloth/studio"
-# Default-mode shared llama.cpp build + cache are siblings of studio (not removed
-# by deleting it). No-op in env/custom mode (they nest under the custom root) and
-# when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
-_remove_path "$HOME/.unsloth/llama.cpp"
-# Stop a detached CUDA llama.cpp build before deleting its tree: _pkill_studio
+# Stop a detached CUDA llama.cpp build BEFORE deleting its tree: _pkill_studio
 # only matches Studio roots, and a live cmake/nvcc under ~/.unsloth/llama.cpp
-# would keep burning CPU/thermals, recreate build/ files, and defeat the
-# trailing rmdir. TERM first, then KILL after the same grace _pkill_studio uses.
+# would keep burning CPU/thermals, recreate build/ files between the rm and the
+# rmdir, and leave a partial tree. TERM first, then KILL after the same grace
+# _pkill_studio uses.
 if command -v pkill >/dev/null 2>&1; then
     _llama_re=$(_pkill_escape "$HOME/.unsloth/llama.cpp")
     for _pat in "run_llama_build\.sh" "provision_llama_cuda\.sh" "$_llama_re"; do
@@ -230,6 +227,10 @@ if command -v pkill >/dev/null 2>&1; then
         pkill -KILL -f "$_pat" 2>/dev/null || true
     done
 fi
+# Default-mode shared llama.cpp build + cache are siblings of studio (not removed
+# by deleting it). No-op in env/custom mode (they nest under the custom root) and
+# when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
+_remove_path "$HOME/.unsloth/llama.cpp"
 # WoA/Spark CUDA-build path artifacts (provision script fetched by setup.sh,
 # install.ps1's background-build runner + log, and the persisted shortcut-skip
 # marker). No-ops when absent.
@@ -237,6 +238,10 @@ _remove_path "$HOME/.unsloth/provision_llama_cuda.sh"
 _remove_path "$HOME/.unsloth/run_llama_build.sh"
 _remove_path "$HOME/.unsloth/llama_cuda_build.log"
 _remove_path "$HOME/.unsloth/.skip-wsl-windows-shortcut"
+# Core-install completion stamp (written by setup.sh, checked by install.ps1's
+# WSL probes). Must go, or a later reinstall could read a stale success.
+_remove_path "$HOME/.unsloth/.install-ok"
+_remove_path "$HOME/.unsloth/unsloth-install.sh"
 _remove_path "$HOME/.unsloth/.cache"
 # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
 # default mode. No-op in env/custom mode (nested under the custom root) and absent.
