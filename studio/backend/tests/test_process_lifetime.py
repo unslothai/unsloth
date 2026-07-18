@@ -75,9 +75,13 @@ def _wait_dead(pid: int, timeout: float) -> bool:
 
 def _killpg(proc) -> None:
     # Reap the process and its whole session/group (forkserver + workers) so a
-    # test never leaves long-lived Python processes behind.
+    # test never leaves long-lived Python processes behind. With
+    # start_new_session=True the leader's pid IS the pgid, and the group lives
+    # as long as any member does -- so kill proc.pid AS the pgid directly rather
+    # than os.getpgid(proc.pid), which raises ESRCH once proc.wait() has already
+    # reaped the leader and would silently skip the group kill.
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        os.killpg(proc.pid, signal.SIGKILL)
     except OSError:
         pass
     try:
