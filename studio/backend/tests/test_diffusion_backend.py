@@ -2873,6 +2873,82 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
     assert replan_calls == [True]  # genuine capacity shortfall: declined without a retry
 
 
+def _decline_dense_quant(backend, monkeypatch, tmp_path):
+    """Configure the harness so the dense-quant fast path is declined for capacity
+    (mirrors test_dense_quant_replan_no_retry_when_capacity_truly_short)."""
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 33_831, companions_mib = 46_157, prequant = False
+        ),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(self, *a, transformer_resident_override_mib = None, **k):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = "model")
+        return types.SimpleNamespace(
+            offload_policy = "model",
+            estimates = {"resident_required_mib": 150_000, "safe_device_budget_mib": 40_000},
+            device_memory = types.SimpleNamespace(
+                total_mib = 183_359, memory_kind = "discrete_vram", free_mib = 60_000
+            ),
+            reasons = ("companions exceed budget",),
+        )
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+
+def test_declined_dense_with_baked_loras_fails_instead_of_silent_drop(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # transformer_quant + adapters, dense build declined for capacity: the GGUF fallback
+    # cannot bake the adapters, so completing it would silently generate WITHOUT the
+    # requested LoRAs behind an HTTP success. The load must fail with the recovery options.
+    backend = DiffusionBackend()
+    _decline_dense_quant(backend, monkeypatch, tmp_path)
+    with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "m.gguf",
+            family_override = "z-image",
+            transformer_quant = "int8",
+            loras = [("adapter", 1.0)],
+        )
+
+
+def test_declined_dense_without_loras_still_falls_back_to_gguf(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The plain decline (no adapters requested) keeps the silent GGUF fallback: weight-0
+    # adapters count as "none" (an explicit disable is not a bake request).
+    backend = DiffusionBackend()
+    _decline_dense_quant(backend, monkeypatch, tmp_path)
+    result = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "int8",
+        loras = [("adapter", 0.0)],
+    )
+    assert result is not None
+    assert backend.status()["transformer_quant"] is None  # GGUF-as-is fallback
+
+
 class _BakePipe:
     def __init__(self):
         self.calls: list = []
@@ -3154,6 +3230,44 @@ def test_base_file_downloaded_include_transformer_flag():
     # The flag must not admit anything else that is normally excluded.
     assert _base_file_downloaded("assets/teaser.png", include_transformer = True) is False
     assert _base_file_downloaded("README.md", include_transformer = True) is False
+
+
+def test_dense_quant_prefetch_capacity_gate(fake_runtime, monkeypatch):
+    # On a device that cannot hold even the candidate's post-quant resident set, the re-plan
+    # is certain to decline the dense path -- widening would fetch the multi-GB base
+    # transformer/ shards (measured: ~47 GB on a Qwen-Image GGUF load on a 24 GB card) only
+    # to run the GGUF as-is. The gate compares steady_total against TOTAL capacity (reserve +
+    # 0.85 margin), never the instantaneous free reading.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory as dmem
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Qwen-Image-GGUF")
+
+    def candidate_with(steady):
+        return lambda **kw: types.SimpleNamespace(prequant = False, steady_total_mib = steady)
+
+    monkeypatch.setattr(
+        dmem,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(
+            total_mib = 24_564, free_mib = 24_000, memory_kind = "discrete_vram"
+        ),
+    )
+    # int8 qwen steady (~22 GB DiT + 17 GB companions = 39 GB) cannot fit a 24 GB card.
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", candidate_with(39_900))
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "int8"}) is False
+    # A candidate that fits total capacity still widens.
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", candidate_with(12_000))
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "int8"}) is True
+    # Unknown sizes keep the old behaviour (widen: the loader may still take the dense path).
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = False),
+    )
+    assert backend._dense_quant_prefetch_needed(fam, {"transformer_quant": "int8"}) is True
 
 
 def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
