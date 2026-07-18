@@ -1122,7 +1122,8 @@ def test_binary_env_macos_strips_inherited_dyld_loader_controls(
     binary_path.write_bytes(b"fake")
 
     monkeypatch.setenv(
-        "DYLD_LIBRARY_PATH", str(runtime_lib.parent / ".." / runtime_lib.parent.name / runtime_lib.name)
+        "DYLD_LIBRARY_PATH",
+        str(runtime_lib.parent / ".." / runtime_lib.parent.name / runtime_lib.name),
     )
     monkeypatch.setenv("DYLD_INSERT_LIBRARIES", str(tmp_path / "inject.dylib"))
     monkeypatch.setenv("DYLD_FRAMEWORK_PATH", str(tmp_path / "Frameworks"))
