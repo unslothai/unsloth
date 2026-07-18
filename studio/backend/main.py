@@ -306,6 +306,7 @@ from routes import (
     rag_router,
     training_history_router,
     training_router,
+    usage_router,
 )
 from routes.llama import router as llama_router
 from routes.preview import router as preview_router
@@ -523,6 +524,14 @@ async def lifespan(app: FastAPI):
         cleanup_orphaned_runs()
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+    try:
+        from storage.usage_log import enforce_retention, record_event
+        from core.inference.api_monitor import api_monitor
+        enforce_retention()
+        api_monitor.on_finish = record_event
+    except Exception as exc:
+        _lifespan_log.warning("usage logging setup failed at startup: %s", exc)
 
     reap_hub_orphan_workers()
 
@@ -992,6 +1001,7 @@ app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(usage_router, prefix = "/api/usage", tags = ["usage"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
